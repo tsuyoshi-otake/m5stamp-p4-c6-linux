@@ -24,11 +24,30 @@ Features out-of-the-box Wi-Fi (`wlan0`) via Espressif ESP-Hosted-NG and stable D
 
 ---
 
+## Technical Deep Dive: The "SSH Wedge" & Kernel Stabilization
+
+Bringing up native Linux on early RISC-V NOMMU silicon often uncovers subtle interaction issues between hardware errata and kernel subsystems.
+
+During initial development, a critical failure known as the **"SSH Wedge"** manifested: executing any non-interactive SSH command (`ssh pi@host id`) or child process termination caused an immediate communication lockup, followed by a hardware watchdog reset (`rst:0x7`) ~120–160s later.
+
+While initially suspected to be an SDIO bus saturation or ESP-Hosted-NG flow-control overflow, extensive post-mortem debugging via RTC crash capsules and local loopback reproduction uncovered an unhandled `Load access fault` in `rb_erase()` during child process exit (`timerqueue_del() -> rb_erase()`).
+
+This was resolved by integrating three essential ESP32-P4 SoC hardening patches:
+1. **Signal `mcause` hardening (`0014`)**: Fixes interrupt masking register corruption on `SIGCHLD` returns.
+2. **L2 Unified Cache hardening (`0015`)**: Prevents silent memory corruption by eliminating blind L2 cache invalidation without write-back.
+3. **Systimer atomic read hardening (`0016`)**: Eliminates torn reads on 52-bit hardware counters and missed timer alarms.
+
+👉 **Read the complete engineering post-mortem and root-cause analysis in [docs/deep-dive-ssh-wedge-and-soc-hardening.md](docs/deep-dive-ssh-wedge-and-soc-hardening.md).**
+
+---
+
 ## Repository Structure
 
 ```text
 .
 ├── board/                 # Hardware contract and pinout specifications
+├── docs/                  # Architecture, troubleshooting, and post-mortem deep dives
+│   └── deep-dive-ssh-wedge-and-soc-hardening.md
 ├── linux/                 # Linux kernel, Buildroot, boot-shim, and integration
 │   ├── boot-shim/         # ESP-IDF 2nd stage bootloader (PSRAM/SDIO/flash setup)
 │   ├── buildroot-external/# Buildroot package definitions & rootfs overlay
