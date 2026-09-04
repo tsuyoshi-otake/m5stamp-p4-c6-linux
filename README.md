@@ -118,6 +118,15 @@ Connect the Stamp-P4 via USB-C (USB-Serial/JTAG on GPIO24/25) and flash using Po
 
 ---
 
+## Default Credentials & Login
+
+| Interface | Username | Password | Notes |
+| :--- | :--- | :--- | :--- |
+| **SSH (`dropbear`)** | `pi` | `raspberry` | Standard Raspberry Pi-compatible default account |
+| **Serial Console (`ttyS0`)** | *(root shell)* | *(none)* | Press `Enter` to activate root shell on USB-Serial/JTAG |
+
+---
+
 ## Acknowledgments & References
 
 - [why2025-linux](https://github.com/mrbreaker/why2025-linux) by @mrbreaker for initial ESP32-P4 NOMMU bring-up reference.
