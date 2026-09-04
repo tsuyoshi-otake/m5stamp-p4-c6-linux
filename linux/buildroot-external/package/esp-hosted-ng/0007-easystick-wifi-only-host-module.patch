@@ -1,0 +1,29 @@
+From: EasyStick maintainers <noreply@example.invalid>
+Subject: [PATCH] host: defer Bluetooth initialization in Wi-Fi-only lab
+
+The AddOn C6 advertises WLAN and BLE over SDIO.  The M3 lab acceptance scope
+is WLAN plus SSH.  Keep ESP-Hosted's Bluetooth code linked (the upstream
+module shares helper symbols), but deliberately do not create an HCI device.
+That prevents an optional BLE setup timeout from racing the WLAN association
+test.  A later Bluetooth milestone must replace this guard with its own
+tested initialization path.
+
+---
+ main.c | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/main.c b/main.c
+index 1111111..2222222 100644
+--- a/main.c
++++ b/main.c
+@@ -235,4 +235,8 @@ static void init_bt(struct esp_adapter *adapter)
+ {
+ 
++	if ((adapter->capabilities & ESP_BT_SPI_SUPPORT) ||
++		(adapter->capabilities & ESP_BT_SDIO_SUPPORT))
++		return;
++
+ 	if ((adapter->capabilities & ESP_BT_SPI_SUPPORT) ||
+ 		(adapter->capabilities & ESP_BT_SDIO_SUPPORT)) {
+-- 
+2.43.0

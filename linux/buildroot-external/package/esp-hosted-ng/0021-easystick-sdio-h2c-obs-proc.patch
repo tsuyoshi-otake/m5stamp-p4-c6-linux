@@ -1,0 +1,176 @@
+From: EasyStick maintainers <noreply@example.invalid>
+Subject: [PATCH] sdio: read-only /proc/esp32_sdio_h2c_obs (CMD52)
+
+Expose C6 H2C observe scratch (host SCRATCH_REG_8..15 = slave pos 32..63)
+as a read-only /proc node. Uses existing bytewise esp_read_reg (CMD52 only).
+
+Must not: CMD53 bulk read, interrupt clear, RX drain, host interrupt, or
+any write to the C6. Safe to poll once after a ping experiment; do not
+poll during the ping itself.
+
+ABI v2 decode matches 0022-observe (magic 0x0B22). Known-good C6 without
+observe yields magic != 0x0B22 — that is the mapping smoke test.
+
+---
+ sdio/esp_sdio.c | 160 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 160 insertions(+)
+
+diff --git a/sdio/esp_sdio.c b/sdio/esp_sdio.c
+index 1111111..2222222 100644
+--- a/sdio/esp_sdio.c
++++ b/sdio/esp_sdio.c
+@@ -14,6 +14,10 @@
+ #include <linux/mmc/card.h>
+ #include <linux/mmc/host.h>
+ #include <linux/module.h>
++#include <linux/proc_fs.h>
++#include <linux/seq_file.h>
++#include <linux/string.h>
++#include <linux/bitops.h>
+ #include "esp_if.h"
+ #include "esp_sdio_api.h"
+ #include "esp_api.h"
+@@ -40,6 +42,127 @@
+ struct task_struct *tx_thread;
+ volatile u8 host_sleep;
+ 
++#define H2C_OBS_MAGIC		0x0B22u
++#define H2C_OBS_ABI_V2		2u
++#define H2C_OBS_BYTES		32
++
++static struct proc_dir_entry *esp_h2c_obs_proc;
++
++static u32 h2c_obs_le32(const u8 *p)
++{
++	return ((u32)p[0]) |
++	       ((u32)p[1] << 8) |
++	       ((u32)p[2] << 16) |
++	       ((u32)p[3] << 24);
++}
++
++static int esp_h2c_obs_show(struct seq_file *m, void *v)
++{
++	struct esp_sdio_context *context = &sdio_context;
++	u8 raw[H2C_OBS_BYTES];
++	u32 words[8];
++	u16 magic, abi, pub_seq;
++	u16 span_ms, max_gap_ms, max_tx_us;
++	s16 last_ret;
++	int ret;
++	int i;
++
++	(void)v;
++
++	if (!context->func) {
++		seq_puts(m, "status=no_func\n");
++		return 0;
++	}
++
++	memset(raw, 0, sizeof(raw));
++	/* CMD52 bytewise only (esp_read_reg). Base = conf_w8 = slave pos 32. */
++	ret = esp_read_reg(context, ESP_SLAVE_SCRATCH_REG_8, raw,
++			   H2C_OBS_BYTES, 1);
++	if (ret) {
++		seq_printf(m, "status=read_fail ret=%d\n", ret);
++		return 0;
++	}
++
++	for (i = 0; i < 8; i++)
++		words[i] = h2c_obs_le32(raw + (i * 4));
++
++	magic = (u16)(words[0] & 0xffffu);
++	abi = (u16)((words[0] >> 16) & 0xffu);
++	pub_seq = (u16)((words[0] >> 24) & 0xffu);
++	span_ms = (u16)(words[6] & 0xffffu);
++	max_gap_ms = (u16)((words[6] >> 16) & 0xffffu);
++	max_tx_us = (u16)(words[7] & 0xffffu);
++	last_ret = (s16)((words[7] >> 16) & 0xffffu);
++
++	seq_puts(m, "status=ok\n");
++	seq_printf(m, "host_base=SCRATCH_REG_8(+0x9C) slave_pos=32..63 bytes=%u\n",
++		   H2C_OBS_BYTES);
++	seq_puts(m, "raw_hex=");
++	for (i = 0; i < H2C_OBS_BYTES; i++)
++		seq_printf(m, "%02x", raw[i]);
++	seq_puts(m, "\n");
++
++	seq_printf(m, "magic=0x%04x abi=%u pub_seq=%u stable=%u\n",
++		   magic, abi, pub_seq, (pub_seq & 1u) ? 0 : 1);
++
++	if (magic != H2C_OBS_MAGIC) {
++		seq_puts(m, "decode=skipped (magic != H2C_OBS_MAGIC; expected on known-good C6)\n");
++		return 0;
++	}
++	if (abi != H2C_OBS_ABI_V2) {
++		seq_printf(m, "decode=skipped (abi=%u != %u)\n",
++			   abi, H2C_OBS_ABI_V2);
++		return 0;
++	}
++
++	seq_printf(m, "h2c_seq_mask=0x%05x h2c_count=%u\n",
++		   words[1] & 0xfffffu, hweight32(words[1]));
++	seq_printf(m, "wifi_ok_mask=0x%05x ok_count=%u\n",
++		   words[2] & 0xfffffu, hweight32(words[2]));
++	seq_printf(m, "wifi_no_mem_mask=0x%05x no_mem_count=%u\n",
++		   words[3] & 0xfffffu, hweight32(words[3]));
++	seq_printf(m, "wifi_other_mask=0x%05x other_count=%u\n",
++		   words[4] & 0xfffffu, hweight32(words[4]));
++	seq_printf(m, "drop_not_ready_mask=0x%05x drop_count=%u\n",
++		   words[5] & 0xfffffu, hweight32(words[5]));
++	seq_printf(m, "span_ms=%u max_gap_ms=%u\n", span_ms, max_gap_ms);
++	seq_printf(m, "max_tx_duration_us=%u last_ret=%d\n",
++		   max_tx_us, (int)last_ret);
++	return 0;
++}
++
++static int esp_h2c_obs_open(struct inode *inode, struct file *file)
++{
++	return single_open(file, esp_h2c_obs_show, NULL);
++}
++
++static const struct proc_ops esp_h2c_obs_fops = {
++	.proc_open	= esp_h2c_obs_open,
++	.proc_read	= seq_read,
++	.proc_lseek	= seq_lseek,
++	.proc_release	= single_release,
++};
++
++static void esp_h2c_obs_proc_create(void)
++{
++	if (esp_h2c_obs_proc)
++		return;
++	esp_h2c_obs_proc = proc_create("esp32_sdio_h2c_obs", 0444, NULL,
++				       &esp_h2c_obs_fops);
++	if (!esp_h2c_obs_proc)
++		esp_err("failed to create /proc/esp32_sdio_h2c_obs\n");
++	else
++		esp_info("created /proc/esp32_sdio_h2c_obs (CMD52 read-only)\n");
++}
++
++static void esp_h2c_obs_proc_remove(void)
++{
++	if (!esp_h2c_obs_proc)
++		return;
++	proc_remove(esp_h2c_obs_proc);
++	esp_h2c_obs_proc = NULL;
++}
++
+ #define ESP_RX_TRACE_DEPTH 8
+ #define ESP_RX_TRACE_EDGE_BYTES 16
+ 
+@@ -1421,6 +1421,8 @@
+ 	sdio_context.adapter = adapter;
+ 	sdio_context.sdio_clk_mhz = speed;
+ 
++	esp_h2c_obs_proc_create();
++
+ 	return sdio_register_driver(&esp_sdio_driver);
+ }
+ 
+@@ -1325,5 +1463,6 @@
+ 
+ void esp_deinit_interface_layer(void)
+ {
++	esp_h2c_obs_proc_remove();
+ 	sdio_unregister_driver(&esp_sdio_driver);
+ }

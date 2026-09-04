@@ -1,0 +1,47 @@
+From: EasyStick maintainers <noreply@example.invalid>
+Subject: [PATCH] sdio: add TX inter-packet pacing and increase buffer retry
+
+C6 SDIO slave SLC DMA descriptor reload takes ~1ms after a Wi-Fi transmission.
+Rapid packet bursts (such as Dropbear SSH post-exec sequence with TCP_NODELAY)
+exhaust slave buffers and trigger unrecoverable SLC desync if sent back-to-back.
+Increase MAX_WRITE_RETRIES from 2 to 50 with 100-200us delay, retry on token read
+error, and pace transmissions with 1-2ms delay after each packet.
+---
+ sdio/esp_sdio.c | 11 +++++++----
+ 1 file changed, 7 insertions(+), 4 deletions(-)
+
+--- a/sdio/esp_sdio.c
++++ b/sdio/esp_sdio.c
+@@ -32,7 +32,7 @@
+ #include "esp_kernel_port.h"
+ 
+ extern u32 raw_tp_mode;
+-#define MAX_WRITE_RETRIES       2
++#define MAX_WRITE_RETRIES       50
+ #define TX_MAX_PENDING_COUNT    200
+ #define TX_RESUME_THRESHOLD     (TX_MAX_PENDING_COUNT/5)
+ 
+@@ -1018,11 +1018,11 @@
+ 		while (retry) {
+ 			ret = esp_slave_get_tx_buffer_num(context, &buf_available, ACQUIRE_LOCK);
+ 
+-			if (buf_available < buf_needed) {
++			if (ret || buf_available < buf_needed) {
+ 
+ 				/* Release SDIO and retry after delay*/
+ 				retry--;
+-				usleep_range(10, 50);
++				usleep_range(100, 200);
+ 				continue;
+ 			}
+ 
+@@ -1181,6 +1181,9 @@
+ 
+ 		dev_kfree_skb(tx_skb);
+ 		tx_skb = NULL;
++
++		/* Inter-packet pacing: ensure C6 SLC DMA has breathing room between packets */
++		usleep_range(1000, 2000);
+ 	}
+ 
+ 	do_exit(0);

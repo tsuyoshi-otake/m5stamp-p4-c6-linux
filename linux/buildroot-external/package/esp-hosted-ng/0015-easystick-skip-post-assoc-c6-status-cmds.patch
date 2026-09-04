@@ -1,0 +1,50 @@
+From: EasyStick maintainers <noreply@example.invalid>
+Subject: [PATCH] cfg80211: do not query C6 TX power or RSSI after assoc
+
+After association, nl80211 get_tx_power issues CMD_GET_TXPOWER (0xF).
+On this C6 that command can time out during the 4-way handshake.  The
+host then waits COMMAND_RESPONSE_TIMEOUT (5 s) and dumps RXTRACE, which
+is longer than the EAPOL window.  Boot and set_tx_power already fill
+priv->tx_pwr; return that cache.  get_station likewise must not issue
+CMD_STA_RSSI (0x1B) on the same exclusive command path; use the RSSI
+from process_assoc_event.
+
+This adds no SDIO transaction, retry, delay, or receive-path change.
+ADD_KEY, auth, and assoc commands are unchanged.
+
+What this cannot see: if the C6 data path is already wedged, or wpa
+never transmits EAPOL message 2 for another reason, skipping 0xF will
+not create message 3.  The negative test is the absence of
+Command[0xF] timed out during 4-way; a remaining 4-way failure means
+this patch was insufficient.
+
+---
+ esp_cfg80211.c | 10 ++++++----
+ 1 file changed, 6 insertions(+), 4 deletions(-)
+
+diff --git a/esp_cfg80211.c b/esp_cfg80211.c
+--- a/esp_cfg80211.c
++++ b/esp_cfg80211.c
+@@ -798,7 +798,8 @@ static int esp_cfg80211_get_station(struct wiphy *wiphy, struct net_device *ndev,
+ 	if (wireless_dev_current_bss_exists(&priv->wdev)) {
+ 
+ 		sinfo->filled |= BIT(NL80211_STA_INFO_SIGNAL);
+-		cmd_get_rssi(priv);
++		/* Use assoc-event RSSI. A CMD_STA_RSSI during 4-way shares
++		 * the exclusive C6 command path that times out as 0xF. */
+ 		sinfo->signal = priv->rssi;
+ 
+ 		sinfo->filled |= BIT(NL80211_STA_INFO_RX_BYTES);
+@@ -842,9 +843,9 @@ static int esp_cfg80211_get_tx_power(struct wiphy *wiphy,
+ 		esp_err("Empty priv\n");
+ 		return -EINVAL;
+ 	}
+-	/* Update Tx power from firmware */
+-	cmd_get_tx_power(priv);
+-
++	/* Do not ask C6 again. GET_TXPOWER (0xF) during 4-way times out
++	 * and wedges the command path. Boot/set already filled tx_pwr.
++	 */
+ 	*dbm = esp_pwr_to_dbm(priv->tx_pwr);
+ 
+ 	return 0;

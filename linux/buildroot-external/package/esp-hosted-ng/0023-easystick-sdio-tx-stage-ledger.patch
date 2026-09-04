@@ -1,0 +1,470 @@
+From: EasyStick maintainers <noreply@example.invalid>
+Subject: [PATCH] host TX stage ledger for SSH sport 22 (observe-only)
+
+Classify post-auth SSH TX on P4 host path:
+netdev -> enqueue -> dequeue -> credit -> CMD53.
+Experiment A: sport22-only CLAIM/MEMCPY markers share a caller-owned
+trace_id with CMD53_ATTEMPT/OK/ERR (no global active flag).
+
+Markers use printk(KERN_EMERG) prefix ES_TX. Logging only.
+
+---
+diff --git a/include/easystick_tx_ledger.h b/include/easystick_tx_ledger.h
+--- a/include/easystick_tx_ledger.h	1970-01-01 00:00:00.000000000 +0000
++++ b/include/easystick_tx_ledger.h	2026-08-21 00:28:24.794654132 +0000
+@@ -0,0 +1,174 @@
++/* EasyStick 0023-A: test-only P4 host TX stage ledger helpers.
++ * Observe TCP source port 22 with payload_len > 0 only.
++ * No ciphertext; no behaviour change when included.
++ * Experiment A follow-up: optional per-call CMD53 claim/memcpy
++ * markers keyed by caller-allocated trace_id (no global flag).
++ */
++#ifndef EASYSTICK_TX_LEDGER_H
++#define EASYSTICK_TX_LEDGER_H
++
++#include <linux/if_ether.h>
++#include <linux/ip.h>
++#include <linux/tcp.h>
++#include <linux/skbuff.h>
++#include "adapter.h"
++
++#define ES_TX_PREFIX		"ES_TX"
++#define ES_TX_SSH_SPORT		22
++#define ES_TX_LOG_CAP		192
++
++struct es_tx_id {
++	u16 dport;
++	u32 seq;
++	u32 ack;
++	u16 plen;
++	u8 flags;
++};
++
++/* Caller-owned CMD53 identity. Passed into esp_write_block only for
++ * sport22 payload frames; NULL elsewhere. Never a global active flag.
++ */
++struct es_tx_cmd53_ctx {
++	struct es_tx_id id;
++	u32 trace;
++	u32 reg;
++	u16 xfer;
++};
++
++static inline int es_tx_parse_ssh_payload(const u8 *data, unsigned int len,
++					  int has_esp_hdr, struct es_tx_id *id)
++{
++	const struct esp_payload_header *ph;
++	const struct ethhdr *eth;
++	const struct iphdr *iph;
++	const struct tcphdr *th;
++	u16 offset = 0;
++	u16 ip_total;
++	u16 tcp_hdrlen;
++	u16 payload_len;
++	unsigned int need;
++
++	if (!data || !id || len < sizeof(struct ethhdr))
++		return 0;
++
++	if (has_esp_hdr) {
++		if (len < sizeof(*ph))
++			return 0;
++		ph = (const struct esp_payload_header *)data;
++		offset = le16_to_cpu(ph->offset);
++		if (offset < sizeof(*ph) || offset >= len)
++			return 0;
++		data += offset;
++		len -= offset;
++	}
++
++	if (len < sizeof(*eth) + sizeof(*iph) + sizeof(*th))
++		return 0;
++
++	eth = (const struct ethhdr *)data;
++	if (eth->h_proto != htons(ETH_P_IP))
++		return 0;
++
++	iph = (const struct iphdr *)(data + sizeof(*eth));
++	if (iph->version != 4 || iph->protocol != IPPROTO_TCP)
++		return 0;
++	if (iph->ihl < 5)
++		return 0;
++
++	need = sizeof(*eth) + (iph->ihl * 4u) + sizeof(*th);
++	if (len < need)
++		return 0;
++
++	th = (const struct tcphdr *)(data + sizeof(*eth) + (iph->ihl * 4u));
++	if (th->source != htons(ES_TX_SSH_SPORT))
++		return 0;
++	if (th->doff < 5)
++		return 0;
++
++	tcp_hdrlen = th->doff * 4u;
++	ip_total = ntohs(iph->tot_len);
++	if (ip_total < (iph->ihl * 4u) + tcp_hdrlen)
++		return 0;
++	if (len < sizeof(*eth) + ip_total) {
++		/* truncated skb: still trust IP total_len for plen */
++	}
++
++	payload_len = ip_total - (iph->ihl * 4u) - tcp_hdrlen;
++	if (payload_len == 0)
++		return 0;
++
++	id->dport = ntohs(th->dest);
++	id->seq = ntohl(th->seq);
++	id->ack = ntohl(th->ack_seq);
++	id->plen = payload_len;
++	/* TCP flags live at offset 13 of the fixed header. */
++	id->flags = ((const u8 *)th)[13];
++	return 1;
++}
++
++static inline int es_tx_parse_skb(const struct sk_buff *skb, int has_esp_hdr,
++				  struct es_tx_id *id)
++{
++	if (!skb || !skb->data || !skb->len)
++		return 0;
++	return es_tx_parse_ssh_payload(skb->data, skb->len, has_esp_hdr, id);
++}
++
++static inline u32 es_tx_alloc_trace(void)
++{
++	static unsigned n;
++
++	n++;
++	if (!n)
++		n = 1;
++	return n;
++}
++
++static inline void es_tx_mark(const char *stage, const struct es_tx_id *id,
++			      const char *reason)
++{
++	static unsigned n;
++
++	if (!stage || !id)
++		return;
++	n++;
++	if (n > ES_TX_LOG_CAP)
++		return;
++
++	if (reason && reason[0])
++		printk(KERN_EMERG ES_TX_PREFIX
++		       " %s reason=%s dport=%u seq=%u ack=%u plen=%u flags=0x%x\n",
++		       stage, reason, id->dport, id->seq, id->ack, id->plen,
++		       id->flags);
++	else
++		printk(KERN_EMERG ES_TX_PREFIX
++		       " %s dport=%u seq=%u ack=%u plen=%u flags=0x%x\n",
++		       stage, id->dport, id->seq, id->ack, id->plen, id->flags);
++}
++
++/* Correlated CMD53 stages: always print the same trace/seq/plen/addr/xfer. */
++static inline void es_tx_mark_cmd53(const char *stage,
++				    const struct es_tx_cmd53_ctx *tr,
++				    int have_ret, int ret)
++{
++	static unsigned n;
++
++	if (!stage || !tr)
++		return;
++	n++;
++	if (n > ES_TX_LOG_CAP)
++		return;
++
++	if (have_ret)
++		printk(KERN_EMERG ES_TX_PREFIX
++		       " %s trace=%u seq=%u plen=%u addr=0x%x xfer=%u ret=%d\n",
++		       stage, tr->trace, tr->id.seq, tr->id.plen, tr->reg,
++		       tr->xfer, ret);
++	else
++		printk(KERN_EMERG ES_TX_PREFIX
++		       " %s trace=%u seq=%u plen=%u addr=0x%x xfer=%u\n",
++		       stage, tr->trace, tr->id.seq, tr->id.plen, tr->reg,
++		       tr->xfer);
++}
++
++#endif /* EASYSTICK_TX_LEDGER_H */
+diff --git a/main.c b/main.c
+--- a/main.c	2026-08-21 00:28:24.726651601 +0000
++++ b/main.c	2026-08-21 00:28:24.826655323 +0000
+@@ -21,6 +21,7 @@
+ #include "esp_fw_version.h"
+ 
+ #include "esp_cfg80211.h"
++#include "easystick_tx_ledger.h"
+ #include "esp_stats.h"
+ 
+ #define HOST_GPIO_PIN_INVALID -1
+@@ -102,6 +103,10 @@
+ 	}
+ 
+ 	if (host_sleep) {
++		struct es_tx_id txid;
++
++		if (es_tx_parse_skb(skb, 0, &txid))
++			es_tx_mark("NETDEV_XMIT", &txid, "HOST_SLEEP");
+ 		return NETDEV_TX_BUSY;
+ 	}
+ 
+@@ -182,6 +187,10 @@
+ 			priv->stats.tx_bytes += skb->len;
+ 		}
+ 	} else {
++		struct es_tx_id txid;
++
++		if (es_tx_parse_skb(skb, 0, &txid))
++			es_tx_mark("NETDEV_XMIT", &txid, "STOP_DATA");
+ 		dev_kfree_skb_any(skb);
+ 		priv->stats.tx_dropped++;
+ 	}
+@@ -462,6 +471,8 @@
+ {
+ 	struct esp_wifi_device *priv = NULL;
+ 	struct esp_skb_cb *cb = NULL;
++	struct es_tx_id txid;
++	int ssh_payload = 0;
+ 
+ 	if (!skb || !ndev)
+ 		return NETDEV_TX_OK;
+@@ -472,7 +483,11 @@
+ 		return NETDEV_TX_OK;
+ 	}
+ 
++	ssh_payload = es_tx_parse_skb(skb, 0, &txid);
++
+ 	if (!priv->port_open) {
++		if (ssh_payload)
++			es_tx_mark("NETDEV_XMIT", &txid, "PORT_CLOSED");
+ 		priv->stats.tx_dropped++;
+ 		esp_verbose("Port not yet open\n");
+ 		dev_kfree_skb(skb);
+@@ -480,12 +495,17 @@
+ 	}
+ 
+ 	if (!skb->len || (skb->len > ETH_FRAME_LEN)) {
++		if (ssh_payload)
++			es_tx_mark("NETDEV_XMIT", &txid, "INVALID_LENGTH");
+ 		esp_err("Bad len %d\n", skb->len);
+ 		priv->stats.tx_dropped++;
+ 		dev_kfree_skb(skb);
+ 		return NETDEV_TX_OK;
+ 	}
+ 
++	if (ssh_payload)
++		es_tx_mark("NETDEV_XMIT", &txid, NULL);
++
+ 	cb = (struct esp_skb_cb *) skb->cb;
+ 	cb->priv = priv;
+ 
+diff --git a/sdio/esp_sdio_api.c b/sdio/esp_sdio_api.c
+--- a/sdio/esp_sdio_api.c	2026-08-21 00:28:24.502643263 +0000
++++ b/sdio/esp_sdio_api.c	2026-08-21 00:28:24.798654281 +0000
+@@ -12,6 +12,7 @@
+ #include <linux/mmc/card.h>
+ #include <linux/mmc/host.h>
+ #include "esp_sdio_api.h"
++#include "easystick_tx_ledger.h"
+ 
+ static int esp_read_byte(struct esp_sdio_context *context, u32 reg, u8 *data, u8 is_lock_needed)
+ {
+@@ -82,7 +83,8 @@
+ 	return ret;
+ }
+ 
+-static int esp_write_multi_byte(struct esp_sdio_context *context, u32 reg, u8 *data, u16 size, u8 is_lock_needed)
++static int esp_write_multi_byte(struct esp_sdio_context *context, u32 reg, u8 *data, u16 size, u8 is_lock_needed,
++				const struct es_tx_cmd53_ctx *tr)
+ {
+ 	struct sdio_func *func = NULL;
+ 	int ret;
+@@ -94,13 +96,20 @@
+ 
+ 	func = context->func;
+ 
++	/* EasyStick 0023-A: sport22-only CLAIM/MEMCPY via caller ctx (tr). */
++	if (tr)
++		es_tx_mark_cmd53("CMD53_CLAIM_ENTER", tr, 0, 0);
+ 	if (is_lock_needed)
+ 		sdio_claim_host(func);
+-
++	if (tr)
++		es_tx_mark_cmd53("CMD53_MEMCPY_ENTER", tr, 0, 0);
+ 	ret = sdio_memcpy_toio(func, reg, data, size);
+-
++	if (tr)
++		es_tx_mark_cmd53("CMD53_MEMCPY_DONE", tr, 1, ret);
+ 	if (is_lock_needed)
+ 		sdio_release_host(func);
++	if (tr)
++		es_tx_mark_cmd53("CMD53_CLAIM_LEAVE", tr, 1, ret);
+ 
+ 	return ret;
+ }
+@@ -188,12 +197,13 @@
+ 	return ret;
+ }
+ 
+-int esp_write_block(struct esp_sdio_context *context, u32 reg, u8 *data, u16 size, u8 is_lock_needed)
++int esp_write_block(struct esp_sdio_context *context, u32 reg, u8 *data, u16 size, u8 is_lock_needed,
++		    const struct es_tx_cmd53_ctx *tr)
+ {
+ 	if (size <= 1) {
+ 		return esp_write_byte(context, reg, *data, is_lock_needed);
+ 	} else {
+-		return esp_write_multi_byte(context, reg, data, size, is_lock_needed);
++		return esp_write_multi_byte(context, reg, data, size, is_lock_needed, tr);
+ 	}
+ }
+ 
+diff --git a/sdio/esp_sdio_api.h b/sdio/esp_sdio_api.h
+--- a/sdio/esp_sdio_api.h	2026-08-11 04:08:23.857450600 +0000
++++ b/sdio/esp_sdio_api.h	2026-08-21 00:28:24.810654728 +0000
+@@ -8,10 +8,12 @@
+ #ifndef _ESP_SDIO_API_H_
+ #define _ESP_SDIO_API_H_
+ #include "esp_sdio_decl.h"
++#include "easystick_tx_ledger.h"
+ 
+ int esp_read_reg(struct esp_sdio_context *context, u32 reg, u8 *data, u16 size, u8 is_lock_needed);
+ int esp_read_block(struct esp_sdio_context *context, u32 reg, u8 *data, u16 size, u8 is_lock_needed);
+ int esp_write_reg(struct esp_sdio_context *context, u32 reg, u8 *data, u16 size, u8 is_lock_needed);
+-int esp_write_block(struct esp_sdio_context *context, u32 reg, u8 *data, u16 size, u8 is_lock_needed);
++int esp_write_block(struct esp_sdio_context *context, u32 reg, u8 *data, u16 size, u8 is_lock_needed,
++		    const struct es_tx_cmd53_ctx *tr);
+ 
+ #endif
+diff --git a/sdio/esp_sdio.c b/sdio/esp_sdio.c
+--- a/sdio/esp_sdio.c	2026-08-21 00:28:24.702650708 +0000
++++ b/sdio/esp_sdio.c	2026-08-21 00:28:24.818655026 +0000
+@@ -27,6 +29,7 @@
+ #include "esp_stats.h"
+ #include "esp_utils.h"
+ #include "esp_kernel_port.h"
++#include "easystick_tx_ledger.h"
+ 
+ extern u32 raw_tp_mode;
+ #define MAX_WRITE_RETRIES       2
+@@ -985,6 +978,10 @@
+ 
+ 	cb = (struct esp_skb_cb *)skb->cb;
+ 	if (cb && cb->priv && (atomic_read(&tx_pending) >= TX_MAX_PENDING_COUNT)) {
++		struct es_tx_id txid;
++
++		if (es_tx_parse_skb(skb, 1, &txid))
++			es_tx_mark("ENQUEUE_OK", &txid, "TX_PENDING_LIMIT");
+ 		esp_tx_pause(cb->priv);
+ 		dev_kfree_skb(skb);
+ 		skb = NULL;
+@@ -1006,10 +1003,17 @@
+ 	atomic_inc(&queue_items[prio]);
+ 	skb_queue_tail(&(sdio_context.tx_q[prio]), skb);
+ 
++	{
++		struct es_tx_id txid;
++
++		if (es_tx_parse_skb(skb, 1, &txid))
++			es_tx_mark("ENQUEUE_OK", &txid, NULL);
++	}
++
+ 	return 0;
+ }
+ 
+-static int is_sdio_write_buffer_available(u32 buf_needed)
++static int is_sdio_write_buffer_available(u32 buf_needed, int *token_err_out)
+ {
+ #define BUFFER_AVAILABLE        1
+ #define BUFFER_UNAVAILABLE      0
+@@ -1019,11 +1023,16 @@
+ 	struct esp_sdio_context *context = &sdio_context;
+ 	u8 retry = MAX_WRITE_RETRIES;
+ 
++	if (token_err_out)
++		*token_err_out = 0;
++
+ 	/*If buffer needed are less than buffer available
+ 	  then only read for available buffer number from slave*/
+ 	if (buf_available < buf_needed) {
+ 		while (retry) {
+ 			ret = esp_slave_get_tx_buffer_num(context, &buf_available, ACQUIRE_LOCK);
++			if (ret && token_err_out && !*token_err_out)
++				*token_err_out = ret;
+ 
+ 			if (buf_available < buf_needed) {
+ 
+@@ -1145,12 +1154,29 @@
+ 
+ 		buf_needed = (tx_skb->len + ESP_RX_BUFFER_SIZE - 1) / ESP_RX_BUFFER_SIZE;
+ 
+-		/*If SDIO slave buffer is available to write then only write data
+-		else wait till buffer is available*/
+-		ret = is_sdio_write_buffer_available(buf_needed);
+-		if (!ret) {
+-			dev_kfree_skb(tx_skb);
+-			continue;
++		{
++			struct es_tx_id txid;
++			int ssh_payload = es_tx_parse_skb(tx_skb, 1, &txid);
++			int token_err = 0;
++
++			if (ssh_payload)
++				es_tx_mark("DEQUEUE", &txid, NULL);
++
++			/*If SDIO slave buffer is available to write then only write data
++			else wait till buffer is available*/
++			ret = is_sdio_write_buffer_available(buf_needed, &token_err);
++			if (!ret) {
++				if (ssh_payload) {
++					if (token_err)
++						es_tx_mark("TOKEN_READ_ERR", &txid, NULL);
++					else
++						es_tx_mark("CREDIT_NO_BUFFER", &txid, NULL);
++				}
++				dev_kfree_skb(tx_skb);
++				continue;
++			}
++			if (ssh_payload)
++				es_tx_mark("CREDIT_OK", &txid, NULL);
+ 		}
+ 
+ 		pos = tx_skb->data;
+@@ -1164,10 +1190,33 @@
+ 		do {
+ 			block_cnt = data_left / ESP_BLOCK_SIZE;
+ 			len_to_send = data_left;
+-			esp_info("CMD53_TX: addr=0x%x bytes=%u\n",
+-				 ESP_SLAVE_CMD53_END_ADDR - len_to_send, len_to_send);
+-			ret = esp_write_block(context, ESP_SLAVE_CMD53_END_ADDR - len_to_send,
+-					pos, (len_to_send + 3) & (~3), ACQUIRE_LOCK);
++			{
++				struct es_tx_id txid;
++				struct es_tx_cmd53_ctx cmd53_ctx;
++				struct es_tx_cmd53_ctx *tr = NULL;
++				u32 addr = ESP_SLAVE_CMD53_END_ADDR - len_to_send;
++				u16 xfer = (len_to_send + 3) & (~3);
++				int ssh_payload = es_tx_parse_skb(tx_skb, 1, &txid);
++
++				if (ssh_payload) {
++					cmd53_ctx.id = txid;
++					cmd53_ctx.trace = es_tx_alloc_trace();
++					cmd53_ctx.reg = addr;
++					cmd53_ctx.xfer = xfer;
++					tr = &cmd53_ctx;
++					es_tx_mark_cmd53("CMD53_ATTEMPT", tr, 0, 0);
++				}
++				esp_info("CMD53_TX: addr=0x%x bytes=%u\n",
++					 addr, len_to_send);
++				ret = esp_write_block(context, addr,
++						pos, xfer, ACQUIRE_LOCK, tr);
++				if (tr) {
++					if (ret)
++						es_tx_mark_cmd53("CMD53_ERR", tr, 1, ret);
++					else
++						es_tx_mark_cmd53("CMD53_OK", tr, 1, ret);
++				}
++			}
+ 
+ 			if (ret) {
+ 				esp_err("Failed to send data: %d %d %d\n", ret, len_to_send, data_left);

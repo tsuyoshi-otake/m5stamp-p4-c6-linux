@@ -1,0 +1,13 @@
+﻿{
+    "port":  "COM10",
+    "baud":  115200,
+    "bytes":  31941,
+    "sha256":  "d4a2b23d6a6b5163747b80cb2274e5f89c121e6b8d2389d37162ac7091c527fa",
+    "reset_requested":  true,
+    "control_lines_driven":  true,
+    "port_opens":  10,
+    "first_byte_seconds":  2.111,
+    "captured_utc":  "2026-08-27T03:18:46.7050831Z",
+    "python":  "C:\\Users\\developer\\AppData\\Local\\Programs\\Python\\Launcher\\py.exe",
+    "reset_strategy":  "esptool-HardReset-compatible-RTS-DTR"
+}

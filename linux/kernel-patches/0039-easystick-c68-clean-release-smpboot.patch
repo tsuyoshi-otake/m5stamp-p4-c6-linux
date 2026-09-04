@@ -1,0 +1,27 @@
+diff --git a/arch/riscv/kernel/smpboot.c b/arch/riscv/kernel/smpboot.c
+index 7e6996556b69..333333333333 100644
+@@ -39,6 +39,12 @@
+ 
+ #include "head.h"
+ 
++/* C68-CLEAN-RELEASE: nm-fixed boot-shim IRAM words (must match cpu_ops_spinwait.c). */
++#define EASYSTICK_C68_RELEASE_PA	0xC68DEAD1u
++#define EASYSTICK_C68_STAGE_PA		0xC68DEAD2u
++#define easystick_c68_release_ptr()	((volatile u32 __force *)EASYSTICK_C68_RELEASE_PA)
++#define easystick_c68_stage_ptr()	((volatile u32 __force *)EASYSTICK_C68_STAGE_PA)
++
+ static DECLARE_COMPLETION(cpu_running);
+ 
+ void __init smp_prepare_cpus(unsigned int max_cpus)
+@@ -191,6 +197,11 @@
+ 		wait_for_completion_timeout(&cpu_running,
+ 					    msecs_to_jiffies(1000));
+ 
++		if (!cpu_online(cpu) &&
++		    of_machine_is_compatible("tsuyoshi-otake,easystick-stamp-p4"))
++			pr_crit("C68 TIMEOUT stage=%08x release=%08x\n",
++				READ_ONCE(*easystick_c68_stage_ptr()),
++				READ_ONCE(*easystick_c68_release_ptr()));
+ 		if (!cpu_online(cpu)) {
+ 			pr_crit("CPU%u: failed to come online\n", cpu);
+ 			ret = -EIO;

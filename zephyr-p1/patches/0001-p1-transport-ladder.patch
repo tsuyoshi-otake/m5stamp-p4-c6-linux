@@ -1,0 +1,272 @@
+diff --git a/drivers/misc/esp_hosted_mcu/Kconfig b/drivers/misc/esp_hosted_mcu/Kconfig
+index 5cd7f318aef..a948d6692ac 100644
+--- a/drivers/misc/esp_hosted_mcu/Kconfig
++++ b/drivers/misc/esp_hosted_mcu/Kconfig
+@@ -134,6 +134,15 @@ config ESP_HOSTED_MCU_EVENT_TASK_POLL_MS
+ 	  the worst-case receive latency: every request and response pays
+ 	  up to one poll period.
+ 
++config ESP_HOSTED_MCU_P1_TRANSPORT_TEST
++	bool "Enable EasyStick P1 transport ladder"
++	help
++	  Enable the temporary, fail-closed transport evidence ladder used by the
++	  EasyStick Stamp-P4 P1 control image. It sends four 512-byte TEST_IF
++	  frames after SDIO setup and requires the configured coprocessor firmware
++	  version before allowing the consumer driver to continue. Do not enable
++	  this option in a production image.
++
+ module = ESP_HOSTED_MCU
+ module-str = esp-hosted-mcu
+ source "subsys/logging/Kconfig.template.log_config"
+diff --git a/drivers/misc/esp_hosted_mcu/esp_hosted_mcu.c b/drivers/misc/esp_hosted_mcu/esp_hosted_mcu.c
+index 0c643426000..a53112518ff 100644
+--- a/drivers/misc/esp_hosted_mcu/esp_hosted_mcu.c
++++ b/drivers/misc/esp_hosted_mcu/esp_hosted_mcu.c
+@@ -10,17 +10,22 @@
+ #include <zephyr/kernel.h>
+ #include <zephyr/device.h>
+ #include <zephyr/sys/byteorder.h>
++#include <zephyr/sys/printk.h>
+ 
+ #include <pb_encode.h>
+ #include <pb_decode.h>
+ #include <esp_hosted_mcu_rpc.pb.h>
+ 
+ #include "esp_hosted_mcu.h"
+ 
+ #include <zephyr/logging/log.h>
+ LOG_MODULE_REGISTER(esp_hosted_mcu_core, CONFIG_ESP_HOSTED_MCU_LOG_LEVEL);
+ 
+ #define DT_DRV_COMPAT espressif_esp_hosted_mcu
+ 
++#if defined(CONFIG_ESP_HOSTED_MCU_P1_TRANSPORT_TEST)
++#define P1_MARK(fmt, ...) printk(fmt "\n", ##__VA_ARGS__)
++#endif
++
+ /*
+  * The active transport backend supplies its api and per-instance config;
+@@ -624,6 +624,48 @@ int esp_hosted_mcu_send_frame(esp_hosted_mcu_if_type_t if_type, uint8_t if_num,
+ 	return ret;
+ }
+ 
++#if defined(CONFIG_ESP_HOSTED_MCU_P1_TRANSPORT_TEST)
++/*
++ * Exercise the negotiated SDIO FIFO with complete 512-byte transfers before
++ * the first RPC. TEST_IF is intentionally unused by the normal consumer; the
++ * matching slave drops it unless its optional raw-transport test is enabled.
++ */
++static int esp_hosted_mcu_p1_transport_test(void)
++{
++	enum {
++		P1_FRAME_SIZE = 512,
++		P1_FRAME_COUNT = 4,
++		P1_PAYLOAD_SIZE = P1_FRAME_SIZE - ESP_HOSTED_MCU_HEADER_SIZE,
++	};
++	static uint8_t payload[P1_PAYLOAD_SIZE];
++
++	for (size_t i = 0; i < sizeof(payload); i++) {
++		payload[i] = (uint8_t)(0x5aU ^ (uint8_t)i);
++	}
++
++	for (unsigned int frame = 0; frame < P1_FRAME_COUNT; frame++) {
++		int ret = esp_hosted_mcu_send_frame(ESP_HOSTED_MCU_TEST_IF, 0, 0, payload,
++						    sizeof(payload));
++
++		if (ret != 0) {
++			P1_MARK("EASYSTICK_P1 STEP 07 CMD53_REPEAT FAIL frame=%u errno=%d",
++				frame + 1U, ret);
++			return ret;
++		}
++
++		/*
++		 * Give the coprocessor time to consume the test frame and replenish
++		 * its receive-buffer credit before the next write.
++		 */
++		k_msleep(5);
++	}
++
++	P1_MARK("EASYSTICK_P1 STEP 07 CMD53_REPEAT PASS frames=%u size=%u",
++		P1_FRAME_COUNT, P1_FRAME_SIZE);
++	return 0;
++}
++#endif
++
+ uint32_t esp_hosted_mcu_fw_version(void)
+ {
+ 	return esp_hosted_mcu_data_0.fw_version;
+@@ -718,9 +760,33 @@ static int esp_hosted_mcu_core_init(const struct device *dev)
+ 	/* Publish only once the link is up, so a failure above leaves it unset. */
+ 	data->dev = dev;
+ 
++#if defined(CONFIG_ESP_HOSTED_MCU_P1_TRANSPORT_TEST)
++	ret = esp_hosted_mcu_p1_transport_test();
++	if (ret != 0) {
++		return ret;
++	}
++#endif
++
+ 	/* The receive thread is up, so the version round-trip can complete. */
+ 	esp_hosted_mcu_check_fw_version(data);
+ 
++#if defined(CONFIG_ESP_HOSTED_MCU_P1_TRANSPORT_TEST)
++	uint32_t expected = ESP_HOSTED_MCU_FW_VERSION_VAL(CONFIG_ESP_HOSTED_MCU_FW_VERSION_MAJOR,
++							  CONFIG_ESP_HOSTED_MCU_FW_VERSION_MINOR,
++							  CONFIG_ESP_HOSTED_MCU_FW_VERSION_PATCH);
++
++	if (data->fw_version != expected) {
++		P1_MARK("EASYSTICK_P1 STEP 08 ESP_HOSTED_INIT FAIL got=0x%06x expected=0x%06x",
++			data->fw_version, expected);
++		return -EPROTO;
++	}
++
++	P1_MARK("EASYSTICK_P1 STEP 08 ESP_HOSTED_INIT PASS fw=%u.%u.%u",
++		ESP_HOSTED_MCU_FW_VERSION_MAJOR(data->fw_version),
++		ESP_HOSTED_MCU_FW_VERSION_MINOR(data->fw_version),
++		ESP_HOSTED_MCU_FW_VERSION_PATCH(data->fw_version));
++#endif
++
+ 	return 0;
+ }
+ 
+diff --git a/drivers/misc/esp_hosted_mcu/esp_hosted_mcu_sdio.c b/drivers/misc/esp_hosted_mcu/esp_hosted_mcu_sdio.c
+index 0a4ba9bfaa5..a21067078f3 100644
+--- a/drivers/misc/esp_hosted_mcu/esp_hosted_mcu_sdio.c
++++ b/drivers/misc/esp_hosted_mcu/esp_hosted_mcu_sdio.c
+@@ -12,13 +12,18 @@
+ #include <zephyr/drivers/sdhc.h>
+ #include <zephyr/sd/sd.h>
+ #include <zephyr/sd/sdio.h>
++#include <zephyr/sys/printk.h>
+ 
+ #include "esp_hosted_mcu.h"
+ 
+ #define DT_DRV_COMPAT espressif_esp_hosted_mcu
+ 
+ #include <zephyr/logging/log.h>
+ LOG_MODULE_REGISTER(esp_hosted_mcu_sdio, CONFIG_ESP_HOSTED_MCU_LOG_LEVEL);
+ 
++#if defined(CONFIG_ESP_HOSTED_MCU_P1_TRANSPORT_TEST)
++#define P1_MARK(fmt, ...) printk(fmt "\n", ##__VA_ARGS__)
++#endif
++
+ /*
+  * Host-visible SLC register window on the coprocessor. The coprocessor decodes only the
+@@ -85,6 +85,10 @@ struct esp_hosted_mcu_sdio_data {
+ 	bool ready;
+ 	/* Signalled by the coprocessor DAT1 card interrupt to wake the receive path. */
+ 	struct k_sem rx_sem;
++#if defined(CONFIG_ESP_HOSTED_MCU_P1_TRANSPORT_TEST)
++	bool p1_small_cmd53_seen;
++	uint32_t p1_512_cmd53_count;
++#endif
+ };
+ 
+ BUILD_ASSERT(DT_NUM_INST_STATUS_OKAY(DT_DRV_COMPAT) <= 1,
+@@ -218,9 +222,28 @@ static int esp_slc_fifo_xfer(struct esp_hosted_mcu_sdio_data *data, const uint8_
+ 		}
+ 
+ 		if (ret != 0) {
++#if defined(CONFIG_ESP_HOSTED_MCU_P1_TRANSPORT_TEST)
++			P1_MARK("EASYSTICK_P1 CMD53 FAIL bytes=%u direction=%s errno=%d", chunk,
++				tx != NULL ? "TX" : "RX", ret);
++#endif
+ 			return ret;
+ 		}
+ 
++#if defined(CONFIG_ESP_HOSTED_MCU_P1_TRANSPORT_TEST)
++		if (chunk < ESP_SLC_BLOCK_SIZE && !data->p1_small_cmd53_seen) {
++			data->p1_small_cmd53_seen = true;
++			P1_MARK("EASYSTICK_P1 STEP 05 CMD53_SMALL PASS bytes=%u direction=%s",
++				chunk, tx != NULL ? "TX" : "RX");
++		}
++		if (chunk == ESP_SLC_BLOCK_SIZE) {
++			data->p1_512_cmd53_count++;
++			if (data->p1_512_cmd53_count == 1U) {
++				P1_MARK("EASYSTICK_P1 STEP 06 CMD53_512 PASS bytes=%u direction=%s",
++					chunk, tx != NULL ? "TX" : "RX");
++			}
++		}
++#endif
++
+ 		/* Advance by the real payload, not the padded chunk. */
+ 		uint32_t consumed = (chunk > remain) ? remain : chunk;
+ 
+@@ -258,6 +281,9 @@ static int esp_hosted_mcu_sdio_init(const struct device *dev)
+ 		return -ENODEV;
+ 	}
+ 
++#if defined(CONFIG_ESP_HOSTED_MCU_P1_TRANSPORT_TEST)
++	P1_MARK("EASYSTICK_P1 STEP 01 C6_RESET BEGIN physical_gpio=42 active=high");
++#endif
+ 	/*
+ 	 * A reset line is the reliable way to restart the coprocessor, but it is
+ 	 * optional: where none is routed, the coprocessor is left to the power
+@@ -268,11 +294,17 @@ static int esp_hosted_mcu_sdio_init(const struct device *dev)
+ 	 */
+ 	if (sdio->reset_gpio.port != NULL) {
+ 		if (!gpio_is_ready_dt(&sdio->reset_gpio)) {
++#if defined(CONFIG_ESP_HOSTED_MCU_P1_TRANSPORT_TEST)
++			P1_MARK("EASYSTICK_P1 STEP 01 C6_RESET FAIL gpio_not_ready");
++#endif
+ 			LOG_ERR("reset GPIO not ready");
+ 			return -ENODEV;
+ 		}
+ 
+ 		if (gpio_pin_configure_dt(&sdio->reset_gpio, GPIO_OUTPUT_ACTIVE)) {
++#if defined(CONFIG_ESP_HOSTED_MCU_P1_TRANSPORT_TEST)
++			P1_MARK("EASYSTICK_P1 STEP 01 C6_RESET FAIL configure");
++#endif
+ 			return -EIO;
+ 		}
+ 
+@@ -287,6 +319,14 @@ static int esp_hosted_mcu_sdio_init(const struct device *dev)
+ 		gpio_pin_set_dt(&sdio->reset_gpio, 0);
+ 		k_msleep(CONFIG_ESP_HOSTED_MCU_RESET_PULSE_MS);
+ 		gpio_pin_set_dt(&sdio->reset_gpio, 1);
++#if defined(CONFIG_ESP_HOSTED_MCU_P1_TRANSPORT_TEST)
++		P1_MARK("EASYSTICK_P1 STEP 01 C6_RESET PASS");
++#endif
++	} else {
++#if defined(CONFIG_ESP_HOSTED_MCU_P1_TRANSPORT_TEST)
++		P1_MARK("EASYSTICK_P1 STEP 01 C6_RESET FAIL reset_gpio_missing");
++#endif
++		return -ENODEV;
+ 	}
+ 
+ 	/*
+@@ -300,9 +340,15 @@ static int esp_hosted_mcu_sdio_init(const struct device *dev)
+ 	while (true) {
+ 		ret = sd_init(sdio->sdhc_dev, &data->card);
+ 		if (ret == 0) {
++#if defined(CONFIG_ESP_HOSTED_MCU_P1_TRANSPORT_TEST)
++			P1_MARK("EASYSTICK_P1 STEP 02 SDIO_ENUMERATE PASS");
++#endif
+ 			break;
+ 		}
+ 		if (sys_timepoint_expired(ready_end)) {
++#if defined(CONFIG_ESP_HOSTED_MCU_P1_TRANSPORT_TEST)
++			P1_MARK("EASYSTICK_P1 STEP 02 SDIO_ENUMERATE FAIL errno=%d", ret);
++#endif
+ 			LOG_ERR("SDIO enumeration failed (%d)", ret);
+ 			return ret;
+ 		}
+@@ -321,12 +367,19 @@ static int esp_hosted_mcu_sdio_init(const struct device *dev)
+ 		LOG_ERR("func1 enable failed (%d)", ret);
+ 		return ret;
+ 	}
++#if defined(CONFIG_ESP_HOSTED_MCU_P1_TRANSPORT_TEST)
++	P1_MARK("EASYSTICK_P1 STEP 03 FUNC1_ENABLE PASS");
++#endif
+ 
+ 	ret = sdio_set_block_size(&data->func1, ESP_SLC_BLOCK_SIZE);
+ 	if (ret != 0) {
+ 		LOG_ERR("func1 block size failed (%d)", ret);
+ 		return ret;
+ 	}
++#if defined(CONFIG_ESP_HOSTED_MCU_P1_TRANSPORT_TEST)
++	P1_MARK("EASYSTICK_P1 STEP 04 CMD52 PASS addr=0x%03x value=0x%02x",
++		ESP_SLC_HOST_TO_CP_INT, ESP_SLC_OPEN_DATA_PATH);
++#endif
+ 
+ 	/*
+ 	 * Raise the open-data-path interrupt so the coprocessor activates its data

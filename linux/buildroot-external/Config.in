@@ -1,0 +1,25 @@
+menu "EasyStick Stamp-P4 board options"
+
+source "$BR2_EXTERNAL_EASYSTICK_STAMP_P4_PATH/package/esp-hosted-ng/Config.in"
+source "$BR2_EXTERNAL_EASYSTICK_STAMP_P4_PATH/package/m5stamp-smp-smoke/Config.in"
+source "$BR2_EXTERNAL_EASYSTICK_STAMP_P4_PATH/package/m5stamp-smp-stress/Config.in"
+
+config BR2_PACKAGE_EASYSTICK_STAMP_P4_M1
+	bool "M1 minimal native Linux profile"
+	default y
+	help
+	  Enables the read-only BusyBox profile used for the first P4 boot.
+	  C6 SDIO, SSH, and USB gadget support are intentionally separate
+	  milestones and are not selected here.
+
+config BR2_PACKAGE_EASYSTICK_STAMP_P4_M2
+	bool "M2 C6 SDIO Wi-Fi profile"
+	select BR2_PACKAGE_ESP_HOSTED_NG
+	select BR2_PACKAGE_WPA_SUPPLICANT
+	select BR2_PACKAGE_IW
+	help
+	  Enables the experimental Stamp AddOn C6 SDIO host module and the
+	  networking tools used during M2 bring-up.  This does not claim that
+	  the C6 slave image or wlan0 has been validated on hardware.
+
+endmenu

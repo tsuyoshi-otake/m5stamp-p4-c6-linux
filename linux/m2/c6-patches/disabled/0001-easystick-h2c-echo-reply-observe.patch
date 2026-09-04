@@ -1,0 +1,289 @@
+From: EasyStick <noreply@easystick.local>
+Subject: [PATCH] easystick: 0022-observe H2C ICMP Echo-Reply counters
+
+Observe-only. Keep NG-1.0.6.0.1. No WIFI_PS_NONE, no TX retry, no
+send_task notify. Echo-Reply frames only; publish 1 Hz via slave
+shared-register bytes 32..63 (host SCRATCH_REG_8..15) + H2C_OBS log.
+---
+diff --git "a/C:\\Users\\DEVELO~1\\AppData\\Local\\Temp\\tmp621bn47t\\old\\main\\app_main.c" "b/C:\\Users\\DEVELO~1\\AppData\\Local\\Temp\\tmp621bn47t\\new\\main\\app_main.c"
+index 5a54d37..8da8ea0 100644
+--- a/main/app_main.c
++++ b/main/app_main.c
+@@ -48,6 +48,9 @@
+ #include "stats.h"
+ #include "esp_mac.h"
+ 
++#include "driver/sdio_slave.h"
++#include "esp_timer.h"
++
+ static const char TAG[] = "FW_MAIN";
+ 
+ #if CONFIG_ESP_WLAN_DEBUG
+@@ -66,6 +69,222 @@ volatile uint8_t station_connected = 0;
+ volatile uint8_t softap_started = 0;
+ volatile uint8_t ota_ongoing = 0;
+ volatile uint8_t power_save_on = 0;
++
++/* EasyStick 0022-observe: H2C ICMP Echo-Reply path only. No PS_NONE, no
++ * TX retry, no send_task notify. Identity stays NG-1.0.6.0.1.
++ *
++ * Hot path: silent RAM counters. Publish: 1 Hz, 32 bytes at slave shared
++ * register *byte* positions 32..63 (contiguous conf_w8..w15; host
++ * ESP_SLAVE_SCRATCH_REG_8..15 at +0x9C) + one ESP_LOGI line.
++ *
++ * sdio_slave_write_reg(pos, uint8_t): writable 0-63 except interrupt
++ * window 28-31 on IDF 5.5.3. Do NOT use pos 8..15 for a 32-byte block.
++ */
++#define H2C_OBS_MAGIC           0x0B22u
++#define H2C_OBS_ABI             2u
++#define H2C_OBS_SEQ_MAX         20u
++#define H2C_OBS_SCRATCH_POS0    32
++#define H2C_OBS_SCRATCH_BYTES   32
++
++typedef struct {
++    uint32_t h2c_seq_mask;
++    int64_t  h2c_first_us;
++    int64_t  h2c_last_us;
++    uint32_t h2c_max_gap_us;
++    uint32_t ok_seq_mask;
++    uint32_t no_mem_seq_mask;
++    uint32_t other_seq_mask;
++    uint32_t drop_seq_mask;
++    int32_t  last_wifi_tx_ret;
++    uint32_t wifi_tx_max_duration_us;
++} h2c_obs_stats_t;
++
++static h2c_obs_stats_t s_h2c_obs;
++static uint8_t s_h2c_obs_pub_seq;
++static esp_timer_handle_t s_h2c_obs_timer;
++static uint8_t s_h2c_obs_timer_started;
++
++static int h2c_obs_parse_echo_reply(const uint8_t *p, uint16_t len, uint16_t *seq_out)
++{
++    uint16_t ethertype;
++    uint8_t ihl;
++    const uint8_t *ip;
++    const uint8_t *icmp;
++
++    if (len < 14 + 20 + 8 || !p || !seq_out) {
++        return 0;
++    }
++    ethertype = ((uint16_t)p[12] << 8) | p[13];
++    if (ethertype != 0x0800) {
++        return 0;
++    }
++    ip = p + 14;
++    ihl = (uint8_t)((ip[0] & 0x0f) * 4);
++    if (ihl < 20 || len < (uint16_t)(14 + ihl + 8)) {
++        return 0;
++    }
++    if (ip[9] != 1) {
++        return 0;
++    }
++    icmp = ip + ihl;
++    if (icmp[0] != 0) {
++        return 0; /* Echo Reply */
++    }
++    *seq_out = ((uint16_t)icmp[6] << 8) | icmp[7];
++    return 1;
++}
++
++static uint32_t h2c_obs_seq_bit(uint16_t seq)
++{
++    if (seq < 1 || seq > H2C_OBS_SEQ_MAX) {
++        return 0;
++    }
++    return 1u << (seq - 1);
++}
++
++static void h2c_obs_note_arrival(uint32_t seq_bit)
++{
++    int64_t now = esp_timer_get_time();
++
++    s_h2c_obs.h2c_seq_mask |= seq_bit;
++    if (s_h2c_obs.h2c_first_us == 0) {
++        s_h2c_obs.h2c_first_us = now;
++    } else {
++        uint32_t gap = (uint32_t)(now - s_h2c_obs.h2c_last_us);
++        if (gap > s_h2c_obs.h2c_max_gap_us) {
++            s_h2c_obs.h2c_max_gap_us = gap;
++        }
++    }
++    s_h2c_obs.h2c_last_us = now;
++}
++
++static uint16_t h2c_obs_us_to_ms_u16(uint32_t us)
++{
++    uint32_t ms = us / 1000u;
++    return (ms > 0xffffu) ? 0xffffu : (uint16_t)ms;
++}
++
++static void h2c_obs_write_words_le(const uint32_t words[8])
++{
++    uint8_t i;
++    uint8_t b;
++
++    for (i = 0; i < 8; i++) {
++        uint32_t w = words[i];
++        for (b = 0; b < 4; b++) {
++            (void)sdio_slave_write_reg(
++                H2C_OBS_SCRATCH_POS0 + (int)i * 4 + (int)b,
++                (uint8_t)((w >> (8 * b)) & 0xffu));
++        }
++    }
++}
++
++static void h2c_obs_publish(void *arg)
++{
++    uint32_t words[8];
++    uint32_t span_us = 0;
++    uint16_t span_ms;
++    uint16_t max_gap_ms;
++    uint16_t max_tx_us;
++    int16_t last_ret16;
++    (void)arg;
++
++    if (s_h2c_obs.h2c_first_us && s_h2c_obs.h2c_last_us >= s_h2c_obs.h2c_first_us) {
++        int64_t span = s_h2c_obs.h2c_last_us - s_h2c_obs.h2c_first_us;
++        span_us = (span > 0xffffffffLL) ? 0xffffffffu : (uint32_t)span;
++    }
++
++    /* Odd seq = updating; even seq = stable snapshot. */
++    s_h2c_obs_pub_seq++;
++    if ((s_h2c_obs_pub_seq & 1u) == 0) {
++        s_h2c_obs_pub_seq++;
++    }
++
++    span_ms = h2c_obs_us_to_ms_u16(span_us);
++    max_gap_ms = h2c_obs_us_to_ms_u16(s_h2c_obs.h2c_max_gap_us);
++    max_tx_us = (s_h2c_obs.wifi_tx_max_duration_us > 0xffffu)
++                    ? 0xffffu
++                    : (uint16_t)s_h2c_obs.wifi_tx_max_duration_us;
++    last_ret16 = (int16_t)s_h2c_obs.last_wifi_tx_ret;
++
++    /* ABI v2 compressed (8 x u32 LE at pos 32..63):
++     * 0 magic|abi|pub_seq  1 h2c_mask  2 ok_mask  3 no_mem_mask
++     * 4 other_mask  5 drop_mask  6 span_ms|max_gap_ms
++     * 7 max_tx_us|last_ret
++     * Counts = popcount(mask).
++     */
++    words[0] = ((uint32_t)H2C_OBS_MAGIC) |
++               ((uint32_t)H2C_OBS_ABI << 16) |
++               ((uint32_t)s_h2c_obs_pub_seq << 24);
++    words[1] = s_h2c_obs.h2c_seq_mask;
++    words[2] = s_h2c_obs.ok_seq_mask;
++    words[3] = s_h2c_obs.no_mem_seq_mask;
++    words[4] = s_h2c_obs.other_seq_mask;
++    words[5] = s_h2c_obs.drop_seq_mask;
++    words[6] = ((uint32_t)span_ms) | (((uint32_t)max_gap_ms) << 16);
++    words[7] = ((uint32_t)max_tx_us) | (((uint32_t)(uint16_t)last_ret16) << 16);
++
++    h2c_obs_write_words_le(words);
++
++    s_h2c_obs_pub_seq++; /* make even = stable */
++    words[0] = ((uint32_t)H2C_OBS_MAGIC) |
++               ((uint32_t)H2C_OBS_ABI << 16) |
++               ((uint32_t)s_h2c_obs_pub_seq << 24);
++    {
++        uint8_t b;
++        for (b = 0; b < 4; b++) {
++            (void)sdio_slave_write_reg(
++                H2C_OBS_SCRATCH_POS0 + (int)b,
++                (uint8_t)((words[0] >> (8 * b)) & 0xffu));
++        }
++    }
++
++    ESP_LOGI(TAG,
++             "H2C_OBS abi=%u h2c=0x%05lx(%u) ok=0x%05lx(%u) "
++             "no_mem=0x%05lx(%u) other=0x%05lx(%u) drop=0x%05lx(%u) "
++             "span_ms=%u max_gap_ms=%u max_tx_us=%u last_ret=%d "
++             "first_us=%lld last_us=%lld sta=%u assoc=%u",
++             (unsigned)H2C_OBS_ABI,
++             (unsigned long)s_h2c_obs.h2c_seq_mask,
++             (unsigned)__builtin_popcount(s_h2c_obs.h2c_seq_mask),
++             (unsigned long)s_h2c_obs.ok_seq_mask,
++             (unsigned)__builtin_popcount(s_h2c_obs.ok_seq_mask),
++             (unsigned long)s_h2c_obs.no_mem_seq_mask,
++             (unsigned)__builtin_popcount(s_h2c_obs.no_mem_seq_mask),
++             (unsigned long)s_h2c_obs.other_seq_mask,
++             (unsigned)__builtin_popcount(s_h2c_obs.other_seq_mask),
++             (unsigned long)s_h2c_obs.drop_seq_mask,
++             (unsigned)__builtin_popcount(s_h2c_obs.drop_seq_mask),
++             (unsigned)span_ms,
++             (unsigned)max_gap_ms,
++             (unsigned)max_tx_us,
++             (int)last_ret16,
++             (long long)s_h2c_obs.h2c_first_us,
++             (long long)s_h2c_obs.h2c_last_us,
++             (unsigned)station_connected,
++             (unsigned)association_ongoing);
++}
++
++static void h2c_obs_timer_start_once(void)
++{
++    const esp_timer_create_args_t args = {
++        .callback = &h2c_obs_publish,
++        .name = "h2c_obs",
++    };
++
++    if (s_h2c_obs_timer_started) {
++        return;
++    }
++    if (esp_timer_create(&args, &s_h2c_obs_timer) != ESP_OK) {
++        return;
++    }
++    if (esp_timer_start_periodic(s_h2c_obs_timer, 1000000) != ESP_OK) {
++        return;
++    }
++    s_h2c_obs_timer_started = 1;
++}
++
++
+ struct wow_config wow;
+ SemaphoreHandle_t wakeup_sem;
+ SemaphoreHandle_t init_sem;
+@@ -539,12 +758,41 @@ void process_rx_pkt(interface_buffer_handle_t *buf_handle)
+         /* ESP_LOGI(TAG, "Data packet on iface=%d", buf_handle->if_type); */
+         /* Data Path */
+         if (buf_handle->if_type == ESP_STA_IF) {
+-            /*ESP_LOGI(TAG, "Station IF");*/
++            uint16_t icmp_seq = 0;
++            int is_echo_rep = h2c_obs_parse_echo_reply(payload, payload_len, &icmp_seq);
++            uint32_t seq_bit = is_echo_rep ? h2c_obs_seq_bit(icmp_seq) : 0;
++
++            h2c_obs_timer_start_once();
++
++            if (is_echo_rep) {
++                h2c_obs_note_arrival(seq_bit);
++            }
+ 
+             /* Forward packet over station interface */
+             if (station_connected || association_ongoing) {
+-                /*ESP_LOGI(TAG, "Send wlan\n");*/
+-                esp_wifi_internal_tx(ESP_IF_WIFI_STA, payload, payload_len);
++                if (is_echo_rep) {
++                    int64_t t0 = esp_timer_get_time();
++                    int ret = esp_wifi_internal_tx(ESP_IF_WIFI_STA, payload, payload_len);
++                    int64_t t1 = esp_timer_get_time();
++                    uint32_t dur = (uint32_t)(t1 - t0);
++
++                    if (dur > s_h2c_obs.wifi_tx_max_duration_us) {
++                        s_h2c_obs.wifi_tx_max_duration_us = dur;
++                    }
++                    s_h2c_obs.last_wifi_tx_ret = ret;
++                    if (ret == ESP_OK) {
++                        s_h2c_obs.ok_seq_mask |= seq_bit;
++                    } else if (ret == ESP_ERR_NO_MEM) {
++                        s_h2c_obs.no_mem_seq_mask |= seq_bit;
++                    } else {
++                        s_h2c_obs.other_seq_mask |= seq_bit;
++                    }
++                } else {
++                    /* Non-ICMP-Echo-Reply DATA: unchanged behaviour. */
++                    esp_wifi_internal_tx(ESP_IF_WIFI_STA, payload, payload_len);
++                }
++            } else if (is_echo_rep) {
++                s_h2c_obs.drop_seq_mask |= seq_bit;
+             }
+ 
+         } else if (buf_handle->if_type == ESP_AP_IF && softap_started) {

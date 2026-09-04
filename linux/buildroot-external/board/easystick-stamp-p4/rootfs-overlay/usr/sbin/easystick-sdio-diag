@@ -1,0 +1,74 @@
+#!/bin/sh
+set -e
+
+# Read-only assembled-board SDIO snapshot. Keep the output on the USB console;
+# the current squashfs image has no durable /config storage.
+# This snapshot cannot read mmc_host->ios.clock or mmc_host->actual_clock;
+# the patched kernel emits those values as ES_SDIO_CLOCK_APPLY/HW records.
+base=0x50083000
+read_reg() {
+	name=$1
+	offset=$2
+	value=$(devmem $((base + offset)) 32)
+	printf '%-9s %s\n' "$name" "$value"
+}
+
+echo "easystick-sdio-diag v1"
+date -u 2>/dev/null || true
+uname -a
+cat /proc/interrupts
+for entry in \
+	CTRL:0x00 PWREN:0x04 CLKDIV:0x08 CLKSRC:0x0c CLKENA:0x10 \
+	TMOUT:0x14 CTYPE:0x18 INTMASK:0x24 CMDARG:0x28 CMD:0x2c \
+	RESP0:0x30 MINTSTS:0x40 RINTSTS:0x44 STATUS:0x48; do
+	read_reg "${entry%%:*}" "${entry##*:}"
+done
+echo "sdio-functions:"
+ls -l /sys/bus/sdio/devices 2>/dev/null || true
+echo "module-parameters:"
+for entry in \
+	resetpin:/sys/module/esp32_sdio/parameters/resetpin \
+	clockspeed:/sys/module/esp32_sdio/parameters/clockspeed; do
+	name=${entry%%:*}
+	path=${entry##*:}
+	if [ -r "$path" ]; then
+		printf '%-9s %s\n' "$name" "$(cat "$path")"
+	else
+		printf '%-9s %s\n' "$name" "<unavailable>"
+	fi
+done
+requested_mhz="<unavailable>"
+if [ -r /etc/easystick/sdio-clock-mhz ]; then
+	requested_mhz=$(cat /etc/easystick/sdio-clock-mhz)
+fi
+module_param_mhz="<unavailable>"
+if [ -r /sys/module/esp32_sdio/parameters/clockspeed ]; then
+	module_param_mhz=$(cat /sys/module/esp32_sdio/parameters/clockspeed)
+fi
+module_dir="/lib/modules/$(uname -r)"
+module_path="$module_dir/updates/esp32_sdio.ko"
+[ -f "$module_path" ] || module_path="$module_dir/extra/esp32_sdio.ko"
+module_sha256="<unavailable>"
+if [ -f "$module_path" ]; then
+	module_sha256=$(sha256sum "$module_path" 2>/dev/null | awk '{print $1}')
+fi
+printf 'ES_SDIO_CLOCK_EVIDENCE requested_mhz=%s module_param_mhz=%s clkdiv=%s clkena=%s module_sha256=%s\n' \
+	"$requested_mhz" "$module_param_mhz" \
+	"$(devmem $((base + 0x08)) 32)" \
+	"$(devmem $((base + 0x10)) 32)" \
+	"${module_sha256:-unavailable}"
+echo "gpio-sdio-inputs:"
+# GPIO_IN1/OUT1/ENABLE1 are read-only snapshots here. GPIO46 is DAT1 and
+# GPIO42 is the C6 reset/EN line; the matrix values verify that the boot shim
+# selected the intended input routes without changing hardware state.
+for entry in \
+	GPIO_IN1:0x500e0040 GPIO_OUT1:0x500e0010 GPIO_ENABLE1:0x500e002c \
+	GPIO46_IN_SEL:0x500e0164 SDIO_CARD_INT_IN_SEL:0x500e035c; do
+	name=${entry%%:*}
+	address=${entry##*:}
+	printf '%-18s %s\n' "$name" "$(devmem "$address" 32)"
+done
+echo "interfaces:"
+ip -details link 2>/dev/null || true
+echo "recent-kernel-log:"
+dmesg | tail -120

@@ -1,0 +1,4 @@
+::sysinit:/etc/init.d/rcS
+ttyGS1::askfirst:-/bin/sh
+::restart:/sbin/init
+::ctrlaltdel:/sbin/reboot

@@ -1,0 +1,66 @@
+#!/bin/sh
+
+# BusyBox ash in the RV32 NOMMU image does not implement `set -u`.
+set -e
+
+# Observe-only hostkey markers (no key material / fingerprint / base64).
+es_hk() {
+	printf '%s\n' "$1"
+}
+
+start() {
+	if [ ! -x /usr/sbin/inetd ]; then
+		es_hk "ES_HOSTKEY INETD_MISSING"
+		echo "M3-lab: inetd is missing; SSH remains disabled"
+		return 1
+	fi
+
+	KEY=/tmp/dropbear_ed25519_host_key
+
+	# Regenerate Ed25519 host key every boot.  Do not use dropbear -R per
+	# connection (that would rotate the key on every accept).
+	es_hk "ES_HOSTKEY GEN_BEGIN"
+	rm -f "$KEY"
+	umask 077
+	if ! dropbearkey -t ed25519 -f "$KEY" >/dev/null 2>&1; then
+		es_hk "ES_HOSTKEY GEN_FAIL"
+		return 1
+	fi
+	es_hk "ES_HOSTKEY GEN_OK"
+
+	if [ ! -s "$KEY" ]; then
+		es_hk "ES_HOSTKEY NONEMPTY_FAIL"
+		return 1
+	fi
+	# BusyBox wc may print leading spaces; strip them.
+	SIZE=$(wc -c < "$KEY" | tr -d ' \t\r\n')
+	es_hk "ES_HOSTKEY NONEMPTY_OK size=${SIZE}"
+
+	if ! chmod 600 "$KEY"; then
+		es_hk "ES_HOSTKEY CHMOD_FAIL"
+		return 1
+	fi
+
+	if ! dropbearkey -y -f "$KEY" >/dev/null 2>&1; then
+		es_hk "ES_HOSTKEY PARSE_FAIL"
+		return 1
+	fi
+	es_hk "ES_HOSTKEY PARSE_OK"
+
+	# inetd listens on 0.0.0.0:22.  Do not gate on a network interface name:
+	# this port's STA iface has been wlan0, upstream esp-hosted may use
+	# ethsta0, and either may appear after this script runs.
+	if ! pidof inetd >/dev/null 2>&1; then
+		es_hk "ES_HOSTKEY INETD_START"
+		printf '%s\n' "M3-lab: starting password-enabled Dropbear on TCP/22"
+		/usr/sbin/inetd /etc/inetd.conf
+	else
+		es_hk "ES_HOSTKEY INETD_ALREADY"
+		printf '%s\n' "M3-lab: inetd already running"
+	fi
+}
+
+case "${1:-start}" in
+	start) start ;;
+	*) echo "Usage: $0 start" >&2; exit 1 ;;
+esac

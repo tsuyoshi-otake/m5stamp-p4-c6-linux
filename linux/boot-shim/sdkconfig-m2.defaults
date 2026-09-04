@@ -1,0 +1,3 @@
+# M2 uses a larger kernel slot and a compacted read-only rootfs slot. Keep
+# the M1 candidate map untouched so it remains the recovery reference.
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions-m2.csv"

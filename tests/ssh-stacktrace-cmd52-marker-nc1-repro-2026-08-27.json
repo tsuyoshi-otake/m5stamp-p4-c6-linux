@@ -1,0 +1,56 @@
+{
+  "schema": 1,
+  "captured_utc": "2026-08-27T12:54:30.393093+00:00",
+  "target": "10.255.10.161",
+  "username": "pi",
+  "command": "id",
+  "events": [
+    {
+      "event": "START",
+      "elapsed": 0.0,
+      "target": "10.255.10.161",
+      "command": "id"
+    },
+    {
+      "event": "TCP22_BEFORE",
+      "elapsed": 0.188,
+      "reachable": true
+    },
+    {
+      "event": "SSH_AUTHENTICATED",
+      "elapsed": 0.969
+    },
+    {
+      "event": "CHANNEL_OPEN",
+      "elapsed": 1.0
+    },
+    {
+      "event": "EXEC_SENT",
+      "elapsed": 1.032,
+      "command": "id"
+    },
+    {
+      "event": "EXIT_TIMEOUT",
+      "elapsed": 13.032,
+      "stdout_bytes": 0,
+      "stderr_bytes": 0,
+      "closed": false
+    },
+    {
+      "event": "OUTPUT",
+      "elapsed": 13.032,
+      "stdout": "",
+      "stderr": "",
+      "stdout_bytes": 0,
+      "stderr_bytes": 0
+    },
+    {
+      "event": "TCP22_AFTER",
+      "elapsed": 16.032,
+      "reachable": false,
+      "error": "TimeoutError('timed out')"
+    }
+  ],
+  "stdout": "",
+  "stderr": ""
+}

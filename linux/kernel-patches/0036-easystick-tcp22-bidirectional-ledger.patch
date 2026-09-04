@@ -1,0 +1,429 @@
+--- /dev/null
++++ b/include/net/easystick_tcp_ledger.h
+@@ -0,0 +1,183 @@
++/* EasyStick 0024-C2: TCP/22 bidirectional observe ledger (m3-lab only).
++ * Observe-only. No behaviour change. Port 22 only; payload>0 preferred;
++ * pure ACK only after a port-22 payload was seen on this boot.
++ */
++#ifndef _NET_EASYSTICK_TCP_LEDGER_H
++#define _NET_EASYSTICK_TCP_LEDGER_H
++
++#include <linux/atomic.h>
++#include <linux/ip.h>
++#include <linux/printk.h>
++#include <linux/skbuff.h>
++#include <linux/tcp.h>
++#include <net/inet_sock.h>
++#include <net/sock.h>
++#include <net/tcp.h>
++
++#define ES_TCP_PREFIX		"ES_TCP"
++#define ES_TCP_PORT		22
++#define ES_TCP_LOG_CAP		48
++
++/* Armed when any TCP/22 payload segment is observed (TX or RX). */
++extern unsigned long es_tcp_ssh_armed;
++
++static inline bool es_tcp_budget(void)
++{
++	static atomic_t n = ATOMIC_INIT(0);
++
++	return atomic_inc_return(&n) <= ES_TCP_LOG_CAP;
++}
++
++static inline bool es_tcp_port22(u16 sport, u16 dport)
++{
++	return sport == ES_TCP_PORT || dport == ES_TCP_PORT;
++}
++
++static inline bool es_tcp_sk_port22(const struct sock *sk)
++{
++	const struct inet_sock *inet;
++
++	if (!sk || sk->sk_protocol != IPPROTO_TCP)
++		return false;
++	inet = inet_sk(sk);
++	return es_tcp_port22(ntohs(inet->inet_sport), ntohs(inet->inet_dport));
++}
++
++static inline void es_tcp_arm(void)
++{
++	WRITE_ONCE(es_tcp_ssh_armed, 1);
++}
++
++static inline bool es_tcp_want_ack(void)
++{
++	return READ_ONCE(es_tcp_ssh_armed) != 0;
++}
++
++static inline void es_tcp_emit(const char *stage, u16 sport, u16 dport,
++			       u32 seq, u32 ack, u16 plen, u8 flags,
++			       const struct sock *sk)
++{
++	const struct tcp_sock *tp;
++	u32 snd_una = 0, snd_nxt = 0, rcv_nxt = 0;
++	u8 state = 0;
++
++	if (!es_tcp_budget())
++		return;
++	if (sk) {
++		state = (u8)sk->sk_state;
++		if (sk_fullsock(sk) && sk->sk_protocol == IPPROTO_TCP) {
++			tp = tcp_sk(sk);
++			snd_una = tp->snd_una;
++			snd_nxt = tp->snd_nxt;
++			rcv_nxt = tp->rcv_nxt;
++		}
++	}
++	/* Match ES_TX: KERN_EMERG survives lab oneshot `dmesg -n 1`. */
++	printk_deferred(KERN_EMERG ES_TCP_PREFIX
++	       " %s sport=%u dport=%u seq=%u ack=%u plen=%u flags=0x%x state=%u snd_una=%u snd_nxt=%u rcv_nxt=%u\n",
++	       stage, sport, dport, seq, ack, plen, flags, state,
++	       snd_una, snd_nxt, rcv_nxt);
++}
++
++static inline void es_tcp_mark_sk_stage(const char *stage, const struct sock *sk,
++					u32 seq, u32 ack, u16 plen, u8 flags)
++{
++	const struct inet_sock *inet;
++
++	if (!es_tcp_sk_port22(sk))
++		return;
++	inet = inet_sk(sk);
++	if (plen)
++		es_tcp_arm();
++	else if (!es_tcp_want_ack())
++		return;
++	es_tcp_emit(stage, ntohs(inet->inet_sport), ntohs(inet->inet_dport),
++		    seq, ack, plen, flags, sk);
++}
++
++static inline bool es_tcp_parse_ipv4_tcp(const struct sk_buff *skb,
++					 u16 *sport, u16 *dport,
++					 u32 *seq, u32 *ack, u16 *plen,
++					 u8 *flags)
++{
++	const struct iphdr *iph;
++	const struct tcphdr *th;
++	unsigned int ihl, thl, tot, avail;
++
++	if (!skb || skb->network_header == (typeof(skb->network_header))~0U)
++		return false;
++	avail = skb_tail_pointer(skb) - skb_network_header(skb);
++	if (avail < sizeof(*iph))
++		return false;
++	iph = ip_hdr(skb);
++	if (!iph || iph->version != 4 || iph->protocol != IPPROTO_TCP)
++		return false;
++	ihl = iph->ihl * 4u;
++	if (ihl < sizeof(*iph) || avail < ihl + sizeof(*th))
++		return false;
++	th = (const struct tcphdr *)((const u8 *)iph + ihl);
++	if (th->doff < 5)
++		return false;
++	thl = th->doff * 4u;
++	if (avail < ihl + thl)
++		return false;
++	tot = ntohs(iph->tot_len);
++	if (tot < ihl + thl)
++		return false;
++	*sport = ntohs(th->source);
++	*dport = ntohs(th->dest);
++	if (!es_tcp_port22(*sport, *dport))
++		return false;
++	*seq = ntohl(th->seq);
++	*ack = ntohl(th->ack_seq);
++	*plen = tot - ihl - thl;
++	*flags = ((const u8 *)th)[13];
++	return true;
++}
++
++static inline void es_tcp_mark_skb_stage(const char *stage,
++					 const struct sk_buff *skb,
++					 const struct sock *sk)
++{
++	u16 sport, dport, plen;
++	u32 seq, ack;
++	u8 flags;
++
++	if (!es_tcp_parse_ipv4_tcp(skb, &sport, &dport, &seq, &ack, &plen, &flags))
++		return;
++	if (plen)
++		es_tcp_arm();
++	else if (!es_tcp_want_ack())
++		return;
++	es_tcp_emit(stage, sport, dport, seq, ack, plen, flags, sk ? sk : skb->sk);
++}
++
++static inline void es_tcp_mark_th_stage(const char *stage, const struct sock *sk,
++					const struct tcphdr *th, unsigned int len)
++{
++	u16 sport, dport, plen;
++	u32 seq, ack;
++	u8 flags;
++	unsigned int thl;
++
++	if (!th || th->doff < 5)
++		return;
++	sport = ntohs(th->source);
++	dport = ntohs(th->dest);
++	if (!es_tcp_port22(sport, dport))
++		return;
++	thl = th->doff * 4u;
++	if (len < thl)
++		return;
++	plen = len - thl;
++	seq = ntohl(th->seq);
++	ack = ntohl(th->ack_seq);
++	flags = ((const u8 *)th)[13];
++	if (plen)
++		es_tcp_arm();
++	else if (!es_tcp_want_ack())
++		return;
++	es_tcp_emit(stage, sport, dport, seq, ack, plen, flags, sk);
++}
++
++#endif /* _NET_EASYSTICK_TCP_LEDGER_H */
+--- a/net/ipv4/tcp_output.c
++++ b/net/ipv4/tcp_output.c
+@@ -38,6 +38,7 @@
+ #define pr_fmt(fmt) "TCP: " fmt
+ 
+ #include <net/tcp.h>
++#include <net/easystick_tcp_ledger.h>
+ #include <net/tcp_ecn.h>
+ #include <net/mptcp.h>
+ #include <net/proto_memory.h>
+@@ -54,6 +55,9 @@
+ /* Refresh clocks of a TCP socket,
+  * ensuring monotically increasing values.
+  */
++unsigned long es_tcp_ssh_armed;
++EXPORT_SYMBOL_GPL(es_tcp_ssh_armed);
++
+ void tcp_mstamp_refresh(struct tcp_sock *tp)
+ {
+ 	u64 val = tcp_clock_ns();
+@@ -2889,6 +2893,10 @@
+ 
+ 	sent_pkts = 0;
+ 
++	if (es_tcp_sk_port22(sk))
++		es_tcp_mark_sk_stage("TCP_WRITE_XMIT_ENTER", sk,
++				     tp->snd_nxt, tp->rcv_nxt, 0, 0);
++
+ 	tcp_mstamp_refresh(tp);
+ 
+ 	/* AccECN option beacon depends on mstamp, it may change mss */
+@@ -2978,6 +2986,15 @@
+ 		if (unlikely(tcp_transmit_skb(sk, skb, 1, gfp)))
+ 			break;
+ 
++		if (es_tcp_sk_port22(sk)) {
++			u16 plen = TCP_SKB_CB(skb)->end_seq - TCP_SKB_CB(skb)->seq;
++
++			es_tcp_mark_sk_stage("TCP_WRITE_XMIT_SEG", sk,
++					     TCP_SKB_CB(skb)->seq,
++					     tp->rcv_nxt, plen,
++					     TCP_SKB_CB(skb)->tcp_flags);
++		}
++
+ repair:
+ 		/* Advance the send_head.  This one is sent out.
+ 		 * This call will increment packets_out.
+@@ -3157,6 +3174,11 @@
+ 	 */
+ 	if (unlikely(sk->sk_state == TCP_CLOSE))
+ 		return;
++
++	if (es_tcp_sk_port22(sk))
++		es_tcp_mark_sk_stage("TCP_PUSH", sk,
++				     tcp_sk(sk)->snd_nxt, tcp_sk(sk)->rcv_nxt,
++				     0, 0);
+ 
+ 	if (tcp_write_xmit(sk, cur_mss, nonagle, 0,
+ 			   sk_gfp_mask(sk, GFP_ATOMIC)))
+@@ -4401,6 +4423,11 @@
+ 	if (sk->sk_state == TCP_CLOSE)
+ 		return;
+ 
++	if (es_tcp_sk_port22(sk))
++		es_tcp_mark_sk_stage("TCP_ACK_BUILD", sk,
++				     tcp_sk(sk)->snd_nxt, rcv_nxt, 0,
++				     TCPHDR_ACK);
++
+ 	/* We are not putting this on the write queue, so
+ 	 * tcp_transmit_skb() will set the ownership to this
+ 	 * sock.
+@@ -4432,6 +4459,10 @@
+ 	skb_set_tcp_pure_ack(buff);
+ 
+ 	/* Send it off, this clears delayed acks for us. */
++	if (es_tcp_sk_port22(sk))
++		es_tcp_mark_sk_stage("TCP_ACK_XMIT", sk,
++				     tcp_sk(sk)->snd_nxt, rcv_nxt, 0,
++				     TCPHDR_ACK);
+ 	__tcp_transmit_skb(sk, buff, 0, (__force gfp_t)0, rcv_nxt);
+ }
+ EXPORT_SYMBOL_GPL(__tcp_send_ack);
+--- a/net/ipv4/tcp.c
++++ b/net/ipv4/tcp.c
+@@ -273,6 +273,7 @@
+ #include <net/inet_common.h>
+ #include <net/inet_ecn.h>
+ #include <net/tcp.h>
++#include <net/easystick_tcp_ledger.h>
+ #include <net/tcp_ecn.h>
+ #include <net/mptcp.h>
+ #include <net/proto_memory.h>
+@@ -1410,9 +1411,20 @@
+ {
+ 	int ret;
+ 
++	if (es_tcp_sk_port22(sk))
++		es_tcp_mark_sk_stage("TCP_SENDMSG_ENTER", sk,
++				     tcp_sk(sk)->snd_nxt, tcp_sk(sk)->rcv_nxt,
++				     (u16)min_t(size_t, size, 65535), 0);
+ 	lock_sock(sk);
+ 	ret = tcp_sendmsg_locked(sk, msg, size);
+ 	release_sock(sk);
++	if (es_tcp_sk_port22(sk)) {
++		u16 copied = (ret > 0) ? (u16)min_t(int, ret, 65535) : 0;
++
++		es_tcp_mark_sk_stage("TCP_SENDMSG_DONE", sk,
++				     tcp_sk(sk)->snd_nxt, tcp_sk(sk)->rcv_nxt,
++				     copied, 0);
++	}
+ 
+ 	return ret;
+ }
+--- a/net/ipv4/ip_output.c
++++ b/net/ipv4/ip_output.c
+@@ -66,6 +66,7 @@
+ #include <net/flow.h>
+ #include <net/snmp.h>
+ #include <net/ip.h>
++#include <net/easystick_tcp_ledger.h>
+ #include <net/protocol.h>
+ #include <net/route.h>
+ #include <net/xfrm.h>
+@@ -530,6 +531,8 @@
+ 	/* TODO : should we use skb->sk here instead of sk ? */
+ 	skb->priority = READ_ONCE(sk->sk_priority);
+ 	skb->mark = READ_ONCE(sk->sk_mark);
++
++	es_tcp_mark_skb_stage("IP_QUEUE_XMIT", skb, sk);
+ 
+ 	res = ip_local_out(net, sk, skb);
+ 	rcu_read_unlock();
+--- a/net/ipv4/ip_input.c
++++ b/net/ipv4/ip_input.c
+@@ -127,6 +127,7 @@
+ 
+ #include <net/snmp.h>
+ #include <net/ip.h>
++#include <net/easystick_tcp_ledger.h>
+ #include <net/protocol.h>
+ #include <net/route.h>
+ #include <linux/skbuff.h>
+@@ -570,6 +571,8 @@
+ 	if (skb == NULL)
+ 		return NET_RX_DROP;
+ 
++	es_tcp_mark_skb_stage("IP_RCV", skb, NULL);
++
+ 	return NF_HOOK(NFPROTO_IPV4, NF_INET_PRE_ROUTING,
+ 		       net, NULL, skb, dev, NULL,
+ 		       ip_rcv_finish);
+--- a/net/ipv4/tcp_ipv4.c
++++ b/net/ipv4/tcp_ipv4.c
+@@ -65,6 +65,7 @@
+ #include <net/icmp.h>
+ #include <net/inet_hashtables.h>
+ #include <net/tcp.h>
++#include <net/easystick_tcp_ledger.h>
+ #include <net/tcp_ecn.h>
+ #include <net/transp_v6.h>
+ #include <net/ipv6.h>
+@@ -2246,6 +2247,7 @@
+ 
+ 	th = (const struct tcphdr *)skb->data;
+ 	iph = ip_hdr(skb);
++	es_tcp_mark_th_stage("TCP_V4_RCV", NULL, th, skb->len);
+ lookup:
+ 	sk = __inet_lookup_skb(skb, __tcp_hdrlen(th), th->source,
+ 			       th->dest, sdif, &refcounted);
+--- a/net/ipv4/tcp_input.c
++++ b/net/ipv4/tcp_input.c
+@@ -73,6 +73,7 @@
+ #include <linux/bitops.h>
+ #include <net/dst.h>
+ #include <net/tcp.h>
++#include <net/easystick_tcp_ledger.h>
+ #include <net/tcp_ecn.h>
+ #include <net/proto_memory.h>
+ #include <net/inet_common.h>
+@@ -5362,6 +5363,7 @@
+ 	enum skb_drop_reason reason;
+ 	bool fragstolen;
+ 	int eaten;
++	u32 rcv_before = tp->rcv_nxt;
+ 
+ 	/* If a subflow has been reset, the packet should not continue
+ 	 * to be processed, drop the packet.
+@@ -5419,7 +5421,26 @@
+ 			sk_forced_mem_schedule(sk, skb->truesize);
+ 		}
+ 
+-		eaten = tcp_queue_rcv(sk, skb, &fragstolen);
++		{
++			u32 q_seq = TCP_SKB_CB(skb)->seq;
++			u32 q_end = TCP_SKB_CB(skb)->end_seq;
++			u16 q_plen = q_end - q_seq;
++
++			eaten = tcp_queue_rcv(sk, skb, &fragstolen);
++			if (es_tcp_sk_port22(sk)) {
++				if (q_plen)
++					es_tcp_arm();
++				if (es_tcp_budget())
++					printk_deferred(KERN_EMERG ES_TCP_PREFIX
++					       " TCP_DATA_QUEUE sport=%u dport=%u seq=%u end=%u"
++					       " rcv_before=%u rcv_after=%u plen=%u"
++					       " snd_una=%u snd_nxt=%u\n",
++					       ntohs(inet_sk(sk)->inet_sport),
++					       ntohs(inet_sk(sk)->inet_dport),
++					       q_seq, q_end, rcv_before, tp->rcv_nxt,
++					       q_plen, tp->snd_una, tp->snd_nxt);
++			}
++		}
+ 		if (skb->len)
+ 			tcp_event_data_recv(sk, skb);
+ 		if (TCP_SKB_CB(skb)->tcp_flags & TCPHDR_FIN)
+@@ -6266,6 +6287,8 @@
+ 	const struct tcphdr *th = (const struct tcphdr *)skb->data;
+ 	struct tcp_sock *tp = tcp_sk(sk);
+ 	unsigned int len = skb->len;
++
++	es_tcp_mark_th_stage("TCP_ESTABLISHED", sk, th, len);
+ 
+ 	/* TCP congestion window tracking */
+ 	trace_tcp_probe(sk, skb);
+--- a/net/core/dev.c
++++ b/net/core/dev.c
+@@ -94,6 +94,7 @@
+ #include <linux/ethtool.h>
+ #include <linux/ethtool_netlink.h>
+ #include <linux/skbuff.h>
++#include <net/easystick_tcp_ledger.h>
+ #include <linux/kthread.h>
+ #include <linux/bpf.h>
+ #include <linux/bpf_trace.h>
+@@ -4705,6 +4706,8 @@
+ 	int rc = -ENOMEM;
+ 	bool again = false;
+ 
++	es_tcp_mark_skb_stage("DEV_QUEUE_XMIT", skb, skb->sk);
++
+ 	skb_reset_mac_header(skb);
+ 	skb_assert_len(skb);
+ 

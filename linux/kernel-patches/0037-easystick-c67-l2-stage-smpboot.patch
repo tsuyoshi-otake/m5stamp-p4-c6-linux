@@ -1,0 +1,46 @@
+diff --git a/arch/riscv/kernel/smpboot.c b/arch/riscv/kernel/smpboot.c
+--- a/arch/riscv/kernel/smpboot.c
++++ b/arch/riscv/kernel/smpboot.c
+@@ -184,7 +184,9 @@
+ 	int ret = 0;
+ 	tidle->thread_info.cpu = cpu;
+ 
++	pr_info("C67 UP cpu=%u hart=%lu\n", cpu, cpuid_to_hartid_map(cpu));
+ 	ret = start_secondary_cpu(cpu, tidle);
++	pr_info("C67 START cpu=%u ret=%d\n", cpu, ret);
+ 	if (!ret) {
+ 		wait_for_completion_timeout(&cpu_running,
+ 					    msecs_to_jiffies(1000));
+@@ -197,6 +199,8 @@
+ 		pr_crit("CPU%u: failed to start\n", cpu);
+ 	}
+ 
++	if (!ret)
++		pr_info("C67 UP_RETURN cpu=%u\n", cpu);
+ 	return ret;
+ }
+ 
+@@ -235,7 +239,10 @@
+ 	pr_debug("CPU%u: Booted secondary hartid %lu\n", curr_cpuid,
+ 		cpuid_to_hartid_map(curr_cpuid));
+ 
++	pr_info("C67 CALLIN cpu=%u hart=%lu\n", curr_cpuid,
++		cpuid_to_hartid_map(curr_cpuid));
+ 	set_cpu_online(curr_cpuid, true);
++	pr_info("C67 ONLINE cpu=%u\n", curr_cpuid);
+ 
+ 	/*
+ 	 * Remote cache and TLB flushes are ignored while the CPU is offline,
+@@ -244,10 +251,12 @@
+ 	local_flush_icache_all();
+ 	local_flush_tlb_all();
+ 	complete(&cpu_running);
++	pr_info("C67 COMPLETE cpu=%u\n", curr_cpuid);
+ 	/*
+ 	 * Disable preemption before enabling interrupts, so we don't try to
+ 	 * schedule a CPU that hasn't actually started yet.
+ 	 */
+ 	local_irq_enable();
++	pr_info("C67 STARTUP cpu=%u\n", curr_cpuid);
+ 	cpu_startup_entry(CPUHP_AP_ONLINE_IDLE);
+ }

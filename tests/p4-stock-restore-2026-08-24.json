@@ -1,0 +1,18 @@
+{
+  "schema": 1,
+  "captured_utc": "2026-08-24T03:56:13Z",
+  "operation": "P4-only full-flash restore of the preserved 16 MiB stock image; no C6 write",
+  "port": "COM10",
+  "chip": "ESP32-P4 revision v1.3",
+  "mac": "e8:f6:0a:e2:5e:73",
+  "stock_readback": "C:\\Users\\developer\\tmp\\easystick-p4-stock-20260809-esptool481-full-v2.bin",
+  "stock_readback_bytes": 16777216,
+  "stock_readback_sha256": "229459f251eaf6222f0c07968702d72a3818e520da1788ce465027d969020c24",
+  "write_address": "0x0",
+  "verify": "verify OK (digest matched)",
+  "c6_write_performed": false,
+  "uart_capture": "projects/easystick-stamp-p4/firmware/tests/p4-stock-restore-uart-2026-08-24.bin",
+  "uart_bytes": 8459,
+  "uart_sha256": "c61fa49ed5cfc48d2fd0e92cdae2c3b380d1ed9dfb2b7cfe038504d74a8ae0fa",
+  "observed_boot": "ESP-IDF v5.4.2-dirty stampp4-factory-test; not Linux, not Zephyr"
+}

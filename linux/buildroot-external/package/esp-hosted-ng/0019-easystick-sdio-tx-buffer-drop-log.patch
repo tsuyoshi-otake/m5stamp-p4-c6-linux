@@ -1,0 +1,61 @@
+From: EasyStick maintainers <noreply@example.invalid>
+Subject: [PATCH] sdio: log TX dequeue and slave-buffer drops
+
+0018 closed 4-way. The following gwping run queued Linux TX (wlan0
+TX 4 then 7) but logged no CMD53_TX after ip addr add. SET_IP 0xD
+timed out with no 0d 02. Gateway ARP stayed incomplete. CMD53_TX is
+emitted only after is_sdio_write_buffer_available succeeds, so a
+silent kfree on BUFFER_UNAVAILABLE is indistinguishable from a stuck
+tx_process thread.
+
+Log the first 24 dequeues and the first 16 buffer drops (then every
+32nd). Do not change ACK, queueing, or C6 commands.
+
+What this cannot see: whether C6 put a frame on air after a successful
+CMD53_TX. The negative tests are: boot has no 254x status=0x00000000
+storm; cold 4-way still has msg3 00 97 and two 08 02; after ip addr
+add the log shows either TX dq plus CMD53_TX, or TX dq plus
+TX drop no-buf, or neither.
+
+---
+--- a/sdio/esp_sdio.c
++++ b/sdio/esp_sdio.c
+@@ -875,7 +875,13 @@
+ 		buf_available -= buf_needed;
+ 
+ 	if (!retry) {
+-		/* No buffer available at slave */
++		static unsigned drop_n;
++
++		drop_n++;
++		if (drop_n <= 16 || !(drop_n % 32))
++			esp_info("TX drop no-buf n=%u need=%u avail=%u host_count=%u\n",
++				 drop_n, buf_needed, buf_available,
++				 context->tx_buffer_count);
+ 		return BUFFER_UNAVAILABLE;
+ 	}
+ 
+@@ -941,6 +947,23 @@
+ 		if (atomic_read(&tx_pending))
+ 			atomic_dec(&tx_pending);
+ 
++		{
++			static unsigned dq;
++			struct esp_payload_header *th =
++				(struct esp_payload_header *)tx_skb->data;
++
++			dq++;
++			if (dq <= 24 || !(dq % 32))
++				esp_info("TX dq n=%u len=%u if=%u type=%u qh=%d qm=%d ql=%d pend=%d\n",
++					 dq, tx_skb->len,
++					 th ? th->if_type : 99,
++					 th ? th->packet_type : 99,
++					 atomic_read(&queue_items[PRIO_Q_HIGH]),
++					 atomic_read(&queue_items[PRIO_Q_MID]),
++					 atomic_read(&queue_items[PRIO_Q_LOW]),
++					 atomic_read(&tx_pending));
++		}
++
+ 		retry = MAX_WRITE_RETRIES;
+ 
+ 		/* resume network tx queue if bearable load */

@@ -1,0 +1,22 @@
+#!/bin/sh
+
+# BusyBox ash in the RV32 NOMMU image does not implement `set -u`.
+set -e
+
+start() {
+	if [ ! -w /config ] || [ ! -s /config/easystick/p4/.ssh/authorized_keys ]; then
+		echo "M3: no writable config or authorized_keys; SSH remains disabled"
+		return 0
+	fi
+	if [ ! -s /config/easystick/dropbear/dropbear_ed25519_host_key ]; then
+		echo "M3: no per-device host key; SSH remains disabled"
+		return 0
+	fi
+	printf '%s\n' "M3: starting key-only Dropbear via inetd"
+	inetd /etc/inetd.conf
+}
+
+case "${1:-start}" in
+	start) start ;;
+	*) echo "Usage: $0 start" >&2; exit 1 ;;
+esac

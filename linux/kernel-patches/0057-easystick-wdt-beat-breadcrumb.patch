@@ -1,0 +1,125 @@
+Subject: [PATCH] easystick: persist per-CPU kthread beat breadcrumbs
+
+Instrument C. A 100 ms kthread per CPU writes {seq,cpu,beat_jiffies,
+last_feed_jiffies} into RTC after the 0x120 CMD53 BB and the 0x18 CMD52
+marker hole. No printk, lock, or allocation on the write path. The beat
+must not sit at crash+sizeof(crash) (0xEC): that collides with BB v6
+suffix fields (bb4_ret...).
+
+---
+ drivers/watchdog/esp32p4_wdt.c | 88 ++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 88 insertions(+)
+
+diff --git a/drivers/watchdog/esp32p4_wdt.c b/drivers/watchdog/esp32p4_wdt.c
+--- a/drivers/watchdog/esp32p4_wdt.c
++++ b/drivers/watchdog/esp32p4_wdt.c
+@@ -34,6 +34,8 @@
+ #include <linux/of.h>
+ #include <linux/panic_notifier.h>
+ #include <asm/irq_regs.h>
++#include <linux/kthread.h>
++#include <linux/sched.h>
+ #include <linux/smp.h>
+ #include <linux/platform_device.h>
+ #include <linux/watchdog.h>
+@@ -80,6 +82,10 @@
+ #define EASYSTICK_CRASH_CAPSULE_REASON_PANIC	3u
+ #define EASYSTICK_CRASH_CAPSULE_STACK_BYTES	32u
+ #define EASYSTICK_CMD53_BB_CRASH_OFFSET	0x80u
++#define EASYSTICK_CMD53_BB_BYTES		0x120u
++#define EASYSTICK_CMD52_MARKER_BYTES	(6u * sizeof(u32))
++#define EASYSTICK_BEAT_CPUS		2u
++#define EASYSTICK_BEAT_PERIOD_MS	100u
+ 
+ struct easystick_crash_capsule {
+ 	u32 magic;
+@@ -109,6 +115,15 @@
+ 	struct easystick_crash_capsule crash;
+ };
+ 
++struct easystick_beat {
++	u32 seq;
++	u32 cpu;
++	u32 beat_jiffies;
++	u32 last_feed_jiffies;
++};
++
++static struct task_struct *easystick_beat_tasks[EASYSTICK_BEAT_CPUS];
++
+ static unsigned int easystick_wdt_test_timeout_s;
+ module_param_named(test_timeout_s, easystick_wdt_test_timeout_s, uint, 0644);
+ MODULE_PARM_DESC(test_timeout_s,
+@@ -230,6 +245,48 @@
+ 		(EASYSTICK_CMD53_BB_PA);
+ 
+ 	return &window->crash;
++}
++
++static volatile struct easystick_beat *easystick_beat_ptr(unsigned int cpu)
++{
++	uintptr_t base;
++
++	BUILD_BUG_ON(offsetof(struct easystick_crash_window, crash) !=
++		     EASYSTICK_CMD53_BB_CRASH_OFFSET);
++	BUILD_BUG_ON(EASYSTICK_CMD53_BB_BYTES <
++		     EASYSTICK_CMD53_BB_CRASH_OFFSET +
++			     sizeof(struct easystick_crash_capsule));
++	BUILD_BUG_ON(EASYSTICK_CMD53_BB_BYTES + EASYSTICK_CMD52_MARKER_BYTES <=
++		     EASYSTICK_CMD53_BB_CRASH_OFFSET +
++			     sizeof(struct easystick_crash_capsule));
++	if (cpu >= EASYSTICK_BEAT_CPUS)
++		return NULL;
++	base = (uintptr_t)EASYSTICK_CMD53_BB_PA + EASYSTICK_CMD53_BB_BYTES +
++	       EASYSTICK_CMD52_MARKER_BYTES;
++	return (volatile struct easystick_beat *)base + cpu;
++}
++
++static int easystick_beat_fn(void *arg)
++{
++	unsigned int cpu = (unsigned int)(uintptr_t)arg;
++	volatile struct easystick_beat *slot = easystick_beat_ptr(cpu);
++	u32 seq = 0;
++
++	if (!slot)
++		return 0;
++	while (!kthread_should_stop()) {
++		seq++;
++		if (!seq)
++			seq = 1u;
++		WRITE_ONCE(slot->seq, seq);
++		WRITE_ONCE(slot->cpu, cpu);
++		WRITE_ONCE(slot->beat_jiffies, (u32)jiffies);
++		WRITE_ONCE(slot->last_feed_jiffies,
++			   (u32)es_wdt_last_feed_jiffies);
++		schedule_timeout_interruptible(
++			msecs_to_jiffies(EASYSTICK_BEAT_PERIOD_MS));
++	}
++	return 0;
+ }
+ 
+ static struct esp32p4_wdt *easystick_crash_wdt;
+@@ -490,6 +547,24 @@
+ 				       wdt);
+ 	if (ret)
+ 		return ret;
++	{
++		unsigned int beat_cpu;
++
++		for (beat_cpu = 0; beat_cpu < EASYSTICK_BEAT_CPUS; beat_cpu++) {
++			struct task_struct *task;
++
++			if (beat_cpu >= num_possible_cpus())
++				break;
++			task = kthread_create(easystick_beat_fn,
++					      (void *)(uintptr_t)beat_cpu,
++					      "es-beat/%u", beat_cpu);
++			if (IS_ERR(task))
++				return PTR_ERR(task);
++			kthread_bind(task, beat_cpu);
++			easystick_beat_tasks[beat_cpu] = task;
++			wake_up_process(task);
++		}
++	}
+ 	return 0;
+ }
+ 

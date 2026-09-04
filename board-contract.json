@@ -1,0 +1,75 @@
+{
+  "schema": 1,
+  "board": "EasyStick Stamp-P4 carrier Rev0.15 WIP",
+  "status": "hardware_contract_only",
+  "source_netlist": "../requirements/netlist.rev0.15.json",
+  "module": {
+    "part": "M5Stack Stamp-P4 / ESP32-P4NRW32",
+    "flash_bytes": 16777216,
+    "psram_bytes": 33554432,
+    "capacity_source": "M5Stack Stamp-P4 documentation",
+    "assembled_revision_verified": true,
+    "observed_on": "2026-08-09",
+    "observed_source": "read-only serial capture on USB-C COM10; no flash write",
+    "observed": {
+      "usb_device": "USB Serial Device / VID 303A PID 1001",
+      "rom": "esp32p4-eco2-20240710",
+      "chip_revision": "v1.3",
+      "flash": { "bytes": 16777216, "mode": "DIO", "clock_hz": 80000000 },
+      "psram": { "bytes": 33554432, "density_mbit": 256, "memory_test": "OK" },
+      "running_image": "stampp4-factory-test",
+      "running_idf": "v5.4.2-dirty"
+    },
+    "stock_readback": {
+      "status": "complete_readonly_backup",
+      "tool": "esptool.py v4.8.1",
+      "size_bytes": 16777216,
+      "sha256": "229459f251eaf6222f0c07968702d72a3818e520da1788ce465027d969020c24",
+      "verification": "two independent full readbacks matched",
+      "notes": "esptool 5.3.1 lost the USB-Serial/JTAG response around 0x001AB000; use the pinned 4.8.1 recovery environment"
+    }
+  },
+  "download_control": {
+    "boot": { "net": "BOOT_GPIO35", "stamp_p4_pin": 36, "active_level": "low" },
+    "reset": { "net": "CHIP_EN", "stamp_p4_pin": 34, "active_level": "low" }
+  },
+  "usb_a_device": {
+    "controller": "USB1_FS_OTG",
+    "role": "device_only_on_this_carrier",
+    "d_plus_gpio": 27,
+    "d_minus_gpio": 26,
+    "d_plus_stamp_p4_pin": 17,
+    "d_minus_stamp_p4_pin": 19,
+    "vbus_stamp_p4_pin": 15,
+    "vbus_net": "USB_5V_PROTECTED",
+    "cdc_acm": "future_gadget_feature",
+    "host_role": "out_of_scope"
+  },
+  "usb2_host": {
+    "d_plus_stamp_p4_pin": 40,
+    "d_minus_stamp_p4_pin": 41,
+    "carrier_status": "NC",
+    "host_role": "not_available_without_hardware_change"
+  },
+  "power": {
+    "usb_a_vbus": "protected_input_only",
+    "usb_a_and_usb_c_simultaneous_power": "prohibited",
+    "host_vbus_source": false
+  },
+  "stamp_addon_c6_sdio": {
+    "status": "pin_contract_unverified_on_linux",
+    "reset_gpio": 42,
+    "clock_gpio": 43,
+    "command_gpio": 44,
+    "data_gpios": [45, 46, 47, 48],
+    "transport": "SDIO",
+    "linux_support": "M2_port_required"
+  },
+  "linux": {
+    "status": "not_implemented",
+    "mmu": false,
+    "smp": false,
+    "flash_layout": "TBD_after_M0_measurement",
+    "dts": "TBD_after_M0_measurement"
+  }
+}

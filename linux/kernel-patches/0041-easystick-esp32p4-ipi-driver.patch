@@ -1,0 +1,150 @@
+diff --git a/drivers/irqchip/irq-esp32p4-ipi.c b/drivers/irqchip/irq-esp32p4-ipi.c
+new file mode 100644
+--- /dev/null
++++ b/drivers/irqchip/irq-esp32p4-ipi.c
+@@ -0,0 +1,145 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * ESP32-P4 HP-core cross-core IPI provider.
++ *
++ * The CPU_INT_FROM_CPU_0/1 registers are target-specific software
++ * interrupt sources. They are routed through two CLIC slots described by
++ * the C68-only device tree node and multiplexed into Linux's generic IPI
++ * range with the same mechanism used by ACLINT SSWI.
++ */
++
++#define pr_fmt(fmt) "esp32p4-ipi: " fmt
++
++#include <linux/cpu.h>
++#include <linux/cpuhotplug.h>
++#include <linux/interrupt.h>
++#include <linux/irq.h>
++#include <linux/irqchip.h>
++#include <linux/io.h>
++#include <linux/kernel.h>
++#include <linux/of_address.h>
++#include <linux/of_irq.h>
++#include <linux/smp.h>
++
++#include <asm/smp.h>
++
++#define ESP32P4_IPI_NR_CPUS		2
++#define ESP32P4_IPI_FROM_CPU0		0x10
++#define ESP32P4_IPI_FROM_CPU1		0x14
++#define ESP32P4_IPI_FROM_CPU_BIT	BIT(0)
++
++static void __iomem *esp32p4_ipi_base;
++static unsigned int esp32p4_ipi_parent_irq[ESP32P4_IPI_NR_CPUS];
++static DEFINE_PER_CPU(int, esp32p4_ipi_dev);
++
++static unsigned int esp32p4_ipi_reg(unsigned int cpu)
++{
++	return cpu ? ESP32P4_IPI_FROM_CPU1 : ESP32P4_IPI_FROM_CPU0;
++}
++
++static void esp32p4_ipi_send(unsigned int cpu)
++{
++	if (cpu >= ESP32P4_IPI_NR_CPUS) {
++		pr_warn_ratelimited("cannot send IPI to CPU%u\n", cpu);
++		return;
++	}
++
++	writel(ESP32P4_IPI_FROM_CPU_BIT,
++	       esp32p4_ipi_base + esp32p4_ipi_reg(cpu));
++}
++
++static irqreturn_t esp32p4_ipi_interrupt(int irq, void *dev_id)
++{
++	unsigned int cpu = smp_processor_id();
++
++	if (cpu < ESP32P4_IPI_NR_CPUS)
++		writel(0, esp32p4_ipi_base + esp32p4_ipi_reg(cpu));
++	else
++		pr_warn_ratelimited("interrupt on unsupported CPU%u\n", cpu);
++
++	ipi_mux_process();
++	return IRQ_HANDLED;
++}
++
++static int esp32p4_ipi_starting_cpu(unsigned int cpu)
++{
++	if (cpu >= ESP32P4_IPI_NR_CPUS ||
++	    !esp32p4_ipi_parent_irq[cpu])
++		return -EINVAL;
++
++	/* Do not replay a stale shim-generated request into Linux. */
++	writel(0, esp32p4_ipi_base + esp32p4_ipi_reg(cpu));
++	enable_percpu_irq(esp32p4_ipi_parent_irq[cpu],
++			  irq_get_trigger_type(esp32p4_ipi_parent_irq[cpu]));
++	return 0;
++}
++
++static int esp32p4_ipi_dying_cpu(unsigned int cpu)
++{
++	if (cpu >= ESP32P4_IPI_NR_CPUS ||
++	    !esp32p4_ipi_parent_irq[cpu])
++		return -EINVAL;
++
++	writel(0, esp32p4_ipi_base + esp32p4_ipi_reg(cpu));
++	disable_percpu_irq(esp32p4_ipi_parent_irq[cpu]);
++	return 0;
++}
++
++static int __init esp32p4_ipi_init(struct device_node *np,
++				    struct device_node *parent)
++{
++	int cpu, ret, virq;
++
++	esp32p4_ipi_base = of_iomap(np, 0);
++	if (!esp32p4_ipi_base) {
++		pr_err("cannot map HP system registers\n");
++		return -ENOMEM;
++	}
++
++	for (cpu = 0; cpu < ESP32P4_IPI_NR_CPUS; cpu++) {
++		unsigned int irq = irq_of_parse_and_map(np, cpu);
++
++		if (!irq) {
++			pr_err("cannot map parent IRQ for CPU%u\n", cpu);
++			return -ENODEV;
++		}
++
++		esp32p4_ipi_parent_irq[cpu] = irq;
++		irq_set_percpu_devid(irq);
++		irq_set_chip_and_handler(irq, irq_get_chip(irq),
++					 handle_percpu_devid_irq);
++		ret = request_percpu_irq(irq, esp32p4_ipi_interrupt,
++					 "esp32p4-ipi", &esp32p4_ipi_dev);
++		if (ret) {
++			pr_err("request_percpu_irq CPU%u failed (%d)\n", cpu, ret);
++			return ret;
++		}
++	}
++
++	virq = ipi_mux_create(BITS_PER_BYTE, esp32p4_ipi_send);
++	if (virq <= 0) {
++		pr_err("cannot create generic IPI mux (%d)\n", virq);
++		return virq ? virq : -ENOMEM;
++	}
++
++	/*
++	 * This callback is installed before the range is published. On CPU1,
++	 * notify_cpu_starting() therefore enables its parent CLIC IRQ before
++	 * smp_callin() reaches riscv_ipi_enable(). The range publication is
++	 * deliberately the final step of provider initialization.
++	 */
++	ret = cpuhp_setup_state(CPUHP_AP_IRQ_ESP32P4_IPI_STARTING,
++				"irqchip/esp32p4-ipi:starting",
++				esp32p4_ipi_starting_cpu,
++				esp32p4_ipi_dying_cpu);
++	if (ret < 0) {
++		pr_err("CPU hotplug setup failed (%d)\n", ret);
++		return ret;
++	}
++
++	riscv_ipi_set_virq_range(virq, BITS_PER_BYTE);
++	pr_info("providing IPIs using HP CPU_INT_FROM_CPU registers\n");
++	return 0;
++}
++
++IRQCHIP_DECLARE(esp32p4_ipi, "espressif,esp32p4-ipi", esp32p4_ipi_init);

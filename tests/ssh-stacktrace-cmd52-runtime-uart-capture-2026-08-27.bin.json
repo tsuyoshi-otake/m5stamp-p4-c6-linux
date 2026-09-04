@@ -1,0 +1,13 @@
+﻿{
+    "port":  "COM10",
+    "baud":  115200,
+    "bytes":  22280,
+    "sha256":  "1e2f1ab5b9a21eb6c2f2ddac235293caa77572b0b798705dda35de3b45be4989",
+    "reset_requested":  false,
+    "control_lines_driven":  false,
+    "port_opens":  7,
+    "first_byte_seconds":  2.016,
+    "captured_utc":  "2026-08-27T03:16:19.7377946Z",
+    "python":  "C:\\Users\\developer\\AppData\\Local\\Programs\\Python\\Launcher\\py.exe",
+    "reset_strategy":  "none"
+}

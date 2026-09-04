@@ -1,0 +1,91 @@
+From: EasyStick maintainers <noreply@example.invalid>
+Subject: [PATCH] esp-hosted: add an explicit CMD52 shot gate
+
+Add a root-writable module parameter that clears the four CMD52 boundary
+words and re-arms MAGIC/ARMED through the same WRITE_ONCE retention helper
+used by the marker candidate.  This permits a user to arm a clean shot after
+normal Wi-Fi startup without changing the CMD52 hot path.
+
+The parameter is only staged when the positive-control marker is enabled.
+Writing 1 to /sys/module/esp32_sdio/parameters/cmd52_marker_shot is a
+one-shot operation; it does not add console output, allocation, locking, or
+timestamping to the observed path.
+
+--- a/sdio/esp_sdio_api.h
++++ b/sdio/esp_sdio_api.h
+@@ -14,5 +14,6 @@
+ int esp_write_reg(struct esp_sdio_context *context, u32 reg, u8 *data, u16 size, u8 is_lock_needed);
+ int esp_write_block(struct esp_sdio_context *context, u32 reg, u8 *data, u16 size, u8 is_lock_needed);
+ void easystick_cmd52_marker_arm(void);
++void easystick_cmd52_marker_shot_arm(void);
+ 
+ #endif
+--- a/sdio/esp_sdio_api.c
++++ b/sdio/esp_sdio_api.c
+@@ -62,6 +62,20 @@
+ 	wmb();
+ }
+ 
++void easystick_cmd52_marker_shot_arm(void)
++{
++	easystick_cmd52_marker_store_word(0u, EASYSTICK_CMD52_MARKER_EMPTY);
++	easystick_cmd52_marker_store_word(1u, EASYSTICK_CMD52_MARKER_EMPTY);
++	easystick_cmd52_marker_store_word(2u, EASYSTICK_CMD52_MARKER_EMPTY);
++	easystick_cmd52_marker_store_word(3u, EASYSTICK_CMD52_MARKER_EMPTY);
++	easystick_cmd52_marker_store_word(4u, EASYSTICK_CMD52_MARKER_EMPTY);
++	easystick_cmd52_marker_store_word(5u, EASYSTICK_CMD52_MARKER_EMPTY);
++	wmb();
++	easystick_cmd52_marker_store_word(0u, EASYSTICK_CMD52_MARKER_MAGIC);
++	easystick_cmd52_marker_store_word(1u, EASYSTICK_CMD52_MARKER_ARMED);
++	wmb();
++}
++
+ static __always_inline bool easystick_cmd52_marker_target(u32 reg, u16 size)
+ {
+ 	return reg == (ESP_SLAVE_TOKEN_RDATA & ESP_ADDRESS_MASK) &&
+--- a/main.c
++++ b/main.c
+@@ -15,4 +15,5 @@
+ #include "esp.h"
++#include "esp_sdio_api.h"
+ #include "esp_if.h"
+ #include "esp_bt_api.h"
+ #include "esp_api.h"
+@@ -35,1 +35,26 @@
++static int cmd52_marker_shot;
++
++static int cmd52_marker_shot_set(const char *val,
++				 const struct kernel_param *kp)
++{
++	int parsed;
++	int ret;
++
++	(void)kp;
++	ret = kstrtoint(val, 0, &parsed);
++	if (ret)
++		return ret;
++	if (parsed != 0 && parsed != 1)
++		return -EINVAL;
++	if (parsed == 1)
++		easystick_cmd52_marker_shot_arm();
++	WRITE_ONCE(cmd52_marker_shot, parsed);
++	return 0;
++}
++
++static const struct kernel_param_ops cmd52_marker_shot_ops = {
++	.set = cmd52_marker_shot_set,
++	.get = param_get_int,
++};
++
+ static char *ota_file = NULL;
+@@ -48,4 +73,10 @@
+ MODULE_PARM_DESC(clockspeed, "Hosts clock speed in MHz");
+ 
++module_param_cb(cmd52_marker_shot, &cmd52_marker_shot_ops,
++		&cmd52_marker_shot,
++		S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
++MODULE_PARM_DESC(cmd52_marker_shot,
++		 "Clear and re-arm the six-word CMD52 marker for one shot");
++
+ module_param(raw_tp_mode, uint, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
+ MODULE_PARM_DESC(raw_tp_mode, "Mode chosen to test raw throughput");

@@ -1,0 +1,29 @@
+Subject: [PATCH] mmc: dw_mmc: arm software DTO from CMD_DONE on writes
+
+0060 armed DTO only from dw_mci_work_func wait sites. On Stamp-P4 SSH exec
+the BH does not come back: leftover CMD53_BB can show cmd_done=1 with
+data_over=0, and EASYSTICK_MMC TX_DRTO never prints through leftover.
+
+Arm the existing dto_timer from the CMD_DONE IRQ after irq_lock is dropped
+when the in-flight request is a write. dto_timer already synthesizes
+SDMMC_INT_DRTO and queues BH.
+
+Signed-off-by: EasyStick <dev@localhost>
+---
+diff --git a/drivers/mmc/host/dw_mmc.c b/drivers/mmc/host/dw_mmc.c
+--- a/drivers/mmc/host/dw_mmc.c
++++ b/drivers/mmc/host/dw_mmc.c
+@@ -2907,6 +2907,13 @@
+ 			dw_mci_cmd_interrupt(host, pending);
+ 
+ 			spin_unlock(&host->irq_lock);
++			/*
++			 * BH may never re-enter after CMD_DONE (observed hung CMD53
++			 * write: cmd_done=1, bh_in=1, data_over=0). Arm software DTO
++			 * here, after irq_lock, so dw_mci_set_drto() can take it.
++			 */
++			if (host->data && host->dir_status == DW_MCI_SEND_STATUS)
++				dw_mci_set_drto(host);
+ 		}
+ 
+ 		if (pending & SDMMC_INT_CD) {

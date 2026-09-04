@@ -1,0 +1,321 @@
+From: EasyStick <noreply@easystick.local>
+Subject: [PATCH] easystick: 0023-A2 H2C TCP/22 signature observe
+
+Observe-only. Keep NG-1.0.6.0.1. No WIFI_PS_NONE, no TX retry, no
+send_task notify. TCP sport=22 plen>0 only; unique sig64 table +
+aggregates via slave shared-register bytes 32..63 (ABI v3 0x0B23).
+---
+diff --git "a/C:\\Users\\DEVELO~1\\AppData\\Local\\Temp\\tmpcbrnp656\\old\\main\\app_main.c" "b/C:\\Users\\DEVELO~1\\AppData\\Local\\Temp\\tmpcbrnp656\\new\\main\\app_main.c"
+index 5a54d37..4bcca6e 100644
+--- a/main/app_main.c
++++ b/main/app_main.c
+@@ -48,6 +48,9 @@
+ #include "stats.h"
+ #include "esp_mac.h"
+ 
++#include "driver/sdio_slave.h"
++#include "esp_timer.h"
++
+ static const char TAG[] = "FW_MAIN";
+ 
+ #if CONFIG_ESP_WLAN_DEBUG
+@@ -66,6 +69,248 @@ volatile uint8_t station_connected = 0;
+ volatile uint8_t softap_started = 0;
+ volatile uint8_t ota_ongoing = 0;
+ volatile uint8_t power_save_on = 0;
++
++/* EasyStick 0023-A2: H2C TCP sport=22 plen>0 signature observer.
++ * Observe-only. No PS_NONE, no TX retry, no send_task notify.
++ * Identity stays NG-1.0.6.0.1.
++ *
++ * sig64 = (tcp_seq << 32) | ((plen & 0xffff) << 16) | (flags & 0xff)
++ * Unique table (16) in RAM; aggregates published 1 Hz to slave pos 32..63.
++ */
++#define H2C_OBS_MAGIC           0x0B23u
++#define H2C_OBS_ABI             3u
++#define H2C_OBS_TABLE_MAX       16u
++#define H2C_OBS_SCRATCH_POS0    32
++#define H2C_OBS_SCRATCH_BYTES   32
++#define H2C_OBS_TCP_SPORT       22u
++
++typedef struct {
++    uint32_t h2c_count;
++    uint64_t h2c_xor64;
++    uint32_t wifi_ok_count;
++    uint64_t wifi_ok_xor64;
++    uint32_t last_seq;
++    uint16_t last_plen;
++    uint8_t  last_flags;
++    uint8_t  h2c_n;
++    uint8_t  wifi_ok_n;
++    uint64_t h2c_table[H2C_OBS_TABLE_MAX];
++    uint64_t wifi_ok_table[H2C_OBS_TABLE_MAX];
++} h2c_obs_stats_t;
++
++static h2c_obs_stats_t s_h2c_obs;
++static uint8_t s_h2c_obs_pub_seq;
++static esp_timer_handle_t s_h2c_obs_timer;
++static uint8_t s_h2c_obs_timer_started;
++
++static uint64_t h2c_obs_sig64(uint32_t seq, uint16_t plen, uint8_t flags)
++{
++    return ((uint64_t)seq << 32) |
++           ((uint64_t)(plen & 0xffffu) << 16) |
++           (uint64_t)(flags & 0xffu);
++}
++
++static int h2c_obs_table_note(uint64_t *table, uint8_t *n, uint64_t sig)
++{
++    uint8_t i;
++
++    for (i = 0; i < *n; i++) {
++        if (table[i] == sig) {
++            return 0; /* duplicate */
++        }
++    }
++    if (*n >= H2C_OBS_TABLE_MAX) {
++        return -1; /* full; still a new signature but not stored */
++    }
++    table[*n] = sig;
++    (*n)++;
++    return 1;
++}
++
++static int h2c_obs_parse_tcp22(const uint8_t *p, uint16_t len,
++                               uint32_t *seq_out, uint16_t *plen_out,
++                               uint8_t *flags_out)
++{
++    uint16_t ethertype;
++    uint8_t ihl;
++    uint8_t doff;
++    const uint8_t *ip;
++    const uint8_t *tcp;
++    uint16_t ip_total;
++    uint16_t tcp_hdrlen;
++    uint16_t payload_len;
++    uint16_t sport;
++
++    if (len < 14 + 20 + 20 || !p || !seq_out || !plen_out || !flags_out) {
++        return 0;
++    }
++    ethertype = ((uint16_t)p[12] << 8) | p[13];
++    if (ethertype != 0x0800) {
++        return 0;
++    }
++    ip = p + 14;
++    ihl = (uint8_t)((ip[0] & 0x0f) * 4);
++    if (ihl < 20 || (ip[0] >> 4) != 4 || ip[9] != 6) {
++        return 0;
++    }
++    if (len < (uint16_t)(14 + ihl + 20)) {
++        return 0;
++    }
++    tcp = ip + ihl;
++    sport = ((uint16_t)tcp[0] << 8) | tcp[1];
++    if (sport != H2C_OBS_TCP_SPORT) {
++        return 0;
++    }
++    doff = (uint8_t)(tcp[12] >> 4);
++    if (doff < 5) {
++        return 0;
++    }
++    tcp_hdrlen = (uint16_t)(doff * 4u);
++    ip_total = ((uint16_t)ip[2] << 8) | ip[3];
++    if (ip_total < (uint16_t)(ihl + tcp_hdrlen)) {
++        return 0;
++    }
++    payload_len = (uint16_t)(ip_total - ihl - tcp_hdrlen);
++    if (payload_len == 0) {
++        return 0;
++    }
++    *seq_out = ((uint32_t)tcp[4] << 24) | ((uint32_t)tcp[5] << 16) |
++               ((uint32_t)tcp[6] << 8) | (uint32_t)tcp[7];
++    *plen_out = payload_len;
++    *flags_out = tcp[13];
++    return 1;
++}
++
++static void h2c_obs_note_h2c(uint32_t seq, uint16_t plen, uint8_t flags)
++{
++    uint64_t sig = h2c_obs_sig64(seq, plen, flags);
++    int rc = h2c_obs_table_note(s_h2c_obs.h2c_table, &s_h2c_obs.h2c_n, sig);
++
++    s_h2c_obs.last_seq = seq;
++    s_h2c_obs.last_plen = plen;
++    s_h2c_obs.last_flags = flags;
++    /* rc>0 new stored; rc<0 new but table full — both are unique first-seen */
++    if (rc != 0) {
++        s_h2c_obs.h2c_count++;
++        s_h2c_obs.h2c_xor64 ^= sig;
++    }
++}
++
++static void h2c_obs_note_wifi_ok(uint32_t seq, uint16_t plen, uint8_t flags)
++{
++    uint64_t sig = h2c_obs_sig64(seq, plen, flags);
++    int rc = h2c_obs_table_note(s_h2c_obs.wifi_ok_table, &s_h2c_obs.wifi_ok_n, sig);
++
++    if (rc != 0) {
++        s_h2c_obs.wifi_ok_count++;
++        s_h2c_obs.wifi_ok_xor64 ^= sig;
++    }
++}
++
++static void h2c_obs_write_words_le(const uint32_t words[8])
++{
++    uint8_t i;
++    uint8_t b;
++
++    for (i = 0; i < 8; i++) {
++        uint32_t w = words[i];
++        for (b = 0; b < 4; b++) {
++            (void)sdio_slave_write_reg(
++                H2C_OBS_SCRATCH_POS0 + (int)i * 4 + (int)b,
++                (uint8_t)((w >> (8 * b)) & 0xffu));
++        }
++    }
++}
++
++static void h2c_obs_publish(void *arg)
++{
++    uint32_t words[8];
++    (void)arg;
++
++    /* Odd seq = updating; even seq = stable snapshot. */
++    s_h2c_obs_pub_seq++;
++    if ((s_h2c_obs_pub_seq & 1u) == 0) {
++        s_h2c_obs_pub_seq++;
++    }
++
++    /* ABI v3 (8 x u32 LE at pos 32..63):
++     * 0 magic|abi|pub_seq
++     * 1 h2c_count
++     * 2 h2c_xor64_lo
++     * 3 h2c_xor64_hi
++     * 4 wifi_ok_count | (last_plen << 16)
++     * 5 wifi_ok_xor64_lo
++     * 6 wifi_ok_xor64_hi
++     * 7 last_seq
++     */
++    words[0] = ((uint32_t)H2C_OBS_MAGIC) |
++               ((uint32_t)H2C_OBS_ABI << 16) |
++               ((uint32_t)s_h2c_obs_pub_seq << 24);
++    words[1] = s_h2c_obs.h2c_count;
++    words[2] = (uint32_t)(s_h2c_obs.h2c_xor64 & 0xffffffffull);
++    words[3] = (uint32_t)(s_h2c_obs.h2c_xor64 >> 32);
++    words[4] = s_h2c_obs.wifi_ok_count |
++               ((uint32_t)s_h2c_obs.last_plen << 16);
++    words[5] = (uint32_t)(s_h2c_obs.wifi_ok_xor64 & 0xffffffffull);
++    words[6] = (uint32_t)(s_h2c_obs.wifi_ok_xor64 >> 32);
++    words[7] = s_h2c_obs.last_seq;
++
++    h2c_obs_write_words_le(words);
++
++    s_h2c_obs_pub_seq++; /* make even = stable */
++    words[0] = ((uint32_t)H2C_OBS_MAGIC) |
++               ((uint32_t)H2C_OBS_ABI << 16) |
++               ((uint32_t)s_h2c_obs_pub_seq << 24);
++    {
++        uint8_t b;
++        for (b = 0; b < 4; b++) {
++            (void)sdio_slave_write_reg(
++                H2C_OBS_SCRATCH_POS0 + (int)b,
++                (uint8_t)((words[0] >> (8 * b)) & 0xffu));
++        }
++    }
++
++    ESP_LOGI(TAG,
++             "H2C_OBS abi=%u h2c_count=%u h2c_xor=0x%08lx%08lx "
++             "wifi_ok_count=%u wifi_ok_xor=0x%08lx%08lx "
++             "last_seq=%u last_plen=%u last_flags=0x%02x "
++             "h2c_n=%u ok_n=%u sta=%u assoc=%u",
++             (unsigned)H2C_OBS_ABI,
++             (unsigned)s_h2c_obs.h2c_count,
++             (unsigned long)(s_h2c_obs.h2c_xor64 >> 32),
++             (unsigned long)(s_h2c_obs.h2c_xor64 & 0xffffffffull),
++             (unsigned)s_h2c_obs.wifi_ok_count,
++             (unsigned long)(s_h2c_obs.wifi_ok_xor64 >> 32),
++             (unsigned long)(s_h2c_obs.wifi_ok_xor64 & 0xffffffffull),
++             (unsigned)s_h2c_obs.last_seq,
++             (unsigned)s_h2c_obs.last_plen,
++             (unsigned)s_h2c_obs.last_flags,
++             (unsigned)s_h2c_obs.h2c_n,
++             (unsigned)s_h2c_obs.wifi_ok_n,
++             (unsigned)station_connected,
++             (unsigned)association_ongoing);
++}
++
++static void h2c_obs_timer_start_once(void)
++{
++    const esp_timer_create_args_t args = {
++        .callback = &h2c_obs_publish,
++        .name = "h2c_obs",
++    };
++
++    if (s_h2c_obs_timer_started) {
++        return;
++    }
++    if (esp_timer_create(&args, &s_h2c_obs_timer) != ESP_OK) {
++        return;
++    }
++    if (esp_timer_start_periodic(s_h2c_obs_timer, 1000000) != ESP_OK) {
++        return;
++    }
++    s_h2c_obs_timer_started = 1;
++}
++
++
+ struct wow_config wow;
+ SemaphoreHandle_t wakeup_sem;
+ SemaphoreHandle_t init_sem;
+@@ -516,10 +761,14 @@ void process_priv_commamd(uint8_t if_type, uint8_t *payload, uint16_t payload_le
+ 
+ void process_rx_pkt(interface_buffer_handle_t *buf_handle)
+ {
+-    struct esp_payload_header *header = NULL;
+     uint8_t *payload = NULL;
++    struct esp_payload_header *header = NULL;
+     uint16_t payload_len = 0;
+ 
++    if (!buf_handle || !buf_handle->payload || !buf_handle->payload_len) {
++        return;
++    }
++
+     header = (struct esp_payload_header *) buf_handle->payload;
+     payload = buf_handle->payload + le16toh(header->offset);
+     payload_len = le16toh(header->len);
+@@ -539,14 +788,30 @@ void process_rx_pkt(interface_buffer_handle_t *buf_handle)
+         /* ESP_LOGI(TAG, "Data packet on iface=%d", buf_handle->if_type); */
+         /* Data Path */
+         if (buf_handle->if_type == ESP_STA_IF) {
+-            /*ESP_LOGI(TAG, "Station IF");*/
++            uint32_t tcp_seq = 0;
++            uint16_t tcp_plen = 0;
++            uint8_t tcp_flags = 0;
++            int is_tcp22 = h2c_obs_parse_tcp22(payload, payload_len,
++                                               &tcp_seq, &tcp_plen, &tcp_flags);
++
++            h2c_obs_timer_start_once();
++
++            if (is_tcp22) {
++                h2c_obs_note_h2c(tcp_seq, tcp_plen, tcp_flags);
++            }
+ 
+             /* Forward packet over station interface */
+             if (station_connected || association_ongoing) {
+-                /*ESP_LOGI(TAG, "Send wlan\n");*/
+-                esp_wifi_internal_tx(ESP_IF_WIFI_STA, payload, payload_len);
++                if (is_tcp22) {
++                    int ret = esp_wifi_internal_tx(ESP_IF_WIFI_STA, payload, payload_len);
++                    if (ret == ESP_OK) {
++                        h2c_obs_note_wifi_ok(tcp_seq, tcp_plen, tcp_flags);
++                    }
++                } else {
++                    /* Non-TCP22 DATA: unchanged behaviour. */
++                    esp_wifi_internal_tx(ESP_IF_WIFI_STA, payload, payload_len);
++                }
+             }
+-
+         } else if (buf_handle->if_type == ESP_AP_IF && softap_started) {
+ 
+             /* Forward packet over soft AP interface */

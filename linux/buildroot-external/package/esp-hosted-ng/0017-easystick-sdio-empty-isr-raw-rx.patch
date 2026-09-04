@@ -1,0 +1,96 @@
+From: EasyStick maintainers <noreply@example.invalid>
+Subject: [PATCH] sdio: dispatch RX_NEW_PACKET latched only in INT_RAW
+
+0011 acknowledges INT_ST==0 by writing ESP_SLAVE_INT_CLR_KNOWN so the
+dw_mmc DAT1 loop dies. That mask includes ESP_SLAVE_RX_NEW_PACKET_INT
+(BIT 23). Boot captures had INT_RAW=0, so the forced clear destroyed
+nothing. Cold 4-way now shows empty raw=0x00ccf800: BIT 23 is latched
+in RAW, ST is still 0, and CLR_KNOWN drops the unread packet. That is
+EAPOL msg3. 0011 assumed RAW-without-ST meant the slave never enabled
+the source; BIT 23 refutes that.
+
+On INT_ST==0 always read INT_RAW, not only the first four of a streak.
+If RAW has RX_NEW_PACKET, do not write CLR_KNOWN. Promote that bit,
+dispatch, then acknowledge only the packet bit. If RAW is 0, or has
+only unnamed bits, keep 0011 CLR_KNOWN. Do not fabricate RX from any
+bit other than BIT 23.
+
+What this cannot see: if the AP never sends msg3, RAW BIT 23 will not
+set. If DAT1 is held by a source outside esp_sdio_decl.h, the 0011
+loop can return. The negative tests are: boot has no 254x
+status=0x00000000 storm; cold 4-way has msg3 00 97 and two 08 02,
+not empty raw=0x00ccf800 followed by a dropped packet.
+
+---
+ sdio/esp_sdio.c | 46 +++++++++++++++++++++++++++++-----------------
+ 1 file changed, 29 insertions(+), 17 deletions(-)
+
+diff --git a/sdio/esp_sdio.c b/sdio/esp_sdio.c
+--- a/sdio/esp_sdio.c
++++ b/sdio/esp_sdio.c
+@@ -122,40 +122,46 @@
+ 	ret = esp_read_reg(context, ESP_SLAVE_INT_ST_REG,
+ 			(u8 *) int_status, sizeof(*int_status), ACQUIRE_LOCK);
+ 	CHECK_SDIO_RW_ERROR(ret);
+ 
+ 	status_read = ret ? 0 : *int_status;
+ 
++	if (!status_read) {
++		u32 raw = 0;
++		int raw_ret = esp_read_reg(context, ESP_SLAVE_INT_RAW_REG,
++				(u8 *) &raw, sizeof(raw), ACQUIRE_LOCK);
++
++		/*
++		 * INT_ST can read 0 while INT_RAW still holds
++		 * ESP_SLAVE_RX_NEW_PACKET_INT (BIT 23).  0011 then wrote
++		 * ESP_SLAVE_INT_CLR_KNOWN, which includes that bit, and
++		 * dropped the unread packet.  Cold 4-way captures show
++		 * empty raw=0x00ccf800 immediately before missing EAPOL
++		 * msg3.  Dispatch the packet bit instead of acknowledging
++		 * it unseen.  A true all-zero RAW still uses CLR_KNOWN so
++		 * the boot DAT1 spin stays dead.
++		 */
++		if (!raw_ret && (raw & ESP_SLAVE_RX_NEW_PACKET_INT)) {
++			esp_info("SDIO IRQ empty-raw-rx: streak=%u st_ret=%d raw=0x%08x dispatch=%d\n",
++				 empty_isr_streak, ret, raw, dispatch);
++			status_read = ESP_SLAVE_RX_NEW_PACKET_INT;
++		} else if (empty_isr_streak < 4 || !(empty_isr_streak % 256)) {
++			esp_info("SDIO IRQ empty: streak=%u st_ret=%d raw=0x%08x raw_ret=%d dispatch=%d\n",
++				 empty_isr_streak, ret, raw, raw_ret, dispatch);
++		}
++	}
++
+ 	if (dispatch)
+ 		esp_process_interrupt(context, status_read);
+ 
+ 	if (status_read) {
+ 		esp_info("SDIO IRQ received: status=0x%08x dispatch=%d after_empty=%u\n",
+ 			 status_read, dispatch, empty_isr_streak);
+ 		empty_isr_streak = 0;
+ 		*int_status = status_read;
+ 	} else {
+-		/*
+-		 * Writing back the zero that was just read acknowledges
+-		 * nothing, so the slave keeps DAT1 asserted and this callback
+-		 * spins -- the 508 identical "status=0x00000000" callbacks per
+-		 * boot recorded on this port are that spin, not slave noise.
+-		 * Force the named bits down instead, and sample INT_RAW at the
+-		 * head of each streak: a raw latch that INT_ST does not report
+-		 * means the slave never enabled that source for host delivery,
+-		 * which is a slave-side configuration fault rather than a
+-		 * missing frame.
+-		 */
+-		if (empty_isr_streak < 4 || !(empty_isr_streak % 256)) {
+-			u32 raw = 0;
+-			int raw_ret = esp_read_reg(context, ESP_SLAVE_INT_RAW_REG,
+-					(u8 *) &raw, sizeof(raw), ACQUIRE_LOCK);
+-
+-			esp_info("SDIO IRQ empty: streak=%u st_ret=%d raw=0x%08x raw_ret=%d dispatch=%d\n",
+-				 empty_isr_streak, ret, raw, raw_ret, dispatch);
+-		}
+ 		empty_isr_streak++;
+ 		*int_status = ESP_SLAVE_INT_CLR_KNOWN;
+ 	}
+ 
+ 	/* Clear interrupt status */
+ 	ret = esp_write_reg(context, ESP_SLAVE_INT_CLR_REG,

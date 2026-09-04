@@ -1,0 +1,287 @@
+diff --git a/drivers/irqchip/irq-esp32p4-clic.c b/drivers/irqchip/irq-esp32p4-clic.c
+--- a/drivers/irqchip/irq-esp32p4-clic.c
++++ b/drivers/irqchip/irq-esp32p4-clic.c
+@@ -24,6 +24,7 @@
+ #include <linux/io.h>
+ #include <linux/of_address.h>
+ #include <linux/of_irq.h>
++#include <linux/smp.h>
+ 
+ #define CLIC_NUM_IRQS     240
+ #define CLIC_INTIP_OFF      0
+@@ -39,6 +40,10 @@
+ static void __iomem *clic_intmtx_base[2];
+ 
+ static u8 clic_intmtx_source[CLIC_NUM_IRQS];
++static bool clic_timer_map_logged;
++static unsigned int clic_timer_mask_count;
++static unsigned int clic_timer_unmask_count;
++static bool clic_timer_local_logged;
+ static u8 clic_trig_edge[CLIC_NUM_IRQS];
+ 
+ struct irq_domain *esp32p4_clic_domain;
+@@ -47,11 +51,51 @@
+ static void clic_irq_mask(struct irq_data *d)
+ {
+ 	writeb(0, clic_base + d->hwirq * 4 + CLIC_INTIE_OFF);
++	if (raw_smp_processor_id() == 1 &&
++	    clic_intmtx_source[d->hwirq] == 54) {
++		unsigned int count = ++clic_timer_mask_count;
++
++		if (count <= 9 || (count && !(count & (count - 1))))
++			pr_info("OBS timer-mask #%u cpu=1 hwirq=%lu source=54 "
++				"IP=%u IE=%u ATTR=0x%02x CTL=0x%02x\n",
++				count, d->hwirq,
++				readb(clic_base + d->hwirq * 4 + CLIC_INTIP_OFF),
++				readb(clic_base + d->hwirq * 4 + CLIC_INTIE_OFF),
++				readb(clic_base + d->hwirq * 4 + CLIC_INTATTR_OFF),
++				readb(clic_base + d->hwirq * 4 + CLIC_INTCTL_OFF));
++	}
+ }
+ 
+ static void clic_irq_unmask(struct irq_data *d)
+ {
+ 	writeb(1, clic_base + d->hwirq * 4 + CLIC_INTIE_OFF);
++	if (raw_smp_processor_id() == 1 &&
++	    clic_intmtx_source[d->hwirq] == 54) {
++		unsigned int count = ++clic_timer_unmask_count;
++		if (!READ_ONCE(clic_timer_local_logged)) {
++			pr_info("OBS timer-clic-local cpu=1 hwirq=%lu "
++				"CLIC_LOCAL_SLOT=%lu CLIC_LOCAL_OFF=0x5c "
++				"IP=%u IE=%u ATTR=0x%02x CTL=0x%02x "
++				"INTMTX1_OFF=0xd8 INTMTX1=0x%08x\n",
++				d->hwirq, d->hwirq,
++				readb(clic_base + d->hwirq * 4 + CLIC_INTIP_OFF),
++				readb(clic_base + d->hwirq * 4 + CLIC_INTIE_OFF),
++				readb(clic_base + d->hwirq * 4 + CLIC_INTATTR_OFF),
++				readb(clic_base + d->hwirq * 4 + CLIC_INTCTL_OFF),
++				clic_intmtx_base[1] ?
++				readl(clic_intmtx_base[1] + 54 * 4) : 0xffffffff);
++			WRITE_ONCE(clic_timer_local_logged, true);
++		}
++
++		if (count <= 9 || (count && !(count & (count - 1))))
++			pr_info("OBS timer-unmask #%u cpu=1 hwirq=%lu source=54 "
++				"IP=%u IE=%u ATTR=0x%02x CTL=0x%02x\n",
++				count, d->hwirq,
++				readb(clic_base + d->hwirq * 4 + CLIC_INTIP_OFF),
++				readb(clic_base + d->hwirq * 4 + CLIC_INTIE_OFF),
++				readb(clic_base + d->hwirq * 4 + CLIC_INTATTR_OFF),
++				readb(clic_base + d->hwirq * 4 + CLIC_INTCTL_OFF));
++	}
+ }
+ 
+ static void clic_irq_ack(struct irq_data *d)
+@@ -127,6 +157,20 @@
+ 
+ 	writeb(attr,             clic_base + hwirq * 4 + CLIC_INTATTR_OFF);
+ 	writeb(CLIC_INTCTL_MAX,  clic_base + hwirq * 4 + CLIC_INTCTL_OFF);
++	if (clic_intmtx_source[hwirq] == 54 &&
++	    !READ_ONCE(clic_timer_map_logged)) {
++		u32 map0 = clic_intmtx_base[0] ?
++			readl(clic_intmtx_base[0] + 54 * 4) : 0xffffffff;
++		u32 map1 = clic_intmtx_base[1] ?
++			readl(clic_intmtx_base[1] + 54 * 4) : 0xffffffff;
++
++		pr_info("OBS timer-map virq=%u hwirq=%lu source=54 "
++			"INTMTX0=0x%08x INTMTX1=0x%08x ATTR=0x%02x CTL=0x%02x\n",
++			irq, hwirq, map0, map1,
++			readb(clic_base + hwirq * 4 + CLIC_INTATTR_OFF),
++			readb(clic_base + hwirq * 4 + CLIC_INTCTL_OFF));
++		WRITE_ONCE(clic_timer_map_logged, true);
++	}
+ 
+ 	irq_domain_set_info(d, irq, hwirq, &esp32p4_clic_chip, NULL,
+ 			    handler, NULL, NULL);
+
+diff --git a/drivers/irqchip/irq-esp32p4-ipi.c b/drivers/irqchip/irq-esp32p4-ipi.c
+--- a/drivers/irqchip/irq-esp32p4-ipi.c
++++ b/drivers/irqchip/irq-esp32p4-ipi.c
+@@ -31,6 +31,8 @@
+ static void __iomem *esp32p4_ipi_base;
+ static unsigned int esp32p4_ipi_parent_irq[ESP32P4_IPI_NR_CPUS];
+ static DEFINE_PER_CPU(int, esp32p4_ipi_dev);
++static unsigned int esp32p4_ipi_send_count[ESP32P4_IPI_NR_CPUS];
++static unsigned int esp32p4_ipi_irq_count;
+ 
+ static unsigned int esp32p4_ipi_reg(unsigned int cpu)
+ {
+@@ -44,13 +46,29 @@
+ 		return;
+ 	}
+ 
+-	writel(ESP32P4_IPI_FROM_CPU_BIT,
+-	       esp32p4_ipi_base + esp32p4_ipi_reg(cpu));
++	{
++		unsigned int count = ++esp32p4_ipi_send_count[cpu];
++
++		writel(ESP32P4_IPI_FROM_CPU_BIT,
++		       esp32p4_ipi_base + esp32p4_ipi_reg(cpu));
++		if (count <= 9 || (count && !(count & (count - 1))))
++			pr_info("OBS ipi-send #%u from_cpu=%u target=%u "
++				"REG=0x%08x\n",
++				count, raw_smp_processor_id(), cpu,
++				readl(esp32p4_ipi_base + esp32p4_ipi_reg(cpu)));
++	}
+ }
+ 
+ static irqreturn_t esp32p4_ipi_interrupt(int irq, void *dev_id)
+ {
+ 	unsigned int cpu = smp_processor_id();
++	unsigned int count = ++esp32p4_ipi_irq_count;
++	u32 pre = cpu < ESP32P4_IPI_NR_CPUS ?
++		readl(esp32p4_ipi_base + esp32p4_ipi_reg(cpu)) : 0xffffffff;
++
++	if (count <= 9 || (count && !(count & (count - 1))))
++		pr_info("OBS ipi-irq #%u irq=%d actual_cpu=%u REG_PRE=0x%08x\n",
++			count, irq, cpu, pre);
+ 
+ 	if (cpu < ESP32P4_IPI_NR_CPUS)
+ 		writel(0, esp32p4_ipi_base + esp32p4_ipi_reg(cpu));
+@@ -58,6 +76,12 @@
+ 		pr_warn_ratelimited("interrupt on unsupported CPU%u\n", cpu);
+ 
+ 	ipi_mux_process();
++	if (count <= 9 || (count && !(count & (count - 1))))
++		pr_info("OBS ipi-post #%u actual_cpu=%u REG_POST=0x%08x\n",
++			count, cpu,
++			cpu < ESP32P4_IPI_NR_CPUS ?
++			readl(esp32p4_ipi_base + esp32p4_ipi_reg(cpu)) :
++			0xffffffff);
+ 	return IRQ_HANDLED;
+ }
+ 
+
+diff --git a/drivers/clocksource/timer-esp32p4-systimer.c b/drivers/clocksource/timer-esp32p4-systimer.c
+--- a/drivers/clocksource/timer-esp32p4-systimer.c
++++ b/drivers/clocksource/timer-esp32p4-systimer.c
+@@ -22,6 +22,7 @@
+ #include <linux/of_irq.h>
+ #include <linux/sched_clock.h>
+ #include <linux/smp.h>
++#include <linux/sched.h>
+ 
+ #include <asm/delay.h>		/* riscv_timebase */
+ 
+@@ -37,7 +38,9 @@
+ #define ST_UNIT0_VAL_LO		0x44
+ #define ST_COMP0_LOAD		0x50
+ #define ST_INT_ENA		0x64
++#define ST_INT_RAW		0x68
+ #define ST_INT_CLR		0x6C
++#define ST_INT_ST		0x70
+ 
+ #define ST_CONF_CLK_EN		BIT(31)
+ #define ST_CONF_UNIT0_WORK_EN	BIT(30)
+@@ -62,6 +65,12 @@
+ 
+ static void __iomem *st_base;
+ static unsigned int esp32p4_timer_irq[ESP32P4_TIMER_CPUS];
++static unsigned int timer_arm_count[ESP32P4_TIMER_CPUS];
++static unsigned int timer_irq_count[ESP32P4_TIMER_CPUS];
++static unsigned int timer_event_count[ESP32P4_TIMER_CPUS];
++static unsigned int timer_rearm_count[ESP32P4_TIMER_CPUS];
++static unsigned int cpu0_setnext_count;
++static unsigned int cpu1_setnext_count;
+ 
+ /* ------------------------------------------------------------------ */
+ /* Counter read (52-bit, 16 MHz)                                      */
+@@ -144,6 +150,44 @@
+ 	writel(readl(st_base + ST_INT_ENA) | bit, st_base + ST_INT_ENA);
+ 	writel(readl(st_base + ST_CONF) | st_target_enable[cpu],
+ 	       st_base + ST_CONF);
++	if (cpu < ESP32P4_TIMER_CPUS) {
++		timer_arm_count[cpu]++;
++		if (cpu == 1 && timer_event_count[cpu])
++			timer_rearm_count[cpu]++;
++	}
++	if (cpu == 0) {
++		unsigned int count = ++cpu0_setnext_count;
++
++		if (count <= 9 || (count && !(count & (count - 1))))
++			pr_info("OBS cpu0-set-next #%u delta=%lu target=%llu "
++				"CONF=0x%08x ENA=0x%08x RAW=0x%08x ST=0x%08x\n",
++				count, delta, target,
++				readl(st_base + ST_CONF),
++				readl(st_base + ST_INT_ENA),
++				readl(st_base + ST_INT_RAW),
++				readl(st_base + ST_INT_ST));
++	} else if (cpu == 1) {
++		unsigned int count = ++cpu1_setnext_count;
++		if (count <= 9 || (count && !(count & (count - 1)))) {
++			pr_info("OBS cpu1-timer-counts arm1=%u irq1=%u "
++				"event1=%u rearm1=%u\n",
++				timer_arm_count[1], timer_irq_count[1],
++				timer_event_count[1], timer_rearm_count[1]);
++		}
++
++		if (count <= 9 || (count && !(count & (count - 1))))
++			pr_info("OBS cpu1-set-next #%u delta=%lu target=%llu "
++				"HI=0x%08x LO=0x%08x TCONF=0x%08x "
++				"CONF=0x%08x ENA=0x%08x RAW=0x%08x ST=0x%08x\n",
++				count, delta, target,
++				readl(st_base + st_target_hi[cpu]),
++				readl(st_base + st_target_lo[cpu]),
++				readl(st_base + st_target_conf[cpu]),
++				readl(st_base + ST_CONF),
++				readl(st_base + ST_INT_ENA),
++				readl(st_base + ST_INT_RAW),
++				readl(st_base + ST_INT_ST));
++	}
+ 
+ 	return 0;
+ }
+@@ -170,9 +203,51 @@
+ 	 * CPU enables this per-CPU parent IRQ. Clear the matching global target
+ 	 * before entering the clockevent callback.
+ 	 */
++	unsigned int count = 0;
++	u32 pre_raw = 0, pre_st = 0, pre_ena = 0, pre_conf = 0;
++
++	if (cpu == 1) {
++		count = ++timer_irq_count[cpu];
++		pre_raw = readl(st_base + ST_INT_RAW);
++		pre_st = readl(st_base + ST_INT_ST);
++		pre_ena = readl(st_base + ST_INT_ENA);
++		pre_conf = readl(st_base + ST_CONF);
++	}
++	ce = this_cpu_ptr(&esp32p4_clock_event);
+ 	esp32p4_timer_stop(cpu);
+-	ce = this_cpu_ptr(&esp32p4_clock_event);
++	if (cpu == 1 &&
++	    (count <= 9 || (count && !(count & (count - 1))))) {
++		pr_info("OBS cpu1-timer-irq #%u irq=%d "
++			"actual_cpu=%u current=%d need=%d handler=%ps "
++			"PRE_RAW=0x%08x PRE_ST=0x%08x PRE_ENA=0x%08x "
++			"PRE_CONF=0x%08x POST_RAW=0x%08x POST_ST=0x%08x "
++			"POST_ENA=0x%08x POST_CONF=0x%08x\n",
++			count, irq, raw_smp_processor_id(), current->pid,
++			need_resched(), ce->event_handler,
++			pre_raw, pre_st, pre_ena, pre_conf,
++			readl(st_base + ST_INT_RAW),
++			readl(st_base + ST_INT_ST),
++			readl(st_base + ST_INT_ENA),
++			readl(st_base + ST_CONF));
++	}
++	timer_event_count[cpu]++;
+ 	ce->event_handler(ce);
++	if (cpu == 1 &&
++	    (count <= 9 || (count && !(count & (count - 1))))) {
++		pr_info("OBS cpu1-timer-counts arm1=%u irq1=%u "
++			"event1=%u rearm1=%u\n",
++			timer_arm_count[1], timer_irq_count[1],
++			timer_event_count[1], timer_rearm_count[1]);
++		pr_info("OBS cpu1-timer-post-event #%u actual_cpu=%u current=%d "
++			"need=%d handler=%ps CONF=0x%08x ENA=0x%08x "
++			"RAW=0x%08x ST=0x%08x\n",
++			count, raw_smp_processor_id(), current->pid,
++			need_resched(), ce->event_handler,
++			readl(st_base + ST_CONF),
++			readl(st_base + ST_INT_ENA),
++			readl(st_base + ST_INT_RAW),
++			readl(st_base + ST_INT_ST));
++	}
+ 	return IRQ_HANDLED;
+ }
+ 
+

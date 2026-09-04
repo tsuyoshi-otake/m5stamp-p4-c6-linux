@@ -1,0 +1,49 @@
+From: EasyStick maintainers <noreply@example.invalid>
+Subject: [PATCH] host: use Stamp-P4 AddOn-C6 SDIO defaults
+
+The NOMMU lab rootfs removes BusyBox mdev's generic SDIO modalias autoload rule
+so S40network can load esp32_sdio with the selected clock arm and attest the
+module image.  The compile-time default is still set to a conservative 5 MHz
+bring-up value as a defense against any loader that bypasses that policy; the
+parameter remains writable for explicitly controlled experiments.
+
+`resetpin` is deliberately left at HOST_GPIO_PIN_INVALID.  Stamp-P4 does wire
+the AddOn-C6 enable/reset signal to GPIO42, but the boot shim's
+`pulse_c6_reset()` already drives it -- 10 ms asserted, 10 ms inactive, then a
+1.5 s ready delay -- before Linux starts, which is the only point at which no
+SDIO transaction can be in flight.  esp_reset() runs from esp_init(), i.e. the
+instant the module loads, and mdev loads this module *during* SDIO enumeration:
+the console shows the CIS tuples, then `loading out-of-tree module`, then
+`mmc0: error -5 whilst initialising SDIO card`.  A driver-side reset there can
+only interrupt an enumeration already in progress.
+
+This was measured, not assumed.  Setting resetpin=42 while the host had no
+gpio_chip covering pin 42 was harmless, because gpio_is_valid() failed and
+esp_reset() bailed out with "host resetpin (42) configured is invalid GPIO" --
+which is present in every capture that reaches `mmc0: new SDIO card at address
+0001`.  Adding CONFIG_GPIO_ESP32P4 and the gpio1 DT node made pin 42 valid and
+so made that bail-out stop happening; enumeration then failed at every retry
+frequency, with the card left holding DAT0 low so the CIU never even consumed
+the clock-update command (`cmd 0x212000 status 0x80212000`, START still set,
+blocked on PRV_DAT_WAIT).  The GPIO change succeeded; that success is what
+broke enumeration.
+
+Reset therefore has exactly one owner, and it is the shim.  Do not set this to
+a live pin without first moving the reset out of module init to a point after
+the card is enumerated.
+
+---
+ main.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+--- a/main.c
++++ b/main.c
+@@ -33,7 +33,7 @@
+
+ static char *ota_file = NULL;
+ static int resetpin = HOST_GPIO_PIN_INVALID;
+-static u32 clockspeed = 0;
++static u32 clockspeed = 5;
+ extern u8 ap_bssid[MAC_ADDR_LEN];
+ extern volatile u8 host_sleep;
+ u32 raw_tp_mode = 0;

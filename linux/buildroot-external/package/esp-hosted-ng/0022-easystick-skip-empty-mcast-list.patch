@@ -1,0 +1,43 @@
+From: EasyStick maintainers <noreply@example.invalid>
+Subject: [PATCH] cfg80211: skip an empty multicast filter update
+
+The first wlan0 RX-mode update can send a broadcast/multicast filter update
+while the ESP-Hosted exclusive command path is still being brought up. On the
+current C6 image the CMD_SET_MCAST_MAC_ADDR (0xE) response can time out,
+leaving a stale command in the path and preventing the later SET_IP command
+used by the static SSH bring-up from completing.
+
+Skip this optional multicast-filter command during the diagnostic SSH image.
+The SSH acceptance path is unicast; multicast reception is intentionally not
+claimed by this patch and remains a separate follow-up test.
+
+---
+ main.c | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/main.c b/main.c
+--- a/main.c
++++ b/main.c
+@@ -1004,14 +1004,22 @@ static void update_mac_filter(struct work_struct *work)
+ #if CONFIG_ALLOW_MULTICAST_WAKEUP
++	/*
++	 * Do not consume the exclusive command path with a multicast
++	 * filter update during the diagnostic SSH image's bring-up.
++	 * This image accepts unicast SSH only; multicast is not claimed.
++	 */
++	esp_info("Skipping multicast filter update\n");
++	return;
++
+ 	netdev_for_each_mc_addr(mac_addr, ndev) {
+ 		if (count < MAX_MULTICAST_ADDR_COUNT) {
+ 			esp_verbose("%d: "MACSTR"\n", count+1, MAC2STR(mac_addr->addr));
+ 			memcpy(&mcast_list.mcast_addr[count++], mac_addr->addr, ETH_ALEN);
+ 		}
+ 	}
+ 
+ 	mcast_list.priv = priv;
+ 	mcast_list.addr_count = count;
+ 
+ 	esp_verbose("Setting Multicast list\n");
+ 	cmd_set_mcast_mac_list(mcast_list.priv, &mcast_list);
+ #else

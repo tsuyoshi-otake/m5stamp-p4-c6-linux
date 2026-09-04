@@ -1,0 +1,58 @@
+diff --git a/arch/riscv/kernel/traps.c b/arch/riscv/kernel/traps.c
+--- a/arch/riscv/kernel/traps.c
++++ b/arch/riscv/kernel/traps.c
+@@ -20,6 +20,7 @@
+ #include <linux/mm.h>
+ #include <linux/module.h>
+ #include <linux/irq.h>
++#include <linux/smp.h>
+ #include <linux/kexec.h>
+ #include <linux/entry-common.h>
+ 
+@@ -172,6 +173,14 @@
+ 
+ asmlinkage __visible __trap_section void do_trap_insn_illegal(struct pt_regs *regs)
+ {
++	if (smp_processor_id() == 1)
++		pr_info("OBS cpu1-illegal mode=%u current=%d/%s "
++			"status=%08lx epc=%08lx ra=%08lx sp=%08lx tp=%08lx "
++			"cause=%08lx tval=%08lx scratch=%08lx\n",
++			user_mode(regs), current->pid, current->comm,
++			regs->status, regs->epc, regs->ra, regs->sp, regs->tp,
++			regs->cause, regs->badaddr, csr_read(CSR_SCRATCH));
++
+ 	bool handled;
+ 
+ 	if (user_mode(regs)) {
+diff --git a/kernel/sched/core.c b/kernel/sched/core.c
+--- a/kernel/sched/core.c
++++ b/kernel/sched/core.c
+@@ -5271,6 +5272,8 @@
+ /*
+  * context_switch - switch to the new MM and the new thread's register state.
+  */
++static unsigned int easystick_cpu1_context_count;
++
+ static __always_inline struct rq *
+ context_switch(struct rq *rq, struct task_struct *prev,
+ 	       struct task_struct *next, struct rq_flags *rf)
+@@ -5327,6 +5330,19 @@
+ 
+ 	prepare_lock_switch(rq, next, rf);
+ 
++	if (smp_processor_id() == 1) {
++		unsigned int count = ++easystick_cpu1_context_count;
++
++		if (count <= 16 || (count && !(count & (count - 1))))
++			pr_info("OBS cpu1-context #%u prev=%d/%s next=%d/%s "
++				"prev_mm=%u next_mm=%u prev_sp=%08lx next_sp=%08lx "
++				"next_ra=%08lx\n",
++				count, prev->pid, prev->comm, next->pid, next->comm,
++				!!prev->mm, !!next->mm,
++				prev->thread.sp, next->thread.sp,
++				next->thread.ra);
++	}
++
+ 	/* Here we just switch the register state and the stack. */
+ 	switch_to(prev, next, prev);
+ 	barrier();

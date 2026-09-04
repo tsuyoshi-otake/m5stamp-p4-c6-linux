@@ -1,0 +1,179 @@
+Subject: [PATCH] mmc: dw_mmc: EasyStick B error-only CMD53 provenance
+
+Observe-only capsule. Opt-in EASYSTICK_DW_MMC_CMD53_ERR_PROV=1.
+
+diff --git a/drivers/mmc/host/dw_mmc.c b/drivers/mmc/host/dw_mmc.c
+--- a/drivers/mmc/host/dw_mmc.c
++++ b/drivers/mmc/host/dw_mmc.c
+@@ -1804,6 +1804,82 @@
+ 		timeout_ns, tmout >> 8);
+ }
+ 
++
++/* EasyStick B: error-only CMD53 / DW-MMC provenance (observe-only). */
++#define ES_MMC_CMD53_PRINT_CAP 8
++
++static void es_mmc_cmd53_mark_start(struct dw_mci *host, struct mmc_command *cmd)
++{
++	if (!cmd || cmd->opcode != 53)
++		return;
++	host->es_cmd53_active = 1;
++	host->es_cmd53_seq++;
++	host->es_cmd53_t0_ns = ktime_get_ns();
++	host->es_cmd53_tmout = mci_readl(host, TMOUT);
++	host->es_cmd53_cmd_status = 0;
++	host->es_cmd53_data_status = 0;
++	host->es_cmd53_irq_pending = 0;
++	host->es_cmd53_idsts = 0;
++	host->es_cmd53_status = 0;
++	host->es_cmd53_rintsts = 0;
++	host->es_cmd53_mintsts = 0;
++}
++
++static void es_mmc_cmd53_snap_irq(struct dw_mci *host, u32 pending)
++{
++	if (!host->es_cmd53_active)
++		return;
++	host->es_cmd53_irq_pending |= pending;
++	host->es_cmd53_mintsts = pending;
++	host->es_cmd53_rintsts = mci_readl(host, RINTSTS);
++	host->es_cmd53_status = mci_readl(host, STATUS);
++	if (host->dma_64bit_address)
++		host->es_cmd53_idsts = mci_readl(host, IDSTS64);
++	else
++		host->es_cmd53_idsts = mci_readl(host, IDSTS);
++}
++
++static void es_mmc_cmd53_emit_if_err(struct dw_mci *host, struct mmc_request *mrq)
++{
++	struct mmc_command *cmd;
++	struct mmc_data *data;
++	int cmd_err = 0, data_err = 0;
++	u64 elapsed_us;
++	u32 bytes = 0, blocks = 0, blksz = 0, resp0 = 0;
++
++	if (!host->es_cmd53_active || !mrq || !mrq->cmd)
++		return;
++	cmd = mrq->cmd;
++	if (cmd->opcode != 53)
++		goto out;
++	data = mrq->data;
++	cmd_err = cmd->error;
++	if (data) {
++		data_err = data->error;
++		bytes = data->bytes_xfered;
++		blocks = data->blocks;
++		blksz = data->blksz;
++	}
++	if (!cmd_err && !data_err)
++		goto out;
++	if (host->es_cmd53_prints >= ES_MMC_CMD53_PRINT_CAP)
++		goto out;
++	host->es_cmd53_prints++;
++	elapsed_us = div_u64(ktime_get_ns() - host->es_cmd53_t0_ns, 1000ULL);
++	resp0 = cmd->resp[0];
++	printk(KERN_EMERG
++	       "ES_MMC CMD53_ERR seq=%u cmd_arg=0x%08x cmd_err=%d data_err=%d resp0=0x%08x bytes_xfered=%u blocks=%u blksz=%u cmd_status=0x%08x data_status=0x%08x state=%u dir_status=%u rintsts=0x%08x mintsts=0x%08x status=0x%08x idsts=0x%08x tmout=0x%08x irq_pending=0x%08x elapsed_us=%llu using_dma=%d\n",
++	       host->es_cmd53_seq, cmd->arg, cmd_err, data_err, resp0, bytes,
++	       blocks, blksz, host->es_cmd53_cmd_status,
++	       host->es_cmd53_data_status, (unsigned int)host->state,
++	       host->dir_status, host->es_cmd53_rintsts, host->es_cmd53_mintsts,
++	       host->es_cmd53_status, host->es_cmd53_idsts, host->es_cmd53_tmout,
++	       host->es_cmd53_irq_pending, (unsigned long long)elapsed_us,
++	       host->using_dma);
++out:
++	host->es_cmd53_active = 0;
++}
++
+ static void __dw_mci_start_request(struct dw_mci *host,
+ 				   struct dw_mci_slot *slot,
+ 				   struct mmc_command *cmd)
+@@ -1821,6 +1897,7 @@
+ 	host->cmd_status = 0;
+ 	host->data_status = 0;
+ 	host->dir_status = 0;
++	es_mmc_cmd53_mark_start(host, cmd);
+ 
+ 	data = cmd->data;
+ 	if (data) {
+@@ -2412,6 +2489,7 @@
+ 	}
+ 
+ 	spin_unlock(&host->lock);
++	es_mmc_cmd53_emit_if_err(host, mrq);
+ 	mmc_request_done(prev_mmc, mrq);
+ 	spin_lock(&host->lock);
+ }
+@@ -2420,6 +2498,8 @@
+ {
+ 	u32 status = host->cmd_status;
+ 
++	if (cmd->opcode == 53)
++		host->es_cmd53_cmd_status = status;
+ 	host->cmd_status = 0;
+ 
+ 	/* Read the response from the card (up to 16 bytes) */
+@@ -2453,6 +2533,8 @@
+ {
+ 	u32 status = host->data_status;
+ 
++	if (data->mrq && data->mrq->cmd && data->mrq->cmd->opcode == 53)
++		host->es_cmd53_data_status = status;
+ 	if (status & DW_MCI_DATA_ERROR_FLAGS) {
+ 		if (status & SDMMC_INT_DRTO) {
+ 			data->error = -ETIMEDOUT;
+@@ -2477,14 +2559,7 @@
+ 			data->error = -EILSEQ;
+ 		}
+ 
+-		/* CMD53-only controller telemetry for the Stamp-P4 SDIO bring-up. */
+-		if (data->mrq && data->mrq->cmd && data->mrq->cmd->opcode == 53)
+-			dev_info(host->dev,
+-				 "CMD53 error: arg=%08x status=%08x rint=%08x mint=%08x stat=%08x ctype=%08x clkdiv=%08x clksrc=%08x\n",
+-				 data->mrq->cmd->arg, status, mci_readl(host, RINTSTS),
+-				 mci_readl(host, MINTSTS), mci_readl(host, STATUS),
+-				 mci_readl(host, CTYPE), mci_readl(host, CLKDIV),
+-				 mci_readl(host, CLKSRC));
++		/* EasyStick B: 0010 CMD53 telemetry replaced by ES_MMC error-only capsule. */
+ 		dev_dbg(host->dev, "data error, status 0x%08x\n", status);
+ 
+ 		/*
+@@ -3349,6 +3424,7 @@
+ 			timer_delete(&host->cto_timer);
+ 			mci_writel(host, RINTSTS, DW_MCI_CMD_ERROR_FLAGS);
+ 			host->cmd_status = pending;
++			es_mmc_cmd53_snap_irq(host, pending);
+ 			smp_wmb(); /* drain writebuffer */
+ 			set_bit(EVENT_CMD_COMPLETE, &host->pending_events);
+ 
+@@ -3366,6 +3442,7 @@
+ 			/* if there is an error report DATA_ERROR */
+ 			mci_writel(host, RINTSTS, DW_MCI_DATA_ERROR_FLAGS);
+ 			host->data_status = pending;
++			es_mmc_cmd53_snap_irq(host, pending);
+ 			smp_wmb(); /* drain writebuffer */
+ 			set_bit(EVENT_DATA_ERROR, &host->pending_events);
+ 
+diff --git a/drivers/mmc/host/dw_mmc.h b/drivers/mmc/host/dw_mmc.h
+--- a/drivers/mmc/host/dw_mmc.h
++++ b/drivers/mmc/host/dw_mmc.h
+@@ -264,6 +264,19 @@
+ 
+ 	u32			cmd_status;
+ 	u32			data_status;
++	/* EasyStick B: error-only CMD53 provenance (observe-only). */
++	u32			es_cmd53_seq;
++	u32			es_cmd53_prints;
++	u32			es_cmd53_active;
++	u64			es_cmd53_t0_ns;
++	u32			es_cmd53_tmout;
++	u32			es_cmd53_cmd_status;
++	u32			es_cmd53_data_status;
++	u32			es_cmd53_irq_pending;
++	u32			es_cmd53_idsts;
++	u32			es_cmd53_status;
++	u32			es_cmd53_rintsts;
++	u32			es_cmd53_mintsts;
+ 	u32			stop_cmdr;
+ 	u32			dir_status;
+ 	struct work_struct	bh_work;

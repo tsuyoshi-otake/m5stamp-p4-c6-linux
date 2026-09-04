@@ -1,0 +1,14 @@
+--- a/arch/riscv/kernel/head.S
++++ b/arch/riscv/kernel/head.S
+@@ -342,6 +342,11 @@
+ 	la a3, .Lsecondary_park
+ 	csrw CSR_TVEC, a3
+ 	call setup_vm
++	li t0, 0x500d2000
++	li t1, 67
++	sb t1, 0(t0)
++	li t1, 1
++	sw t1, 4(t0)
+ #ifdef CONFIG_MMU
+ 	la a0, early_pg_dir
+ 	XIP_FIXUP_OFFSET a0

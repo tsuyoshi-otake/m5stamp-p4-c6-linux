@@ -1,0 +1,63 @@
+#!/bin/sh
+
+# Interactive first-boot provisioning for the p4 account.  This follows the
+# current Raspberry Pi OS model: choose/provision credentials during setup,
+# rather than shipping a universal pi/raspberry password.  The script must be
+# run from the USB-C recovery/serial path or the future USB-A CDC console.
+
+# BusyBox ash in the RV32 NOMMU image does not implement `set -u`.
+set -e
+
+CONFIG_ROOT=/config/easystick
+KEY_FILE=${CONFIG_ROOT}/p4/.ssh/authorized_keys
+WIFI_FILE=${CONFIG_ROOT}/network.conf
+
+if [ ! -w /config ]; then
+	echo "firstboot: /config is not writable; mount the validated config partition first" >&2
+	exit 1
+fi
+if [ ! -w /etc/shadow ]; then
+	echo "firstboot: /etc/shadow is read-only; mount the validated writable overlay first" >&2
+	exit 1
+fi
+
+umask 077
+mkdir -p "${CONFIG_ROOT}/p4/.ssh" "${CONFIG_ROOT}/dropbear"
+chown -R p4:p4 "${CONFIG_ROOT}/p4" 2>/dev/null || true
+
+printf 'EasyStick first boot. Default user is p4.\n'
+printf 'Set the local console password for p4 (SSH never accepts passwords).\n'
+passwd p4
+
+printf 'Wi-Fi SSID (leave empty to configure later): '
+IFS= read -r WIFI_SSID
+if [ -n "${WIFI_SSID}" ]; then
+	printf 'Wi-Fi passphrase: '
+	if command -v stty >/dev/null 2>&1; then stty -echo; fi
+	IFS= read -r WIFI_PSK
+	if command -v stty >/dev/null 2>&1; then stty echo; fi
+	printf '\n'
+	{
+		printf 'WIFI_SSID=%s\n' "${WIFI_SSID}"
+		printf 'WIFI_PSK=%s\n' "${WIFI_PSK}"
+	} > "${WIFI_FILE}"
+	chmod 0600 "${WIFI_FILE}"
+fi
+
+printf 'SSH public key (one line, required for SSH): '
+IFS= read -r SSH_PUBLIC_KEY
+case "${SSH_PUBLIC_KEY}" in
+	ssh-ed25519\ *|ssh-rsa\ *|ecdsa-sha2-*\ *)
+		printf '%s\n' "${SSH_PUBLIC_KEY}" > "${KEY_FILE}"
+		chmod 0600 "${KEY_FILE}"
+		chown p4:p4 "${KEY_FILE}" 2>/dev/null || true
+		;;
+	*)
+		echo "firstboot: key must be an OpenSSH public-key line" >&2
+		rm -f "${KEY_FILE}"
+		exit 1
+		;;
+esac
+
+printf '%s\n' 'First-boot data saved outside the read-only rootfs.'
+printf '%s\n' 'Reboot after the C6 SDIO wlan0 path is configured to enable SSH.'

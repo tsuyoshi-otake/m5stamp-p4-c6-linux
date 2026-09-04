@@ -1,0 +1,413 @@
+Subject: [PATCH] easystick: persist MWDT pretimeout and panic mini-dumps
+
+MWDT stage 0 raises the pretimeout interrupt and stage 1 performs the final
+system reset, leaving a bounded window for a torn-safe register and short-stack
+capsule beside the CMD53 retention record. Oops and panic notifiers use the same
+bounded record when the kernel fails before the watchdog pretimeout. The boot
+shim persists that capsule to the dedicated crashlog partition before starting
+Linux again.
+
+Placeholder EASYSTICK_CMD53_BB_PA 0xBBDEAD01u is substituted by the
+CMD53 build wrapper.
+
+diff --git a/drivers/watchdog/esp32p4_wdt.c b/drivers/watchdog/esp32p4_wdt.c
+--- a/drivers/watchdog/esp32p4_wdt.c
++++ b/drivers/watchdog/esp32p4_wdt.c
+@@ -22,19 +22,28 @@
+  */
+ 
+ #include <linux/bitfield.h>
++#include <linux/atomic.h>
+ #include <linux/bits.h>
+ #include <linux/delay.h>
+ #include <linux/io.h>
++#include <linux/interrupt.h>
+ #include <linux/jiffies.h>
+ #include <linux/kernel.h>
++#include <linux/kdebug.h>
+ #include <linux/module.h>
+ #include <linux/of.h>
++#include <linux/panic_notifier.h>
++#include <asm/irq_regs.h>
++#include <linux/smp.h>
+ #include <linux/platform_device.h>
+ #include <linux/watchdog.h>
++#include <linux/uaccess.h>
++#include <asm/ptrace.h>
+ 
+ #define TIMG_WDTCONFIG0			0x48
+ #define  TIMG_WDT_EN			BIT(31)
+ #define  TIMG_WDT_STG0			GENMASK(30, 29)
++#define  TIMG_WDT_STG1			GENMASK(28, 27)
+ #define  TIMG_WDT_CONF_UPDATE_EN	BIT(22)
+ #define  TIMG_WDT_CPU_RESET_LENGTH	GENMASK(20, 18)
+ #define  TIMG_WDT_SYS_RESET_LENGTH	GENMASK(17, 15)
+@@ -42,10 +51,16 @@
+ #define TIMG_WDTCONFIG1			0x4c
+ #define  TIMG_WDT_CLK_PRESCALE		GENMASK(31, 16)
+ #define TIMG_WDTCONFIG2			0x50
++#define TIMG_WDTCONFIG3			0x54
+ #define TIMG_WDTFEED			0x60
+ #define TIMG_WDTWPROTECT		0x64
++#define TIMG_INT_ENA_TIMERS		0x70
++#define TIMG_INT_RAW_TIMERS		0x74
++#define TIMG_INT_CLR_TIMERS		0x7c
++#define  TIMG_WDT_INT			BIT(2)
+ 
+ #define TIMG_WDT_STG_SEL_RESET_SYSTEM	3
++#define TIMG_WDT_STG_SEL_INT		1
+ #define TIMG_WDT_RESET_LENGTH_3200_NS	7
+ #define TIMG_WDT_WKEY_UNLOCK		0x50d83aa1
+ 
+@@ -56,9 +71,56 @@
+ #define ESP32P4_WDT_DEFAULT_TIMEOUT_S	30
+ #define ESP32P4_WDT_MAX_TIMEOUT_S	3600
+ 
++#define EASYSTICK_CMD53_BB_PA		0xBBDEAD01u
++#define EASYSTICK_CRASH_CAPSULE_MAGIC	0x45534350u
++#define EASYSTICK_CRASH_CAPSULE_VERSION	1u
++#define EASYSTICK_CRASH_CAPSULE_COMMIT_XOR	0xC3A5C0DEu
++#define EASYSTICK_CRASH_CAPSULE_REASON_WDT	1u
++#define EASYSTICK_CRASH_CAPSULE_REASON_OOPS	2u
++#define EASYSTICK_CRASH_CAPSULE_REASON_PANIC	3u
++#define EASYSTICK_CRASH_CAPSULE_STACK_BYTES	32u
++#define EASYSTICK_CMD53_BB_CRASH_OFFSET	0x80u
++
++struct easystick_crash_capsule {
++	u32 magic;
++	u32 version;
++	u32 sequence;
++	u32 commit;
++	u32 reason;
++	u32 cpu;
++	u32 epc;
++	u32 ra;
++	u32 sp;
++	u32 gp;
++	u32 tp;
++	u32 status;
++	u32 cause;
++	u32 badaddr;
++	u32 wdt_config0;
++	u32 wdt_config1;
++	u32 wdt_config2;
++	u32 wdt_int_raw;
++	u32 stack_len;
++	u8 stack[EASYSTICK_CRASH_CAPSULE_STACK_BYTES];
++};
++
++struct easystick_crash_window {
++	u8 cmd53_prefix[EASYSTICK_CMD53_BB_CRASH_OFFSET];
++	struct easystick_crash_capsule crash;
++};
++
++static unsigned int easystick_wdt_test_timeout_s;
++module_param_named(test_timeout_s, easystick_wdt_test_timeout_s, uint, 0644);
++MODULE_PARM_DESC(test_timeout_s,
++		 "override the watchdog timeout for a bounded positive control");
++static bool easystick_wdt_test_no_feed;
++module_param_named(test_no_feed, easystick_wdt_test_no_feed, bool, 0644);
++MODULE_PARM_DESC(test_no_feed,
++		 "disable watchdog feeds for a bounded positive control");
+ struct esp32p4_wdt {
+ 	struct watchdog_device wdd;
+ 	void __iomem *base;
++	int irq;
+ };
+ 
+ /* EasyStick 0024 observe-only: feed telemetry (do not change timeout/policy). */
+@@ -75,21 +137,33 @@
+ 	writel(0, wdt->base + TIMG_WDTWPROTECT);
+ }
+ 
+-/* Arm stage 0 for a system reset after @timeout_ticks (1 ms units). */
++/* Arm stage 0 for pretimeout interrupt, then stage 1 resets the system. */
+ static void esp32p4_wdt_arm(struct esp32p4_wdt *wdt, u32 timeout_ticks)
+ {
++	u32 grace_ticks;
++	u32 pretimeout_ticks;
++	u32 int_ena;
+ 	u32 conf = TIMG_WDT_EN |
+-		   FIELD_PREP(TIMG_WDT_STG0, TIMG_WDT_STG_SEL_RESET_SYSTEM) |
++		   FIELD_PREP(TIMG_WDT_STG0, TIMG_WDT_STG_SEL_INT) |
++		   FIELD_PREP(TIMG_WDT_STG1, TIMG_WDT_STG_SEL_RESET_SYSTEM) |
+ 		   FIELD_PREP(TIMG_WDT_SYS_RESET_LENGTH,
+ 			      TIMG_WDT_RESET_LENGTH_3200_NS) |
+ 		   FIELD_PREP(TIMG_WDT_CPU_RESET_LENGTH,
+ 			      TIMG_WDT_RESET_LENGTH_3200_NS);
+ 
++	if (timeout_ticks < 2u)
++		timeout_ticks = 2u;
++	grace_ticks = min_t(u32, 30000u, timeout_ticks / 2u);
++	if (!grace_ticks)
++		grace_ticks = 1u;
++	pretimeout_ticks = timeout_ticks - grace_ticks;
+ 	esp32p4_wdt_unlock(wdt);
+ 	writel(FIELD_PREP(TIMG_WDT_CLK_PRESCALE, ESP32P4_WDT_PRESCALE),
+ 	       wdt->base + TIMG_WDTCONFIG1);
+-	writel(timeout_ticks, wdt->base + TIMG_WDTCONFIG2);
+-	/* Stages 1-3 stay OFF: stage 0 alone resets the system. */
++	writel(pretimeout_ticks, wdt->base + TIMG_WDTCONFIG2);
++	writel(timeout_ticks, wdt->base + TIMG_WDTCONFIG3);
++	int_ena = readl(wdt->base + TIMG_INT_ENA_TIMERS);
++	writel(int_ena | TIMG_WDT_INT, wdt->base + TIMG_INT_ENA_TIMERS);
+ 	writel(conf, wdt->base + TIMG_WDTCONFIG0);
+ 	writel(conf | TIMG_WDT_CONF_UPDATE_EN, wdt->base + TIMG_WDTCONFIG0);
+ 	writel(1, wdt->base + TIMG_WDTFEED);
+@@ -109,9 +183,12 @@
+ {
+ 	struct esp32p4_wdt *wdt = watchdog_get_drvdata(wdd);
+ 
++	u32 int_ena;
+ 	esp32p4_wdt_unlock(wdt);
+ 	writel(0, wdt->base + TIMG_WDTCONFIG0);
+ 	writel(TIMG_WDT_CONF_UPDATE_EN, wdt->base + TIMG_WDTCONFIG0);
++	int_ena = readl(wdt->base + TIMG_INT_ENA_TIMERS);
++	writel(int_ena & ~TIMG_WDT_INT, wdt->base + TIMG_INT_ENA_TIMERS);
+ 	esp32p4_wdt_relock(wdt);
+ 
+ 	return 0;
+@@ -121,6 +198,9 @@
+ {
+ 	struct esp32p4_wdt *wdt = watchdog_get_drvdata(wdd);
+ 
++	if (easystick_wdt_test_no_feed)
++		return 0;
++
+ 	esp32p4_wdt_unlock(wdt);
+ 	writel(1, wdt->base + TIMG_WDTFEED);
+ 	esp32p4_wdt_relock(wdt);
+@@ -142,6 +222,165 @@
+ 	return esp32p4_wdt_start(wdd);
+ }
+ 
++static volatile struct easystick_crash_capsule *
++easystick_crash_capsule_ptr(void)
++{
++	volatile struct easystick_crash_window *window =
++		(volatile struct easystick_crash_window *)(uintptr_t)
++		(EASYSTICK_CMD53_BB_PA);
++
++	return &window->crash;
++}
++
++static struct esp32p4_wdt *easystick_crash_wdt;
++static atomic_t easystick_crash_claimed = ATOMIC_INIT(0);
++
++static bool easystick_crash_reason_valid(u32 reason)
++{
++	return reason == EASYSTICK_CRASH_CAPSULE_REASON_WDT ||
++	       reason == EASYSTICK_CRASH_CAPSULE_REASON_OOPS ||
++	       reason == EASYSTICK_CRASH_CAPSULE_REASON_PANIC;
++}
++
++static bool easystick_crash_capsule_valid(
++	volatile const struct easystick_crash_capsule *capsule)
++{
++	u32 sequence = READ_ONCE(capsule->sequence);
++
++	return READ_ONCE(capsule->magic) == EASYSTICK_CRASH_CAPSULE_MAGIC &&
++	       READ_ONCE(capsule->version) == EASYSTICK_CRASH_CAPSULE_VERSION &&
++	       sequence != 0u &&
++	       READ_ONCE(capsule->commit) ==
++		       (sequence ^ EASYSTICK_CRASH_CAPSULE_COMMIT_XOR) &&
++	       easystick_crash_reason_valid(READ_ONCE(capsule->reason)) &&
++	       READ_ONCE(capsule->stack_len) <=
++		       EASYSTICK_CRASH_CAPSULE_STACK_BYTES;
++}
++
++static void easystick_capture_crash(struct esp32p4_wdt *wdt,
++				    struct pt_regs *regs, u32 reason)
++{
++	volatile struct easystick_crash_capsule *capsule;
++	u32 sequence;
++	long stack_result;
++
++	capsule = easystick_crash_capsule_ptr();
++	if (easystick_crash_capsule_valid(capsule) ||
++	    atomic_cmpxchg(&easystick_crash_claimed, 0, 1))
++		return;
++	sequence = READ_ONCE(capsule->sequence) + 1u;
++	if (!sequence)
++		sequence = 1u;
++
++	WRITE_ONCE(capsule->commit, 0);
++	wmb();
++	WRITE_ONCE(capsule->magic, EASYSTICK_CRASH_CAPSULE_MAGIC);
++	WRITE_ONCE(capsule->version, EASYSTICK_CRASH_CAPSULE_VERSION);
++	WRITE_ONCE(capsule->sequence, sequence);
++	WRITE_ONCE(capsule->reason, reason);
++	WRITE_ONCE(capsule->cpu, raw_smp_processor_id());
++	if (wdt) {
++		WRITE_ONCE(capsule->wdt_config0,
++			   readl(wdt->base + TIMG_WDTCONFIG0));
++		WRITE_ONCE(capsule->wdt_config1,
++			   readl(wdt->base + TIMG_WDTCONFIG1));
++		WRITE_ONCE(capsule->wdt_config2,
++			   readl(wdt->base + TIMG_WDTCONFIG2));
++		WRITE_ONCE(capsule->wdt_int_raw,
++			   readl(wdt->base + TIMG_INT_RAW_TIMERS));
++	} else {
++		WRITE_ONCE(capsule->wdt_config0, 0);
++		WRITE_ONCE(capsule->wdt_config1, 0);
++		WRITE_ONCE(capsule->wdt_config2, 0);
++		WRITE_ONCE(capsule->wdt_int_raw, 0);
++	}
++	WRITE_ONCE(capsule->stack_len, 0);
++	if (regs) {
++		WRITE_ONCE(capsule->epc, regs->epc);
++		WRITE_ONCE(capsule->ra, regs->ra);
++		WRITE_ONCE(capsule->sp, regs->sp);
++		WRITE_ONCE(capsule->gp, regs->gp);
++		WRITE_ONCE(capsule->tp, regs->tp);
++		WRITE_ONCE(capsule->status, regs->status);
++		WRITE_ONCE(capsule->cause, regs->cause);
++		WRITE_ONCE(capsule->badaddr, regs->badaddr);
++		stack_result = copy_from_kernel_nofault(
++			(void *)capsule->stack,
++			(const void *)(uintptr_t)regs->sp,
++			EASYSTICK_CRASH_CAPSULE_STACK_BYTES);
++		if (!stack_result)
++			WRITE_ONCE(capsule->stack_len,
++				   EASYSTICK_CRASH_CAPSULE_STACK_BYTES);
++	} else {
++		WRITE_ONCE(capsule->epc, 0);
++		WRITE_ONCE(capsule->ra, 0);
++		WRITE_ONCE(capsule->sp, 0);
++		WRITE_ONCE(capsule->gp, 0);
++		WRITE_ONCE(capsule->tp, 0);
++		WRITE_ONCE(capsule->status, 0);
++		WRITE_ONCE(capsule->cause, 0);
++		WRITE_ONCE(capsule->badaddr, 0);
++	}
++	wmb();
++	WRITE_ONCE(capsule->commit,
++		   sequence ^ EASYSTICK_CRASH_CAPSULE_COMMIT_XOR);
++	pr_emerg("EASYSTICK_WDT CAPSULE_COMMIT seq=%u reason=%u\n",
++		sequence, reason);
++}
++
++static int easystick_crash_die(struct notifier_block *nb,
++			       unsigned long val, void *data)
++{
++	struct die_args *args = data;
++
++	if (val == DIE_OOPS && args)
++		easystick_capture_crash(easystick_crash_wdt, args->regs,
++					EASYSTICK_CRASH_CAPSULE_REASON_OOPS);
++	return NOTIFY_DONE;
++}
++
++static struct notifier_block easystick_crash_die_nb = {
++	.notifier_call = easystick_crash_die,
++};
++
++static int easystick_crash_panic(struct notifier_block *nb,
++				 unsigned long action, void *data)
++{
++	easystick_capture_crash(easystick_crash_wdt, get_irq_regs(),
++				EASYSTICK_CRASH_CAPSULE_REASON_PANIC);
++	return NOTIFY_DONE;
++}
++
++static struct notifier_block easystick_crash_panic_nb = {
++	.notifier_call = easystick_crash_panic,
++};
++
++static void easystick_crash_notifiers_unregister(void *data)
++{
++	struct esp32p4_wdt *wdt = data;
++
++	atomic_notifier_chain_unregister(&panic_notifier_list,
++					 &easystick_crash_panic_nb);
++	unregister_die_notifier(&easystick_crash_die_nb);
++	if (easystick_crash_wdt == wdt)
++		easystick_crash_wdt = NULL;
++}
++
++static irqreturn_t esp32p4_wdt_pretimeout(int irq, void *data)
++{
++	struct esp32p4_wdt *wdt = data;
++
++	easystick_capture_crash(wdt, get_irq_regs(),
++				EASYSTICK_CRASH_CAPSULE_REASON_WDT);
++
++	pr_emerg("EASYSTICK_WDT PRETIMEOUT\n");
++	esp32p4_wdt_unlock(wdt);
++	writel(TIMG_WDT_INT, wdt->base + TIMG_INT_CLR_TIMERS);
++	esp32p4_wdt_relock(wdt);
++
++	return IRQ_HANDLED;
++}
++
+ static int esp32p4_wdt_restart(struct watchdog_device *wdd,
+ 			       unsigned long action, void *data)
+ {
+@@ -171,6 +410,7 @@
+ {
+ 	struct device *dev = &pdev->dev;
+ 	struct esp32p4_wdt *wdt;
++	int ret;
+ 	u32 val;
+ 
+ 	wdt = devm_kzalloc(dev, sizeof(*wdt), GFP_KERNEL);
+@@ -181,6 +421,14 @@
+ 	if (IS_ERR(wdt->base))
+ 		return PTR_ERR(wdt->base);
+ 
++	wdt->irq = platform_get_irq(pdev, 0);
++	if (wdt->irq < 0)
++		return wdt->irq;
++	ret = devm_request_irq(dev, wdt->irq, esp32p4_wdt_pretimeout,
++			       IRQF_NO_THREAD, "esp32p4-wdt", wdt);
++	if (ret)
++		return dev_err_probe(dev, ret, "failed to request WDT IRQ\n");
++
+ 	wdt->wdd.info = &esp32p4_wdt_info;
+ 	wdt->wdd.ops = &esp32p4_wdt_ops;
+ 	wdt->wdd.min_timeout = 1;
+@@ -189,6 +437,13 @@
+ 	wdt->wdd.parent = dev;
+ 	watchdog_set_drvdata(&wdt->wdd, wdt);
+ 	watchdog_init_timeout(&wdt->wdd, 0, dev);
++	if (easystick_wdt_test_timeout_s) {
++		if (easystick_wdt_test_timeout_s > ESP32P4_WDT_MAX_TIMEOUT_S)
++			return -EINVAL;
++		wdt->wdd.timeout = easystick_wdt_test_timeout_s;
++		dev_warn(dev, "test timeout override: %u s\n",
++			 wdt->wdd.timeout);
++	}
+ 	watchdog_set_restart_priority(&wdt->wdd, 128);
+ 
+ 	/*
+@@ -213,7 +468,29 @@
+ 	esp32p4_wdt_arm(wdt, wdt->wdd.timeout * ESP32P4_WDT_TICK_HZ);
+ 	set_bit(WDOG_HW_RUNNING, &wdt->wdd.status);
+ 
+-	return devm_watchdog_register_device(dev, &wdt->wdd);
++	ret = devm_watchdog_register_device(dev, &wdt->wdd);
++	if (ret)
++		return ret;
++	easystick_crash_wdt = wdt;
++	ret = register_die_notifier(&easystick_crash_die_nb);
++	if (ret) {
++		easystick_crash_wdt = NULL;
++		return dev_err_probe(dev, ret, "failed to register die notifier\n");
++	}
++	ret = atomic_notifier_chain_register(&panic_notifier_list,
++					    &easystick_crash_panic_nb);
++	if (ret) {
++		unregister_die_notifier(&easystick_crash_die_nb);
++		easystick_crash_wdt = NULL;
++		return dev_err_probe(dev, ret,
++				    "failed to register panic notifier\n");
++	}
++	ret = devm_add_action_or_reset(dev,
++				       easystick_crash_notifiers_unregister,
++				       wdt);
++	if (ret)
++		return ret;
++	return 0;
+ }
+ 
+ static const struct of_device_id esp32p4_wdt_of_match[] = {

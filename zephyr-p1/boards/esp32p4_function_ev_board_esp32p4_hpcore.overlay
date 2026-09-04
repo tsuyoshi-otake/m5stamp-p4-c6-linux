@@ -1,0 +1,55 @@
+/*
+ * EasyStick Stamp-P4 P1 overlay.
+ *
+ * The Function-EV HP-core board support remains the base.  Only the
+ * EasyStick carrier wiring is changed here; this is not a copied board DTS.
+ */
+
+#include <zephyr/dt-bindings/gpio/gpio.h>
+
+/* The Function-EV SD-card connector is not populated on EasyStick. */
+&sdhc0 {
+	status = "disabled";
+};
+
+/*
+ * Stamp-AddOn C6 SDIO wiring on the EasyStick carrier.
+ *
+ * GPIO42 is physical P4 GPIO42, represented by GPIO controller gpio1 offset
+ * 10.  It is the C6 regulator enable/power-gate and reset-control path:
+ * logical high enables the C6 rail, while logical low removes it.
+ */
+&sdhc1 {
+	status = "okay";
+	bus-width = <4>;
+	max-bus-freq = <40000000>;
+	clk-pin = <43>;
+	cmd-pin = <44>;
+	d0-pin = <45>;
+	d1-pin = <46>;
+	d2-pin = <47>;
+	d3-pin = <48>;
+};
+
+&esp_hosted_mcu {
+	reset-gpios = <&gpio1 10 GPIO_ACTIVE_HIGH>;
+	status = "okay";
+};
+
+/* Bluetooth is outside P1 and is deliberately not brought up. */
+&esp_hosted_mcu_hci {
+	status = "disabled";
+};
+
+/* Ethernet is unrelated to this independent Wi-Fi host validation. */
+&mdio {
+	status = "disabled";
+};
+
+&phy {
+	status = "disabled";
+};
+
+&eth {
+	status = "disabled";
+};

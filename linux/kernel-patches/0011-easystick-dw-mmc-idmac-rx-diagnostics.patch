@@ -1,0 +1,586 @@
+diff --git a/drivers/mmc/host/dw_mmc.c b/drivers/mmc/host/dw_mmc.c
+index 571bd9a..5e1d195 100644
+--- a/drivers/mmc/host/dw_mmc.c
++++ b/drivers/mmc/host/dw_mmc.c
+@@ -104,6 +104,207 @@ struct idmac_desc {
+ /* Each descriptor can transfer up to 4KB of data in chained mode */
+ #define DW_MCI_DESC_DATA_LENGTH	0x1000
+ 
++static struct dw_mci_cmd53_trace_record *
++dw_mci_cmd53_trace_active(struct dw_mci *host)
++{
++	u32 seq = READ_ONCE(host->cmd53_trace_active);
++	struct dw_mci_cmd53_trace_record *record;
++
++	if (!seq)
++		return NULL;
++	record = &host->cmd53_trace[(seq - 1) % DW_MCI_CMD53_TRACE_DEPTH];
++	if (READ_ONCE(record->seq) != seq)
++		return NULL;
++	return record;
++}
++
++static u32 dw_mci_cmd53_trace_idsts(struct dw_mci *host)
++{
++	if (host->use_dma != TRANS_MODE_IDMAC)
++		return 0;
++	return host->dma_64bit_address ? mci_readl(host, IDSTS64) :
++		mci_readl(host, IDSTS);
++}
++
++static u64 dw_mci_cmd53_trace_dsc(struct dw_mci *host)
++{
++	if (host->use_dma != TRANS_MODE_IDMAC)
++		return 0;
++	if (host->dma_64bit_address)
++		return (u64)mci_readl(host, DSCADDRL) |
++			((u64)mci_readl(host, DSCADDRU) << 32);
++	return mci_readl(host, DSCADDR);
++}
++
++static u64 dw_mci_cmd53_trace_buf(struct dw_mci *host)
++{
++	if (host->use_dma != TRANS_MODE_IDMAC)
++		return 0;
++	if (host->dma_64bit_address)
++		return (u64)mci_readl(host, BUFADDRL) |
++			((u64)mci_readl(host, BUFADDRU) << 32);
++	return mci_readl(host, BUFADDR);
++}
++
++static u32 dw_mci_cmd53_trace_own(struct dw_mci *host)
++{
++	if (!host->sg_cpu || host->use_dma != TRANS_MODE_IDMAC)
++		return 0;
++	if (host->dma_64bit_address)
++		return le32_to_cpu(READ_ONCE(((struct idmac_desc_64addr *)
++					       host->sg_cpu)->des0));
++	return le32_to_cpu(READ_ONCE(((struct idmac_desc *)host->sg_cpu)->des0));
++}
++
++static void dw_mci_cmd53_trace_begin(struct dw_mci *host,
++				     struct mmc_command *cmd,
++				     struct mmc_data *data)
++{
++	struct dw_mci_cmd53_trace_record *record;
++	u32 seq;
++
++	host->cmd53_trace_active = 0;
++	if (cmd->opcode != SD_IO_RW_EXTENDED ||
++	    !(data->flags & MMC_DATA_READ))
++		return;
++
++	seq = ++host->cmd53_trace_head;
++	record = &host->cmd53_trace[(seq - 1) % DW_MCI_CMD53_TRACE_DEPTH];
++	memset(record, 0, sizeof(*record));
++	record->seq = seq;
++	record->arg = cmd->arg;
++	record->fn = (cmd->arg >> 28) & 0x7;
++	record->incr = !!(cmd->arg & BIT(26));
++	record->addr = (cmd->arg >> 9) & 0x1ffff;
++	record->requested = data->blocks * data->blksz;
++	record->cpu_va = (unsigned long)sg_virt(data->sg);
++	record->map_ret = -EINPROGRESS;
++	record->start_ret = -EINPROGRESS;
++	record->desc_first = U16_MAX;
++	record->desc_last = U16_MAX;
++	record->desc_64 = host->dma_64bit_address;
++	record->started_ns = ktime_get_ns();
++	WRITE_ONCE(host->cmd53_trace_active, seq);
++}
++
++static void dw_mci_cmd53_trace_submit_snapshot(struct dw_mci *host, int ret)
++{
++	struct dw_mci_cmd53_trace_record *record =
++		dw_mci_cmd53_trace_active(host);
++
++	if (!record)
++		return;
++	record->start_ret = ret;
++	record->engine = ret ? DW_MCI_CMD53_TRACE_PIO_FALLBACK :
++		DW_MCI_CMD53_TRACE_IDMAC;
++	record->submit_rint = mci_readl(host, RINTSTS);
++	record->submit_mint = mci_readl(host, MINTSTS);
++	record->submit_idsts = dw_mci_cmd53_trace_idsts(host);
++	record->submit_bmod = mci_readl(host, BMOD);
++	record->submit_dsc = dw_mci_cmd53_trace_dsc(host);
++	record->submit_buf = dw_mci_cmd53_trace_buf(host);
++}
++
++static void dw_mci_cmd53_trace_pio_bytes(struct dw_mci *host, u32 bytes)
++{
++	struct dw_mci_cmd53_trace_record *record =
++		dw_mci_cmd53_trace_active(host);
++
++	if (record)
++		record->pio_bytes += bytes;
++}
++
++static void dw_mci_cmd53_trace_finish(struct dw_mci *host,
++				      struct mmc_data *data)
++{
++	struct dw_mci_cmd53_trace_record *record =
++		dw_mci_cmd53_trace_active(host);
++
++	if (!record)
++		return;
++	record->completed_ns = ktime_get_ns();
++	record->complete_rint = mci_readl(host, RINTSTS);
++	record->complete_mint = mci_readl(host, MINTSTS);
++	record->complete_idsts = dw_mci_cmd53_trace_idsts(host);
++	record->complete_bmod = mci_readl(host, BMOD);
++	record->complete_dsc = dw_mci_cmd53_trace_dsc(host);
++	record->complete_buf = dw_mci_cmd53_trace_buf(host);
++	record->own_finish = dw_mci_cmd53_trace_own(host);
++	record->data_status = host->data_status;
++	record->bytes_xfered = data->bytes_xfered;
++	record->data_error = data->error;
++	/* Publish a complete record before its sequence marker. */
++	smp_wmb();
++	WRITE_ONCE(record->valid_seq, record->seq);
++	WRITE_ONCE(host->cmd53_trace_active, 0);
++}
++
++static const char *dw_mci_cmd53_trace_engine_name(u8 engine)
++{
++	switch (engine) {
++	case DW_MCI_CMD53_TRACE_IDMAC:
++		return "idmac";
++	case DW_MCI_CMD53_TRACE_PIO_FALLBACK:
++		return "pio-fallback";
++	default:
++		return "unavailable";
++	}
++}
++
++static ssize_t cmd53_rx_trace_show(struct device *dev,
++				   struct device_attribute *attr, char *buf)
++{
++	struct dw_mci *host = dev_get_drvdata(dev);
++	u32 newest = READ_ONCE(host->cmd53_trace_head);
++	u32 count = min_t(u32, newest, DW_MCI_CMD53_TRACE_DEPTH);
++	ssize_t length = 0;
++	u32 seq;
++
++	for (seq = newest - count + 1; seq <= newest; seq++) {
++		const struct dw_mci_cmd53_trace_record *record =
++			&host->cmd53_trace[(seq - 1) % DW_MCI_CMD53_TRACE_DEPTH];
++
++		if (READ_ONCE(record->valid_seq) != seq)
++			continue;
++		length += sysfs_emit_at(buf, length,
++			"CMD53HOST seq=%u arg=%08x fn=%u incr=%u addr=%05x bytes=%u va=0x%lx dma=0x%llx dma_len=%u map=%d start=%d engine=%s elapsed_ns=%llu\n",
++			record->seq, record->arg, record->fn, record->incr,
++			record->addr, record->requested, record->cpu_va,
++			(unsigned long long)record->dma_addr, record->dma_len,
++			record->map_ret, record->start_ret,
++			dw_mci_cmd53_trace_engine_name(record->engine),
++			(unsigned long long)(record->completed_ns - record->started_ns));
++		length += sysfs_emit_at(buf, length,
++			" desc64=%u ring=0x%llx slots=%u-%u count=%u buf=0x%llx len=%u own=%08x/%08x/%08x/%08x/%08x own_timeout=%u\n",
++			record->desc_64, (unsigned long long)record->desc_dma,
++			record->desc_first, record->desc_last, record->desc_count,
++			(unsigned long long)record->desc_buf, record->desc_len,
++			record->own_before, record->own_after_poll,
++			record->own_submit, record->own_dma_irq,
++			record->own_finish,
++			record->own_timeout);
++		length += sysfs_emit_at(buf, length,
++			" submit[rint=%08x mint=%08x idsts=%08x bmod=%08x dsc=0x%llx buf=0x%llx] irq[rint=%08x mint=%08x idsts=%08x dto=%u dma=%u dataerr=%u] done[rint=%08x mint=%08x idsts=%08x bmod=%08x dsc=0x%llx buf=0x%llx status=%08x bytes=%u err=%d pio=%u]\n",
++			record->submit_rint, record->submit_mint,
++			record->submit_idsts, record->submit_bmod,
++			(unsigned long long)record->submit_dsc,
++			(unsigned long long)record->submit_buf,
++			record->irq_rint_or, record->irq_mint_or,
++			record->irq_idsts_or, record->dto_seen,
++			record->dma_complete, record->data_error_seen,
++			record->complete_rint, record->complete_mint,
++			record->complete_idsts, record->complete_bmod,
++			(unsigned long long)record->complete_dsc,
++			(unsigned long long)record->complete_buf,
++			record->data_status, record->bytes_xfered,
++			record->data_error, record->pio_bytes);
++		if (length >= PAGE_SIZE)
++			break;
++	}
++	return length;
++}
++static DEVICE_ATTR_RO(cmd53_rx_trace);
++
+ #if defined(CONFIG_DEBUG_FS)
+ static int dw_mci_req_show(struct seq_file *s, void *v)
+ {
+@@ -595,12 +796,16 @@ static inline int dw_mci_prepare_desc64(struct dw_mci *host,
+ 					 struct mmc_data *data,
+ 					 unsigned int sg_len)
+ {
++	struct dw_mci_cmd53_trace_record *record =
++		dw_mci_cmd53_trace_active(host);
+ 	unsigned int desc_len;
+ 	struct idmac_desc_64addr *desc_first, *desc_last, *desc;
+ 	u32 val;
+-	int i;
++	int i, ret;
+ 
+ 	desc_first = desc_last = desc = host->sg_cpu;
++	if (record)
++		record->desc_first = 0;
+ 
+ 	for (i = 0; i < sg_len; i++) {
+ 		unsigned int length = sg_dma_len(&data->sg[i]);
+@@ -619,10 +824,19 @@ static inline int dw_mci_prepare_desc64(struct dw_mci *host,
+ 			 * isn't still owned by IDMAC as IDMAC's write
+ 			 * ops and CPU's read ops are asynchronous.
+ 			 */
+-			if (readl_poll_timeout_atomic(&desc->des0, val,
+-						!(val & IDMAC_DES0_OWN),
+-						10, 100 * USEC_PER_MSEC))
++			if (record && desc == desc_first)
++				record->own_before = READ_ONCE(desc->des0);
++			ret = readl_poll_timeout_atomic(&desc->des0, val,
++							!(val & IDMAC_DES0_OWN),
++							10,
++							100 * USEC_PER_MSEC);
++			if (record && desc == desc_first)
++				record->own_after_poll = val;
++			if (ret) {
++				if (record)
++					record->own_timeout = 1;
+ 				goto err_own_bit;
++			}
+ 
+ 			/*
+ 			 * Set the OWN bit and disable interrupts
+@@ -652,6 +866,14 @@ static inline int dw_mci_prepare_desc64(struct dw_mci *host,
+ 	/* Set last descriptor */
+ 	desc_last->des0 &= ~(IDMAC_DES0_CH | IDMAC_DES0_DIC);
+ 	desc_last->des0 |= IDMAC_DES0_LD;
++	if (record) {
++		record->desc_last = desc_last - desc_first;
++		record->desc_count = record->desc_last + 1;
++		record->desc_buf = (u64)le32_to_cpu(desc_first->des4) |
++			((u64)le32_to_cpu(desc_first->des5) << 32);
++		record->desc_len = le32_to_cpu(desc_first->des2) & 0x1fff;
++		record->own_submit = le32_to_cpu(READ_ONCE(desc_first->des0));
++	}
+ 
+ 	return 0;
+ err_own_bit:
+@@ -667,12 +889,16 @@ static inline int dw_mci_prepare_desc32(struct dw_mci *host,
+ 					 struct mmc_data *data,
+ 					 unsigned int sg_len)
+ {
++	struct dw_mci_cmd53_trace_record *record =
++		dw_mci_cmd53_trace_active(host);
+ 	unsigned int desc_len;
+ 	struct idmac_desc *desc_first, *desc_last, *desc;
+ 	u32 val;
+-	int i;
++	int i, ret;
+ 
+ 	desc_first = desc_last = desc = host->sg_cpu;
++	if (record)
++		record->desc_first = 0;
+ 
+ 	for (i = 0; i < sg_len; i++) {
+ 		unsigned int length = sg_dma_len(&data->sg[i]);
+@@ -691,11 +917,20 @@ static inline int dw_mci_prepare_desc32(struct dw_mci *host,
+ 			 * isn't still owned by IDMAC as IDMAC's write
+ 			 * ops and CPU's read ops are asynchronous.
+ 			 */
+-			if (readl_poll_timeout_atomic(&desc->des0, val,
+-						      IDMAC_OWN_CLR64(val),
+-						      10,
+-						      100 * USEC_PER_MSEC))
++			if (record && desc == desc_first)
++				record->own_before =
++					le32_to_cpu(READ_ONCE(desc->des0));
++			ret = readl_poll_timeout_atomic(&desc->des0, val,
++							IDMAC_OWN_CLR64(val),
++							10,
++							100 * USEC_PER_MSEC);
++			if (record && desc == desc_first)
++				record->own_after_poll = le32_to_cpu(val);
++			if (ret) {
++				if (record)
++					record->own_timeout = 1;
+ 				goto err_own_bit;
++			}
+ 
+ 			/*
+ 			 * Set the OWN bit and disable interrupts
+@@ -726,6 +961,13 @@ static inline int dw_mci_prepare_desc32(struct dw_mci *host,
+ 	desc_last->des0 &= cpu_to_le32(~(IDMAC_DES0_CH |
+ 				       IDMAC_DES0_DIC));
+ 	desc_last->des0 |= cpu_to_le32(IDMAC_DES0_LD);
++	if (record) {
++		record->desc_last = desc_last - desc_first;
++		record->desc_count = record->desc_last + 1;
++		record->desc_buf = le32_to_cpu(desc_first->des2);
++		record->desc_len = le32_to_cpu(desc_first->des1) & 0x1fff;
++		record->own_submit = le32_to_cpu(READ_ONCE(desc_first->des0));
++	}
+ 
+ 	return 0;
+ err_own_bit:
+@@ -1105,21 +1347,41 @@ disable:
+ 
+ static int dw_mci_submit_data_dma(struct dw_mci *host, struct mmc_data *data)
+ {
++	struct dw_mci_cmd53_trace_record *record;
+ 	unsigned long irqflags;
+-	int sg_len;
++	int sg_len, ret;
+ 	u32 temp;
+ 
+ 	host->using_dma = 0;
+ 
+ 	/* If we don't have a channel, we can't do DMA */
+-	if (!host->use_dma)
++	if (!host->use_dma) {
++		record = dw_mci_cmd53_trace_active(host);
++		if (record) {
++			record->map_ret = -ENODEV;
++			record->start_ret = -ENODEV;
++			record->engine = DW_MCI_CMD53_TRACE_PIO_FALLBACK;
++		}
+ 		return -ENODEV;
++	}
+ 
+ 	sg_len = dw_mci_pre_dma_transfer(host, data, COOKIE_MAPPED);
++	record = dw_mci_cmd53_trace_active(host);
++	if (record)
++		record->map_ret = sg_len;
+ 	if (sg_len < 0) {
++		if (record) {
++			record->start_ret = -ENODEV;
++			record->engine = DW_MCI_CMD53_TRACE_PIO_FALLBACK;
++		}
+ 		host->dma_ops->stop(host);
+ 		return sg_len;
+ 	}
++	if (record) {
++		record->dma_addr = sg_dma_address(data->sg);
++		record->dma_len = sg_dma_len(data->sg);
++		record->desc_dma = host->sg_dma;
++	}
+ 
+ 	host->using_dma = 1;
+ 
+@@ -1150,7 +1412,9 @@ static int dw_mci_submit_data_dma(struct dw_mci *host, struct mmc_data *data)
+ 	mci_writel(host, INTMASK, temp);
+ 	spin_unlock_irqrestore(&host->irq_lock, irqflags);
+ 
+-	if (host->dma_ops->start(host, sg_len)) {
++	ret = host->dma_ops->start(host, sg_len);
++	dw_mci_cmd53_trace_submit_snapshot(host, ret);
++	if (ret) {
+ 		host->dma_ops->stop(host);
+ 		/* We can't do DMA, try PIO for this one */
+ 		dev_dbg(host->dev,
+@@ -1363,6 +1627,7 @@ static void __dw_mci_start_request(struct dw_mci *host,
+ 
+ 	data = cmd->data;
+ 	if (data) {
++		dw_mci_cmd53_trace_begin(host, cmd, data);
+ 		dw_mci_set_data_timeout(host, data->timeout_ns);
+ 		mci_writel(host, BYTCNT, data->blksz*data->blocks);
+ 		mci_writel(host, BLKSIZ, data->blksz);
+@@ -2034,6 +2299,7 @@ static int dw_mci_data_complete(struct dw_mci *host, struct mmc_data *data)
+ 		data->bytes_xfered = data->blocks * data->blksz;
+ 		data->error = 0;
+ 	}
++	dw_mci_cmd53_trace_finish(host, data);
+ 
+ 	return data->error;
+ }
+@@ -2744,6 +3010,7 @@ static void dw_mci_read_data_pio(struct dw_mci *host, bool dto)
+ 				break;
+ 			dw_mci_pull_data(host, (void *)(buf + offset), len);
+ 			data->bytes_xfered += len;
++			dw_mci_cmd53_trace_pio_bytes(host, len);
+ 			offset += len;
+ 			remain -= len;
+ 		} while (remain);
+@@ -2850,10 +3117,16 @@ static void dw_mci_handle_cd(struct dw_mci *host)
+ static irqreturn_t dw_mci_interrupt(int irq, void *dev_id)
+ {
+ 	struct dw_mci *host = dev_id;
++	struct dw_mci_cmd53_trace_record *trace;
+ 	u32 pending;
+ 	struct dw_mci_slot *slot = host->slot;
+ 
+ 	pending = mci_readl(host, MINTSTS); /* read-only mask reg */
++	trace = dw_mci_cmd53_trace_active(host);
++	if (trace) {
++		trace->irq_mint_or |= pending;
++		trace->irq_rint_or |= mci_readl(host, RINTSTS);
++	}
+ 
+ 	if (pending) {
+ 		/* Check volt switch first, since it can look like an error */
+@@ -2887,6 +3160,8 @@ static irqreturn_t dw_mci_interrupt(int irq, void *dev_id)
+ 
+ 		if (pending & DW_MCI_DATA_ERROR_FLAGS) {
+ 			spin_lock(&host->irq_lock);
++			if (trace)
++				trace->data_error_seen = 1;
+ 
+ 			if (host->quirks & DW_MMC_QUIRK_EXTENDED_TMOUT)
+ 				timer_delete(&host->dto_timer);
+@@ -2909,6 +3184,8 @@ static irqreturn_t dw_mci_interrupt(int irq, void *dev_id)
+ 
+ 		if (pending & SDMMC_INT_DATA_OVER) {
+ 			spin_lock(&host->irq_lock);
++			if (trace)
++				trace->dto_seen = 1;
+ 
+ 			timer_delete(&host->dto_timer);
+ 
+@@ -2967,7 +3244,13 @@ static irqreturn_t dw_mci_interrupt(int irq, void *dev_id)
+ 	/* Handle IDMA interrupts */
+ 	if (host->dma_64bit_address == 1) {
+ 		pending = mci_readl(host, IDSTS64);
++		if (trace)
++			trace->irq_idsts_or |= pending;
+ 		if (pending & (SDMMC_IDMAC_INT_TI | SDMMC_IDMAC_INT_RI)) {
++			if (trace) {
++				trace->dma_complete = 1;
++				trace->own_dma_irq = dw_mci_cmd53_trace_own(host);
++			}
+ 			mci_writel(host, IDSTS64, SDMMC_IDMAC_INT_TI |
+ 							SDMMC_IDMAC_INT_RI);
+ 			mci_writel(host, IDSTS64, SDMMC_IDMAC_INT_NI);
+@@ -2976,7 +3259,13 @@ static irqreturn_t dw_mci_interrupt(int irq, void *dev_id)
+ 		}
+ 	} else {
+ 		pending = mci_readl(host, IDSTS);
++		if (trace)
++			trace->irq_idsts_or |= pending;
+ 		if (pending & (SDMMC_IDMAC_INT_TI | SDMMC_IDMAC_INT_RI)) {
++			if (trace) {
++				trace->dma_complete = 1;
++				trace->own_dma_irq = dw_mci_cmd53_trace_own(host);
++			}
+ 			mci_writel(host, IDSTS, SDMMC_IDMAC_INT_TI |
+ 							SDMMC_IDMAC_INT_RI);
+ 			mci_writel(host, IDSTS, SDMMC_IDMAC_INT_NI);
+@@ -3310,6 +3599,7 @@ exit:
+ static void dw_mci_dto_timer(struct timer_list *t)
+ {
+ 	struct dw_mci *host = timer_container_of(host, t, dto_timer);
++	struct dw_mci_cmd53_trace_record *trace;
+ 	unsigned long irqflags;
+ 	u32 pending;
+ 
+@@ -3344,6 +3634,9 @@ static void dw_mci_dto_timer(struct timer_list *t)
+ 		 * and report a data timeout to the core.
+ 		 */
+ 		host->data_status = SDMMC_INT_DRTO;
++		trace = dw_mci_cmd53_trace_active(host);
++		if (trace)
++			trace->data_error_seen = 1;
+ 		set_bit(EVENT_DATA_ERROR, &host->pending_events);
+ 		set_bit(EVENT_DATA_COMPLETE, &host->pending_events);
+ 		queue_work(system_bh_wq, &host->bh_work);
+@@ -3625,6 +3918,10 @@ int dw_mci_probe(struct dw_mci *host)
+ 		dev_dbg(host->dev, "slot %d init failed\n", i);
+ 		goto err_dmaunmap;
+ 	}
++	ret = device_create_file(host->dev, &dev_attr_cmd53_rx_trace);
++	if (ret)
++		dev_warn(host->dev,
++			 "could not create CMD53 RX trace attribute: %d\n", ret);
+ 
+ 	/* Now that slots are all setup, we can enable card detect */
+ 	dw_mci_enable_cd(host);
+@@ -3650,6 +3947,7 @@ EXPORT_SYMBOL(dw_mci_probe);
+ void dw_mci_remove(struct dw_mci *host)
+ {
+ 	dev_dbg(host->dev, "remove slot\n");
++	device_remove_file(host->dev, &dev_attr_cmd53_rx_trace);
+ 	if (host->slot)
+ 		dw_mci_cleanup_slot(host->slot);
+ 
+diff --git a/drivers/mmc/host/dw_mmc.h b/drivers/mmc/host/dw_mmc.h
+index 648b4a5..ac3fe0f 100644
+--- a/drivers/mmc/host/dw_mmc.h
++++ b/drivers/mmc/host/dw_mmc.h
+@@ -56,6 +56,67 @@ struct dw_mci_dma_slave {
+ 	enum dma_transfer_direction direction;
+ };
+ 
++#define DW_MCI_CMD53_TRACE_DEPTH 8
++
++enum dw_mci_cmd53_trace_engine {
++	DW_MCI_CMD53_TRACE_UNAVAILABLE,
++	DW_MCI_CMD53_TRACE_IDMAC,
++	DW_MCI_CMD53_TRACE_PIO_FALLBACK,
++};
++
++struct dw_mci_cmd53_trace_record {
++	u32 valid_seq;
++	u32 seq;
++	u32 arg;
++	u32 addr;
++	u32 requested;
++	unsigned long cpu_va;
++	dma_addr_t dma_addr;
++	dma_addr_t desc_dma;
++	dma_addr_t desc_buf;
++	u32 dma_len;
++	s32 map_ret;
++	s32 start_ret;
++	u16 desc_first;
++	u16 desc_last;
++	u16 desc_count;
++	u8 engine;
++	u8 fn;
++	u8 incr;
++	u8 desc_64;
++	u32 own_before;
++	u32 own_after_poll;
++	u32 own_submit;
++	u32 own_dma_irq;
++	u32 own_finish;
++	u32 desc_len;
++	u32 submit_rint;
++	u32 submit_mint;
++	u32 submit_idsts;
++	u32 submit_bmod;
++	u64 submit_dsc;
++	u64 submit_buf;
++	u32 irq_rint_or;
++	u32 irq_mint_or;
++	u32 irq_idsts_or;
++	u32 complete_rint;
++	u32 complete_mint;
++	u32 complete_idsts;
++	u32 complete_bmod;
++	u64 complete_dsc;
++	u64 complete_buf;
++	u32 data_status;
++	u32 bytes_xfered;
++	u32 pio_bytes;
++	s32 data_error;
++	u8 dto_seen;
++	u8 dma_complete;
++	u8 data_error_seen;
++	u8 own_timeout;
++	u64 started_ns;
++	u64 completed_ns;
++};
++
+ /**
+  * struct dw_mci - MMC controller state shared between all slots
+  * @lock: Spinlock protecting the queue and associated data.
+@@ -185,6 +246,9 @@ struct dw_mci {
+ 	const struct dw_mci_dma_ops	*dma_ops;
+ 	/* For idmac */
+ 	unsigned int		ring_size;
++	struct dw_mci_cmd53_trace_record cmd53_trace[DW_MCI_CMD53_TRACE_DEPTH];
++	u32			cmd53_trace_head;
++	u32			cmd53_trace_active;
+ 
+ 	/* For edmac */
+ 	struct dw_mci_dma_slave *dms;

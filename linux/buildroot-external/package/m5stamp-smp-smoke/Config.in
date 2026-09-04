@@ -1,0 +1,6 @@
+config BR2_PACKAGE_M5STAMP_SMP_SMOKE
+	bool "M5Stamp L3 SMP smoke helper"
+	help
+	  Installs the test-only helper used by the C68 L3 smoke shot.  It
+	  verifies CPU topology, runs bounded CPU1-affine userspace work, and
+	  invokes the kernel's /proc/m5stamp_smp_smoke cross-call endpoint.

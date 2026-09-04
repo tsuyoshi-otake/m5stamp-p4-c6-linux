@@ -1,0 +1,40 @@
+#!/bin/sh
+
+# BusyBox ash in the RV32 NOMMU image does not implement `set -u`.
+set -e
+
+# Mount writable tmpfs on /tmp before any consumer (S85 host keys, seedrng, etc.).
+# Root is squashfs (ro); without this, /tmp is a RO directory on the rootfs.
+
+es_tmpfs() {
+	printf '%s\n' "$1"
+}
+
+start() {
+	es_tmpfs "ES_TMPFS BEGIN"
+	if mount | grep -q ' on /tmp type tmpfs'; then
+		es_tmpfs "ES_TMPFS ALREADY"
+		return 0
+	fi
+	if ! grep -q '[[:space:]]tmpfs$' /proc/filesystems 2>/dev/null; then
+		es_tmpfs "ES_TMPFS NO_FS"
+		return 1
+	fi
+	# 1M is enough for Dropbear host keys and small temp files; keep this
+	# single-variable until a later capacity policy is measured.
+	if ! mount -t tmpfs -o mode=1777,size=1M tmpfs /tmp; then
+		es_tmpfs "ES_TMPFS MOUNT_FAIL"
+		return 1
+	fi
+	if ! touch /tmp/.easystick_tmpfs_ok 2>/dev/null; then
+		es_tmpfs "ES_TMPFS WRITE_FAIL"
+		return 1
+	fi
+	rm -f /tmp/.easystick_tmpfs_ok
+	es_tmpfs "ES_TMPFS OK"
+}
+
+case "${1:-start}" in
+	start) start ;;
+	*) echo "Usage: $0 start" >&2; exit 1 ;;
+esac

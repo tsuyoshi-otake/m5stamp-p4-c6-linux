@@ -1,0 +1,19 @@
+﻿{
+    "schema":  1,
+    "captured_utc":  "2026-08-23T22:59:15.0533772Z",
+    "mode":  "P1-NG-negative-control",
+    "target":  "M5Stack Stamp-P4 host with attached Stamp-AddOn C6",
+    "port":  "COM10",
+    "chip_probe":  "esptool.py v4.8.1\r\nSerial port COM10\r\nConnecting...\r\nChip is ESP32-P4 (revision v1.3)\r\nFeatures: High-Performance MCU\r\nCrystal is 40MHz\r\nMAC: e8:f6:0a:e2:5e:73\r\nUploading stub...\r\nRunning stub...\r\nStub running...\r\nChanging baud rate to 921600\r\nChanged.\r\nWarning: ESP32-P4 has no Chip ID. Reading MAC instead.\r\nMAC: e8:f6:0a:e2:5e:73\r\nStaying in bootloader.",
+    "host_image":  "D:\\Users\\Developer\\easystick-tmp-20260820\\build-p1-zephyr-r06\\zephyr\\zephyr.bin",
+    "host_image_sha256":  "fb6ff22e0180909170796ac1a85d1a11f2c801c0fb956c4968a466cfea4377b9",
+    "flash_address":  "0x2000",
+    "flash_mode":  "dio",
+    "flash_frequency":  "80m",
+    "flash_size":  "16MB",
+    "stock_readback":  "C:\\Users\\developer\\tmp\\easystick-p4-stock-20260809-esptool481-full-v2.bin",
+    "stock_readback_sha256":  "229459f251eaf6222f0c07968702d72a3818e520da1788ce465027d969020c24",
+    "c6_write_performed":  false,
+    "c6_state":  "unchanged existing ESP-Hosted-NG 1.0.6",
+    "operation":  "P4-only Zephyr image write and verify; no C6 write"
+}

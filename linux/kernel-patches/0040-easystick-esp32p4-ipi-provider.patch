@@ -1,0 +1,98 @@
+diff --git a/drivers/irqchip/Kconfig b/drivers/irqchip/Kconfig
+--- a/drivers/irqchip/Kconfig
++++ b/drivers/irqchip/Kconfig
+@@ -826,10 +826,21 @@
+ config ESP32P4_CLIC
+ 	bool "Espressif ESP32-P4 CLIC interrupt controller"
+ 	depends on SOC_ESP32P4
+ 	select IRQ_DOMAIN
+ 	help
+ 	  Support for the ESP32-P4 Core-Local Interrupt Controller (CLIC).
+ 	  Routes peripheral interrupts (slots 16-239) via the interrupt matrix
+ 	  to the HP RISC-V core. Required for any peripheral interrupt support.
+ 
++config ESP32P4_IPI
++	bool "Espressif ESP32-P4 cross-core IPI provider"
++	depends on ESP32P4_CLIC && SMP
++	select GENERIC_IRQ_IPI_MUX
++	default y
++	help
++	  Provide the generic RISC-V IPI range using the ESP32-P4
++	  CPU_INT_FROM_CPU registers routed through CLIC. The provider must
++	  register the IPI virq range before a secondary hart enters the
++	  RISC-V smp_callin() path.
++
+ endmenu
+diff --git a/drivers/irqchip/Makefile b/drivers/irqchip/Makefile
+--- a/drivers/irqchip/Makefile
++++ b/drivers/irqchip/Makefile
+@@ -139,2 +139,3 @@
+ obj-$(CONFIG_SUNPLUS_SP7021_INTC)	+= irq-sp7021-intc.o
+ obj-$(CONFIG_ESP32P4_CLIC)		+= irq-esp32p4-clic.o
++obj-$(CONFIG_ESP32P4_IPI)		+= irq-esp32p4-ipi.o
+diff --git a/include/linux/cpuhotplug.h b/include/linux/cpuhotplug.h
+--- a/include/linux/cpuhotplug.h
++++ b/include/linux/cpuhotplug.h
+@@ -144,6 +144,7 @@
+ 	CPUHP_AP_IRQ_AVECINTC_STARTING,
+ 	CPUHP_AP_IRQ_SIFIVE_PLIC_STARTING,
+ 	CPUHP_AP_IRQ_ACLINT_SSWI_STARTING,
++	CPUHP_AP_IRQ_ESP32P4_IPI_STARTING,
+ 	CPUHP_AP_IRQ_RISCV_IMSIC_STARTING,
+ 	CPUHP_AP_IRQ_RISCV_SBI_IPI_STARTING,
+ 	CPUHP_AP_ARM_MVEBU_COHERENCY,
+diff --git a/drivers/irqchip/irq-esp32p4-clic.c b/drivers/irqchip/irq-esp32p4-clic.c
+--- a/drivers/irqchip/irq-esp32p4-clic.c
++++ b/drivers/irqchip/irq-esp32p4-clic.c
+@@ -38,4 +38,4 @@
+ static void __iomem *clic_base;
+-static void __iomem *clic_intmtx_base;
++static void __iomem *clic_intmtx_base[2];
+ 
+ static u8 clic_intmtx_source[CLIC_NUM_IRQS];
+@@ -100,12 +100,23 @@
+ static int clic_domain_map(struct irq_domain *d, unsigned int irq,
+ 			    irq_hw_number_t hwirq)
+ {
++	int cpu;
+ 	u8 attr;
+ 	irq_flow_handler_t handler;
+ 
+-	if (clic_intmtx_base && clic_intmtx_source[hwirq])
+-		writel(hwirq, clic_intmtx_base + clic_intmtx_source[hwirq] * 4);
++	/*
++	 * ESP32-P4 has one interrupt-matrix register bank per HP hart.
++	 * Keep both banks in agreement so a per-CPU CLIC IRQ can be enabled
++	 * on either hart. The second bank is optional for the single-core
++	 * baseline and is supplied by the C68 DTS.
++	 */
++	if (clic_intmtx_source[hwirq]) {
++		for (cpu = 0; cpu < ARRAY_SIZE(clic_intmtx_base); cpu++)
++			if (clic_intmtx_base[cpu])
++				writel(hwirq, clic_intmtx_base[cpu] +
++				       clic_intmtx_source[hwirq] * 4);
++	}
+ 
+ 	if (clic_trig_edge[hwirq]) {
+ 		attr = CLIC_INTATTR_MMODE_EDGE;
+ 		handler = handle_edge_irq;
+@@ -159,1 +159,2 @@
+-	clic_intmtx_base = of_iomap(np, 1);
++	clic_intmtx_base[0] = of_iomap(np, 1);
++	clic_intmtx_base[1] = of_iomap(np, 2);
+@@ -165,6 +166,7 @@
+-		if (clic_intmtx_base)
+-			iounmap(clic_intmtx_base);
++		for (int cpu = 0; cpu < ARRAY_SIZE(clic_intmtx_base); cpu++)
++			if (clic_intmtx_base[cpu])
++				iounmap(clic_intmtx_base[cpu]);
+ 		pr_err("cannot allocate IRQ domain\n");
+ 		return -ENOMEM;
+ 	}
+ 
+@@ -171,3 +184,3 @@
+	pr_info("%d IRQ slots%s\n", CLIC_NUM_IRQS,
+-		clic_intmtx_base ? ", INTMTX routing enabled" : "");
++		clic_intmtx_base[0] ? ", INTMTX routing enabled" : "");
+ 	return 0;
+ }

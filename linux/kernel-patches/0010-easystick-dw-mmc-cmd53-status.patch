@@ -1,0 +1,12 @@
+--- a/drivers/mmc/host/dw_mmc.c
++++ b/drivers/mmc/host/dw_mmc.c
+@@ -2018,1 +2018,9 @@
++		/* CMD53-only controller telemetry for the Stamp-P4 SDIO bring-up. */
++		if (data->mrq && data->mrq->cmd && data->mrq->cmd->opcode == 53)
++			dev_info(host->dev,
++				 "CMD53 error: arg=%08x status=%08x rint=%08x mint=%08x stat=%08x ctype=%08x clkdiv=%08x clksrc=%08x\n",
++				 data->mrq->cmd->arg, status, mci_readl(host, RINTSTS),
++				 mci_readl(host, MINTSTS), mci_readl(host, STATUS),
++				 mci_readl(host, CTYPE), mci_readl(host, CLKDIV),
++				 mci_readl(host, CLKSRC));
+ 		dev_dbg(host->dev, "data error, status 0x%08x\n", status);

@@ -1,0 +1,5 @@
+::sysinit:/etc/init.d/rcS
+# USB-C/COM10 is the interactive lab console; UART0 remains the recovery fixture.
+ttyGS1::askfirst:-/bin/sh
+::restart:/sbin/init
+::ctrlaltdel:/sbin/reboot

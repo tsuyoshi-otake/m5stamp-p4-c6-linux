@@ -1,0 +1,7 @@
+config BR2_PACKAGE_M5STAMP_SMP_STRESS
+	bool "M5Stamp bounded SMP stress helper"
+	select BR2_PACKAGE_M5STAMP_SMP_SMOKE
+	help
+	  Installs the C68-only bounded process and SMP stress helper.  It
+	  exercises CPU1 affinity, fork/exec, bounded memory activity, the
+	  m5stamp cross-call endpoint, and BusyBox top snapshots.

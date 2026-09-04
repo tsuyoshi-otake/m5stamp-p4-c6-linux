@@ -1,0 +1,30 @@
+# Enforce LF for text files across all platforms
+* text=auto eol=lf
+
+# Explicit LF for build scripts, configs, and patches
+*.sh text eol=lf
+*.patch text eol=lf
+*.diff text eol=lf
+*.c text eol=lf
+*.h text eol=lf
+*.S text eol=lf
+*.dts text eol=lf
+*.dtsi text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+*.py text eol=lf
+*.fragment text eol=lf
+*.defaults text eol=lf
+*.in text eol=lf
+*.mk text eol=lf
+Makefile text eol=lf
+Kconfig text eol=lf
+
+# Binary files
+*.bin binary
+*.img binary
+*.squashfs binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.pdf binary

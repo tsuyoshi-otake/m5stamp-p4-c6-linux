@@ -1,0 +1,248 @@
+From: EasyStick maintainers <noreply@example.invalid>
+Subject: [PATCH] sdio: trace DMA receive buffer lifecycle
+
+Capture the state of the small sequence of SDIO receive buffers that leads to
+the reproducible CMD_GET_TXPOWER timeout.  Records are kept in a fixed static
+ring and printed only after command 0x0f times out, keeping printk traffic out
+of the receive/IRQ path.
+
+This is observation only.  It adds no SDIO transaction, retry, delay, poll,
+buffer initialization, cache operation or receive control-flow change.  The
+MMC function-driver API has already discarded the request and scatterlist by
+the time sdio_memcpy_fromio() returns, so DMA bus addresses and private DW-MMC
+IDMAC descriptors are deliberately reported as unavailable rather than read
+through a racy private-ABI cast.
+
+---
+ esp_cmd.c       |   4 ++
+ sdio/esp_sdio.c | 161 ++++++++++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 165 insertions(+)
+
+diff --git a/esp_cmd.c b/esp_cmd.c
+--- a/esp_cmd.c
++++ b/esp_cmd.c
+@@ -15,5 +15,7 @@
+ #include "esp_stats.h"
+ 
++void esp_sdio_rx_trace_dump(void);
++
+ #define COMMAND_RESPONSE_TIMEOUT (5 * HZ)
+ u8 ap_bssid[MAC_ADDR_LEN];
+ extern u32 raw_tp_mode;
+@@ -277,5 +279,7 @@ static int wait_and_decode_cmd_resp(struct esp_wifi_device *priv,
+ 	if (ret == 0) {
+ 		esp_err("Command[0x%X] timed out\n", cmd_node->cmd_code);
++		if (cmd_node->cmd_code == CMD_GET_TXPOWER)
++			esp_sdio_rx_trace_dump();
+ 		ret = -EINVAL;
+ 	} else {
+ 		esp_verbose("Resp for command [0x%X]\n", cmd_node->cmd_code);
+diff --git a/sdio/esp_sdio.c b/sdio/esp_sdio.c
+--- a/sdio/esp_sdio.c
++++ b/sdio/esp_sdio.c
+@@ -8,5 +8,6 @@
+ #include "utils.h"
+ #include <linux/delay.h>
++#include <linux/ktime.h>
+ #include <linux/mutex.h>
+ #include <linux/mmc/sdio.h>
+ #include <linux/mmc/sdio_func.h>
+@@ -39,6 +40,154 @@ static atomic_t queue_items[MAX_PRIORITY_QUEUES];
+ struct task_struct *tx_thread;
+ volatile u8 host_sleep;
+ 
++#define ESP_RX_TRACE_DEPTH 8
++#define ESP_RX_TRACE_EDGE_BYTES 16
++
++enum esp_rx_trace_stage {
++	ESP_RX_TRACE_PRE_DMA,
++	ESP_RX_TRACE_POST_DMA,
++	ESP_RX_TRACE_PRE_PARSE,
++	ESP_RX_TRACE_STAGE_COUNT,
++};
++
++struct esp_rx_trace_snapshot {
++	u32 fingerprint;
++	u8 first[ESP_RX_TRACE_EDGE_BYTES];
++	u8 last[ESP_RX_TRACE_EDGE_BYTES];
++};
++
++struct esp_rx_trace_record {
++	u32 valid_seq;
++	u32 seq;
++	u32 slave_len;
++	u32 cmd53_len;
++	u32 cmd53_addr;
++	u32 rx_before;
++	u32 rx_after;
++	u32 producer_pos;
++	u64 started_ns;
++	u64 completed_ns;
++	unsigned long buffer_va;
++	u8 edge_len;
++	u8 host_index;
++	u8 func_num;
++	int ret;
++	struct esp_rx_trace_snapshot stage[ESP_RX_TRACE_STAGE_COUNT];
++};
++
++static struct esp_rx_trace_record esp_rx_trace_ring[ESP_RX_TRACE_DEPTH];
++static u32 esp_rx_trace_next_seq;
++
++static u32 esp_rx_trace_fingerprint(const u8 *data, u32 len)
++{
++	u32 hash = 2166136261U;
++	u32 i;
++
++	for (i = 0; i < len; i++) {
++		hash ^= data[i];
++		hash *= 16777619U;
++	}
++	return hash;
++}
++
++static void esp_rx_trace_snapshot(struct esp_rx_trace_snapshot *snapshot,
++		const u8 *data, u32 len, u8 edge_len)
++{
++	u32 i;
++
++	snapshot->fingerprint = esp_rx_trace_fingerprint(data, len);
++	for (i = 0; i < edge_len; i++) {
++		snapshot->first[i] = data[i];
++		snapshot->last[i] = data[len - edge_len + i];
++	}
++}
++
++static void esp_rx_trace_print_snapshot(const char *name,
++		const struct esp_rx_trace_snapshot *snapshot, u8 edge_len)
++{
++	pr_info("esp32_sdio: RXTRACE %s fp=%08x first=%*phN last=%*phN\n",
++		name, snapshot->fingerprint, edge_len, snapshot->first,
++		edge_len, snapshot->last);
++}
++
++void esp_sdio_rx_trace_dump(void);
++
++void esp_sdio_rx_trace_dump(void)
++{
++	u32 newest = READ_ONCE(esp_rx_trace_next_seq);
++	u32 count = min_t(u32, newest, ESP_RX_TRACE_DEPTH);
++	u32 seq;
++
++	pr_info("esp32_sdio: RXTRACE BEGIN count=%u newest=%u engine=unavailable dma_bus=unavailable idmac_desc=unavailable idmac_index=unavailable\n",
++		count, newest);
++	for (seq = newest - count + 1; seq <= newest; seq++) {
++		const struct esp_rx_trace_record *record =
++			&esp_rx_trace_ring[(seq - 1) % ESP_RX_TRACE_DEPTH];
++
++		if (READ_ONCE(record->valid_seq) != seq)
++			continue;
++		pr_info("esp32_sdio: RXTRACE seq=%u slave_len=%u cmd53_len=%u addr=0x%x va=0x%lx host=mmc%u func=%u ret=%d rx_before=%u producer=%u rx_after=%u elapsed_ns=%llu\n",
++			record->seq, record->slave_len, record->cmd53_len,
++			record->cmd53_addr, record->buffer_va,
++			record->host_index, record->func_num, record->ret,
++			record->rx_before, record->producer_pos, record->rx_after,
++			(unsigned long long)(record->completed_ns - record->started_ns));
++		esp_rx_trace_print_snapshot("pre_dma",
++			&record->stage[ESP_RX_TRACE_PRE_DMA], record->edge_len);
++		esp_rx_trace_print_snapshot("post_dma",
++			&record->stage[ESP_RX_TRACE_POST_DMA], record->edge_len);
++		esp_rx_trace_print_snapshot("pre_parse",
++			&record->stage[ESP_RX_TRACE_PRE_PARSE], record->edge_len);
++	}
++	pr_info("esp32_sdio: RXTRACE END\n");
++}
++
++static struct esp_rx_trace_record *esp_rx_trace_begin(
++		struct esp_sdio_context *context, struct sk_buff *skb,
++		u32 slave_len, u32 cmd53_len, u32 cmd53_addr)
++{
++	u32 seq = ++esp_rx_trace_next_seq;
++	struct esp_rx_trace_record *record =
++		&esp_rx_trace_ring[(seq - 1) % ESP_RX_TRACE_DEPTH];
++
++	WRITE_ONCE(record->valid_seq, 0);
++	record->seq = seq;
++	record->slave_len = slave_len;
++	record->cmd53_len = cmd53_len;
++	record->cmd53_addr = cmd53_addr;
++	record->rx_before = context->rx_byte_count;
++	record->rx_after = context->rx_byte_count;
++	record->producer_pos =
++		(context->rx_byte_count + slave_len) % ESP_RX_BYTE_MAX;
++	record->buffer_va = (unsigned long)skb->data;
++	record->edge_len = min_t(u32, slave_len, ESP_RX_TRACE_EDGE_BYTES);
++	record->host_index = context->func->card->host->index;
++	record->func_num = context->func->num;
++	record->ret = 0;
++	esp_rx_trace_snapshot(&record->stage[ESP_RX_TRACE_PRE_DMA],
++		skb->data, slave_len, record->edge_len);
++	record->started_ns = ktime_get_ns();
++	return record;
++}
++
++static void esp_rx_trace_dma_complete(struct esp_rx_trace_record *record,
++		struct sk_buff *skb, int ret)
++{
++	record->completed_ns = ktime_get_ns();
++	record->ret = ret;
++	esp_rx_trace_snapshot(&record->stage[ESP_RX_TRACE_POST_DMA],
++		skb->data, record->slave_len, record->edge_len);
++}
++
++static void esp_rx_trace_before_parse(struct esp_rx_trace_record *record,
++		struct sk_buff *skb)
++{
++	esp_rx_trace_snapshot(&record->stage[ESP_RX_TRACE_PRE_PARSE],
++		skb->data, record->slave_len, record->edge_len);
++	smp_wmb();
++	WRITE_ONCE(record->valid_seq, record->seq);
++}
++
+ static int init_context(struct esp_sdio_context *context);
+ static struct sk_buff *read_packet(struct esp_adapter *adapter);
+ static int write_packet(struct esp_adapter *adapter, struct sk_buff *skb);
+@@ -448,6 +596,8 @@ static struct sk_buff *read_packet(struct esp_adapter *adapter)
+ 	u32 len_from_slave, data_left, len_to_read, size, num_blocks;
++	u32 cmd53_len, first_cmd53_len;
+ 	int ret = 0;
+ 	struct sk_buff *skb;
++	struct esp_rx_trace_record *trace;
+ 	u8 *pos;
+ 	struct esp_sdio_context *context;
+ 	struct esp_payload_header *header;
+@@ -499,6 +650,12 @@ static struct sk_buff *read_packet(struct esp_adapter *adapter)
+ 
+ 	skb_put(skb, len_from_slave);
+ 	pos = skb->data;
++	cmd53_len = ALIGN(len_from_slave, 4);
++	first_cmd53_len = len_from_slave / ESP_BLOCK_SIZE;
++	first_cmd53_len = first_cmd53_len ?
++		first_cmd53_len * ESP_BLOCK_SIZE : len_from_slave;
++	trace = esp_rx_trace_begin(context, skb, len_from_slave, cmd53_len,
++		ESP_SLAVE_CMD53_END_ADDR - first_cmd53_len);
+ 
+ 	data_left = len_from_slave;
+ 
+@@ -524,6 +681,8 @@ static struct sk_buff *read_packet(struct esp_adapter *adapter)
+ 			if (ret)
+ 				esp_info("BOOT_CMD53_RX: bytes=%u ret=%d\n", len_to_read, ret);
+ 		}
++		if (data_left == len_to_read || ret)
++			esp_rx_trace_dma_complete(trace, skb, ret);
+ 
+ 		if (ret) {
+ 			esp_err("Failed to read data - %d [%u - %d]\n", ret, num_blocks, len_to_read);
+@@ -541,8 +699,10 @@ static struct sk_buff *read_packet(struct esp_adapter *adapter)
+ 		context->rx_byte_count = context->rx_byte_count % ESP_RX_BYTE_MAX;
+ 
+ 	} while (data_left > 0);
++	trace->rx_after = context->rx_byte_count;
+ 
+ 	sdio_release_host(context->func);
++	esp_rx_trace_before_parse(trace, skb);
+ 
+ 	print_hex_dump(KERN_INFO, "esp32_sdio: BOOT_CMD53_DATA: ", DUMP_PREFIX_NONE,
+ 			16, 1, skb->data, min_t(u32, len_from_slave, 32), false);
+-- 
+2.43.0

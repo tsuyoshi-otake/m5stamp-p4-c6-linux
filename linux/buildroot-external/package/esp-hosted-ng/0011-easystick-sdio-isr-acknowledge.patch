@@ -1,0 +1,184 @@
+From: EasyStick maintainers <noreply@example.invalid>
+Subject: [PATCH] sdio: acknowledge the slave interrupt instead of echoing it
+
+esp_handle_isr() writes the value it just read from INT_ST back to INT_CLR.
+INT_CLR is write-1-to-clear, so when the read returns zero the write
+acknowledges nothing.  dw_mmc masks its per-slot SDIO bit inside the hard
+IRQ handler and re-arms it from ack_sdio_irq() once the callback returns, so
+an unacknowledged slave assertion re-enters this callback immediately and
+without bound.  On the experimental ESP32-P4 host port that closed loop is
+what produces the 254 identical "status=0x00000000" callbacks per boot, and
+it also reconciles the two register readings that looked contradictory:
+RINTSTS keeps bit 17 latched while a one-shot MINTSTS sample lands inside
+the masked window and reads zero.
+
+Three changes, all confined to the interrupt path:
+
+  - Acknowledge with the named INT bits when INT_ST reads zero (or the read
+    itself fails), so the host can always break the loop.  Dispatch still
+    uses the value actually read, so a forced acknowledge cannot fabricate
+    an RX_NEW_PACKET event.
+
+  - Split the early-return guard.  sdio_claim_irq() arms this callback in
+    esp_probe() well before the adapter reaches ESP_CONTEXT_RX_READY, and
+    every interrupt taken in that window was previously dropped without
+    writing INT_CLR -- the same unbounded loop, entered earlier.  The slave
+    is now acknowledged whenever a context exists; only dispatch waits for
+    the adapter.
+
+  - Sample INT_RAW at the head of each empty-status streak.  A raw latch
+    that INT_ST does not report means the slave never enabled that source
+    for host delivery, which is a slave-side configuration fault rather
+    than a missing frame.  This is the measurement the previous telemetry
+    could not make, because every sample it took was of the loop.
+
+The empty-status log is rate limited to the first four of a streak and then
+every 256th, so a fault that survives this patch stays legible on the
+console instead of flooding it.  Board-port telemetry only: register values
+and counts, never payload contents or Wi-Fi credentials.
+
+What this does not fix: if DAT1 is held by a source outside the bits
+esp_sdio_decl.h names, the forced acknowledge cannot clear it and the loop
+persists -- the INT_RAW sample is there to identify exactly that case.
+
+Verified on hardware 2026-08-11, cold Type-C power cycle, read-only 60 s
+capture (easystick-p4-israck-boot-20260811.log, sha256
+85994ab595eee6a386b20a85ced7e9f90b13be8642a987909f0fceaf30ed6227):
+
+  - The loop stops.  254 distinct callbacks became 2, both inside the first
+    300 ms after OPEN_DATA_PATH, and zero after "ESP SDIO probe completed".
+    The pre-patch capture ended with the storm still running; this one runs
+    to its natural end.  Not rate limiting: the streak reached 1, and the
+    first four of a streak always print.  Not an unloaded driver: no
+    rmmod/unload and no Oops, BUG, panic or WARNING in the log.
+
+  - INT_RAW is genuinely zero, not unreadable.  Both records read
+    "raw=0x00000000 raw_ret=0" with "st_ret=0", so the reads succeeded and
+    the zeros are values.  The slave-side interrupt configuration fault this
+    sample was added to detect is therefore refuted rather than confirmed:
+    no interrupt event exists at the source.
+
+  - The forced acknowledge destroyed nothing.  0010's independent PACKET_LEN
+    poll read len=0 ret=0 on all ten iterations across 2.7 s, plus one
+    CMD53 read at len=0 ret=0, and that path performs no INT_CLR write.
+
+  - Note when comparing counts: the console carries keep_bootcon, so every
+    line after "legacy console [ttyGS1] enabled" appears twice.  The 508
+    figure in earlier notes and in the in-source comment below is a raw grep
+    count of that doubled stream.  The comment is left as written because
+    changing it would desynchronize this patch from the source that produced
+    the capture above; read it as 254 distinct.
+
+  - The software delta measured against was 0010 + 0011 + the esp32_sdio
+    resetpin default, not 0011 alone.
+
+Still unmeasured: this patch's INT_CLR path has only ever been exercised
+against an all-zero status, because the C6 has never asserted an interrupt.
+
+---
+ sdio/esp_sdio.c | 70 +++++++++++++++++++++++++++++++++++++++++++-----
+ 1 file changed, 64 insertions(+), 6 deletions(-)
+
+--- a/sdio/esp_sdio.c
++++ b/sdio/esp_sdio.c
+@@ -63,10 +63,27 @@
+ 	}
+ }
+ 
++/*
++ * Union of every SLCHOST interrupt source this driver's own register map
++ * names.  INT_CLR is write-1-to-clear, so this is the widest acknowledge
++ * that can be justified from esp_sdio_decl.h alone.
++ */
++#define ESP_SLAVE_INT_CLR_KNOWN	(ESP_SLAVE_BIT0_INT | ESP_SLAVE_BIT1_INT |	\
++				 ESP_SLAVE_BIT2_INT | ESP_SLAVE_BIT3_INT |	\
++				 ESP_SLAVE_BIT4_INT | ESP_SLAVE_BIT5_INT |	\
++				 ESP_SLAVE_BIT6_INT | ESP_SLAVE_BIT7_INT |	\
++				 ESP_SLAVE_RX_UNDERFLOW_INT |			\
++				 ESP_SLAVE_TX_OVERFLOW_INT |			\
++				 ESP_SLAVE_RX_NEW_PACKET_INT)
++
+ static void esp_handle_isr(struct sdio_func *func)
+ {
++	/* SDIO IRQ context only, one function at a time: no locking needed. */
++	static u32 empty_isr_streak;
+ 	struct esp_sdio_context *context = NULL;
+ 	u32 *int_status;
++	u32 status_read;
++	bool dispatch;
+ 	int ret;
+ 
+ 	if (!func) {
+@@ -78,12 +95,23 @@
+ 
+ 	context = sdio_get_drvdata(func);
+ 
+-	if (!(context) ||
+-	    !(context->adapter) ||
+-	    (atomic_read(&context->adapter->state) < ESP_CONTEXT_RX_READY)) {
++	if (!context) {
+ 		return;
+ 	}
+ 
++	/*
++	 * An interrupt taken before the adapter reaches ESP_CONTEXT_RX_READY
++	 * must still be acknowledged.  sdio_claim_irq() arms this callback in
++	 * esp_probe() well before that state is set, and dw_mmc masks its
++	 * per-slot SDIO bit inside the hard IRQ handler and re-arms it from
++	 * ack_sdio_irq() after every callback.  Returning without writing
++	 * INT_CLR therefore leaves the slave asserting DAT1 and this callback
++	 * re-enters immediately, forever.  Acknowledge the slave in every
++	 * case; only dispatch work when the adapter can accept it.
++	 */
++	dispatch = context->adapter &&
++		   atomic_read(&context->adapter->state) >= ESP_CONTEXT_RX_READY;
++
+ 	int_status = kmalloc(sizeof(u32), GFP_ATOMIC);
+ 
+ 	if (!int_status) {
+@@ -94,10 +122,40 @@
+ 	ret = esp_read_reg(context, ESP_SLAVE_INT_ST_REG,
+ 			(u8 *) int_status, sizeof(*int_status), ACQUIRE_LOCK);
+ 	CHECK_SDIO_RW_ERROR(ret);
+-	esp_info("SDIO IRQ received: read_ret=%d status=0x%08x\n",
+-		 ret, *int_status);
+ 
+-	esp_process_interrupt(context, *int_status);
++	status_read = ret ? 0 : *int_status;
++
++	if (dispatch)
++		esp_process_interrupt(context, status_read);
++
++	if (status_read) {
++		esp_info("SDIO IRQ received: status=0x%08x dispatch=%d after_empty=%u\n",
++			 status_read, dispatch, empty_isr_streak);
++		empty_isr_streak = 0;
++		*int_status = status_read;
++	} else {
++		/*
++		 * Writing back the zero that was just read acknowledges
++		 * nothing, so the slave keeps DAT1 asserted and this callback
++		 * spins -- the 508 identical "status=0x00000000" callbacks per
++		 * boot recorded on this port are that spin, not slave noise.
++		 * Force the named bits down instead, and sample INT_RAW at the
++		 * head of each streak: a raw latch that INT_ST does not report
++		 * means the slave never enabled that source for host delivery,
++		 * which is a slave-side configuration fault rather than a
++		 * missing frame.
++		 */
++		if (empty_isr_streak < 4 || !(empty_isr_streak % 256)) {
++			u32 raw = 0;
++			int raw_ret = esp_read_reg(context, ESP_SLAVE_INT_RAW_REG,
++					(u8 *) &raw, sizeof(raw), ACQUIRE_LOCK);
++
++			esp_info("SDIO IRQ empty: streak=%u st_ret=%d raw=0x%08x raw_ret=%d dispatch=%d\n",
++				 empty_isr_streak, ret, raw, raw_ret, dispatch);
++		}
++		empty_isr_streak++;
++		*int_status = ESP_SLAVE_INT_CLR_KNOWN;
++	}
+ 
+ 	/* Clear interrupt status */
+ 	ret = esp_write_reg(context, ESP_SLAVE_INT_CLR_REG,
+-- 
+2.43.0

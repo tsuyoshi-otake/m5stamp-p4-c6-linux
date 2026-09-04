@@ -1,0 +1,10 @@
+config BR2_PACKAGE_ESP_HOSTED_NG
+	bool "ESP-Hosted-NG SDIO host module"
+	depends on BR2_LINUX_KERNEL
+	depends on BR2_PACKAGE_BUSYBOX
+	select BR2_PACKAGE_WPA_SUPPLICANT
+	select BR2_PACKAGE_IW
+	help
+	  Build the locked ESP-Hosted-NG Linux host driver for the Stamp AddOn
+	  C6 SDIO transport.  The package is only selected by the M2 profile.
+

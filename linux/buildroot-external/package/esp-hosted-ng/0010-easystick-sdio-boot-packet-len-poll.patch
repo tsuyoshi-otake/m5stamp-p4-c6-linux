@@ -1,0 +1,46 @@
+From: EasyStick maintainers <noreply@example.invalid>
+Subject: [PATCH] sdio: poll the raw packet-length register after OPEN_DATA_PATH
+
+The single 100 ms drain added by 0005 only proves the C6 boot-up frame is
+absent at exactly one instant.  It cannot distinguish "C6 never queues the
+frame" from "C6 queues it after 100 ms" from "the SDIO card interrupt never
+reaches esp_handle_isr() so the driver never notices a frame that IS queued".
+Replace the single drain with a bounded poll of the same CMD52 length
+register used by esp_get_len_from_slave(), logging every sample.  This is
+temporary board-port telemetry: it records only a byte count and elapsed
+time, never Wi-Fi credentials or payload contents.  Normal traffic
+continues to rely on the SDIO card interrupt; this loop only runs once,
+during probe, and only while diagnosing the missing boot frame.
+
+---
+ sdio/esp_sdio.c | 14 +++++++++++++-
+ 1 file changed, 13 insertions(+), 1 deletion(-)
+
+diff --git a/sdio/esp_sdio.c b/sdio/esp_sdio.c
+--- a/sdio/esp_sdio.c
++++ b/sdio/esp_sdio.c
+@@ -862,9 +862,21 @@ static int esp_probe(struct sdio_func *func,
+ 	ret = generate_slave_intr(context, BIT(ESP_OPEN_DATA_PATH));
+ 	esp_info("OPEN_DATA_PATH write completed: ret=%d\n", ret);
+ 	if (!ret) {
++		unsigned int poll_iter;
++		u32 polled_len = 0;
++
+ 		/* The first C6 BOOTUP frame predates the initial producer snapshot. */
+ 		context->rx_byte_count = 0;
+-		msleep(100);
++		for (poll_iter = 0; poll_iter < 10; poll_iter++) {
++			int poll_ret = esp_get_len_from_slave(context, &polled_len,
++							       ACQUIRE_LOCK);
++
++			esp_info("BOOT_POLL: iter=%u elapsed_ms=%u len=%u ret=%d\n",
++				 poll_iter, poll_iter * 300, polled_len, poll_ret);
++			if (!poll_ret && polled_len)
++				break;
++			msleep(300);
++		}
+ 		esp_process_new_packet_intr(context->adapter);
+ 	}
+ 
+-- 
+2.43.0

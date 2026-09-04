@@ -1,0 +1,467 @@
+diff --git a/drivers/mmc/host/dw_mmc.h b/drivers/mmc/host/dw_mmc.h
+index ac3fe0f..9951ad6 100644
+--- a/drivers/mmc/host/dw_mmc.h
++++ b/drivers/mmc/host/dw_mmc.h
+@@ -139,6 +139,11 @@ struct dw_mci_cmd53_trace_record {
+  * @dma_64bit_address: Whether DMA supports 64-bit address mode or not.
+  * @sg_dma: Bus address of DMA buffer.
+  * @sg_cpu: Virtual address of DMA buffer.
++ * @sg_noncoherent: Whether the descriptor ring came from
++ *	dma_alloc_noncoherent() rather than dmam_alloc_coherent(), and so
++ *	needs explicit ownership synchronisation and an explicit free.
++ * @sg_device_owned: Whether the noncoherent descriptor ring is currently in
++ *	the device domain.  Meaningless unless @sg_noncoherent is set.
+  * @dma_ops: Pointer to platform-specific DMA callbacks.
+  * @cmd_status: Snapshot of SR taken upon completion of the current
+  * @ring_size: Buffer size for idma descriptors.
+@@ -243,6 +248,8 @@ struct dw_mci {
+ 
+ 	dma_addr_t		sg_dma;
+ 	void			*sg_cpu;
++	bool			sg_noncoherent;
++	bool			sg_device_owned;
+ 	const struct dw_mci_dma_ops	*dma_ops;
+ 	/* For idmac */
+ 	unsigned int		ring_size;
+diff --git a/drivers/mmc/host/dw_mmc.c b/drivers/mmc/host/dw_mmc.c
+index 5e1d195..2b043ce 100644
+--- a/drivers/mmc/host/dw_mmc.c
++++ b/drivers/mmc/host/dw_mmc.c
+@@ -649,6 +649,53 @@ static void dw_mci_stop_dma(struct dw_mc
+ 	set_bit(EVENT_XFER_COMPLETE, &host->pending_events);
+ }
+ 
++/*
++ * Descriptor-ring ownership helpers.
++ *
++ * When dmam_alloc_coherent() is unavailable the ring is an ordinary cached
++ * allocation obtained from dma_alloc_noncoherent(), so every handover between
++ * the CPU and IDMAC has to be made explicit.  Both directions act on the same
++ * memory - the CPU writes descriptors and IDMAC writes the OWN bit back - so
++ * the ring is synchronised as DMA_BIDIRECTIONAL throughout.
++ *
++ * The ring is synchronised whole rather than per descriptor.  On this
++ * architecture dma_sync_single_for_cpu(DMA_BIDIRECTIONAL) is an invalidate
++ * with no write-back, and a descriptor is far smaller than a cache line
++ * (16 bytes against dma_get_cache_alignment()), so a partial sync would
++ * discard whatever a neighbouring descriptor in the same line was holding.
++ * Whole-ring granularity has no such interior boundary, and the allocation is
++ * page-sized and page-aligned, so both ends are already cache-line aligned and
++ * the sync cannot reach memory outside the ring.
++ *
++ * sg_device_owned makes the state machine explicit and idempotent:
++ *	CPU-owned -> to_device -> device-owned -> completion/stop -> CPU-owned
++ * A repeated call in the direction the ring is already in does nothing, so
++ * these are safe to place on every path that could transfer ownership.
++ *
++ * On a coherent ring both are no-ops by construction: the sync calls are
++ * skipped entirely rather than relying on them being cheap, because the
++ * streaming sync API does not apply to a coherent allocation.
++ */
++static void dw_mci_idmac_ring_to_device(struct dw_mci *host)
++{
++	if (!host->sg_noncoherent || host->sg_device_owned)
++		return;
++
++	dma_sync_single_for_device(host->dev, host->sg_dma,
++				   DESC_RING_BUF_SZ, DMA_BIDIRECTIONAL);
++	host->sg_device_owned = true;
++}
++
++static void dw_mci_idmac_ring_to_cpu(struct dw_mci *host)
++{
++	if (!host->sg_noncoherent || !host->sg_device_owned)
++		return;
++
++	dma_sync_single_for_cpu(host->dev, host->sg_dma,
++				DESC_RING_BUF_SZ, DMA_BIDIRECTIONAL);
++	host->sg_device_owned = false;
++}
++
+ static void dw_mci_dma_cleanup(struct dw_mci *host)
+ {
+ 	struct mmc_data *data = host->data;
+@@ -685,6 +732,14 @@ static void dw_mci_idmac_stop_dma(struct
+ 	temp &= ~(SDMMC_IDMAC_ENABLE | SDMMC_IDMAC_FB);
+ 	temp |= SDMMC_IDMAC_SWRESET;
+ 	mci_writel(host, BMOD, temp);
++
++	/*
++	 * The controller is now stopped and reset, so it will not touch the
++	 * ring again until it is restarted.  An abort, a timeout or an error
++	 * reaches here instead of the completion callback, so this is the only
++	 * place those paths get the ring back into the CPU domain.
++	 */
++	dw_mci_idmac_ring_to_cpu(host);
+ }
+ 
+ static void dw_mci_dmac_complete_dma(void *arg)
+@@ -694,6 +749,15 @@ static void dw_mci_dmac_complete_dma(voi
+ 
+ 	dev_vdbg(host->dev, "DMA complete\n");
+ 
++	/*
++	 * IDMAC has finished with the ring and has written the OWN bits back
++	 * into it, so take it into the CPU domain here.  This is the normal
++	 * completion half of the ownership transition; the abort and error
++	 * paths are covered by dw_mci_idmac_stop_dma() instead.  Inert when
++	 * the ring is coherent or when EDMAC is the transfer engine.
++	 */
++	dw_mci_idmac_ring_to_cpu(host);
++
+ 	if ((host->use_dma == TRANS_MODE_EDMAC) &&
+ 	    data && (data->flags & MMC_DATA_READ))
+ 		/* Invalidate cache after read */
+@@ -714,10 +778,59 @@ static void dw_mci_dmac_complete_dma(voi
+ 	}
+ }
+ 
++/*
++ * One OWN poll iteration.
++ *
++ * Take the ring into the CPU domain before reading, so the read cannot be
++ * answered from a line the device has since updated.  If IDMAC still owns the
++ * descriptor, hand the ring straight back to the device domain before the
++ * caller waits and polls again, so the next iteration's invalidate has
++ * something to re-fetch.  There is no unsynchronised read on this path.
++ *
++ * Both helpers are no-ops once the ring is already in the requested domain, so
++ * a settled poll costs one invalidate and a settled coherent ring costs
++ * nothing.  Callers must have the ring in the CPU domain and hold no dirty
++ * descriptor writes when they start polling: the invalidate below would throw
++ * such writes away.  dw_mci_prepare_desc{32,64}() satisfy this by polling the
++ * whole chain before writing any of it.
++ */
++static u32 dw_mci_idmac_own64(struct dw_mci *host,
++			      struct idmac_desc_64addr *desc)
++{
++	u32 val;
++
++	dw_mci_idmac_ring_to_cpu(host);
++	val = READ_ONCE(desc->des0);
++	if (val & IDMAC_DES0_OWN)
++		dw_mci_idmac_ring_to_device(host);
++
++	return val;
++}
++
++static u32 dw_mci_idmac_own32(struct dw_mci *host, struct idmac_desc *desc)
++{
++	u32 val;
++
++	dw_mci_idmac_ring_to_cpu(host);
++	val = READ_ONCE(desc->des0);
++	if (!IDMAC_OWN_CLR64(val))
++		dw_mci_idmac_ring_to_device(host);
++
++	return val;
++}
++
+ static int dw_mci_idmac_init(struct dw_mci *host)
+ {
+ 	int i;
+ 
++	/*
++	 * The ring links written below are CPU stores, so the ring has to be
++	 * in the CPU domain first.  Without this an entry from runtime resume
++	 * or from the err_own_bit recovery would leave sg_device_owned set and
++	 * suppress the handover at the end of this function.
++	 */
++	dw_mci_idmac_ring_to_cpu(host);
++
+ 	if (host->dma_64bit_address == 1) {
+ 		struct idmac_desc_64addr *p;
+ 		/* Number of descriptors in the ring buffer */
+@@ -767,6 +880,15 @@ static int dw_mci_idmac_init(struct dw_m
+ 		p->des0 = cpu_to_le32(IDMAC_DES0_ER);
+ 	}
+ 
++	/*
++	 * Hand the freshly initialised ring to the device before it is used.
++	 * Without this the first CPU-side synchronisation would invalidate the
++	 * still-dirty ring links written just above and throw them away, and
++	 * the descriptor base address programmed below would point at whatever
++	 * memory held before this function ran.
++	 */
++	dw_mci_idmac_ring_to_device(host);
++
+ 	dw_mci_idmac_reset(host);
+ 
+ 	if (host->dma_64bit_address == 1) {
+@@ -807,11 +929,23 @@ static inline int dw_mci_prepare_desc64(
+ 	if (record)
+ 		record->desc_first = 0;
+ 
++	/*
++	 * Pass 1: wait for IDMAC to release every descriptor this transfer
++	 * needs, before any of them is written.
++	 *
++	 * The poll is split from the fill because polling a noncoherent ring
++	 * invalidates it, and an invalidate is not selective enough to spare a
++	 * descriptor already written in the same cache line.  While this loop
++	 * runs the ring holds no dirty CPU writes, so it can be refreshed from
++	 * memory as many times as the poll needs.  The per-descriptor 10 us /
++	 * 100 ms cadence is unchanged, and so is the order in which
++	 * descriptors are waited for.
++	 */
++	dw_mci_idmac_ring_to_cpu(host);
++
+ 	for (i = 0; i < sg_len; i++) {
+ 		unsigned int length = sg_dma_len(&data->sg[i]);
+ 
+-		u64 mem_addr = sg_dma_address(&data->sg[i]);
+-
+ 		for ( ; length ; desc++) {
+ 			desc_len = (length <= DW_MCI_DESC_DATA_LENGTH) ?
+ 				   length : DW_MCI_DESC_DATA_LENGTH;
+@@ -825,11 +959,13 @@ static inline int dw_mci_prepare_desc64(
+ 			 * ops and CPU's read ops are asynchronous.
+ 			 */
+ 			if (record && desc == desc_first)
+-				record->own_before = READ_ONCE(desc->des0);
+-			ret = readl_poll_timeout_atomic(&desc->des0, val,
+-							!(val & IDMAC_DES0_OWN),
+-							10,
+-							100 * USEC_PER_MSEC);
++				record->own_before =
++					dw_mci_idmac_own64(host, desc);
++			ret = read_poll_timeout_atomic(dw_mci_idmac_own64, val,
++						       !(val & IDMAC_DES0_OWN),
++						       10,
++						       100 * USEC_PER_MSEC,
++						       false, host, desc);
+ 			if (record && desc == desc_first)
+ 				record->own_after_poll = val;
+ 			if (ret) {
+@@ -837,6 +973,26 @@ static inline int dw_mci_prepare_desc64(
+ 					record->own_timeout = 1;
+ 				goto err_own_bit;
+ 			}
++		}
++	}
++
++	/*
++	 * Pass 2: fill the descriptors in.  The ring is CPU-owned and stays
++	 * that way; dw_mci_idmac_start_dma() performs the single handover to
++	 * the device once the whole chain is written.
++	 */
++	desc = desc_first;
++
++	for (i = 0; i < sg_len; i++) {
++		unsigned int length = sg_dma_len(&data->sg[i]);
++
++		u64 mem_addr = sg_dma_address(&data->sg[i]);
++
++		for ( ; length ; desc++) {
++			desc_len = (length <= DW_MCI_DESC_DATA_LENGTH) ?
++				   length : DW_MCI_DESC_DATA_LENGTH;
++
++			length -= desc_len;
+ 
+ 			/*
+ 			 * Set the OWN bit and disable interrupts
+@@ -879,6 +1035,12 @@ static inline int dw_mci_prepare_desc64(
+ err_own_bit:
+ 	/* restore the descriptor chain as it's polluted */
+ 	dev_dbg(host->dev, "descriptor is still owned by IDMAC.\n");
++	/*
++	 * The poll left the ring in the device domain so IDMAC could update
++	 * it.  Take it back before the memset below, or the invalidate inside
++	 * dw_mci_idmac_init() would discard the cleared ring.
++	 */
++	dw_mci_idmac_ring_to_cpu(host);
+ 	memset(host->sg_cpu, 0, DESC_RING_BUF_SZ);
+ 	dw_mci_idmac_init(host);
+ 	return -EINVAL;
+@@ -900,11 +1062,16 @@ static inline int dw_mci_prepare_desc32(
+ 	if (record)
+ 		record->desc_first = 0;
+ 
++	/*
++	 * Pass 1: wait for IDMAC to release every descriptor this transfer
++	 * needs, before any of them is written.  See dw_mci_prepare_desc64()
++	 * for why the poll and the fill are separate passes.
++	 */
++	dw_mci_idmac_ring_to_cpu(host);
++
+ 	for (i = 0; i < sg_len; i++) {
+ 		unsigned int length = sg_dma_len(&data->sg[i]);
+ 
+-		u32 mem_addr = sg_dma_address(&data->sg[i]);
+-
+ 		for ( ; length ; desc++) {
+ 			desc_len = (length <= DW_MCI_DESC_DATA_LENGTH) ?
+ 				   length : DW_MCI_DESC_DATA_LENGTH;
+@@ -917,13 +1084,16 @@ static inline int dw_mci_prepare_desc32(
+ 			 * isn't still owned by IDMAC as IDMAC's write
+ 			 * ops and CPU's read ops are asynchronous.
+ 			 */
+-			if (record && desc == desc_first)
+-				record->own_before =
+-					le32_to_cpu(READ_ONCE(desc->des0));
+-			ret = readl_poll_timeout_atomic(&desc->des0, val,
+-							IDMAC_OWN_CLR64(val),
+-							10,
+-							100 * USEC_PER_MSEC);
++			if (record && desc == desc_first) {
++				u32 own = dw_mci_idmac_own32(host, desc);
++
++				record->own_before = le32_to_cpu(own);
++			}
++			ret = read_poll_timeout_atomic(dw_mci_idmac_own32, val,
++						       IDMAC_OWN_CLR64(val),
++						       10,
++						       100 * USEC_PER_MSEC,
++						       false, host, desc);
+ 			if (record && desc == desc_first)
+ 				record->own_after_poll = le32_to_cpu(val);
+ 			if (ret) {
+@@ -931,6 +1101,25 @@ static inline int dw_mci_prepare_desc32(
+ 					record->own_timeout = 1;
+ 				goto err_own_bit;
+ 			}
++		}
++	}
++
++	/*
++	 * Pass 2: fill the descriptors in.  The ring stays CPU-owned until
++	 * dw_mci_idmac_start_dma() hands the completed chain over.
++	 */
++	desc = desc_first;
++
++	for (i = 0; i < sg_len; i++) {
++		unsigned int length = sg_dma_len(&data->sg[i]);
++
++		u32 mem_addr = sg_dma_address(&data->sg[i]);
++
++		for ( ; length ; desc++) {
++			desc_len = (length <= DW_MCI_DESC_DATA_LENGTH) ?
++				   length : DW_MCI_DESC_DATA_LENGTH;
++
++			length -= desc_len;
+ 
+ 			/*
+ 			 * Set the OWN bit and disable interrupts
+@@ -973,6 +1162,12 @@ static inline int dw_mci_prepare_desc32(
+ err_own_bit:
+ 	/* restore the descriptor chain as it's polluted */
+ 	dev_dbg(host->dev, "descriptor is still owned by IDMAC.\n");
++	/*
++	 * The poll left the ring in the device domain so IDMAC could update
++	 * it.  Take it back before the memset below, or the invalidate inside
++	 * dw_mci_idmac_init() would discard the cleared ring.
++	 */
++	dw_mci_idmac_ring_to_cpu(host);
+ 	memset(host->sg_cpu, 0, DESC_RING_BUF_SZ);
+ 	dw_mci_idmac_init(host);
+ 	return -EINVAL;
+@@ -992,13 +1187,15 @@ static int dw_mci_idmac_start_dma(struct
+ 		goto out;
+ 
+ 	/*
+-	 * Flush the descriptor ring out of the CPU cache so IDMAC sees the
+-	 * descriptors we just wrote. No-op if sg_cpu came from
+-	 * dma_alloc_coherent (already coherent); real cache writeback when
+-	 * we fell back to plain pages on a NOMMU non-coherent platform.
++	 * Hand the completed descriptor chain over to the device.  This is the
++	 * single point at which the ring leaves the CPU domain for a transfer;
++	 * IDMAC writes the OWN bit back into the same memory, so the direction
++	 * is bidirectional rather than to-device.  It is paired with the return
++	 * in dw_mci_dmac_complete_dma() on the normal path and the one in
++	 * dw_mci_idmac_stop_dma() on the abort and error paths.  Skipped
++	 * entirely on a coherent ring.
+ 	 */
+-	dma_sync_single_for_device(host->dev, host->sg_dma,
+-				   DESC_RING_BUF_SZ, DMA_TO_DEVICE);
++	dw_mci_idmac_ring_to_device(host);
+ 
+ 	/* drain writebuffer */
+ 	wmb();
+@@ -3415,6 +3612,27 @@ static void dw_mci_cleanup_slot(struct d
+ 	slot->host->slot = NULL;
+ }
+ 
++/*
++ * dma_alloc_noncoherent() is not device-managed, unlike the coherent path, so
++ * pair it with an explicit release.
++ *
++ * This is registered with devm_add_action_or_reset(), which ties it to the
++ * device's own lifetime: probe failure and remove, and nothing else.  It must
++ * not be reachable from dma_ops->exit, because dw_mci_runtime_suspend() calls
++ * that and dw_mci_runtime_resume() then calls dma_ops->init(), which expects
++ * the ring to still exist.
++ */
++static void dw_mci_free_noncoherent_ring(void *data)
++{
++	struct dw_mci *host = data;
++
++	dma_free_noncoherent(host->dev, DESC_RING_BUF_SZ, host->sg_cpu,
++			     host->sg_dma, DMA_BIDIRECTIONAL);
++	host->sg_cpu = NULL;
++	host->sg_noncoherent = false;
++	host->sg_device_owned = false;
++}
++
+ static void dw_mci_init_dma(struct dw_mci *host)
+ {
+ 	int addr_config;
+@@ -3470,23 +3688,46 @@ static void dw_mci_init_dma(struct dw_mc
+ 						   &host->sg_dma, GFP_KERNEL);
+ 		if (!host->sg_cpu) {
+ 			/*
+-			 * Coherent DMA alloc not available on this platform
+-			 * (NOMMU, no uncached aperture). Fall back to plain
+-			 * cached pages; we explicitly cache_writeback the
+-			 * descriptor ring before each IDMAC kick — see
+-			 * dw_mci_idmac_start_dma().
++			 * Coherent DMA alloc is unavailable on this platform
++			 * (NOMMU: neither ARCH_HAS_DMA_SET_UNCACHED nor
++			 * DMA_DIRECT_REMAP). Take a proper noncoherent DMA
++			 * allocation instead of hand-rolling one out of
++			 * devm_kzalloc() + virt_to_phys(): this gives a real
++			 * dma_addr_t from the DMA API, memory the API is
++			 * willing to cache-maintain, and page granularity, so
++			 * the ownership syncs below are well defined rather
++			 * than relying on a phys == dma 1:1 assumption.
+ 			 */
+-			host->sg_cpu = devm_kzalloc(host->dev,
+-						    DESC_RING_BUF_SZ,
+-						    GFP_KERNEL);
++			host->sg_cpu = dma_alloc_noncoherent(host->dev,
++							     DESC_RING_BUF_SZ,
++							     &host->sg_dma,
++							     DMA_BIDIRECTIONAL,
++							     GFP_KERNEL);
+ 			if (host->sg_cpu) {
++				host->sg_noncoherent = true;
++				host->sg_device_owned = false;
+ 				/*
+-				 * NOMMU + dma-direct: phys == dma_addr (1:1).
+-				 * Revisit if an IOMMU layer ever appears on this SoC.
++				 * The ownership syncs cover the whole ring, so
++				 * both ends must sit on a cache-line boundary
++				 * or a sync would share a line with memory the
++				 * ring does not own.  A page-sized allocation
++				 * satisfies this; assert it rather than assume
++				 * it, using the alignment the DMA API reports
++				 * instead of a hard-coded line size.
+ 				 */
+-				host->sg_dma = virt_to_phys(host->sg_cpu);
+-				dev_info(host->dev,
+-					 "IDMAC: cached descriptor ring with manual cache sync\n");
++				WARN_ON_ONCE(!IS_ALIGNED(host->sg_dma,
++							 dma_get_cache_alignment()) ||
++					     !IS_ALIGNED(DESC_RING_BUF_SZ,
++							 dma_get_cache_alignment()));
++				if (devm_add_action_or_reset(host->dev,
++							     dw_mci_free_noncoherent_ring,
++							     host)) {
++					host->sg_cpu = NULL;
++					host->sg_noncoherent = false;
++				} else {
++					dev_info(host->dev,
++						 "IDMAC: noncoherent descriptor ring with explicit ownership sync\n");
++				}
+ 			}
+ 		}
+ 		if (!host->sg_cpu) {

@@ -1,0 +1,18 @@
+# BusyBox inetd is the NOMMU front-end for Dropbear.  Buildroot forces
+# NON_INETD_MODE=0 for Dropbear when BR2_USE_MMU is disabled.
+CONFIG_INETD=y
+CONFIG_PASSWD=y
+CONFIG_MODPROBE=y
+CONFIG_INSMOD=y
+CONFIG_LSMOD=y
+CONFIG_RMMOD=y
+# Buildroot's stock udhcpc default.script calls the BusyBox mktemp
+# applet while applying a lease.
+CONFIG_MKTEMP=y
+CONFIG_SHA256SUM=y
+CONFIG_NTPD=y
+CONFIG_HWCLOCK=y
+CONFIG_SYSLOGD=y
+CONFIG_DEVMEM=y
+CONFIG_DEFAULT_MODULES_DIR="/lib/modules"
+CONFIG_DEFAULT_DEPMOD_FILE="modules.dep"

@@ -1,0 +1,16 @@
+# The M1 defconfig used Buildroot's stock busybox config, which does not
+# enable the kernel module loading applets.  S40network calls insmod to load
+# esp32_sdio after the board post-build removes mdev's modalias autoload rule;
+# without this fragment the driver cannot be loaded even though esp32_sdio.ko
+# is built and installed correctly.
+CONFIG_MODPROBE=y
+CONFIG_INSMOD=y
+CONFIG_LSMOD=y
+CONFIG_RMMOD=y
+# Buildroot's stock udhcpc default.script calls the BusyBox mktemp
+# applet while applying a lease.  Without it, DHCP deconfig/configure
+# fails after the Wi-Fi association even though the driver is healthy.
+CONFIG_MKTEMP=y
+CONFIG_SHA256SUM=y
+CONFIG_DEFAULT_MODULES_DIR="/lib/modules"
+CONFIG_DEFAULT_DEPMOD_FILE="modules.dep"

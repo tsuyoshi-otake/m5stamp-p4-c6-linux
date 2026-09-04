@@ -1,0 +1,38 @@
+Subject: [PATCH] mmc: dw_mmc: keep Slot 1 on CLKDIV byte 0
+
+Partially reverts the CLKDIV hunk that the WHY2025 reference patch
+`0007-mmc-dw_mmc-esp32p4-fixes.patch` adds to dw_mci_setup_bus().  That hunk
+makes the divider byte follow slot->id, which is correct on a controller whose
+CLKSRC selects a per-slot divider.  On the ESP32-P4 CLKSRC stays zero, so
+physical Slot 1 still reads divider 0 and writing byte 1 leaves the card on
+the bypass clock.
+
+The block removed below is 0007's, not upstream's; both patches must be read
+together.  `snps,slot-id = <1>` remains correct for every other use of
+slot->id on this port (CMD card_number, CTYPE, SDMMC_INT_SDIO, and the
+CLKENA enable/low-power bits) -- CLKDIV is the single exception.
+
+--- a/drivers/mmc/host/dw_mmc.c
++++ b/drivers/mmc/host/dw_mmc.c
+@@ -1283,14 +1283,8 @@
+-		/*
+-		 * CLKDIV: bits [7:0] = slot 0 divider, [15:8] = slot 1, etc.
+-		 * Read-modify-write to keep other slots' dividers intact and
+-		 * place ours at the right byte for slot->id.
+-		 */
+-		{
+-			u32 clkdiv = mci_readl(host, CLKDIV);
+-			u32 shift  = slot->id * 8;
+-
+-			clkdiv &= ~(0xff << shift);
+-			clkdiv |= (div & 0xff) << shift;
+-			mci_writel(host, CLKDIV, clkdiv);
+-		}
++		/*
++		 * CLKSRC remains zero, so physical Slot 1 also selects divider 0.
++		 * Updating divider 1 leaves the card at the bypass clock and makes
++		 * the existing command/data timeout calculations inconsistent.
++		 */
++		mci_writel(host, CLKDIV,
++			   (mci_readl(host, CLKDIV) & ~0xffu) | (div & 0xffu));
+ 

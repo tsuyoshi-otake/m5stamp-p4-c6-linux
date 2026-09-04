@@ -1,0 +1,26 @@
+diff --git a/arch/riscv/kernel/traps.c b/arch/riscv/kernel/traps.c
+--- a/arch/riscv/kernel/traps.c
++++ b/arch/riscv/kernel/traps.c
+@@ -20,6 +20,7 @@
+ #include <linux/mm.h>
+ #include <linux/module.h>
+ #include <linux/irq.h>
++#include <linux/smp.h>
+ #include <linux/kexec.h>
+ #include <linux/entry-common.h>
+ 
+@@ -172,6 +173,14 @@
+ 
+ asmlinkage __visible __trap_section void do_trap_insn_illegal(struct pt_regs *regs)
+ {
++	if (smp_processor_id() == 1)
++		pr_info("OBS cpu1-illegal mode=%u current=%d/%s "
++			"status=%08lx epc=%08lx ra=%08lx sp=%08lx tp=%08lx "
++			"cause=%08lx tval=%08lx scratch=%08lx\n",
++			user_mode(regs), current->pid, current->comm,
++			regs->status, regs->epc, regs->ra, regs->sp, regs->tp,
++			regs->cause, regs->badaddr, csr_read(CSR_SCRATCH));
++
+ 	bool handled;
+ 
+ 	if (user_mode(regs)) {

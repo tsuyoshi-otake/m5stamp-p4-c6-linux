@@ -1,0 +1,33 @@
+--- a/drivers/clocksource/timer-esp32p4-systimer.c
++++ b/drivers/clocksource/timer-esp32p4-systimer.c
+@@ -48,1 +48,1 @@
+- * CLIC slot 17 is edge-triggered (DTS: IRQ_TYPE_EDGE_RISING). The flow
++ * CLIC slot 17 is level-triggered (DTS: IRQ_TYPE_LEVEL_HIGH). The flow
+@@ -54,8 +54,5 @@
+- * CLIC base and INTIP offset come from the irqchip driver.
+- */
+-#define CLIC_BASE        0x20801000
+-#define CLIC_INTIP_OFF   0
++ * CLIC source status is cleared by the ISR; no direct INTIP write is needed.
++ */
+ 
+ static void __iomem *st_base;
+ static unsigned int esp32p4_timer_irq;
+-static void __iomem *clic_slot17_intip;
+@@ -140,8 +140,0 @@
+-	/*
+-	 * Clear CLIC slot 17 pending bit. handle_percpu_devid_irq does not
+-	 * call irq_ack, so without this the edge-triggered slot stays latched
+-	 * and no further rising edges are seen after the first fire.
+-	 */
+-	if (clic_slot17_intip)
+-		writeb(0, clic_slot17_intip);
+-
+@@ -164,7 +164,0 @@
+-	/* Map CLIC slot 17 INTIP byte for direct ack from our ISR. */
+-	clic_slot17_intip = ioremap(CLIC_BASE + CLIC_SLOT_SYSTIMER * 4 +
+-				    CLIC_INTIP_OFF, 1);
+-	if (!clic_slot17_intip)
+-		pr_warn("could not map CLIC INTIP for slot %d; tick may stall\n",
+-			CLIC_SLOT_SYSTIMER);
+-

@@ -1,0 +1,3 @@
+# Deliberate Raspberry-Pi-style first-boot account for the experimental image.
+# Change this password immediately after the first successful login.
+pi 1000 pi 1000 $1$easystic$2Ms/.ldoGSWxG26ffkFnh0 /home/pi /bin/sh - EasyStick initial user

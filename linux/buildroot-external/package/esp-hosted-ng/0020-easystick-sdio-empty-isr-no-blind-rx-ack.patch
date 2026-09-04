@@ -1,0 +1,104 @@
+From: EasyStick maintainers <noreply@example.invalid>
+Subject: [PATCH] sdio: never blind-ack RX_NEW_PACKET after RX ready
+
+0018 correctly ACKs a nonzero INT_RAW sample when INT_ST==0 and BIT 23
+is not yet set (empty-raw-ack of 0x004cf800). Those bits are R/WTC on
+ESP32-C6 SLCHOST, so writing the observed RAW to INT_CLR is hardware-
+correct. The remaining TOCTOU is the RAW==0 fallback: it still wrote
+ESP_SLAVE_INT_CLR_KNOWN, which includes BIT 23. Sequence:
+
+  1. host reads INT_RAW == 0
+  2. C6 latches RX_NEW_PACKET
+  3. host writes CLR_KNOWN
+  4. unread BIT 23 is cleared
+
+After ESP_CONTEXT_RX_READY, never acknowledge an unobserved
+RX_NEW_PACKET. Keep CLR_KNOWN (with BIT 23) only while !dispatch so
+the boot DAT1 spin still dies. When RAW==0 after RX ready, also sample
+PACKET_LEN; if it advanced past context->rx_byte_count, promote BIT 23
+and dispatch instead of fabricating a silent drop.
+
+Invariant after RX ready: INT_ST -> INT_RAW -> PACKET_LEN -> ACK, and
+BIT 23 is cleared only when this path observed it (RAW sample, ST, or
+PACKET_LEN advance).
+
+What this cannot see: AP isolation, a wedged C6 Wi-Fi RX path that
+never advances PACKET_LEN, or INT_ENA misconfiguration. Negative tests:
+boot has no 254x status=0x00000000 storm; cold 4-way still gets msg3
+and two ADD_KEY; after RX ready, empty RAW==0 never writes BIT 23 in
+the ACK value.
+
+---
+--- a/sdio/esp_sdio.c
++++ b/sdio/esp_sdio.c
+@@ -224,6 +224,11 @@
+ 				 ESP_SLAVE_RX_UNDERFLOW_INT |			\
+ 				 ESP_SLAVE_TX_OVERFLOW_INT |			\
+ 				 ESP_SLAVE_RX_NEW_PACKET_INT)
++/*
++ * ESP32-C6 SLCHOST SLC0 raw interrupt bits 0..25 are R/WTC.  Mask observed
++ * RAW before INT_CLR so a stray upper bit cannot be written as clear.
++ */
++#define ESP_C6_SLCHOST_INT_W1C_MASK	0x03ffffffU
+ 
+ static void esp_handle_isr(struct sdio_func *func)
+ {
+@@ -296,6 +301,24 @@
+ 			esp_info("SDIO IRQ empty-raw-rx: streak=%u st_ret=%d raw=0x%08x dispatch=%d\n",
+ 				 empty_isr_streak, ret, raw, dispatch);
+ 			status_read = ESP_SLAVE_RX_NEW_PACKET_INT;
++		} else if (dispatch && !raw_ret && !raw) {
++			u32 pkt_len = 0;
++			int pkt_ret = esp_read_reg(context,
++					ESP_SLAVE_PACKET_LEN_REG,
++					(u8 *) &pkt_len, sizeof(pkt_len),
++					ACQUIRE_LOCK);
++
++			pkt_len &= ESP_SLAVE_LEN_MASK;
++			if (!pkt_ret && pkt_len != context->rx_byte_count) {
++				esp_info("SDIO IRQ empty-pktlen-rx: streak=%u pkt_len=%u rx_byte=%u\n",
++					 empty_isr_streak, pkt_len,
++					 context->rx_byte_count);
++				status_read = ESP_SLAVE_RX_NEW_PACKET_INT;
++			} else if (empty_isr_streak < 4 ||
++				   !(empty_isr_streak % 256)) {
++				esp_info("SDIO IRQ empty: streak=%u st_ret=%d raw=0x%08x raw_ret=%d dispatch=%d\n",
++					 empty_isr_streak, ret, raw, raw_ret, dispatch);
++			}
+ 		} else if (empty_isr_streak < 4 || !(empty_isr_streak % 256)) {
+ 			esp_info("SDIO IRQ empty: streak=%u st_ret=%d raw=0x%08x raw_ret=%d dispatch=%d\n",
+ 				 empty_isr_streak, ret, raw, raw_ret, dispatch);
+@@ -319,11 +342,29 @@
+ 		 * still uses CLR_KNOWN for the boot DAT1 spin.
+ 		 */
+ 		if (!raw_ret && raw) {
+-			esp_info("SDIO IRQ empty-raw-ack: streak=%u raw=0x%08x\n",
+-				 empty_isr_streak, raw);
+-			*int_status = raw;
++			u32 ack = raw & ESP_C6_SLCHOST_INT_W1C_MASK;
++
++			esp_info("SDIO IRQ empty-raw-ack: streak=%u raw=0x%08x ack=0x%08x\n",
++				 empty_isr_streak, raw, ack);
++			*int_status = ack;
++		} else if (!dispatch) {
++			/*
++			 * Boot / pre-RX_READY: keep 0011 CLR_KNOWN so the DAT1
++			 * spin dies.  BIT 23 is included here only before the
++			 * adapter accepts packets.
++			 */
++			*int_status = ESP_SLAVE_INT_CLR_KNOWN;
+ 		} else {
+-			*int_status = ESP_SLAVE_INT_CLR_KNOWN;
++			/*
++			 * RX_READY: never blind-ack an unobserved RX_NEW_PACKET.
++			 * RAW was zero (or unreadable); clearing BIT 23 here is
++			 * the TOCTOU 0018 left open.
++			 */
++			*int_status = ESP_SLAVE_INT_CLR_KNOWN
++				& ~ESP_SLAVE_RX_NEW_PACKET_INT;
++			if (empty_isr_streak < 4 || !(empty_isr_streak % 256))
++				esp_info("SDIO IRQ empty-safe-ack: streak=%u ack=0x%08x\n",
++					 empty_isr_streak, *int_status);
+ 		}
+ 	}
+ 

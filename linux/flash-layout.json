@@ -1,0 +1,41 @@
+{
+  "schema": 1,
+  "status": "candidate_not_for_flash",
+  "board": "EasyStick Stamp-P4 carrier Rev0.15 WIP",
+  "board_contract": "../board-contract.json",
+  "flash_bytes": 16777216,
+  "alignment_bytes": 4096,
+  "write_gate": "blocked_until_m0_rom_recovery_cycles",
+  "evidence": {
+    "stock_partition_map": "../tests/m0-serial-observation-2026-08-09.md",
+    "stock_readback": "../board-contract.json",
+    "note": "The candidate regions fit the measured 16 MiB device but have not been written or accepted as the final boot map."
+  },
+  "load_addresses": {
+    "kernel_psram": "0x48000000",
+    "dtb_psram": "0x48800000",
+    "psram_bytes": 33554432
+  },
+  "regions": [
+    { "name": "rom-reserved", "offset": "0x000000", "size_bytes": "0x002000", "kind": "reserved" },
+    { "name": "bootloader", "offset": "0x002000", "size_bytes": "0x006000", "kind": "esp-idf-bootloader" },
+    { "name": "partition-table", "offset": "0x008000", "size_bytes": "0x001000", "kind": "esp-idf-partition-table" },
+    { "name": "nvs", "offset": "0x009000", "size_bytes": "0x006000", "kind": "stock-data-reference" },
+    { "name": "phy-init", "offset": "0x00f000", "size_bytes": "0x001000", "kind": "stock-data-reference" },
+    { "name": "boot-shim", "offset": "0x010000", "size_bytes": "0x080000", "kind": "esp-idf-app", "artifact": true },
+    { "name": "kernel", "offset": "0x090000", "size_bytes": "0x680000", "kind": "flat-riscv-image", "artifact": true },
+    { "name": "rootfs", "offset": "0x710000", "size_bytes": "0x800000", "kind": "squashfs-mtd-rom", "artifact": true, "power_of_two": true },
+    { "name": "dtb", "offset": "0xf10000", "size_bytes": "0x010000", "kind": "flattened-device-tree", "artifact": true },
+    { "name": "crashlog", "offset": "0xf20000", "size_bytes": "0x020000", "kind": "writable-crash-capsule", "artifact": false },
+    { "name": "tail-reserve", "offset": "0xf40000", "size_bytes": "0x0c0000", "kind": "reserved" }
+  ],
+  "invariants": {
+    "one_hp_core": true,
+    "mmu": false,
+    "rootfs_read_only": true,
+    "rootfs_mtd_rom_placeholder": ["0xdeadbeef", "0xcafefade"],
+    "c6_sdio_in_m1": false,
+    "usb_gadget_in_m1": false,
+    "write_commands_allowed": false
+  }
+}

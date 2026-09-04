@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "target": "10.255.10.161",
+  "username": "pi",
+  "command": "id",
+  "captured_utc": "2026-08-27T03:17:02.505582+00:00",
+  "events": [
+    {
+      "event": "TCP22_FAIL",
+      "elapsed": 5.093,
+      "error": "TimeoutError:timed out"
+    },
+    {
+      "event": "TOP_EXCEPTION",
+      "elapsed": 13.109,
+      "error": "TimeoutError:timed out"
+    },
+    {
+      "event": "SSH_CLIENT_CLOSED",
+      "elapsed": 13.109
+    },
+    {
+      "event": "POST_TCP22_FAIL",
+      "elapsed": 16.109,
+      "error": "TimeoutError:timed out"
+    }
+  ],
+  "stdout": "",
+  "stderr": ""
+}

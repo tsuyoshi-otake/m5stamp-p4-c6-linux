@@ -1,0 +1,19 @@
+[submodule "vendor/esp-hosted"]
+	path = vendor/esp-hosted
+	url = https://github.com/espressif/esp-hosted.git
+
+[submodule "vendor/linux"]
+	path = vendor/linux
+	url = https://github.com/torvalds/linux.git
+
+[submodule "vendor/buildroot"]
+	path = vendor/buildroot
+	url = https://gitlab.com/buildroot.org/buildroot.git
+
+[submodule "vendor/esp-idf"]
+	path = vendor/esp-idf
+	url = https://github.com/espressif/esp-idf.git
+
+[submodule "vendor/why2025-linux"]
+	path = vendor/why2025-linux
+	url = https://github.com/mrbreaker/why2025-linux.git

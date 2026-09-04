@@ -1,0 +1,109 @@
+--- a/drivers/irqchip/irq-esp32p4-ipi.c
++++ b/drivers/irqchip/irq-esp32p4-ipi.c
+@@ -25,6 +25,7 @@
+ #include <linux/seq_file.h>
+ #include <linux/smp.h>
+ #include <linux/uaccess.h>
++#include <linux/workqueue.h>
+ 
+ #include <asm/smp.h>
+ 
+@@ -42,6 +43,11 @@
+ struct esp32p4_l3_smoke_result {
+ 	struct completion cpu0_started;
+ 	struct completion reverse_done;
++	struct work_struct reverse_work;
++	u32 generation;
++	u32 reverse_work_generation;
++	bool reverse_work_active;
++	bool reverse_work_initialized;
+ 	int cpu0_callback_cpu;
+ 	int forward_cpu;
+ 	int reverse_initiator_cpu;
+@@ -67,6 +69,24 @@
+ 	struct esp32p4_l3_smoke_result *result = arg;
+ 
+ 	result->reverse_cpu = raw_smp_processor_id();
++}
++
++static void esp32p4_l3_smoke_reverse_work(struct work_struct *work)
++{
++	struct esp32p4_l3_smoke_result *result =
++		container_of(work, struct esp32p4_l3_smoke_result, reverse_work);
++
++	if (result->reverse_work_generation != result->generation) {
++		result->reverse_work_active = false;
++		return;
++	}
++	if (raw_smp_processor_id() != 1)
++		result->reverse_target_rc = -EXDEV;
++	else
++		result->reverse_target_rc =
++			smp_call_function_single(0, esp32p4_l3_smoke_reverse_target,
++					 result, 1);
++	result->reverse_work_active = false;
+ 	complete(&result->reverse_done);
+ }
+ 
+@@ -97,11 +112,18 @@
+-static void esp32p4_l3_smoke_reverse_start(void *arg)
+-{
+-	struct esp32p4_l3_smoke_result *result = arg;
+-
+-	result->reverse_initiator_cpu = raw_smp_processor_id();
+-	result->reverse_target_rc =
+-		smp_call_function_single(0, esp32p4_l3_smoke_reverse_target,
+-					 result, 0);
+-	if (result->reverse_target_rc)
+-		complete(&result->reverse_done);
+-}
++static void esp32p4_l3_smoke_reverse_start(void *arg)
++{
++	struct esp32p4_l3_smoke_result *result = arg;
++
++	result->reverse_initiator_cpu = raw_smp_processor_id();
++	if (result->reverse_work_active) {
++		result->reverse_target_rc = -EBUSY;
++		complete(&result->reverse_done);
++		return;
++	}
++	result->reverse_work_generation = result->generation;
++	result->reverse_work_active = true;
++	if (!schedule_work_on(1, &result->reverse_work)) {
++		result->reverse_work_active = false;
++		result->reverse_target_rc = -EBUSY;
++		complete(&result->reverse_done);
++	}
++}
+@@ -112,6 +126,17 @@
+ 
++	if (result->reverse_work_initialized &&
++	    WARN_ON_ONCE(work_pending(&result->reverse_work)))
++		return -EBUSY;
++	result->generation++;
++	if (!result->generation)
++		result->generation = 1;
+	init_completion(&result->cpu0_started);
+ 	init_completion(&result->reverse_done);
++	if (!result->reverse_work_initialized) {
++		INIT_WORK(&result->reverse_work, esp32p4_l3_smoke_reverse_work);
++		result->reverse_work_initialized = true;
++	}
++	result->reverse_work_active = false;
+ 	result->cpu0_callback_cpu = -1;
+ 	result->forward_cpu = -1;
+ 	result->reverse_initiator_cpu = -1;
+@@ -152,9 +167,13 @@
+ 	}
+ 
+ 	result->status = 1;
++	cancel_work_sync(&result->reverse_work);
++	result->reverse_work_active = false;
+ 	return 0;
+ 
+ fail:
++	cancel_work_sync(&result->reverse_work);
++	result->reverse_work_active = false;
+ 	result->status = 0;
+ 	return ret;
+ }

@@ -1,0 +1,32 @@
+From: EasyStick maintainers <noreply@example.invalid>
+Subject: [PATCH] sdio: attest requested and effective host clock
+
+The module parameter is only a request.  Record the value applied to the MMC
+host together with mmc_host->ios.clock and mmc_host->actual_clock so a clock
+arm cannot be judged from its init-script label alone.
+
+---
+ sdio/esp_sdio.c | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/sdio/esp_sdio.c b/sdio/esp_sdio.c
+--- a/sdio/esp_sdio.c
++++ b/sdio/esp_sdio.c
+@@ -16,6 +16,7 @@
+ #include <linux/mmc/sdio_ids.h>
+ #include <linux/mmc/card.h>
+ #include <linux/mmc/host.h>
++#include <linux/kernel.h>
+ #include <linux/module.h>
+ #include <linux/proc_fs.h>
+ #include <linux/seq_file.h>
+@@ -1266,5 +1266,9 @@ static int esp_probe(struct sdio_func *func,
+ 		host->ios.clock = hz;
+ 		host->ops->set_ios(host, &host->ios);
++		pr_info("ES_SDIO_CLOCK_APPLY requested_mhz=%u ios_clock_hz=%u "
++			"actual_clock_hz=%u\n",
++			sdio_context.sdio_clk_mhz, host->ios.clock,
++			host->actual_clock);
+ 	}
+ 
+ 	ret = init_context(context);

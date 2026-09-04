@@ -1,0 +1,52 @@
+From: EasyStick maintainers <noreply@example.invalid>
+Subject: [PATCH] sdio: transmit exact packet length without 512-byte block padding
+
+The ESP-Hosted-NG host driver previously padded every outgoing frame to a
+multiple of 512 bytes (ESP_BLOCK_SIZE), reading beyond the allocated skb
+boundary into uninitialized memory and forcing all transfers into SDIO block
+mode.
+
+On ESP32-C6 SDIO slave, repeated CMD53 block-mode writes cause the SLC DMA
+descriptor chain to lose internal synchronization, permanently asserting
+DAT0 busy and resulting in communications failure (Espressif EHM-188).
+
+Transmit exact 4-byte-aligned frame length without 512-byte block padding.
+Frames <= 512 bytes are transferred via SDIO byte mode, avoiding the C6
+SLC block-mode DMA descriptor synchronization bug.
+
+---
+ sdio/esp_sdio.c | 10 ++++------
+ 1 file changed, 4 insertions(+), 6 deletions(-)
+
+--- a/sdio/esp_sdio.c
++++ b/sdio/esp_sdio.c
+@@ -1150,24 +1150,23 @@
+ 		data_left = len_to_send = 0;
+ 
+ 		data_left = tx_skb->len;
+-		pad = ESP_BLOCK_SIZE - (data_left % ESP_BLOCK_SIZE);
+-		data_left += pad;
++		(void)pad;
++		(void)block_cnt;
+ 
+ 
+ 		do {
+-			block_cnt = data_left / ESP_BLOCK_SIZE;
+-			len_to_send = data_left;
++			len_to_send = (data_left + 3) & (~3);
+ 			esp_info("CMD53_TX: addr=0x%x bytes=%u\n",
+ 				 ESP_SLAVE_CMD53_END_ADDR - len_to_send, len_to_send);
+ 			ret = esp_write_block(context, ESP_SLAVE_CMD53_END_ADDR - len_to_send,
+-					pos, (len_to_send + 3) & (~3), ACQUIRE_LOCK);
++					pos, len_to_send, ACQUIRE_LOCK);
+ 
+ 			if (ret) {
+ 				esp_err("Failed to send data: %d %d %d\n", ret, len_to_send, data_left);
+ 				break;
+ 			}
+ 
+-			data_left -= len_to_send;
++			data_left = 0;
+ 			pos += len_to_send;
+ 		} while (data_left);
+ 

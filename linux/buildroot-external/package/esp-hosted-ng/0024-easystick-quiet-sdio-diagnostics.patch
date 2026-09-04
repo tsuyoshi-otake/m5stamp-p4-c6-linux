@@ -1,0 +1,28 @@
+From: EasyStick maintainers <noreply@example.invalid>
+Subject: [PATCH] sdio: keep transport breadcrumbs off the normal console path
+
+The functional RX interrupt fixes remain enabled, but the ESP-Hosted source
+uses esp_info() for packet and interrupt breadcrumbs.  On the ESP32-P4 NOMMU
+target that formatting and console work competes with SDIO and Dropbear.
+Lower only this translation unit's informational breadcrumbs to the debug
+level; error and warning reports remain visible.
+
+After 0005/0013 the include list has linux/delay.h and linux/ktime.h between
+utils.h and linux/mutex.h; keep the remapping immediately after utils.h so
+every later esp_info() call in this file is demoted.
+
+---
+ sdio/esp_sdio.c | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/sdio/esp_sdio.c b/sdio/esp_sdio.c
+--- a/sdio/esp_sdio.c
++++ b/sdio/esp_sdio.c
+@@ -8,5 +8,7 @@
+ #include "utils.h"
++#undef esp_info
++#define esp_info(format, ...) esp_logger(ESP_DEBUG, __func__, format, ##__VA_ARGS__)
+ #include <linux/delay.h>
+ #include <linux/ktime.h>
+ #include <linux/mutex.h>
+ #include <linux/mmc/sdio.h>

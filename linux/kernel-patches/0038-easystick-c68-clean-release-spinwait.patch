@@ -1,0 +1,41 @@
+diff --git a/arch/riscv/kernel/cpu_ops_spinwait.c b/arch/riscv/kernel/cpu_ops_spinwait.c
+index 111111111111..222222222222 100644
+@@ -5,6 +5,7 @@
+ 
+ #include <linux/errno.h>
+ #include <linux/of.h>
++#include <linux/kernel.h>
+ #include <linux/string.h>
+ #include <linux/sched/task_stack.h>
+ #include <asm/cpu_ops.h>
+@@ -13,6 +14,13 @@
+ 
+ #include "head.h"
+ 
++/* C68-CLEAN-RELEASE: nm-fixed boot-shim IRAM words (c68_release / c68_stage). */
++#define EASYSTICK_C68_RELEASE_PA	0xC68DEAD1u
++#define EASYSTICK_C68_STAGE_PA		0xC68DEAD2u
++#define EASYSTICK_C68_RELEASE_GO	0xC68A11A5u
++#define easystick_c68_release_ptr()	((volatile u32 __force *)EASYSTICK_C68_RELEASE_PA)
++#define easystick_c68_stage_ptr()	((volatile u32 __force *)EASYSTICK_C68_STAGE_PA)
++
+ const struct cpu_operations cpu_ops_spinwait;
+ void *__cpu_spinwait_stack_pointer[NR_CPUS] __section(".data");
+ void *__cpu_spinwait_task_pointer[NR_CPUS] __section(".data");
+@@ -50,6 +58,16 @@
+ 	 */
+ 	cpu_update_secondary_bootdata(cpuid, tidle);
+ 
++	smp_wmb();
++
++	if (cpuid == 1 &&
++	    of_machine_is_compatible("tsuyoshi-otake,easystick-stamp-p4")) {
++		WRITE_ONCE(*easystick_c68_release_ptr(), EASYSTICK_C68_RELEASE_GO);
++		smp_wmb();
++		pr_info("C68 RELEASE cpu=1 stage=%08x\n",
++			READ_ONCE(*easystick_c68_stage_ptr()));
++	}
++
+ 	return 0;
+ }
+ 

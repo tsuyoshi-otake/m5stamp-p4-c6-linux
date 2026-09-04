@@ -1,0 +1,69 @@
+{
+  "schema": 1,
+  "generated": "2026-08-09",
+  "policy": {
+    "source_checkouts": "pinned_git_submodules_or_external_build_directory",
+    "vendor_into_repository": true,
+    "vendor_form": "git_submodule_gitlinks_only; toolchains_and_generated_outputs_stay_external",
+    "submodule_initialise": "git submodule update --init --recursive",
+    "why2025_images_reusable": false,
+    "recovery_tool_versions": "pin outside the source checkout"
+  },
+  "host_tools": {
+    "esptool": {
+      "package": "esptool",
+      "version": "4.8.1",
+      "role": "P4 readback/recovery",
+      "notes": "5.3.1 lost the USB-Serial/JTAG response during this target's flash read; 4.8.1 completed two matching 16 MiB readbacks."
+    },
+    "pyserial": {
+      "package": "pyserial",
+      "role": "serial log capture"
+    }
+  },
+  "sources": {
+    "why2025_linux_reference": {
+      "repository": "https://github.com/mrbreaker/why2025-linux.git",
+      "commit": "bd790395c14968a27c00f962c9cd08d66f39de24",
+      "submodule_path": "projects/easystick-stamp-p4/firmware/vendor/why2025-linux",
+      "role": "reference_only",
+      "notes": "Native P4 NOMMU Linux proof; its board DTS and SPI C6 transport do not target EasyStick."
+    },
+    "linux_base": {
+      "repository": "https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git",
+      "tag": "v6.18.35",
+      "tag_object": "1e0ea17e5f018fdbf91c02f030452ea407be729f",
+      "commit": "acb7cf4c1184e27622be0faf89244d5001ed1e87",
+      "fetch_repository": "https://github.com/torvalds/linux.git",
+      "submodule_repository": "https://github.com/torvalds/linux.git",
+      "submodule_path": "projects/easystick-stamp-p4/firmware/vendor/linux",
+      "role": "kernel_base",
+      "notes": "commit is the peeled commit behind the annotated v6.18.35 tag"
+    },
+    "buildroot": {
+      "repository": "https://gitlab.com/buildroot.org/buildroot.git",
+      "tag": "2025.02.15",
+      "tag_object": "92659ffda2d80dfdf824b114ae2cec22f2fd1de4",
+      "commit": "c49ae7216786d3cb62a8e8de5556007b4b539233",
+      "submodule_path": "projects/easystick-stamp-p4/firmware/vendor/buildroot",
+      "role": "rootfs_and_toolchain"
+    },
+    "esp_idf": {
+      "repository": "https://github.com/espressif/esp-idf.git",
+      "tag": "v5.5.3",
+      "tag_object": "b31fcc7a314a44ad992b58f589f7d1d8a4fadff6",
+      "commit": "2c211b236707889e8400c4dc5644dd5c4ee071e0",
+      "submodule_path": "projects/easystick-stamp-p4/firmware/vendor/esp-idf",
+      "role": "p4_boot_shim_and_c6_firmware"
+    },
+    "esp_hosted_ng": {
+      "repository": "https://github.com/espressif/esp-hosted.git",
+      "tag": "release/ng-1.0.6",
+      "commit": "8626b42fd3f9eb5a1ccb5daea481f0d8d32b1685",
+      "submodule_path": "projects/easystick-stamp-p4/firmware/vendor/esp-hosted",
+      "role": "c6_wifi_transport",
+      "transport_target": "SDIO",
+      "notes": "The locked upstream supports SDIO; EasyStick integration and slave image are not implemented yet."
+    }
+  }
+}

@@ -1,0 +1,72 @@
+From: EasyStick maintainers <noreply@example.invalid>
+Subject: [PATCH] sdio: empty ISR must not ACK bits it did not read
+
+0017 dispatches when INT_ST==0 and INT_RAW has ESP_SLAVE_RX_NEW_PACKET_INT
+(BIT 23). The else path still wrote ESP_SLAVE_INT_CLR_KNOWN, which
+includes BIT 23. Cold 4-way after msg2 shows empty raw=0x004cf800: BIT 23
+is not latched yet, unnamed bits hold DAT1, and the superset clear can
+ACK a msg3 that arrives between the RAW read and INT_CLR write. That
+packet is never delivered. 0017 successful captures had BIT 23 already
+set in RAW (0x00ccf800), so they never entered this else.
+
+Keep 0017: RAW BIT 23 promotes and acknowledges only that bit.
+Keep 0011: a true all-zero RAW still uses CLR_KNOWN so the boot DAT1
+spin stays dead. When RAW is nonzero without BIT 23, write that RAW
+value. Do not fabricate RX from those bits. Do not clear BIT 23 unless
+this read observed it.
+
+What this cannot see: if the AP never sends msg3, RAW BIT 23 will not
+set. If unnamed bits are not write-1-to-clear, DAT1 can still stick;
+that is a remaining slave-side question, not a licence to ACK unseen
+RX. The negative tests are: boot has no 254x status=0x00000000 storm;
+cold 4-way has msg3 00 97 and two 08 02; after msg2, empty
+raw=0x004cf800 is followed by empty-raw-ack of that value, not by a
+dropped packet and Command[0x6] timeout.
+
+---
+--- a/sdio/esp_sdio.c
++++ b/sdio/esp_sdio.c
+@@ -232,6 +232,8 @@
+ 	struct esp_sdio_context *context = NULL;
+ 	u32 *int_status;
+ 	u32 status_read;
++	u32 raw;
++	int raw_ret;
+ 	bool dispatch;
+ 	int ret;
+ 
+@@ -273,10 +275,11 @@
+ 	CHECK_SDIO_RW_ERROR(ret);
+ 
+ 	status_read = ret ? 0 : *int_status;
++	raw = 0;
++	raw_ret = 0;
+ 
+ 	if (!status_read) {
+-		u32 raw = 0;
+-		int raw_ret = esp_read_reg(context, ESP_SLAVE_INT_RAW_REG,
++		raw_ret = esp_read_reg(context, ESP_SLAVE_INT_RAW_REG,
+ 				(u8 *) &raw, sizeof(raw), ACQUIRE_LOCK);
+ 
+ 		/*
+@@ -309,7 +312,19 @@
+ 		*int_status = status_read;
+ 	} else {
+ 		empty_isr_streak++;
+-		*int_status = ESP_SLAVE_INT_CLR_KNOWN;
++		/*
++		 * CLR_KNOWN includes BIT 23.  Writing it here after a RAW
++		 * sample that did not contain BIT 23 can acknowledge msg3
++		 * unseen.  Ack only the bits this read observed.  RAW==0
++		 * still uses CLR_KNOWN for the boot DAT1 spin.
++		 */
++		if (!raw_ret && raw) {
++			esp_info("SDIO IRQ empty-raw-ack: streak=%u raw=0x%08x\n",
++				 empty_isr_streak, raw);
++			*int_status = raw;
++		} else {
++			*int_status = ESP_SLAVE_INT_CLR_KNOWN;
++		}
+ 	}
+ 
+ 	/* Clear interrupt status */

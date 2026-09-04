@@ -1,0 +1,2 @@
+# Do not auto-load this module from modules-load.d.  Board-specific init must
+# supply the AddOn-C6 reset GPIO and SDIO clock parameters to modprobe.

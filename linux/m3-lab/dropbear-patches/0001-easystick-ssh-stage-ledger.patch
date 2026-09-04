@@ -1,0 +1,412 @@
+--- a/Makefile.in
++++ b/Makefile.in
+@@ -37,7 +37,7 @@
+ OBJ_DIR=./obj
+ MAN_DIR=@srcdir@/manpages
+ 
+-_COMMONOBJS=dbutil.o buffer.o dbhelpers.o \
++_COMMONOBJS=dbutil.o easystick-ssh-ledger.o buffer.o dbhelpers.o \
+ 		dss.o bignum.o \
+ 		signkey.o rsa.o dbrandom.o \
+ 		queue.o \
+--- /dev/null
++++ b/src/easystick-ssh-ledger.h
+@@ -0,0 +1,24 @@
++/* EasyStick M2.5 test-only SSH stage ledger.
++ * Dual sink (test-only): /dev/kmsg + /dev/ttyGS1, each opened once at start
++ * with O_WRONLY|O_CLOEXEC|O_NONBLOCK. Markers are write()-only; errno saved.
++ * Never stdout/stderr — inetd binds the SSH socket to stdio.
++ * No flash/MTD/PSRAM/RTC persistence.
++ *
++ * Observe: passive serial (ttyGS1) and/or dmesg | grep ES_SSH
++ *
++ * IDENT_SENT = userspace socket write of the full server banner completed.
++ * Pi observing the banner is a separate end-to-end RX check.
++ * EXEC success never returns: EXEC_BEGIN present + EXEC_FAIL absent + id stdout.
++ */
++#ifndef EASYSTICK_SSH_LEDGER_H_
++#define EASYSTICK_SSH_LEDGER_H_
++
++void es_ssh_ledger_open(void);
++void es_ssh_mark(const char *msg);
++/* After vfork: write a fixed string only; never open/snprintf/malloc. */
++void es_ssh_mark_vfork_child(void);
++/* Fail tags may reopen sinks without updating the long-lived fds
++ * (run_command closes fds 3..maxfd before execv; vfork shares .data). */
++void es_ssh_mark_fail(const char *tag, int err);
++
++#endif /* EASYSTICK_SSH_LEDGER_H_ */
+--- /dev/null
++++ b/src/easystick-ssh-ledger.c
+@@ -0,0 +1,92 @@
++/* EasyStick M2.5 test-only SSH stage ledger implementation. */
++#include "easystick-ssh-ledger.h"
++
++#include <errno.h>
++#include <fcntl.h>
++#include <stdio.h>
++#include <string.h>
++#include <unistd.h>
++
++static int es_ssh_kmsg_fd = -1;
++static int es_ssh_tty_fd = -1;
++
++static void es_ssh_write_sinks(const char *msg, size_t len) {
++	if (es_ssh_kmsg_fd >= 0) {
++		(void)write(es_ssh_kmsg_fd, msg, len);
++	}
++	if (es_ssh_tty_fd >= 0) {
++		(void)write(es_ssh_tty_fd, msg, len);
++	}
++}
++
++void es_ssh_ledger_open(void) {
++	int saved = errno;
++
++	if (es_ssh_kmsg_fd < 0) {
++		es_ssh_kmsg_fd = open("/dev/kmsg", O_WRONLY | O_CLOEXEC | O_NONBLOCK);
++	}
++	if (es_ssh_tty_fd < 0) {
++		es_ssh_tty_fd = open("/dev/ttyGS1", O_WRONLY | O_CLOEXEC | O_NONBLOCK);
++	}
++	errno = saved;
++}
++
++void es_ssh_mark(const char *msg) {
++	int saved = errno;
++	size_t len;
++
++	if (msg == NULL) {
++		errno = saved;
++		return;
++	}
++	if (es_ssh_kmsg_fd < 0 || es_ssh_tty_fd < 0) {
++		es_ssh_ledger_open();
++	}
++	len = strlen(msg);
++	es_ssh_write_sinks(msg, len);
++	errno = saved;
++}
++
++void es_ssh_mark_vfork_child(void) {
++	/* Shared address space until exec: only write() to pre-opened fds. */
++	static const char msg[] = "ES_SSH VFORK_CHILD\n";
++	int saved = errno;
++
++	es_ssh_write_sinks(msg, sizeof(msg) - 1);
++	errno = saved;
++}
++
++void es_ssh_mark_fail(const char *tag, int err) {
++	char buf[48];
++	int saved = errno;
++	int n;
++	int fd;
++
++	n = snprintf(buf, sizeof(buf), "ES_SSH %s errno=%d\n", tag, err);
++	if (n <= 0) {
++		errno = saved;
++		return;
++	}
++
++	/* Prefer the long-lived fds when still open. */
++	if (es_ssh_kmsg_fd >= 0 || es_ssh_tty_fd >= 0) {
++		es_ssh_write_sinks(buf, (size_t)n);
++		errno = saved;
++		return;
++	}
++
++	/* After run_command closes 3..maxfd (or open failed at start): one-shot
++	 * reopen. Do not store into static fds — under vfork those are shared
++	 * with the suspended parent. */
++	fd = open("/dev/kmsg", O_WRONLY | O_CLOEXEC | O_NONBLOCK);
++	if (fd >= 0) {
++		(void)write(fd, buf, (size_t)n);
++		(void)close(fd);
++	}
++	fd = open("/dev/ttyGS1", O_WRONLY | O_CLOEXEC | O_NONBLOCK);
++	if (fd >= 0) {
++		(void)write(fd, buf, (size_t)n);
++		(void)close(fd);
++	}
++	errno = saved;
++}
+--- a/src/svr-main.c
++++ b/src/svr-main.c
+@@ -30,6 +30,7 @@
+ #include "runopts.h"
+ #include "dbrandom.h"
+ #include "crypto_desc.h"
++#include "easystick-ssh-ledger.h"
+ 
+ static size_t listensockets(int *sock, size_t sockcount, int *maxfd);
+ static void sigchld_handler(int dummy);
+@@ -97,10 +98,15 @@
+ static void main_inetd() {
+ 	char *host, *port = NULL;
+ 
++	es_ssh_ledger_open();
++	es_ssh_mark("ES_SSH DB_ENTER\n");
++
+ 	/* Set up handlers, syslog */
+ 	commonsetup();
+ 
++	es_ssh_mark("ES_SSH RNG_BEGIN\n");
+ 	seedrandom();
++	es_ssh_mark("ES_SSH RNG_OK\n");
+ 
+ 	if (svr_opts.reexec_childpipe < 0) {
+ 		/* In case our inetd was lax in logging source addresses */
+--- a/src/common-session.c
++++ b/src/common-session.c
+@@ -25,6 +25,8 @@
+ #include "includes.h"
+ #include "session.h"
+ #include "dbutil.h"
++#include "atomicio.h"
++#include "easystick-ssh-ledger.h"
+ #include "packet.h"
+ #include "algo.h"
+ #include "buffer.h"
+@@ -370,9 +372,25 @@
+ }
+ 
+ void send_session_identification() {
+-	buffer *writebuf = buf_new(strlen(LOCAL_IDENT "\r\n") + 1);
+-	buf_putbytes(writebuf, (const unsigned char *) LOCAL_IDENT "\r\n", strlen(LOCAL_IDENT "\r\n"));
+-	writebuf_enqueue(writebuf);
++	const char *ident = LOCAL_IDENT "\r\n";
++	size_t len = strlen(ident);
++
++	if (IS_DROPBEAR_SERVER) {
++		/* IDENT_SENT = userspace socket write of the full banner OK.
++		 * Pi seeing the banner is end-to-end RX, not this marker. */
++		es_ssh_mark("ES_SSH IDENT_BEGIN\n");
++		if (atomicio(vwrite, ses.sock_out, (void *)ident, len) != len) {
++			dropbear_exit("Error writing ident string");
++		}
++		es_ssh_mark("ES_SSH IDENT_SENT\n");
++		return;
++	}
++
++	{
++		buffer *writebuf = buf_new(len + 1);
++		buf_putbytes(writebuf, (const unsigned char *)ident, len);
++		writebuf_enqueue(writebuf);
++	}
+ }
+ 
+ static void read_session_identification() {
+@@ -407,6 +425,9 @@
+ 		/* linebuf is already null terminated */
+ 		ses.remoteident = m_malloc(len);
+ 		memcpy(ses.remoteident, linebuf, len);
++		if (IS_DROPBEAR_SERVER) {
++			es_ssh_mark("ES_SSH PEER_IDENT\n");
++		}
+ 	}
+ 
+ 	/* Shall assume that 2.x will be backwards compatible. */
+--- a/src/common-kex.c
++++ b/src/common-kex.c
+@@ -30,6 +30,7 @@
+ #include "session.h"
+ #include "kex.h"
+ #include "ssh.h"
++#include "easystick-ssh-ledger.h"
+ #include "packet.h"
+ #include "bignum.h"
+ #include "dbrandom.h"
+@@ -174,6 +175,9 @@
+ 		ses.kexstate.donesecondkex = 1;
+ 	}
+ 	ses.kexstate.donefirstkex = 1;
++	if (IS_DROPBEAR_SERVER) {
++		es_ssh_mark("ES_SSH KEX_OK\n");
++	}
+ 	ses.dataallowed = 1; /* we can send other packets again now */
+ 	gen_new_keys();
+ 	switch_keys();
+--- a/src/svr-auth.c
++++ b/src/svr-auth.c
+@@ -33,6 +33,7 @@
+ #include "ssh.h"
+ #include "packet.h"
+ #include "auth.h"
++#include "easystick-ssh-ledger.h"
+ #include "runopts.h"
+ #include "dbrandom.h"
+ 
+@@ -77,6 +78,8 @@
+ 	int valid_user = 0;
+ 
+ 	TRACE(("enter recv_msg_userauth_request"))
++
++	es_ssh_mark("ES_SSH AUTH_REQ\n");
+ 
+ 	/* for compensating failure delay */
+ 	gettime_wrapper(&ses.authstate.auth_starttime);
+@@ -447,6 +450,8 @@
+ 
+ 	TRACE(("enter send_msg_userauth_success"))
+ 
++	es_ssh_mark("ES_SSH AUTH_COMMIT\n");
++
+ 	CHECKCLEARTOWRITE();
+ 
+ 	buf_putbyte(ses.writepayload, SSH_MSG_USERAUTH_SUCCESS);
+@@ -455,6 +460,7 @@
+ 	/* authdone must be set after encrypt_packet() for 
+ 	 * delayed-zlib mode */
+ 	ses.authstate.authdone = 1;
++	es_ssh_mark("ES_SSH AUTH_OK\n");
+ 
+ #if DROPBEAR_SVR_DROP_PRIVS
+ 	/* Drop privileges as soon as authentication has happened. */
+--- a/src/svr-authpubkey.c
++++ b/src/svr-authpubkey.c
+@@ -65,6 +65,7 @@
+ #include "packet.h"
+ #include "algo.h"
+ #include "runopts.h"
++#include "easystick-ssh-ledger.h"
+ 
+ #if DROPBEAR_SVR_PUBKEY_AUTH
+ 
+@@ -101,6 +102,8 @@
+ 	struct PubKeyOptions *pubkey_options = NULL;
+ 
+ 	TRACE(("enter pubkeyauth"))
++
++	es_ssh_mark("ES_SSH PUBKEY_ENTER\n");
+ 
+ 	/* 0 indicates user just wants to check if key can be used, 1 is an
+ 	 * actual attempt*/
+@@ -165,6 +168,9 @@
+ 	if (auth_failure) {
+ 		int status = checkpubkey(keyalgo, keyalgolen, keyblob, keybloblen, &pubkey_options);
+ 		auth_failure = (status != DROPBEAR_SUCCESS);
++		if (!auth_failure) {
++			es_ssh_mark("ES_SSH AUTHKEY_MATCH\n");
++		}
+ 	}
+ 
+ 	if (auth_failure) {
+@@ -226,7 +232,9 @@
+ 
+ 	/* ... and finally verify the signature */
+ 	fp = sign_key_fingerprint(keyblob, keybloblen);
++	es_ssh_mark("ES_SSH SIG_VERIFY_BEGIN\n");
+ 	if (buf_verify(ses.payload, key, sigtype, signbuf) == DROPBEAR_SUCCESS) {
++		es_ssh_mark("ES_SSH SIG_VERIFY_OK\n");
+ 		if (ses.authstate.pubkey_options == NULL) {
+ 			ses.authstate.pubkey_options = pubkey_options;
+ 			pubkey_options = NULL;
+@@ -256,6 +264,7 @@
+ 		}
+ #endif
+ 	} else {
++		es_ssh_mark("ES_SSH SIG_VERIFY_FAIL\n");
+ 		dropbear_log(LOG_WARNING,
+ 				"Pubkey auth bad signature for '%s' with key %s from %s",
+ 				ses.authstate.pw_name, fp, svr_ses.addrstring);
+@@ -489,6 +498,8 @@
+ 	gid_t origgid;
+ 
+ 	TRACE(("enter checkpubkey"))
++
++	es_ssh_mark("ES_SSH AUTHKEY_OPEN_BEGIN\n");
+ 
+ #if DROPBEAR_SVR_MULTIUSER
+ 	/* access the file as the authenticating user. */
+@@ -530,6 +541,8 @@
+ 		goto out;
+ 	}
+ 	TRACE(("checkpubkey: opened authorized_keys OK"))
++	es_ssh_mark("ES_SSH AUTHKEY_OPEN_OK\n");
++	es_ssh_mark("ES_SSH AUTHKEY_PARSE_BEGIN\n");
+ 
+ 	line = buf_new(MAX_AUTHKEYS_LINE);
+ 	line_num = 0;
+--- a/src/svr-chansession.c
++++ b/src/svr-chansession.c
+@@ -32,6 +32,7 @@
+ #include "sshpty.h"
+ #include "termcodes.h"
+ #include "ssh.h"
++#include "easystick-ssh-ledger.h"
+ #include "dbrandom.h"
+ #include "x11fwd.h"
+ #include "agentfwd.h"
+@@ -672,6 +673,8 @@
+ 	int ret;
+ 
+ 	TRACE(("enter sessioncommand %d", channel->index))
++
++	es_ssh_mark("ES_SSH SESSION_EXEC\n");
+ 
+ 	if (chansess->pid != 0) {
+ 		/* Note that only one command can _succeed_. The client might try
+--- a/src/dbutil.c
++++ b/src/dbutil.c
+@@ -63,6 +63,7 @@
+ 
+ #include "includes.h"
+ #include "dbutil.h"
++#include "easystick-ssh-ledger.h"
+ #include "buffer.h"
+ #include "session.h"
+ #include "atomicio.h"
+@@ -298,6 +299,7 @@
+ 		return DROPBEAR_FAILURE;
+ 	}
+ 
++	es_ssh_mark("ES_SSH VFORK_BEGIN\n");
+ #if DROPBEAR_VFORK
+ 	pid = vfork();
+ #else
+@@ -305,11 +307,16 @@
+ #endif
+ 
+ 	if (pid < 0) {
++		{
++			int e = errno;
++			es_ssh_mark_fail("VFORK_FAIL", e);
++		}
+ 		return DROPBEAR_FAILURE;
+ 	}
+ 
+ 	if (!pid) {
+-		/* child */
++		/* child — shared address space until exec */
++		es_ssh_mark_vfork_child();
+ 
+ 		TRACE(("back to normal sigchld"))
+ 		/* Revert to normal sigchld handling */
+@@ -336,11 +343,13 @@
+ 			close(errfds[FDOUT]);
+ 		}
+ 
++		es_ssh_mark("ES_SSH EXEC_BEGIN\n");
+ 		exec_fn(exec_data);
+-		/* not reached */
++		/* exec success never returns; EXEC_FAIL is marked in run_command */
+ 		return DROPBEAR_FAILURE;
+ 	} else {
+-		/* parent */
++		/* parent resumes after child exec/exit on vfork */
++		es_ssh_mark("ES_SSH VFORK_PARENT_RESUME\n");
+ 		close(infds[FDIN]);
+ 		close(outfds[FDOUT]);
+ 
+@@ -410,6 +419,10 @@
+ 	}
+ 
+ 	execv(argv0, args);
++	{
++		int exec_errno = errno;
++		es_ssh_mark_fail("EXEC_FAIL", exec_errno);
++	}
+ }
+ 
+ #if DEBUG_TRACE

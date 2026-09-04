@@ -1,0 +1,40 @@
+From: EasyStick maintainers <noreply@example.invalid>
+Subject: [PATCH] sdio: log bring-up interrupt handshake
+
+Keep the messages narrowly scoped to initial bring-up.  They distinguish a
+successful host-to-slave OPEN_DATA_PATH register write from receipt of the
+first slave SDIO interrupt on the experimental ESP32-P4 host port.
+
+---
+ sdio/esp_sdio.c | 6 ++++--
+ 1 file changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/sdio/esp_sdio.c b/sdio/esp_sdio.c
+index 1111111..2222222 100644
+--- a/sdio/esp_sdio.c
++++ b/sdio/esp_sdio.c
+@@ -87,6 +87,8 @@ static void esp_handle_isr(struct sdio_func *func)
+ 	ret = esp_read_reg(context, ESP_SLAVE_INT_ST_REG,
+ 			(u8 *) int_status, sizeof(*int_status), ACQUIRE_LOCK);
+ 	CHECK_SDIO_RW_ERROR(ret);
++	esp_info("SDIO IRQ received: read_ret=%d status=0x%08x\n",
++		 ret, *int_status);
+ 
+ 	esp_process_interrupt(context, *int_status);
+ 
+@@ -795,10 +797,11 @@ static int esp_probe(struct sdio_func *func,
+ 
+ 	context->adapter->dev = &func->dev;
+ 	atomic_set(&context->adapter->state, ESP_CONTEXT_RX_READY);
+-	generate_slave_intr(context, BIT(ESP_OPEN_DATA_PATH));
++	ret = generate_slave_intr(context, BIT(ESP_OPEN_DATA_PATH));
++	esp_info("OPEN_DATA_PATH write completed: ret=%d\n", ret);
+ 
+ 
+-	esp_dbg("ESP SDIO probe completed\n");
++	esp_info("ESP SDIO probe completed\n");
+ 
+ 	return ret;
+ }
+-- 
+2.43.0

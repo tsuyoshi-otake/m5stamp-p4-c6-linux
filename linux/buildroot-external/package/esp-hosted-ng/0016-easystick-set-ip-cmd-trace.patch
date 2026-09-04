@@ -1,0 +1,92 @@
+From: EasyStick maintainers <noreply@example.invalid>
+Subject: [PATCH] cmd: skip SET_IP(0); do not retune the 4-way path
+
+CMD_SET_IP_ADDR (0xD) ACKs on this C6 when the exclusive command path
+is idle. Busybox ifconfig netmask does UP/Down/UP and the Down path
+queued SET_IP(0), which raced ADD_KEY. Assigning Linux IPv4 before
+4-way let ARP into the EAPOL window.
+
+Do not skip SET_MCAST. Do not add per-command esp_info: those delayed
+ADD_KEY TX and C6 latched INT_RAW 0x00ccf800 while INT_ST was 0.
+Do not change wait_and_decode or re-kick cmd_work on success: that
+delayed msg2 and msg3 never arrived. Keep the 0015 command path.
+
+Skip SET_IP(0) and a duplicate of the last successful address. Clear
+the cache on disconnect. Re-kick cmd_work only after a timeout.
+
+What this cannot see: if C6 needs 0xD during 4-way rather than after
+both keys, ping still fails. The negative test is msg3 plus two 08 02
+with no 0xF/0x8 timeout, then 0d 02 or "C6 SET_IP stored", no
+SET_IP(0), and host ping from 10.255.10.146.
+
+---
+diff --git a/esp_cfg80211.c b/esp_cfg80211.c
+--- a/esp_cfg80211.c
++++ b/esp_cfg80211.c
+@@ -250,8 +250,7 @@ static int esp_inetaddr_event(struct notifier_block *nb,
+ 
+ 	case NETDEV_DOWN:
+ 		if (priv && (priv->if_type == ESP_STA_IF)) {
+-			cmd_set_ip_address(priv, 0);
+-			esp_info("Interface %s Down: %d\n", netdev->name, priv->if_type);
++			esp_info("Interface %s Down: skip SET_IP 0\n", netdev->name);
+ 		}
+ 		break;
+ 	}
+diff --git a/esp_cmd.c b/esp_cmd.c
+--- a/esp_cmd.c
++++ b/esp_cmd.c
+@@ -287,6 +287,9 @@ static int wait_and_decode_cmd_resp(struct esp_wifi_device *priv,
+ 	adapter->cur_cmd = NULL;
+ 	adapter->cmd_resp = 0;
+ 	spin_unlock_bh(&adapter->cmd_lock);
++
++	if (ret)
++		queue_work(adapter->cmd_wq, &adapter->cmd_work);
+ 
+ 	switch (cmd_node->cmd_code) {
+ 
+@@ -798,6 +801,7 @@ static void process_disconnect_event(struct esp_wifi_device *priv,
+ 	cfg80211_bss_flush(priv->adapter->wiphy);
+ #endif
+ 	esp_port_close(priv);
++	priv->last_c6_ip = 0;
+ 
+ #if 0
+ 	if (event->reason >= 200) {
+@@ -939,6 +943,15 @@ int cmd_set_ip_address(struct esp_wifi_device *priv, u32 ip)
+ 	if (test_bit(ESP_CLEANUP_IN_PROGRESS, &priv->adapter->state_flags))
+ 		return 0;
+ 
++	if (!ip) {
++		esp_info("skip C6 SET_IP 0\n");
++		return 0;
++	}
++	if (priv->last_c6_ip == ip) {
++		esp_info("skip C6 SET_IP duplicate %pI4\n", &ip);
++		return 0;
++	}
++
+ 	cmd_node = prepare_command_request(priv->adapter, CMD_SET_IP_ADDR,
+ 			sizeof(struct cmd_set_ip_addr));
+ 
+@@ -956,6 +969,8 @@ int cmd_set_ip_address(struct esp_wifi_device *priv, u32 ip)
+ 	queue_work(priv->adapter->cmd_wq, &priv->adapter->cmd_work);
+ 
+ 	RET_ON_FAIL(wait_and_decode_cmd_resp(priv, cmd_node));
++	priv->last_c6_ip = ip;
++	esp_info("C6 SET_IP stored %pI4\n", &ip);
+ 
+ 	return 0;
+ }
+diff --git a/include/esp.h b/include/esp.h
+--- a/include/esp.h
++++ b/include/esp.h
+@@ -175,6 +175,7 @@ struct esp_wifi_device {
+ 	uint8_t                 tx_pwr;
+ 	uint32_t                rssi;
+ 	bool                    local_disconnect_req;
++	uint32_t                last_c6_ip;
+ };
+ 
+

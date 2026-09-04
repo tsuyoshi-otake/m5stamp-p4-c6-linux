@@ -1,0 +1,300 @@
+--- a/src/easystick-ssh-ledger.h
++++ b/src/easystick-ssh-ledger.h
+@@ -24,5 +24,15 @@
+ void es_ssh_mark_pipe_read_once(void);
+ void es_ssh_note_chan_data_queued(void);
+ void es_ssh_try_mark_socket_write(void);
++/* 0024 channel / encrypt / socket observe (no payload bytes). */
++void es_ssh_mark_channel_data_build(unsigned int chan, unsigned int len);
++void es_ssh_mark_channel_data_queue(unsigned int chan, unsigned int len);
++void es_ssh_mark_encrypt_begin(unsigned int ssh_seq, unsigned char pkt_type);
++void es_ssh_mark_encrypt_done(unsigned int ssh_seq, unsigned int wire_len);
++void es_ssh_mark_socket_write_begin(void);
++void es_ssh_mark_socket_write_done(void);
++void es_ssh_mark_channel_eof(void);
++void es_ssh_mark_exit_status(void);
++void es_ssh_mark_channel_close(void);
+ 
+ #endif /* EASYSTICK_SSH_LEDGER_H_ */
+--- a/src/easystick-ssh-ledger.c
++++ b/src/easystick-ssh-ledger.c
+@@ -7,10 +7,22 @@
+ #include <string.h>
+ #include <unistd.h>
+ 
++#include "ssh.h"
++
+ static int es_ssh_kmsg_fd = -1;
+ static int es_ssh_tty_fd = -1;
+ static int es_ssh_pipe_read_marked;
+ static int es_ssh_want_sock_write_mark;
++static unsigned int es_ssh_pending_seq;
++static unsigned int es_ssh_pending_wire_len;
++static int es_ssh_have_pending_sock;
++static int es_ssh_sock_begin_marked;
++static int es_ssh_sock_done_marked;
++static int es_ssh_channel_eof_marked;
++static int es_ssh_exit_status_marked;
++static int es_ssh_channel_close_marked;
++static int es_ssh_encrypt_begin_active;
++static unsigned char es_ssh_encrypt_begin_type;
+ 
+ static void es_ssh_write_sinks(const char *msg, size_t len) {
+ 	if (es_ssh_kmsg_fd >= 0) {
+@@ -115,3 +127,163 @@
+ 	es_ssh_want_sock_write_mark = 0;
+ 	es_ssh_mark("ES_SSH DROPBEAR_SOCKET_WRITE\n");
+ }
++
++static const char *es_ssh_pkt_type_name(unsigned char pkt_type) {
++	switch (pkt_type) {
++	case SSH_MSG_USERAUTH_SUCCESS:
++		return "USERAUTH_SUCCESS";
++	case SSH_MSG_CHANNEL_OPEN_CONFIRMATION:
++		return "CHANNEL_OPEN_CONFIRM";
++	case SSH_MSG_CHANNEL_WINDOW_ADJUST:
++		return "WINDOW_ADJUST";
++	case SSH_MSG_CHANNEL_DATA:
++		return "CHANNEL_DATA";
++	case SSH_MSG_CHANNEL_EXTENDED_DATA:
++		return "CHANNEL_EXT_DATA";
++	case SSH_MSG_CHANNEL_EOF:
++		return "CHANNEL_EOF";
++	case SSH_MSG_CHANNEL_CLOSE:
++		return "CHANNEL_CLOSE";
++	case SSH_MSG_CHANNEL_REQUEST:
++		return "CHANNEL_REQUEST";
++	default:
++		return NULL;
++	}
++}
++
++void es_ssh_mark_channel_data_build(unsigned int chan, unsigned int len) {
++	char buf[72];
++	int n;
++	int saved = errno;
++
++	n = snprintf(buf, sizeof(buf),
++		"ES_SSH CHANNEL_DATA_BUILD chan=%u len=%u\n", chan, len);
++	if (n > 0) {
++		es_ssh_mark(buf);
++	}
++	errno = saved;
++}
++
++void es_ssh_mark_channel_data_queue(unsigned int chan, unsigned int len) {
++	char buf[72];
++	int n;
++	int saved = errno;
++
++	n = snprintf(buf, sizeof(buf),
++		"ES_SSH CHANNEL_DATA_QUEUE chan=%u len=%u\n", chan, len);
++	if (n > 0) {
++		es_ssh_mark(buf);
++	}
++	errno = saved;
++}
++
++void es_ssh_mark_encrypt_begin(unsigned int ssh_seq, unsigned char pkt_type) {
++	const char *name;
++	char buf[80];
++	int n;
++	int saved = errno;
++
++	es_ssh_encrypt_begin_active = 0;
++	name = es_ssh_pkt_type_name(pkt_type);
++	if (name == NULL) {
++		errno = saved;
++		return;
++	}
++	n = snprintf(buf, sizeof(buf),
++		"ES_SSH ENCRYPT_BEGIN ssh_seq=%u type=%s\n", ssh_seq, name);
++	if (n > 0) {
++		es_ssh_mark(buf);
++		es_ssh_encrypt_begin_active = 1;
++		es_ssh_encrypt_begin_type = pkt_type;
++	}
++	errno = saved;
++}
++
++void es_ssh_mark_encrypt_done(unsigned int ssh_seq, unsigned int wire_len) {
++	char buf[72];
++	int n;
++	int saved = errno;
++
++	if (!es_ssh_encrypt_begin_active) {
++		errno = saved;
++		return;
++	}
++	es_ssh_encrypt_begin_active = 0;
++	n = snprintf(buf, sizeof(buf),
++		"ES_SSH ENCRYPT_DONE ssh_seq=%u wire_len=%u\n", ssh_seq, wire_len);
++	if (n > 0) {
++		es_ssh_mark(buf);
++	}
++	/* Socket BEGIN/DONE track the CHANNEL_DATA wire write only. */
++	if (es_ssh_encrypt_begin_type == SSH_MSG_CHANNEL_DATA
++			|| es_ssh_encrypt_begin_type == SSH_MSG_CHANNEL_EXTENDED_DATA) {
++		es_ssh_pending_seq = ssh_seq;
++		es_ssh_pending_wire_len = wire_len;
++		es_ssh_have_pending_sock = 1;
++		es_ssh_sock_begin_marked = 0;
++		es_ssh_sock_done_marked = 0;
++	}
++	errno = saved;
++}
++
++void es_ssh_mark_socket_write_begin(void) {
++	char buf[72];
++	int n;
++	int saved = errno;
++
++	if (!es_ssh_have_pending_sock || es_ssh_sock_begin_marked) {
++		errno = saved;
++		return;
++	}
++	es_ssh_sock_begin_marked = 1;
++	n = snprintf(buf, sizeof(buf),
++		"ES_SSH SOCKET_WRITE_BEGIN ssh_seq=%u wire_len=%u\n",
++		es_ssh_pending_seq, es_ssh_pending_wire_len);
++	if (n > 0) {
++		es_ssh_mark(buf);
++	}
++	errno = saved;
++}
++
++void es_ssh_mark_socket_write_done(void) {
++	char buf[72];
++	int n;
++	int saved = errno;
++
++	if (!es_ssh_have_pending_sock || es_ssh_sock_done_marked) {
++		errno = saved;
++		return;
++	}
++	es_ssh_sock_done_marked = 1;
++	n = snprintf(buf, sizeof(buf),
++		"ES_SSH SOCKET_WRITE_DONE ssh_seq=%u wire_len=%u\n",
++		es_ssh_pending_seq, es_ssh_pending_wire_len);
++	if (n > 0) {
++		es_ssh_mark(buf);
++	}
++	errno = saved;
++}
++
++void es_ssh_mark_channel_eof(void) {
++	if (es_ssh_channel_eof_marked) {
++		return;
++	}
++	es_ssh_channel_eof_marked = 1;
++	es_ssh_mark("ES_SSH CHANNEL_EOF\n");
++}
++
++void es_ssh_mark_exit_status(void) {
++	if (es_ssh_exit_status_marked) {
++		return;
++	}
++	es_ssh_exit_status_marked = 1;
++	es_ssh_mark("ES_SSH EXIT_STATUS\n");
++}
++
++void es_ssh_mark_channel_close(void) {
++	if (es_ssh_channel_close_marked) {
++		return;
++	}
++	es_ssh_channel_close_marked = 1;
++	es_ssh_mark("ES_SSH CHANNEL_CLOSE\n");
++}
+--- a/src/common-channel.c
++++ b/src/common-channel.c
+@@ -383,6 +383,7 @@
+ 	buf_putbyte(ses.writepayload, SSH_MSG_CHANNEL_CLOSE);
+ 	buf_putint(ses.writepayload, channel->remotechan);
+ 
++	es_ssh_mark_channel_close();
+ 	encrypt_packet();
+ 
+ 	channel->sent_eof = 1;
+@@ -402,6 +403,7 @@
+ 	buf_putbyte(ses.writepayload, SSH_MSG_CHANNEL_EOF);
+ 	buf_putint(ses.writepayload, channel->remotechan);
+ 
++	es_ssh_mark_channel_eof();
+ 	encrypt_packet();
+ 
+ 	channel->sent_eof = 1;
+@@ -752,6 +754,8 @@
+ 		return;
+ 	}
+ 	es_ssh_mark_pipe_read_once();
++	es_ssh_mark_channel_data_build((unsigned int)channel->index,
++			(unsigned int)len);
+ 
+ 	if (channel->read_mangler) {
+ 		channel->read_mangler(channel, buf_getwriteptr(ses.writepayload, len), &len);
+@@ -770,6 +774,8 @@
+ 
+ 	channel->transwindow -= len;
+ 
++	es_ssh_mark_channel_data_queue((unsigned int)channel->index,
++			(unsigned int)len);
+ 	encrypt_packet();
+ 	es_ssh_note_chan_data_queued();
+ 	TRACE(("leave send_msg_channel_data"))
+--- a/src/packet.c
++++ b/src/packet.c
+@@ -70,6 +70,7 @@
+ 	
+ 	TRACE2(("enter write_packet"))
+ 	dropbear_assert(!isempty(&ses.writequeue));
++	es_ssh_mark_socket_write_begin();
+ 
+ #if defined(HAVE_WRITEV) && (defined(IOV_MAX) || defined(UIO_MAXIOV))
+ 
+@@ -100,6 +101,9 @@
+ 	packet_queue_consume(&ses.writequeue, written);
+ 	ses.writequeue_len -= written;
+ 
++	if (written > 0) {
++		es_ssh_mark_socket_write_done();
++	}
+ 	es_ssh_try_mark_socket_write();
+ 
+ 	if (written == 0) {
+@@ -144,6 +148,9 @@
+ 	}
+ #endif /* writev */
+ 
++	if (written > 0) {
++		es_ssh_mark_socket_write_done();
++	}
+ 	es_ssh_try_mark_socket_write();
+ 
+ 	TRACE2(("leave write_packet"))
+@@ -548,6 +555,7 @@
+ 		enqueue_reply_packet();
+ 		return;
+ 	}
++	es_ssh_mark_encrypt_begin(ses.transseq, packet_type);
+ 		
+ 	blocksize = ses.keys->trans.algo_crypt->blocksize;
+ 	mac_size = ses.keys->trans.algo_mac->hashsize;
+@@ -659,6 +667,8 @@
+ 
+ 	writebuf_enqueue(writebuf);
+ 
++	es_ssh_mark_encrypt_done(ses.transseq, (unsigned int)writebuf->len);
++
+ 	/* Update counts */
+ 	ses.transseq++;
+ 
+--- a/src/svr-chansession.c
++++ b/src/svr-chansession.c
+@@ -193,6 +193,7 @@
+ 	buf_putbyte(ses.writepayload, 0); /* boolean FALSE */
+ 	buf_putint(ses.writepayload, chansess->exit.exitstatus);
+ 
++	es_ssh_mark_exit_status();
+ 	encrypt_packet();
+ 
+ }

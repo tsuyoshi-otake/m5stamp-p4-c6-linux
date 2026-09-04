@@ -1,0 +1,110 @@
+--- a/drivers/mmc/host/dw_mmc.c
++++ b/drivers/mmc/host/dw_mmc.c
+@@ -8,6 +8,7 @@
+  */
+ 
+ #include <linux/blkdev.h>
++#include <linux/cache.h>
+ #include <linux/clk.h>
+ #include <linux/debugfs.h>
+ #include <linux/device.h>
+@@ -792,6 +793,65 @@
+ 	return 0;
+ }
+ 
++/*
++ * IDMAC descriptor-ring CPU visibility.
++ *
++ * On this port dmam_alloc_coherent() is unavailable (NOMMU, no uncached
++ * aperture), so the descriptor ring falls back to ordinary cached pages -
++ * see dw_mci_probe().  dw_mci_idmac_start_dma() writes the ring back before
++ * each IDMAC kick, but nothing invalidates it afterwards, so the OWN bit
++ * that IDMAC clears in memory has no defined path back into the CPU's view
++ * and the poll below can spin on a stale cache line.
++ *
++ * Invalidate exactly the cache line(s) holding one descriptor, and only
++ * immediately before a re-read of des0.  The first read of each poll
++ * iteration is left alone on purpose: an unconditional invalidate would
++ * also discard the still-dirty ring links written by dw_mci_idmac_init()
++ * before the first transfer's writeback, whereas a cached view showing OWN
++ * set is never CPU-written state that has not already been written back.
++ *
++ * Deliberately scoped for the descriptor-coherency A/B: one descriptor line
++ * only, no whole-ring operation, no payload-buffer synchronisation, and no
++ * change to the poll cadence, the 100 ms timeout or the err_own_bit
++ * recovery path.
++ */
++static void dw_mci_idmac_desc_invalidate(struct dw_mci *host,
++					 const void *desc, size_t size)
++{
++	unsigned long offset = (const char *)desc - (const char *)host->sg_cpu;
++	dma_addr_t first = ALIGN_DOWN(host->sg_dma + offset, L1_CACHE_BYTES);
++	dma_addr_t last = ALIGN(host->sg_dma + offset + size, L1_CACHE_BYTES);
++
++	dma_sync_single_for_cpu(host->dev, first, last - first,
++				DMA_FROM_DEVICE);
++}
++
++static u32 dw_mci_idmac_own64(struct dw_mci *host,
++			      struct idmac_desc_64addr *desc)
++{
++	u32 val = readl(&desc->des0);
++
++	if (val & IDMAC_DES0_OWN) {
++		dw_mci_idmac_desc_invalidate(host, desc, sizeof(*desc));
++		val = readl(&desc->des0);
++	}
++
++	return val;
++}
++
++static u32 dw_mci_idmac_own32(struct dw_mci *host,
++			      struct idmac_desc *desc)
++{
++	u32 val = readl(&desc->des0);
++
++	if (!IDMAC_OWN_CLR64(val)) {
++		dw_mci_idmac_desc_invalidate(host, desc, sizeof(*desc));
++		val = readl(&desc->des0);
++	}
++
++	return val;
++}
++
+ static inline int dw_mci_prepare_desc64(struct dw_mci *host,
+ 					 struct mmc_data *data,
+ 					 unsigned int sg_len)
+@@ -826,10 +886,12 @@
+ 			 */
+ 			if (record && desc == desc_first)
+ 				record->own_before = READ_ONCE(desc->des0);
+-			ret = readl_poll_timeout_atomic(&desc->des0, val,
+-							!(val & IDMAC_DES0_OWN),
+-							10,
+-							100 * USEC_PER_MSEC);
++			ret = read_poll_timeout_atomic(dw_mci_idmac_own64,
++						       val,
++						       !(val & IDMAC_DES0_OWN),
++						       10,
++						       100 * USEC_PER_MSEC,
++						       false, host, desc);
+ 			if (record && desc == desc_first)
+ 				record->own_after_poll = val;
+ 			if (ret) {
+@@ -920,10 +982,12 @@
+ 			if (record && desc == desc_first)
+ 				record->own_before =
+ 					le32_to_cpu(READ_ONCE(desc->des0));
+-			ret = readl_poll_timeout_atomic(&desc->des0, val,
+-							IDMAC_OWN_CLR64(val),
+-							10,
+-							100 * USEC_PER_MSEC);
++			ret = read_poll_timeout_atomic(dw_mci_idmac_own32,
++						       val,
++						       IDMAC_OWN_CLR64(val),
++						       10,
++						       100 * USEC_PER_MSEC,
++						       false, host, desc);
+ 			if (record && desc == desc_first)
+ 				record->own_after_poll = le32_to_cpu(val);
+ 			if (ret) {

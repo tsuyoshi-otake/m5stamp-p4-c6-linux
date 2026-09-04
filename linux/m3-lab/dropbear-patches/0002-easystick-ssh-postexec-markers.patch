@@ -1,0 +1,106 @@
+--- a/src/easystick-ssh-ledger.h
++++ b/src/easystick-ssh-ledger.h
+@@ -19,6 +19,11 @@ void es_ssh_mark(const char *msg);
+ void es_ssh_mark_vfork_child(void);
+ /* Fail tags may reopen sinks without updating the long-lived fds
+  * (run_command closes fds 3..maxfd before execv; vfork shares .data). */
+ void es_ssh_mark_fail(const char *tag, int err);
++/* Post-exec: first successful pipe read of session stdout, then first
++ * successful sock_out write after that channel-data packet was queued. */
++void es_ssh_mark_pipe_read_once(void);
++void es_ssh_note_chan_data_queued(void);
++void es_ssh_try_mark_socket_write(void);
+ 
+ #endif /* EASYSTICK_SSH_LEDGER_H_ */
+--- a/src/easystick-ssh-ledger.c
++++ b/src/easystick-ssh-ledger.c
+@@ -10,6 +10,8 @@
+ 
+ static int es_ssh_kmsg_fd = -1;
+ static int es_ssh_tty_fd = -1;
++static int es_ssh_pipe_read_marked;
++static int es_ssh_want_sock_write_mark;
+ 
+ static void es_ssh_write_sinks(const char *msg, size_t len) {
+ 	if (es_ssh_kmsg_fd >= 0) {
+@@ -90,3 +92,26 @@ void es_ssh_mark_fail(const char *tag, int err) {
+ 	}
+ 	errno = saved;
+ }
++
++void es_ssh_mark_pipe_read_once(void) {
++	if (es_ssh_pipe_read_marked) {
++		return;
++	}
++	es_ssh_pipe_read_marked = 1;
++	es_ssh_mark("ES_SSH DROPBEAR_PIPE_READ\n");
++}
++
++void es_ssh_note_chan_data_queued(void) {
++	es_ssh_want_sock_write_mark = 1;
++}
++
++void es_ssh_try_mark_socket_write(void) {
++	static int done;
++
++	if (!es_ssh_want_sock_write_mark || done) {
++		return;
++	}
++	done = 1;
++	es_ssh_want_sock_write_mark = 0;
++	es_ssh_mark("ES_SSH DROPBEAR_SOCKET_WRITE\n");
++}
+--- a/src/common-channel.c
++++ b/src/common-channel.c
+@@ -25,6 +25,7 @@
+ #include "packet.h"
+ #include "ssh.h"
+ #include "buffer.h"
++#include "easystick-ssh-ledger.h"
+ #include "circbuffer.h"
+ #include "dbutil.h"
+ #include "channel.h"
+@@ -750,6 +751,7 @@ static void send_msg_channel_data(struct Channel *channel, int isextended) {
+ 					len, errno, fd))
+ 		return;
+ 	}
++	es_ssh_mark_pipe_read_once();
+ 
+ 	if (channel->read_mangler) {
+ 		channel->read_mangler(channel, buf_getwriteptr(ses.writepayload, len), &len);
+@@ -769,6 +769,7 @@
+ 	channel->transwindow -= len;
+ 
+ 	encrypt_packet();
++	es_ssh_note_chan_data_queued();
+ 	TRACE(("leave send_msg_channel_data"))
+ }
+ 
+--- a/src/packet.c
++++ b/src/packet.c
+@@ -26,6 +26,7 @@
+ #include "packet.h"
+ #include "session.h"
+ #include "dbutil.h"
++#include "easystick-ssh-ledger.h"
+ #include "ssh.h"
+ #include "algo.h"
+ #include "buffer.h"
+@@ -111,6 +112,8 @@ void write_packet() {
+ 	packet_queue_consume(&ses.writequeue, written);
+ 	ses.writequeue_len -= written;
+ 
++	es_ssh_try_mark_socket_write();
++
+ 	if (written == 0) {
+ 		ses.remoteclosed();
+ 	}
+@@ -137,6 +140,8 @@ void write_packet() {
+ 		buf_incrpos(writebuf, written);
+ 	}
+ #endif /* writev */
++
++	es_ssh_try_mark_socket_write();
+ 
+ 	TRACE2(("leave write_packet"))
+ }

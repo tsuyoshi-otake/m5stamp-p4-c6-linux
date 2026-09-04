@@ -1,0 +1,135 @@
+--- a/src/easystick-ssh-ledger.h
++++ b/src/easystick-ssh-ledger.h
+@@ -34,5 +34,8 @@
+ void es_ssh_mark_channel_eof(void);
+ void es_ssh_mark_exit_status(void);
+ void es_ssh_mark_channel_close(void);
++/* 0024-E0 early-init / exit observe */
++void es_ssh_mark_fatal_site(unsigned int site);
++void es_ssh_mark_signal_term(void);
+ 
+ #endif /* EASYSTICK_SSH_LEDGER_H_ */
+--- a/src/easystick-ssh-ledger.c
++++ b/src/easystick-ssh-ledger.c
+@@ -287,3 +287,22 @@
+ 	es_ssh_channel_close_marked = 1;
+ 	es_ssh_mark("ES_SSH CHANNEL_CLOSE\n");
+ }
++
++void es_ssh_mark_fatal_site(unsigned int site) {
++	char buf[40];
++	int n;
++	int saved = errno;
++
++	n = snprintf(buf, sizeof(buf), "ES_SSH DROPBEAR_FATAL site=%u\n", site);
++	if (n > 0) {
++		es_ssh_write_sinks(buf, (size_t)n);
++	}
++	errno = saved;
++}
++
++void es_ssh_mark_signal_term(void) {
++	/* Async-signal-safe: fixed write to pre-opened fds only. */
++	static const char msg[] = "ES_SSH SIGNAL_TERM\n";
++	es_ssh_write_sinks(msg, sizeof(msg) - 1);
++}
++
+--- a/src/svr-main.c
++++ b/src/svr-main.c
+@@ -102,7 +102,9 @@
+ 	es_ssh_mark("ES_SSH DB_ENTER\n");
+ 
+ 	/* Set up handlers, syslog */
++	es_ssh_mark("ES_SSH EARLY_COMMONSETUP_BEGIN\n");
+ 	commonsetup();
++	es_ssh_mark("ES_SSH EARLY_COMMONSETUP_DONE\n");
+ 
+ 	es_ssh_mark("ES_SSH RNG_BEGIN\n");
+ 	seedrandom();
+@@ -438,6 +440,7 @@
+ /* catch ctrl-c or sigterm */
+ static void sigintterm_handler(int UNUSED(unused)) {
+ 
++	es_ssh_mark_signal_term();
+ 	ses.exitflag = 1;
+ }
+ 
+@@ -447,7 +450,9 @@
+ 	struct sigaction sa_chld;
+ #ifndef DISABLE_SYSLOG
+ 	if (opts.usingsyslog) {
++		es_ssh_mark("ES_SSH EARLY_STARTSYSLOG_BEGIN\n");
+ 		startsyslog(PROGNAME);
++		es_ssh_mark("ES_SSH EARLY_STARTSYSLOG_DONE\n");
+ 	}
+ #endif
+ 
+@@ -457,6 +462,7 @@
+ 		signal(SIGTERM, sigintterm_handler) == SIG_ERR ||
+ #endif
+ 		signal(SIGPIPE, SIG_IGN) == SIG_ERR) {
++		es_ssh_mark_fatal_site(1);
+ 		dropbear_exit("signal() error");
+ 	}
+ 
+@@ -465,17 +471,23 @@
+ 	sa_chld.sa_flags = SA_NOCLDSTOP;
+ 	sigemptyset(&sa_chld.sa_mask);
+ 	if (sigaction(SIGCHLD, &sa_chld, NULL) < 0) {
++		es_ssh_mark_fatal_site(2);
+ 		dropbear_exit("signal() error");
+ 	}
+ 	if (signal(SIGSEGV, sigsegv_handler) == SIG_ERR) {
++		es_ssh_mark_fatal_site(3);
+ 		dropbear_exit("signal() error");
+ 	}
+ 
++	es_ssh_mark("ES_SSH EARLY_CRYPTO_INIT_BEGIN\n");
+ 	crypto_init();
++	es_ssh_mark("ES_SSH EARLY_CRYPTO_INIT_DONE\n");
+ 
+ 	/* Now we can setup the hostkeys - needs to be after logging is on,
+ 	 * otherwise we might end up blatting error messages to the socket */
++	es_ssh_mark("ES_SSH EARLY_LOAD_ALL_HOSTKEYS_BEGIN\n");
+ 	load_all_hostkeys();
++	es_ssh_mark("ES_SSH EARLY_LOAD_ALL_HOSTKEYS_DONE\n");
+ }
+ 
+ /* Set up listening sockets for all the requested ports */
+--- a/src/svr-session.c
++++ b/src/svr-session.c
+@@ -41,6 +41,7 @@
+ #include "runopts.h"
+ #include "crypto_desc.h"
+ #include "fuzz.h"
++#include "easystick-ssh-ledger.h"
+ 
+ static void svr_remoteclosed(void);
+ static void svr_algos_initialise(void);
+@@ -219,6 +220,8 @@
+ 	int i;
+ 	int add_delay = 0;
+ 
++	es_ssh_mark("ES_SSH DROPBEAR_EXIT\n");
++
+ #if DROPBEAR_PLUGIN
+ 	if ((ses.plugin_session != NULL)) {
+ 		svr_ses.plugin_instance->delete_session(ses.plugin_session);
+--- a/src/svr-runopts.c
++++ b/src/svr-runopts.c
+@@ -27,6 +27,7 @@
+ #include "signkey.h"
+ #include "buffer.h"
+ #include "dbutil.h"
++#include "easystick-ssh-ledger.h"
+ #include "algo.h"
+ #include "ecdsa.h"
+ 
+@@ -755,6 +756,7 @@
+ #endif
+ 
+ 	if (!any_keys) {
++		es_ssh_mark_fatal_site(4);
+ 		dropbear_exit("No hostkeys available. 'dropbear -R' may be useful or run dropbearkey.");
+ 	}
+ }

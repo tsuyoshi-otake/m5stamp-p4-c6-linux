@@ -1,0 +1,77 @@
+#!/bin/sh
+#
+# Bring up the ESP-Hosted interface when the C6 SDIO driver appears.
+# The loop is bounded so a missing/unflashed C6 cannot block the console.
+#
+
+case "$1" in
+  start)
+	# The SDIO arm is selected at build time.  mdev's modalias rule is removed
+	# by post-build so this script is the sole loader and can attest its input.
+	# If mdev still loaded it, fail closed rather than guessing which binary or
+	# default parameter was used.
+	WANT_MHZ="${ES_SDIO_MHZ:-}"
+	if [ -z "$WANT_MHZ" ] && [ -r /etc/easystick/sdio-clock-mhz ]; then
+		WANT_MHZ=$(cat /etc/easystick/sdio-clock-mhz)
+	fi
+	WANT_MHZ="${WANT_MHZ:-5}"
+	case "$WANT_MHZ" in
+		1|2|5|10) ;;
+		*) echo "ES_SDIO_CLOCK_FAIL invalid requested_mhz=$WANT_MHZ" >&2; exit 70 ;;
+	esac
+	MODULE_DIR="/lib/modules/$(uname -r)"
+	KO="$MODULE_DIR/updates/esp32_sdio.ko"
+	[ -f "$KO" ] || KO="$MODULE_DIR/extra/esp32_sdio.ko"
+	if grep -q '^esp32_sdio ' /proc/modules; then
+		echo "ES_SDIO_PRELOADED=1 requested_mhz=$WANT_MHZ" >&2
+		exit 70
+	fi
+	[ -f "$KO" ] || {
+		echo "ES_SDIO_INSMOD_FAIL missing_ko=$KO requested_mhz=$WANT_MHZ" >&2
+		exit 70
+	}
+	if insmod "$KO" "clockspeed=$WANT_MHZ"; then
+		MODULE_SOURCE=S40
+	else
+		rc=$?
+		echo "ES_SDIO_INSMOD_FAIL rc=$rc ko=$KO requested_mhz=$WANT_MHZ" >&2
+		exit "$rc"
+	fi
+	[ -r /sys/module/esp32_sdio/parameters/clockspeed ] || {
+		echo "ES_SDIO_CLOCK_FAIL module_param_unavailable source=$MODULE_SOURCE requested_mhz=$WANT_MHZ" >&2
+		exit 70
+	}
+	ACTUAL_PARAM_MHZ=$(cat /sys/module/esp32_sdio/parameters/clockspeed)
+	[ "$ACTUAL_PARAM_MHZ" = "$WANT_MHZ" ] || {
+		echo "ES_SDIO_CLOCK_FAIL source=$MODULE_SOURCE requested_mhz=$WANT_MHZ module_param_mhz=$ACTUAL_PARAM_MHZ" >&2
+		exit 70
+	}
+	MODULE_SHA256=$(sha256sum "$KO" 2>/dev/null | awk '{print $1}')
+	echo "ES_SDIO_LOAD_OK source=$MODULE_SOURCE requested_mhz=$WANT_MHZ module_param_mhz=$ACTUAL_PARAM_MHZ module_sha256=${MODULE_SHA256:-unavailable}"
+	(
+		i=0
+		while [ "$i" -lt 30 ]; do
+			if ifconfig wlan0 >/dev/null 2>&1; then
+				ifconfig wlan0 up
+				udhcpc -i wlan0 -q -n -t 5 -T 3 -A 5
+				if ! ifconfig wlan0 2>/dev/null | grep -q 'inet addr:'; then
+					echo "wlan0 DHCP returned without an IPv4 address"
+				fi
+				exit 0
+			fi
+			i=$((i + 1))
+			sleep 1
+		done
+		echo "wlan0 did not appear during first-boot DHCP window"
+	) &
+	;;
+  stop)
+	killall udhcpc 2>/dev/null || true
+	;;
+  *)
+	echo "Usage: $0 {start|stop}"
+	exit 1
+	;;
+esac
+
+exit 0

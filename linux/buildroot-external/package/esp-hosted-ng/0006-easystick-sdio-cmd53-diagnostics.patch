@@ -1,0 +1,40 @@
+From: EasyStick maintainers <noreply@example.invalid>
+Subject: [PATCH] sdio: record the first forced receive drain
+
+Separate a missed initial interrupt from a CMD53 FIFO failure.  This is
+temporary board-port telemetry: it records only transport lengths and return
+codes, never Wi-Fi credentials or payload contents.
+
+---
+ sdio/esp_sdio.c | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/sdio/esp_sdio.c b/sdio/esp_sdio.c
+--- a/sdio/esp_sdio.c
++++ b/sdio/esp_sdio.c
+@@ -411,5 +411,7 @@ static struct sk_buff *read_packet(struct esp_adapter *adapter)
+ 	/* Read length */
+ 	ret = esp_get_len_from_slave(context, &len_from_slave, LOCK_ALREADY_ACQUIRED);
++	esp_info("BOOT_CMD53_RX: len=%u ret=%d\n", len_from_slave, ret);
++
+ 
+ 	if (ret || !len_from_slave) {
+ 		sdio_release_host(context->func);
+@@ -445,6 +447,8 @@ static struct sk_buff *read_packet(struct esp_adapter *adapter)
+ 			ret = esp_read_block(context,
+ 					ESP_SLAVE_CMD53_END_ADDR - len_to_read,
+ 					pos, (len_to_read + 3) & (~3), LOCK_ALREADY_ACQUIRED);
++			if (ret)
++				esp_info("BOOT_CMD53_RX: bytes=%u ret=%d\n", len_to_read, ret);
+ 		}
+ 
+ 		if (ret) {
+@@ -480,4 +484,6 @@ static struct sk_buff *read_packet(struct esp_adapter *adapter)
+	sdio_release_host(context->func);
+
++	print_hex_dump(KERN_INFO, "esp32_sdio: BOOT_CMD53_DATA: ", DUMP_PREFIX_NONE,
++			16, 1, skb->data, min_t(u32, len_from_slave, 32), false);
+	header = (struct esp_payload_header *)skb->data;
+	len = le16_to_cpu(header->len);
+-- 
+2.43.0

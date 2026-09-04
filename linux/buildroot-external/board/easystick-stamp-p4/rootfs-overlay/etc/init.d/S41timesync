@@ -1,0 +1,56 @@
+#!/bin/sh
+# Synchronize system time after DHCP and, when the board exposes an RTC,
+# persist the synchronized value before services such as SSH are exercised.
+# Network time and RTC hardware are both best-effort so an unavailable clock
+# never prevents the local console or SSH recovery path.
+
+case "$1" in
+  start)
+	log=/var/log/ntp-sync.log
+	: >"$log"
+	if ! ifconfig wlan0 >/dev/null 2>&1; then
+		echo "NTP_SKIPPED_NO_WLAN0" >>"$log"
+	elif ! command -v ntpd >/dev/null 2>&1; then
+		echo "NTP_SKIPPED_NO_NTPD" >>"$log"
+	else
+		i=0
+		while [ "$i" -lt 60 ]; do
+			if ifconfig wlan0 2>/dev/null | grep -q 'inet addr:'; then
+				break
+			fi
+			i=$((i + 1))
+			sleep 1
+		done
+		if ! ifconfig wlan0 2>/dev/null | grep -q 'inet addr:'; then
+			echo "NTP_SKIPPED_NO_IPV4" >>"$log"
+		elif ntpd -q -n -p pool.ntp.org >>"$log" 2>&1; then
+			echo "NTP_SYNC_OK" >>"$log"
+			if [ -c /dev/rtc0 ] && command -v hwclock >/dev/null 2>&1; then
+				if hwclock -w >>"$log" 2>&1; then
+					echo "RTC_WRITE_OK" >>"$log"
+					if hwclock -r >>"$log" 2>&1; then
+						echo "RTC_READBACK_OK" >>"$log"
+					else
+						echo "RTC_READBACK_FAIL" >>"$log"
+					fi
+				else
+					echo "RTC_WRITE_FAIL" >>"$log"
+				fi
+			else
+				echo "RTC_UNAVAILABLE" >>"$log"
+			fi
+		else
+			echo "NTP_SYNC_FAIL" >>"$log"
+		fi
+	fi
+	;;
+  stop)
+	killall ntpd 2>/dev/null || true
+	;;
+  *)
+	echo "Usage: $0 {start|stop}"
+	exit 1
+	;;
+esac
+
+exit 0

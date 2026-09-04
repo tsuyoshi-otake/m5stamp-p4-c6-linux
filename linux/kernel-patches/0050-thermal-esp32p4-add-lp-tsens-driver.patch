@@ -1,0 +1,431 @@
+diff --git a/drivers/thermal/Kconfig b/drivers/thermal/Kconfig
+--- a/drivers/thermal/Kconfig
++++ b/drivers/thermal/Kconfig
+@@ -18,5 +18,19 @@ if THERMAL
+ if THERMAL
+ 
++config ESP32P4_TSENS
++	tristate "ESP32-P4 LP temperature sensor"
++	depends on OF
++	help
++	  Enable the built-in ESP32-P4 low-power temperature sensor.
++
++	  This bring-up driver programs the SAR/TSENS analog range through
++	  the internal REGI2C master, verifies the DAC write/readback path,
++	  and exposes a tripless thermal zone in /sys/class/thermal.
++
++	  The driver intentionally uses the fixed ESP-IDF range offset=0,
++	  REGI2C value 15. It is a vendor bring-up driver, not an upstream
++	  clock/reset/nvmem provider implementation.
++
+ config THERMAL_NETLINK
+ 	bool "Thermal netlink management"
+ 	depends on NET
+diff --git a/drivers/thermal/Makefile b/drivers/thermal/Makefile
+--- a/drivers/thermal/Makefile
++++ b/drivers/thermal/Makefile
+@@ -16,6 +16,7 @@ thermal_sys-$(CONFIG_THERMAL_DEBUGFS)	+= thermal_debugfs.o
+ # interface to/from other layers providing sensors
+ thermal_sys-$(CONFIG_THERMAL_HWMON)		+= thermal_hwmon.o
+ thermal_sys-$(CONFIG_THERMAL_OF)		+= thermal_of.o
++obj-$(CONFIG_ESP32P4_TSENS)		+= esp32p4_tsens.o
+ 
+ # governors
+ CFLAGS_gov_power_allocator.o			:= -I$(src)
+diff --git a/drivers/thermal/esp32p4_tsens.c b/drivers/thermal/esp32p4_tsens.c
+new file mode 100644
+--- /dev/null
++++ b/drivers/thermal/esp32p4_tsens.c
+@@ -0,0 +1,392 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * ESP32-P4 LP-TSENS bring-up driver.
++ *
++ * This is intentionally a small vendor driver.  It mirrors the ESP-IDF
++ * v5.5.3 sequence for the fixed offset=0 / REGI2C value 15 range, but does
++ * not depend on the boot-shim having configured the sensor first.
++ *
++ * The REGI2C transaction is the ESP32-P4 LP_I2C_ANA_MST operation described
++ * by ESP-IDF v5.5.3's esp_rom_regi2c_esp32p4.c implementation.  The register
++ * offsets below are cross-checked against that release's
++ * soc/i2c_ana_mst_reg.h:
++ *
++ *   0x50124000 + 0x00: I2C0_CTRL
++ *   0x50124000 + 0x34: CLK160M (select the 160 MHz master clock)
++ *   0x50124000 + 0x1c: ANA_CONF1
++ *   0x50124000 + 0x20: ANA_CONF2
++ *   SAR/ADC analog block 0x69 selects ANA_CONF2 bit 7.
++ *
++ * The eFuse field and conversion constants are copied from the P4 ESP-IDF
++ * temperature_sensor_ll.h and efuse register layout.  The raw field is
++ * 10 bits wide; ESP-IDF uses bit 8 as the sign flag, bits 7:0 as magnitude,
++ * and ignores bit 9.  The driver uses no floating point and does not treat
++ * the eFuse field as two's complement.
++ */
++
++#include <linux/bitfield.h>
++#include <linux/bits.h>
++#include <linux/delay.h>
++#include <linux/device.h>
++#include <linux/err.h>
++#include <linux/io.h>
++#include <linux/kernel.h>
++#include <linux/module.h>
++#include <linux/of.h>
++#include <linux/platform_device.h>
++#include <linux/spinlock.h>
++#include <linux/thermal.h>
++
++#define ESP32P4_TSENS_CTRL			0x00
++#define ESP32P4_TSENS_WAKEUP_CTRL		0x24
++
++#define ESP32P4_TSENS_OUT			GENMASK(7, 0)
++#define ESP32P4_TSENS_READY			BIT(8)
++#define ESP32P4_TSENS_SAMPLE_EN		BIT(9)
++#define ESP32P4_TSENS_POWER_UP		BIT(22)
++#define ESP32P4_TSENS_WAKEUP_EN		BIT(30)
++
++#define ESP32P4_LPPERI_CLK_EN			0x00
++#define ESP32P4_LPPERI_RESET_EN		0x08
++#define ESP32P4_LPPERI_TSENS_CLK		BIT(17)
++#define ESP32P4_LPPERI_I2CMST_CLK		BIT(27)
++#define ESP32P4_LPPERI_I2CMST_RESET		BIT(26)
++#define ESP32P4_LPPERI_TSENS_RESET		BIT(18)
++
++#define ESP32P4_ANA_CONF1			0x1c
++#define ESP32P4_ANA_CONF2			0x20
++#define ESP32P4_ANA_I2C0_CTRL			0x00
++#define ESP32P4_ANA_CLK160M			0x34
++#define ESP32P4_ANA_CLK_I2C_MST_SEL_160M	BIT(0)
++#define ESP32P4_ANA_I2C_BUSY			BIT(25)
++#define ESP32P4_ANA_I2C_WRITE			BIT(24)
++#define ESP32P4_ANA_I2C_DATA			GENMASK(23, 16)
++#define ESP32P4_ANA_I2C_ADDR			GENMASK(15, 8)
++#define ESP32P4_ANA_I2C_SLAVE			GENMASK(7, 0)
++#define ESP32P4_ANA_SAR_BLOCK			0x69
++#define ESP32P4_ANA_SAR_SELECT			BIT(7)
++#define ESP32P4_ANA_TSENS_DAC			0x06
++#define ESP32P4_ANA_TSENS_DAC_MASK		GENMASK(3, 0)
++
++#define ESP32P4_PMU_RF_PWC			0x15c
++#define ESP32P4_PMU_PERIF_I2C_RSTB		BIT(26)
++#define ESP32P4_PMU_XPD_PERIF_I2C		BIT(27)
++
++/*
++ * EFUSE.rd_sys_part2_data3.temperature_sensor is at EFUSE + 0x168.
++ * The generated ESP-IDF field is 10 bits wide: bit 8 is the sign flag and
++ * bits 7:0 are the magnitude.  ESP-IDF ignores bit 9 when decoding it.
++ */
++#define ESP32P4_EFUSE_TEMP_SENSOR		0x168
++#define ESP32P4_EFUSE_TEMP_MASK			GENMASK(9, 0)
++
++#define ESP32P4_TSENS_DAC_VALUE			15
++#define ESP32P4_TSENS_DAC_PROBE			7
++#define ESP32P4_TSENS_SETTLE_US			300
++#define ESP32P4_TSENS_I2C_TIMEOUT_US		1000
++
++#define ESP32P4_TSENS_ADC_MILLI_NUM		4386
++#define ESP32P4_TSENS_ADC_MILLI_DEN		10
++#define ESP32P4_TSENS_OFFSET_MILLI		20520
++
++struct esp32p4_tsens {
++	void __iomem *tsens;
++	void __iomem *lpperi;
++	void __iomem *ana_mst;
++	void __iomem *pmu;
++	void __iomem *efuse;
++	struct thermal_zone_device *tzd;
++	raw_spinlock_t regi2c_lock;
++	int delta_t;
++};
++
++static int esp32p4_tsens_wait_idle(struct esp32p4_tsens *data)
++{
++	unsigned int elapsed;
++
++	for (elapsed = 0; elapsed < ESP32P4_TSENS_I2C_TIMEOUT_US; elapsed++) {
++		if (!(readl(data->ana_mst + ESP32P4_ANA_I2C0_CTRL) &
++		      ESP32P4_ANA_I2C_BUSY))
++			return 0;
++		udelay(1);
++	}
++
++	return -ETIMEDOUT;
++}
++
++static void esp32p4_tsens_select_sar_block(struct esp32p4_tsens *data)
++{
++	/*
++	 * This mirrors ESP-IDF's regi2c_enable_block(): clear both analog
++	 * configuration registers, then select the SAR/ADC analog master.
++	 */
++	writel(0, data->ana_mst + ESP32P4_ANA_CONF2);
++	writel(0, data->ana_mst + ESP32P4_ANA_CONF1);
++	writel(ESP32P4_ANA_SAR_SELECT, data->ana_mst + ESP32P4_ANA_CONF2);
++}
++
++static int esp32p4_tsens_regi2c_read_locked(struct esp32p4_tsens *data,
++					     u8 reg, u8 *value)
++{
++	u32 command;
++	int ret;
++
++	esp32p4_tsens_select_sar_block(data);
++	ret = esp32p4_tsens_wait_idle(data);
++	if (ret)
++		return ret;
++
++	command = FIELD_PREP(ESP32P4_ANA_I2C_SLAVE, ESP32P4_ANA_SAR_BLOCK) |
++		  FIELD_PREP(ESP32P4_ANA_I2C_ADDR, reg);
++	writel(command, data->ana_mst + ESP32P4_ANA_I2C0_CTRL);
++
++	ret = esp32p4_tsens_wait_idle(data);
++	if (ret)
++		return ret;
++
++	*value = FIELD_GET(ESP32P4_ANA_I2C_DATA,
++			   readl(data->ana_mst + ESP32P4_ANA_I2C0_CTRL));
++	return 0;
++}
++
++static int esp32p4_tsens_regi2c_write_locked(struct esp32p4_tsens *data,
++					      u8 reg, u8 value)
++{
++	u32 command;
++	int ret;
++
++	esp32p4_tsens_select_sar_block(data);
++	ret = esp32p4_tsens_wait_idle(data);
++	if (ret)
++		return ret;
++
++	command = FIELD_PREP(ESP32P4_ANA_I2C_SLAVE, ESP32P4_ANA_SAR_BLOCK) |
++		  FIELD_PREP(ESP32P4_ANA_I2C_ADDR, reg) |
++		  FIELD_PREP(ESP32P4_ANA_I2C_DATA, value) |
++		  ESP32P4_ANA_I2C_WRITE;
++	writel(command, data->ana_mst + ESP32P4_ANA_I2C0_CTRL);
++
++	return esp32p4_tsens_wait_idle(data);
++}
++
++static int esp32p4_tsens_regi2c_update_locked(struct esp32p4_tsens *data,
++					       u8 value)
++{
++	u8 dac_reg;
++	int ret;
++
++	ret = esp32p4_tsens_regi2c_read_locked(data, ESP32P4_ANA_TSENS_DAC,
++					       &dac_reg);
++	if (!ret) {
++		dac_reg &= ~ESP32P4_ANA_TSENS_DAC_MASK;
++		dac_reg |= value & ESP32P4_ANA_TSENS_DAC_MASK;
++		ret = esp32p4_tsens_regi2c_write_locked(data,
++							ESP32P4_ANA_TSENS_DAC,
++							dac_reg);
++	}
++
++	return ret;
++}
++
++static int esp32p4_tsens_regi2c_probe_range(struct esp32p4_tsens *data,
++					     u8 *before, u8 *probe, u8 *after)
++{
++	unsigned long flags;
++	u8 dac_reg;
++	int ret;
++
++	raw_spin_lock_irqsave(&data->regi2c_lock, flags);
++
++	ret = esp32p4_tsens_regi2c_read_locked(data, ESP32P4_ANA_TSENS_DAC,
++					       &dac_reg);
++	if (!ret)
++		*before = dac_reg & ESP32P4_ANA_TSENS_DAC_MASK;
++	if (!ret)
++		ret = esp32p4_tsens_regi2c_update_locked(data,
++							 ESP32P4_TSENS_DAC_PROBE);
++	if (!ret)
++		ret = esp32p4_tsens_regi2c_read_locked(data,
++						       ESP32P4_ANA_TSENS_DAC,
++						       &dac_reg);
++	if (!ret)
++		*probe = dac_reg & ESP32P4_ANA_TSENS_DAC_MASK;
++	if (!ret)
++		ret = esp32p4_tsens_regi2c_update_locked(data,
++							 ESP32P4_TSENS_DAC_VALUE);
++	if (!ret)
++		ret = esp32p4_tsens_regi2c_read_locked(data,
++						       ESP32P4_ANA_TSENS_DAC,
++						       &dac_reg);
++	if (!ret)
++		*after = dac_reg & ESP32P4_ANA_TSENS_DAC_MASK;
++
++	raw_spin_unlock_irqrestore(&data->regi2c_lock, flags);
++	return ret;
++}
++
++static int esp32p4_tsens_raw_to_mdeg(const struct esp32p4_tsens *data,
++				     u32 raw)
++{
++	s64 temp_mc;
++
++	temp_mc = DIV_ROUND_CLOSEST((s64)raw * ESP32P4_TSENS_ADC_MILLI_NUM,
++				    ESP32P4_TSENS_ADC_MILLI_DEN);
++	temp_mc -= ESP32P4_TSENS_OFFSET_MILLI;
++	temp_mc -= (s64)data->delta_t * 100;
++	return (int)temp_mc;
++}
++
++static int esp32p4_tsens_get_temp(struct thermal_zone_device *tzd,
++				  int *temp)
++{
++	struct esp32p4_tsens *data = thermal_zone_device_priv(tzd);
++	u32 raw = readl(data->tsens + ESP32P4_TSENS_CTRL) &
++		  ESP32P4_TSENS_OUT;
++
++	*temp = esp32p4_tsens_raw_to_mdeg(data, raw);
++	return 0;
++}
++
++static const struct thermal_zone_device_ops esp32p4_tsens_ops = {
++	.get_temp = esp32p4_tsens_get_temp,
++};
++
++static void esp32p4_tsens_unregister(void *arg)
++{
++	thermal_zone_device_unregister(arg);
++}
++
++static int esp32p4_tsens_probe(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct esp32p4_tsens *data;
++	u32 value;
++	u32 ctrl;
++	u32 efuse_raw;
++	u8 dac_before = 0;
++	u8 dac_probe = 0;
++	u8 dac_after = 0;
++	u32 raw;
++	int temp_mc;
++	int ret;
++
++	data = devm_kzalloc(dev, sizeof(*data), GFP_KERNEL);
++	if (!data)
++		return -ENOMEM;
++	raw_spin_lock_init(&data->regi2c_lock);
++
++	data->tsens = devm_platform_ioremap_resource_byname(pdev, "tsens");
++	if (IS_ERR(data->tsens))
++		return dev_err_probe(dev, PTR_ERR(data->tsens),
++				     "failed to map TSENS\n");
++	data->lpperi = devm_platform_ioremap_resource_byname(pdev, "lpperi");
++	if (IS_ERR(data->lpperi))
++		return dev_err_probe(dev, PTR_ERR(data->lpperi),
++				     "failed to map LP_PERI\n");
++	data->ana_mst = devm_platform_ioremap_resource_byname(pdev, "ana-mst");
++	if (IS_ERR(data->ana_mst))
++		return dev_err_probe(dev, PTR_ERR(data->ana_mst),
++				     "failed to map LP analog I2C master\n");
++	data->pmu = devm_platform_ioremap_resource_byname(pdev, "pmu");
++	if (IS_ERR(data->pmu))
++		return dev_err_probe(dev, PTR_ERR(data->pmu), "failed to map PMU\n");
++	data->efuse = devm_platform_ioremap_resource_byname(pdev, "efuse");
++	if (IS_ERR(data->efuse))
++		return dev_err_probe(dev, PTR_ERR(data->efuse),
++				     "failed to map eFuse\n");
++
++	value = readl(data->pmu + ESP32P4_PMU_RF_PWC);
++	value &= ~ESP32P4_PMU_PERIF_I2C_RSTB;
++	writel(value, data->pmu + ESP32P4_PMU_RF_PWC);
++	value |= ESP32P4_PMU_XPD_PERIF_I2C;
++	writel(value, data->pmu + ESP32P4_PMU_RF_PWC);
++	value |= ESP32P4_PMU_PERIF_I2C_RSTB;
++	writel(value, data->pmu + ESP32P4_PMU_RF_PWC);
++
++	value = readl(data->lpperi + ESP32P4_LPPERI_CLK_EN);
++	value |= ESP32P4_LPPERI_I2CMST_CLK | ESP32P4_LPPERI_TSENS_CLK;
++	writel(value, data->lpperi + ESP32P4_LPPERI_CLK_EN);
++	value = readl(data->lpperi + ESP32P4_LPPERI_RESET_EN);
++	value |= ESP32P4_LPPERI_I2CMST_RESET | ESP32P4_LPPERI_TSENS_RESET;
++	writel(value, data->lpperi + ESP32P4_LPPERI_RESET_EN);
++	value &= ~(ESP32P4_LPPERI_I2CMST_RESET | ESP32P4_LPPERI_TSENS_RESET);
++	writel(value, data->lpperi + ESP32P4_LPPERI_RESET_EN);
++	value = readl(data->ana_mst + ESP32P4_ANA_CLK160M);
++	value |= ESP32P4_ANA_CLK_I2C_MST_SEL_160M;
++	writel(value, data->ana_mst + ESP32P4_ANA_CLK160M);
++
++	ret = esp32p4_tsens_regi2c_probe_range(data, &dac_before, &dac_probe,
++						&dac_after);
++	if (ret)
++		return dev_err_probe(dev, ret, "REGI2C range transaction failed\n");
++	if (dac_probe != ESP32P4_TSENS_DAC_PROBE ||
++	    dac_after != ESP32P4_TSENS_DAC_VALUE)
++		return dev_err_probe(dev, -EIO,
++				     "REGI2C DAC readback failed before=%u probe=%u after=%u\n",
++				     dac_before, dac_probe, dac_after);
++
++	efuse_raw = readl(data->efuse + ESP32P4_EFUSE_TEMP_SENSOR) &
++		    ESP32P4_EFUSE_TEMP_MASK;
++	data->delta_t = (efuse_raw & BIT(8)) ?
++			-(int)(efuse_raw & GENMASK(7, 0)) :
++			(int)(efuse_raw & GENMASK(7, 0));
++
++	ctrl = readl(data->tsens + ESP32P4_TSENS_CTRL);
++	ctrl |= ESP32P4_TSENS_POWER_UP;
++	writel(ctrl, data->tsens + ESP32P4_TSENS_CTRL);
++	value = readl(data->tsens + ESP32P4_TSENS_WAKEUP_CTRL);
++	value |= ESP32P4_TSENS_WAKEUP_EN;
++	writel(value, data->tsens + ESP32P4_TSENS_WAKEUP_CTRL);
++	ctrl |= ESP32P4_TSENS_SAMPLE_EN;
++	writel(ctrl, data->tsens + ESP32P4_TSENS_CTRL);
++	udelay(ESP32P4_TSENS_SETTLE_US);
++
++	raw = readl(data->tsens + ESP32P4_TSENS_CTRL) & ESP32P4_TSENS_OUT;
++	temp_mc = esp32p4_tsens_raw_to_mdeg(data, raw);
++	if (temp_mc < -40000 || temp_mc > 125000)
++		return dev_err_probe(dev, -ERANGE,
++				     "initial temperature out of range: raw=%u temp_mc=%d\n",
++				     raw, temp_mc);
++
++	data->tzd = thermal_tripless_zone_device_register(
++		"esp32p4-tsens", data, &esp32p4_tsens_ops, NULL);
++	if (IS_ERR(data->tzd))
++		return dev_err_probe(dev, PTR_ERR(data->tzd),
++				     "failed to register thermal zone\n");
++	ret = devm_add_action_or_reset(dev, esp32p4_tsens_unregister,
++				       data->tzd);
++	if (ret)
++		return ret;
++
++	/*
++	 * READY is intentionally diagnostic only.  ESP-IDF v5.5.3 reads OUT
++	 * directly and the Phase-0 board capture produced a live raw value with
++	 * READY=0.
++	 */
++	dev_info(dev,
++		 "P4_TSENS_LINUX PASS efuse_raw=0x%03x delta_t=%d range_reg=%u dac_before=%u dac_probe=%u dac_readback=%u ready=%u raw=%u temp_mc=%d\n",
++		 efuse_raw, data->delta_t, ESP32P4_TSENS_DAC_VALUE,
++		 dac_before, dac_probe, dac_after,
++		 !!(readl(data->tsens + ESP32P4_TSENS_CTRL) &
++		    ESP32P4_TSENS_READY),
++		 raw, temp_mc);
++	return 0;
++}
++
++static const struct of_device_id esp32p4_tsens_of_match[] = {
++	{ .compatible = "espressif,esp32p4-tsens" },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, esp32p4_tsens_of_match);
++
++static struct platform_driver esp32p4_tsens_driver = {
++	.probe = esp32p4_tsens_probe,
++	.driver = {
++		.name = "esp32p4-tsens",
++		.of_match_table = esp32p4_tsens_of_match,
++	},
++};
++module_platform_driver(esp32p4_tsens_driver);
++
++MODULE_DESCRIPTION("ESP32-P4 LP temperature sensor");
++MODULE_LICENSE("GPL");

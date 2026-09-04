@@ -1,0 +1,36 @@
+From: EasyStick maintainers <noreply@example.invalid>
+Subject: [PATCH] sdio: do not re-claim host in the IRQ callback
+
+The MMC SDIO core invokes a function IRQ callback while the host is already
+claimed by the SDIO IRQ worker.  The callback contract explicitly requires the
+handler not to call sdio_claim_host() or sdio_release_host().
+
+The P4 port uses bytewise CMD52 access for the ESP slave register window.
+esp_handle_isr() therefore performs several synchronous commands while holding
+that already-claimed host.  Passing ACQUIRE_LOCK makes esp_read_reg() and
+esp_write_reg() perform a nested claim/release around the callback's
+transaction.  Avoid that unnecessary ownership transition in the callback and
+leave all non-IRQ callers unchanged.
+
+This is a P4 host-side synchronization fix.  It does not change the C6 image,
+register addresses, command format, retry policy, or DMA path.
+
+---
+ sdio/esp_sdio.c | 8 ++++----
+ 1 file changed, 4 insertions(+), 4 deletions(-)
+
+diff --git a/sdio/esp_sdio.c b/sdio/esp_sdio.c
+--- a/sdio/esp_sdio.c
++++ b/sdio/esp_sdio.c
+@@ -399,1 +399,1 @@
+-			(u8 *) int_status, sizeof(*int_status), ACQUIRE_LOCK);
++			(u8 *) int_status, sizeof(*int_status), LOCK_ALREADY_ACQUIRED);
+@@ -408,1 +408,1 @@
+-				(u8 *) &raw, sizeof(raw), ACQUIRE_LOCK);
++				(u8 *) &raw, sizeof(raw), LOCK_ALREADY_ACQUIRED);
+@@ -429,1 +429,1 @@
+-					ACQUIRE_LOCK);
++					LOCK_ALREADY_ACQUIRED);
+@@ -493,1 +493,1 @@
+-			(u8 *) int_status, sizeof(*int_status), ACQUIRE_LOCK);
++			(u8 *) int_status, sizeof(*int_status), LOCK_ALREADY_ACQUIRED);

@@ -1,0 +1,56 @@
+--- a/drivers/tty/serial/esp32_uart.c
++++ b/drivers/tty/serial/esp32_uart.c
+@@ -675,6 +675,53 @@ static struct console esp32_uart_console = {
+ 	.data		= &esp32_uart_reg,
+ };
+ 
++/*
++ * The Stamp-P4 module USB-C is wired to the P4 USB-Serial/JTAG peripheral,
++ * not UART0.  Keep an early console on that FIFO so a board without a
++ * GPIO38/37 UART fixture still exposes kernel bring-up logs.
++ */
++#define ESP32P4_USB_JTAG_EP1_REG	0x00
++#define ESP32P4_USB_JTAG_EP1_CONF_REG	0x04
++#define ESP32P4_USB_JTAG_WR_DONE	BIT(0)
++#define ESP32P4_USB_JTAG_DATA_FREE	BIT(1)
++
++static void esp32p4_usb_jtag_putchar(struct uart_port *port, u8 c)
++{
++	void __iomem *base = port->membase;
++	unsigned int timeout = 1000000;
++
++	while (!(readl(base + ESP32P4_USB_JTAG_EP1_CONF_REG) &
++		 ESP32P4_USB_JTAG_DATA_FREE) && --timeout)
++		cpu_relax();
++	if (!timeout)
++		return;
++
++	writel(c, base + ESP32P4_USB_JTAG_EP1_REG);
++	writel(ESP32P4_USB_JTAG_WR_DONE,
++	       base + ESP32P4_USB_JTAG_EP1_CONF_REG);
++}
++
++static void esp32p4_usb_jtag_earlycon_write(struct console *con,
++					     const char *s, unsigned int n)
++{
++	struct earlycon_device *dev = con->data;
++
++	uart_console_write(&dev->port, s, n, esp32p4_usb_jtag_putchar);
++}
++
++static int __init esp32p4_usb_jtag_earlycon_setup(
++	struct earlycon_device *device, const char *options)
++{
++	if (!device->port.membase)
++		return -ENODEV;
++	device->con->write = esp32p4_usb_jtag_earlycon_write;
++	return 0;
++}
++
++OF_EARLYCON_DECLARE(esp32p4usbjtag,
++		    "espressif,esp32p4-usb-serial-jtag",
++		    esp32p4_usb_jtag_earlycon_setup);
++
+ static void esp32_uart_earlycon_putchar(struct uart_port *port, u8 c)
+ {
+ 	esp32_uart_put_char_sync(port, c);

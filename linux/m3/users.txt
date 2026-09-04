@@ -1,0 +1,4 @@
+# username uid group gid password home shell groups comment
+# The account is locked in the image.  First boot unlocks it only after a
+# password is supplied over the local USB setup console; SSH remains key-only.
+p4 -1 p4 -1 ! /config/easystick/p4 /bin/sh - EasyStick operator

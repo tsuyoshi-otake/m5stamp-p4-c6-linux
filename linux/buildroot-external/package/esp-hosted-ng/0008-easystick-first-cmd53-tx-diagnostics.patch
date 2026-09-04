@@ -1,0 +1,26 @@
+From: EasyStick maintainers <noreply@example.invalid>
+Subject: [PATCH] sdio: log command-path CMD53 transmit result
+
+Record the CMD53 write used by ESP-Hosted control commands.  Together with
+the existing receive/IRQ evidence, this distinguishes a host write failure
+from a C6 response/interrupt failure.  The record contains only address,
+length, and return code.
+
+---
+ sdio/esp_sdio.c | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/sdio/esp_sdio.c b/sdio/esp_sdio.c
+--- a/sdio/esp_sdio.c
++++ b/sdio/esp_sdio.c
+@@ -681,6 +681,8 @@ static int tx_process(void *data)
+ 		do {
+ 			block_cnt = data_left / ESP_BLOCK_SIZE;
+ 			len_to_send = data_left;
++			esp_info("CMD53_TX: addr=0x%x bytes=%u\n",
++				 ESP_SLAVE_CMD53_END_ADDR - len_to_send, len_to_send);
+ 			ret = esp_write_block(context, ESP_SLAVE_CMD53_END_ADDR - len_to_send,
+ 					pos, (len_to_send + 3) & (~3), ACQUIRE_LOCK);
+ 
+-- 
+2.43.0

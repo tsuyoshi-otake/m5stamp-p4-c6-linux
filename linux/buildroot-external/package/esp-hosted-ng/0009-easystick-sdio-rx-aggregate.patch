@@ -1,0 +1,124 @@
+From: EasyStick maintainers <noreply@example.invalid>
+Subject: [PATCH] sdio: split queued ESP-Hosted receive frames
+
+SDIO stream mode can return more than one ESP-Hosted frame when the P4
+userspace or interrupt worker falls behind.  The original host transport
+treated the whole byte count as one frame, so the next frame was interpreted
+as a malformed payload and command responses were lost.  Keep the locked C6
+image unchanged and split aligned payloads in the P4 host driver.
+
+---
+ sdio/esp_sdio.c      | 54 ++++++++++++++++++++++++++++++++++++++++++++++++++++
+ sdio/esp_sdio_decl.h |  2 ++
+ 2 files changed, 56 insertions(+)
+
+diff --git a/sdio/esp_sdio.c b/sdio/esp_sdio.c
+index 79fb212..2f3c0c1 100644
+--- a/sdio/esp_sdio.c
++++ b/sdio/esp_sdio.c
+@@ -254,6 +254,7 @@ static void esp_remove(struct sdio_func *func)
+ 	if (context) {
+ 		for (prio_q_idx = 0; prio_q_idx < MAX_PRIORITY_QUEUES; prio_q_idx++)
+ 			skb_queue_purge(&(sdio_context.tx_q[prio_q_idx]));
++		skb_queue_purge(&(sdio_context.rx_q));
+ 		atomic_set(&tx_pending, 0);
+ 	}
+ 
+@@ -374,6 +375,7 @@ static int init_context(struct esp_sdio_context *context)
+ 		skb_queue_head_init(&(sdio_context.tx_q[prio_q_idx]));
+ 		atomic_set(&queue_items[prio_q_idx], 0);
+ 	}
++	skb_queue_head_init(&(sdio_context.rx_q));
+ 
+ 	context->adapter->if_type = ESP_IF_TYPE_SDIO;
+ 
+@@ -388,6 +390,7 @@ static struct sk_buff *read_packet(struct esp_adapter *adapter)
+ 	u8 *pos;
+ 	struct esp_sdio_context *context;
+ 	struct esp_payload_header *header;
++	u16 frame_len, aligned_len, pos_in_aggr;
+ 	u16 len, offset;
+ 
+ 	if (!adapter || !adapter->if_context) {
+@@ -396,6 +399,9 @@ static struct sk_buff *read_packet(struct esp_adapter *adapter)
+ 	}
+ 
+ 	context = adapter->if_context;
++	skb = skb_dequeue(&(context->rx_q));
++	if (skb)
++		return skb;
+ 
+ 	if (!context || !context->func) {
+ 		esp_err("Invalid context/state\n");
+@@ -487,7 +493,54 @@ static struct sk_buff *read_packet(struct esp_adapter *adapter)
+ 		return NULL;
+ 	}
+ 
+-	return skb;
++	frame_len = len + offset;
++	if (frame_len > len_from_slave) {
++		esp_err("Drop truncated pkt: len=%d offset=%d total=%u\n",
++			len, offset, len_from_slave);
++		dev_kfree_skb(skb);
++		return NULL;
++	}
++	aligned_len = (frame_len + 3) & ~3;
++	if (aligned_len >= len_from_slave) {
++		if (frame_len < skb->len)
++			skb_trim(skb, frame_len);
++		return skb;
++	}
++
++	/* The ESP SDIO stream may contain several 4-byte aligned frames. */
++	pos_in_aggr = 0;
++	while (pos_in_aggr + sizeof(*header) <= len_from_slave) {
++		struct sk_buff *frame_skb;
++
++		header = (struct esp_payload_header *)(skb->data + pos_in_aggr);
++		len = le16_to_cpu(header->len);
++		offset = le16_to_cpu(header->offset);
++		if (!len)
++			break;
++		if (len > ESP_RX_BUFFER_SIZE || !ESP_OFFSET_VALID(offset)) {
++			esp_err("Drop invalid aggregate pkt: len=%d offset=%d pos=%u\n",
++				len, offset, pos_in_aggr);
++			break;
++		}
++		frame_len = len + offset;
++		aligned_len = (frame_len + 3) & ~3;
++		if (pos_in_aggr + frame_len > len_from_slave) {
++			esp_err("Drop truncated aggregate pkt: len=%d offset=%d pos=%u total=%u\n",
++				len, offset, pos_in_aggr, len_from_slave);
++			break;
++		}
++
++		frame_skb = esp_if_alloc_skb(context->adapter, frame_len);
++		if (!frame_skb)
++			break;
++		skb_put(frame_skb, frame_len);
++		memcpy(frame_skb->data, skb->data + pos_in_aggr, frame_len);
++		skb_queue_tail(&(context->rx_q), frame_skb);
++		pos_in_aggr += aligned_len;
++	}
++
++	dev_kfree_skb(skb);
++	return skb_dequeue(&(context->rx_q));
+ }
+ 
+ static int write_packet(struct esp_adapter *adapter, struct sk_buff *skb)
+diff --git a/sdio/esp_sdio_decl.h b/sdio/esp_sdio_decl.h
+index f7cfb0a..a26376a 100644
+--- a/sdio/esp_sdio_decl.h
++++ b/sdio/esp_sdio_decl.h
+@@ -29,6 +29,7 @@
+ #define ESP_BLOCK_SIZE                 512
+ #define ESP_RX_BYTE_MAX                0x100000
+ #define ESP_RX_BUFFER_SIZE             2048
++#define ESP_SDIO_RX_AGGR_SIZE          16384
+ 
+ #define ESP_TX_BUFFER_MASK             0xFFF
+ #define ESP_TX_BUFFER_MAX              0x1000
+@@ -79,0 +80 @@ struct esp_sdio_context {
++	struct sk_buff_head    rx_q;
+-- 
+2.43.0

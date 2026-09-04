@@ -1,0 +1,221 @@
+diff --git a/drivers/irqchip/irq-esp32p4-ipi.c b/drivers/irqchip/irq-esp32p4-ipi.c
+--- a/drivers/irqchip/irq-esp32p4-ipi.c
++++ b/drivers/irqchip/irq-esp32p4-ipi.c
+@@ -16,15 +16,20 @@
+ #define pr_fmt(fmt) "esp32p4-ipi: " fmt
+ 
+ #include <linux/cpu.h>
++#include <linux/completion.h>
+ #include <linux/cpuhotplug.h>
+ #include <linux/interrupt.h>
++#include <linux/init.h>
+ #include <linux/irq.h>
+ #include <linux/irqchip.h>
+ #include <linux/io.h>
+ #include <linux/kernel.h>
+ #include <linux/of_address.h>
+ #include <linux/of_irq.h>
++#include <linux/proc_fs.h>
++#include <linux/seq_file.h>
+ #include <linux/smp.h>
++#include <linux/uaccess.h>
+ 
+ #include <asm/smp.h>
+ 
+@@ -31,13 +36,196 @@
+ static void __iomem *esp32p4_ipi_base;
+ static unsigned int esp32p4_ipi_parent_irq[ESP32P4_IPI_NR_CPUS];
+ static DEFINE_PER_CPU(int, esp32p4_ipi_dev);
+ static unsigned int esp32p4_ipi_send_count[ESP32P4_IPI_NR_CPUS];
+ static unsigned int esp32p4_ipi_irq_count;
+ 
++struct esp32p4_l3_smoke_result {
++	struct completion cpu0_started;
++	struct completion reverse_done;
++	int cpu0_callback_cpu;
++	int forward_cpu;
++	int reverse_initiator_cpu;
++	int reverse_cpu;
++	int forward_rc;
++	int reverse_initiate_rc;
++	int reverse_target_rc;
++	int status;
++};
++
++static DEFINE_MUTEX(esp32p4_l3_smoke_lock);
++static struct esp32p4_l3_smoke_result esp32p4_l3_smoke_result;
++
++static void esp32p4_l3_smoke_forward(void *arg)
++{
++	struct esp32p4_l3_smoke_result *result = arg;
++
++	result->forward_cpu = raw_smp_processor_id();
++}
++
++static void esp32p4_l3_smoke_reverse_target(void *arg)
++{
++	struct esp32p4_l3_smoke_result *result = arg;
++
++	result->reverse_cpu = raw_smp_processor_id();
++	complete(&result->reverse_done);
++}
++
++static void esp32p4_l3_smoke_reverse_start(void *arg)
++{
++	struct esp32p4_l3_smoke_result *result = arg;
++
++	result->reverse_initiator_cpu = raw_smp_processor_id();
++	result->reverse_target_rc =
++		smp_call_function_single(0, esp32p4_l3_smoke_reverse_target,
++					 result, 0);
++	if (result->reverse_target_rc)
++		complete(&result->reverse_done);
++}
++
++/*
++ * This callback runs on CPU0.  The forward call waits for CPU1's callback,
++ * while the reverse call is deliberately non-blocking: CPU1 must be able to
++ * notify CPU0 after this callback returns, otherwise a wait inside this
++ * callback would deadlock the CPU0 IPI handler.
++ */
++static void esp32p4_l3_smoke_start_on_cpu0(void *arg)
++{
++	struct esp32p4_l3_smoke_result *result = arg;
++
++	result->cpu0_callback_cpu = raw_smp_processor_id();
++	result->forward_rc =
++		smp_call_function_single(1, esp32p4_l3_smoke_forward, result, 1);
++	if (!result->forward_rc)
++		result->reverse_initiate_rc =
++			smp_call_function_single(1,
++						 esp32p4_l3_smoke_reverse_start,
++						 result, 0);
++	else
++		result->reverse_initiate_rc = result->forward_rc;
++	complete(&result->cpu0_started);
++}
++
++static int esp32p4_l3_smoke_run(struct esp32p4_l3_smoke_result *result)
++{
++	unsigned long timeout;
++	int ret;
++
++	init_completion(&result->cpu0_started);
++	init_completion(&result->reverse_done);
++	result->cpu0_callback_cpu = -1;
++	result->forward_cpu = -1;
++	result->reverse_initiator_cpu = -1;
++	result->reverse_cpu = -1;
++	result->forward_rc = -EIO;
++	result->reverse_initiate_rc = -EIO;
++	result->reverse_target_rc = -EIO;
++
++	if (raw_smp_processor_id() == 0) {
++		esp32p4_l3_smoke_start_on_cpu0(result);
++		ret = 0;
++	} else {
++		ret = smp_call_function_single(0,
++					       esp32p4_l3_smoke_start_on_cpu0,
++					       result, 1);
++	}
++	if (ret)
++		goto fail;
++
++	timeout = wait_for_completion_timeout(&result->cpu0_started, HZ);
++	if (!timeout || result->forward_rc || result->reverse_initiate_rc) {
++		ret = -ETIMEDOUT;
++		goto fail;
++	}
++
++	timeout = wait_for_completion_timeout(&result->reverse_done, HZ);
++	if (!timeout || result->reverse_target_rc) {
++		ret = -ETIMEDOUT;
++		goto fail;
++	}
++
++	if (result->cpu0_callback_cpu != 0 ||
++	    result->forward_cpu != 1 ||
++	    result->reverse_initiator_cpu != 1 ||
++	    result->reverse_cpu != 0) {
++		ret = -EXDEV;
++		goto fail;
++	}
++
++	result->status = 1;
++	return 0;
++
++fail:
++	result->status = 0;
++	return ret;
++}
++
++static int esp32p4_l3_smoke_show(struct seq_file *m, void *unused)
++{
++	struct esp32p4_l3_smoke_result *result = m->private;
++
++	seq_printf(m,
++		   "status=%s cpu0=%d forward_cpu=%d reverse_init_cpu=%d "
++		   "reverse_cpu=%d forward_rc=%d reverse_init_rc=%d "
++		   "reverse_target_rc=%d\n",
++		   result->status ? "PASS" : "FAIL",
++		   result->cpu0_callback_cpu, result->forward_cpu,
++		   result->reverse_initiator_cpu, result->reverse_cpu,
++		   result->forward_rc, result->reverse_initiate_rc,
++		   result->reverse_target_rc);
++	return 0;
++}
++
++static int esp32p4_l3_smoke_open(struct inode *inode, struct file *file)
++{
++	return single_open(file, esp32p4_l3_smoke_show,
++			   &esp32p4_l3_smoke_result);
++}
++
++static ssize_t esp32p4_l3_smoke_write(struct file *file,
++				       const char __user *buf,
++				       size_t count, loff_t *ppos)
++{
++	char command[8];
++	int ret;
++
++	if (!count || count >= sizeof(command))
++		return -EINVAL;
++	if (copy_from_user(command, buf, count))
++		return -EFAULT;
++	command[count] = '\0';
++	if (strcmp(command, "run\n") && strcmp(command, "run"))
++		return -EINVAL;
++
++	mutex_lock(&esp32p4_l3_smoke_lock);
++	ret = esp32p4_l3_smoke_run(&esp32p4_l3_smoke_result);
++	mutex_unlock(&esp32p4_l3_smoke_lock);
++	return ret ? ret : count;
++}
++
++static const struct proc_ops esp32p4_l3_smoke_proc_ops = {
++	.proc_open = esp32p4_l3_smoke_open,
++	.proc_read = seq_read,
++	.proc_lseek = seq_lseek,
++	.proc_release = single_release,
++	.proc_write = esp32p4_l3_smoke_write,
++};
++
++static int __init esp32p4_l3_smoke_proc_init(void)
++{
++	if (!proc_create("m5stamp_smp_smoke", 0600, NULL,
++			 &esp32p4_l3_smoke_proc_ops)) {
++		pr_err("cannot create /proc/m5stamp_smp_smoke\n");
++		return -ENOMEM;
++	}
++	pr_info("M5STAMP L3 smoke endpoint /proc/m5stamp_smp_smoke ready\n");
++	return 0;
++}
++late_initcall(esp32p4_l3_smoke_proc_init);
++
+ static unsigned int esp32p4_ipi_reg(unsigned int cpu)
+ {
+ 	return cpu ? ESP32P4_IPI_FROM_CPU1 : ESP32P4_IPI_FROM_CPU0;
+ }
+ 
+ static void esp32p4_ipi_send(unsigned int cpu)
+ {

@@ -1,0 +1,25 @@
+From: EasyStick <noreply@easystick.local>
+Subject: [PATCH] easystick: disable C6 Wi-Fi modem-sleep (WIFI_PS_NONE)
+
+Keep NG-1.0.6.0.1. On set_ps failure: log only; do not abort.
+---
+--- a/main/cmd.c	2026-08-16 13:09:51.777571000 +0900
++++ b/main/cmd.c	2026-08-16 13:09:51.778570500 +0900
+@@ -1022,6 +1022,17 @@
+         return result;
+     }
+ 
++    /* EasyStick 0021: keep STA awake so the AP does not buffer downlink for
++     * modem-sleep/DTIM windows (observed ~21 s burst of ICMP replies). */
++    {
++        esp_err_t ps_ret = esp_wifi_set_ps(WIFI_PS_NONE);
++        if (ps_ret != ESP_OK) {
++            ESP_LOGE(TAG, "Failed to disable Wi-Fi power save: %s",
++                     esp_err_to_name(ps_ret));
++            /* Do not abort - keep C6 reachable for host-OTA rollback. */
++        }
++    }
++
+     esp_wifi_set_debug_log();
+ 
+     /* Register to get events from wifi driver */

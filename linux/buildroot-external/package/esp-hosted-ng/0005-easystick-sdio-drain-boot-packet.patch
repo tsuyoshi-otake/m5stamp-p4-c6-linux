@@ -1,0 +1,33 @@
+From: EasyStick maintainers <noreply@example.invalid>
+Subject: [PATCH] sdio: drain a boot packet after opening the data path
+
+The P4 in-band interrupt input is edge sensitive.  The C6 can queue its
+BOOTUP packet before the host's interrupt path observes an edge, leaving a
+non-zero RX position but no work scheduled.  Poll the receive queue once
+after OPEN_DATA_PATH; normal traffic continues to use SDIO interrupts.
+
+---
+ sdio/esp_sdio.c | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/sdio/esp_sdio.c b/sdio/esp_sdio.c
+--- a/sdio/esp_sdio.c
++++ b/sdio/esp_sdio.c
+@@ -8,2 +8,3 @@
+ #include "utils.h"
++#include <linux/delay.h>
+ #include <linux/mutex.h>
+@@ -800,5 +801,11 @@ static int esp_probe(struct sdio_func *func,
+ 	ret = generate_slave_intr(context, BIT(ESP_OPEN_DATA_PATH));
+ 	esp_info("OPEN_DATA_PATH write completed: ret=%d\n", ret);
++	if (!ret) {
++		/* The first C6 BOOTUP frame predates the initial producer snapshot. */
++		context->rx_byte_count = 0;
++		msleep(100);
++		esp_process_new_packet_intr(context->adapter);
++	}
+ 
+ 
+ 	esp_info("ESP SDIO probe completed\n");
+-- 
+2.43.0

@@ -1,0 +1,13 @@
+﻿{
+    "port":  "COM10",
+    "baud":  115200,
+    "bytes":  16284,
+    "sha256":  "89c96cf29d299418f56548344e30b7742da0f164e835158ecafa993ac962696c",
+    "reset_requested":  true,
+    "control_lines_driven":  true,
+    "port_opens":  11,
+    "first_byte_seconds":  2.113,
+    "captured_utc":  "2026-08-27T10:39:26.4739671Z",
+    "python":  "D:\\Users\\Developer\\easystick-tmp-20260820\\easystick-p4-tools-481\\Scripts\\python.exe",
+    "reset_strategy":  "esptool-HardReset-compatible-RTS-DTR"
+}

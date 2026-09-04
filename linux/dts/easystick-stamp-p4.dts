@@ -1,0 +1,258 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * EasyStick Stamp-P4 Rev0.15 WIP — M1 minimal Linux board description.
+ *
+ * The first bring-up uses one HP hart, UART0, the P4 CLIC/SYSTIMER pair, and
+ * the read-only flash window populated by the ESP-IDF boot shim. The M2
+ * profile additionally enables the flexible SDMMC Slot 1 for the C6 AddOn;
+ * USB gadget, display, and removable storage remain absent.
+ *
+ * UART0 remains the deterministic fixture fallback.  In M2/M3 the module
+ * USB-C USB-Serial/JTAG controller is exposed as ttyGS1 by the board-local
+ * ACM driver; it is a device-mode console and never a USB host/VBUS source.
+ */
+/dts-v1/;
+
+#include <dt-bindings/interrupt-controller/irq.h>
+
+/ {
+	#address-cells = <1>;
+	#size-cells = <1>;
+	model = "EasyStick Stamp-P4 Rev0.15 (M1)";
+	compatible = "tsuyoshi-otake,easystick-stamp-p4", "espressif,esp32p4";
+
+	cpus {
+		#address-cells = <1>;
+		#size-cells = <0>;
+		timebase-frequency = <16000000>;
+
+		CPU0: cpu@0 {
+			device_type = "cpu";
+			compatible = "riscv";
+			reg = <0>;
+			riscv,isa = "rv32imafc";
+			mmu-type = "riscv,none";
+			status = "okay";
+
+			CPU0_intc: interrupt-controller {
+				compatible = "riscv,cpu-intc";
+				#interrupt-cells = <1>;
+				interrupt-controller;
+			};
+		};
+	};
+
+	memory@48000000 {
+		device_type = "memory";
+		reg = <0x48000000 0x02000000>;
+	};
+
+	xtal_clk: xtal-clock {
+		compatible = "fixed-clock";
+		#clock-cells = <0>;
+		clock-frequency = <40000000>;
+		clock-output-names = "xtal";
+	};
+
+	aliases {
+		serial0 = &uart0;
+		serial1 = &usb_serial_jtag;
+	};
+
+	chosen {
+		/*
+		 * Keep early USB-JTAG output during probe, then hand the M2/M3
+		 * console to the board-local ACM driver as ttyGS1.  The driver is
+		 * selected by network profiles and by the C68 top/stress diagnostic
+		 * profiles; the base M1 image intentionally remains earlycon-only
+		 * until a UART fixture is attached.
+		 */
+		bootargs = "earlycon=esp32p4usbjtag,mmio32,0x500d2000 console=ttyGS1,115200n8 keep_bootcon loglevel=8 root=/dev/mtdblock0 rootfstype=squashfs ro init=/sbin/init idle=poll";
+	};
+
+	soc: soc {
+		#address-cells = <1>;
+		#size-cells = <1>;
+		compatible = "simple-bus";
+		ranges;
+
+		clic0: interrupt-controller@20801000 {
+			compatible = "espressif,esp32p4-clic";
+			reg = <0x20801000 0x3c0>, <0x500d6000 0x200>,
+			      <0x500d6800 0x200>;
+			interrupt-controller;
+			#interrupt-cells = <3>;
+		};
+
+		systimer: timer@500e2000 {
+			compatible = "espressif,esp32p4-systimer";
+			reg = <0x500e2000 0x100>;
+			/*
+			 * Target0/source53 services CPU0; target1/source54 is the
+			 * independent CPU1 clockevent. The CLIC driver maps both
+			 * sources into both INTMTX banks, while the timer driver
+			 * enables each parent IRQ only on its owning CPU.
+			 */
+			interrupts-extended = <&clic0 17 53 IRQ_TYPE_LEVEL_HIGH>,
+					      <&clic0 23 54 IRQ_TYPE_LEVEL_HIGH>;
+			status = "okay";
+		};
+
+		/*
+		 * ESP32-P4 LP-TSENS.  The bring-up driver maps the companion
+		 * LP_PERI, LP_I2C_ANA_MST, PMU, and eFuse windows because this
+		 * vendor tree has no clock/reset/nvmem provider for them yet.
+		 * The node is inert unless CONFIG_ESP32P4_TSENS=y is selected.
+		 */
+		tsens: temperature-sensor@5012f000 {
+			compatible = "espressif,esp32p4-tsens";
+			reg = <0x5012f000 0x2c>,
+			      <0x50120000 0x1000>,
+			      <0x50124000 0x40>,
+			      <0x50115000 0x200>,
+			      <0x5012d000 0x200>;
+			reg-names = "tsens", "lpperi", "ana-mst", "pmu", "efuse";
+			#thermal-sensor-cells = <0>;
+			status = "okay";
+		};
+
+		uart0: serial@500ca000 {
+			compatible = "esp,esp32p4-uart";
+			reg = <0x500ca000 0x1000>;
+			interrupts-extended = <&clic0 18 31 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&xtal_clk>;
+			status = "okay";
+		};
+
+		/*
+		 * P4 USB Serial/JTAG register block.  IDF assigns interrupt source
+		 * 22 (ETS_USB_SERIAL_JTAG_INTR_SOURCE); CLIC slot 19 is unused by
+		 * this board.  The existing esp32_acm driver uses the same EP1
+		 * register layout as P4, with the P4 compatible added by patch 0028.
+		 */
+		usb_serial_jtag: serial@500d2000 {
+			compatible = "espressif,esp32p4-usb-serial-jtag";
+			reg = <0x500d2000 0x1000>;
+			interrupts-extended = <&clic0 19 22 IRQ_TYPE_LEVEL_HIGH>;
+			status = "okay";
+		};
+
+		/*
+		 * GPIO bank 1 (hw pins 32..56), driven by the espressif,esp32p4-gpio
+		 * controller (patch 0002-gpio-esp32p4.patch, reused verbatim from the
+		 * WHY2025 reference: register offsets cross-checked 2026-08-11 against
+		 * this repo's own ESP-IDF gpio_reg.h/io_mux_reg.h headers and matched).
+		 * GPIO42 is the documented C6 reset/EN pin (firmware/README.md), but
+		 * no driver requests it: the boot shim's pulse_c6_reset() owns the C6
+		 * reset and runs before Linux starts, which is the only point at which
+		 * no SDIO transaction can be in flight.  This bank is retained for
+		 * register-map coverage and for a future fix that moves a host-side
+		 * reset to after enumeration -- not to serve a resetpin parameter.
+		 *
+		 * HAZARD, measured 2026-08-11.  This node is exactly what makes
+		 * gpio_is_valid(42) succeed, so it also makes any `resetpin=42` live
+		 * the instant one is set.  esp_reset() runs from esp_init(), i.e. as
+		 * the module loads, and mdev loads esp32_sdio *during* SDIO
+		 * enumeration; the driver then resets the card mid-transaction and it
+		 * is left holding DAT0 low, so the CIU blocks on PRV_DAT_WAIT and
+		 * never consumes even the clock-update command (`cmd 0x212000 status
+		 * 0x80212000`, START still set) at any retry frequency.  Before this
+		 * node existed, gpio_is_valid(42) failed and esp_reset() bailed out
+		 * with "host resetpin (42) configured is invalid GPIO", which is
+		 * present in every capture that reaches `mmc0: new SDIO card at
+		 * address 0001`.  The GPIO change succeeded; that success is what
+		 * broke enumeration.  esp-hosted-ng patch 0002 therefore leaves
+		 * resetpin at HOST_GPIO_PIN_INVALID and sets only clockspeed; do not
+		 * point it at a live pin without first moving the reset out of module
+		 * init.  Bank 0 (GPIOs 0..31, needed for an irq_chip) is omitted:
+		 * nothing on this board currently requests a pin below 32.
+		 */
+		gpio1: gpio-bank1@500e0000 {
+			compatible = "espressif,esp32p4-gpio";
+			reg = <0x500e0000 0x1000>;
+			espressif,bank-id = <1>;
+			gpio-controller;
+			#gpio-cells = <2>;
+			status = "okay";
+		};
+
+		/*
+		 * Stamp-AddOn C6 SDIO.  The P4 controller's Slot 1 uses the
+		 * GPIO matrix: CLK=43, CMD=44, DAT0..3=45..48.  The boot shim
+		 * enables the raw P4 clock/reset and routes these signals before
+		 * jumping to Linux; this node describes the already-running bus.
+		 * `snps,slot-id` is consumed by the local dw_mmc fix because the
+		 * P4 CMD register selects the physical card in bits [20:16].
+		 */
+		sdmmc_biu_clk: sdmmc-biu-clock {
+			compatible = "fixed-clock";
+			#clock-cells = <0>;
+			clock-frequency = <40000000>;
+			clock-output-names = "sdmmc-biu";
+		};
+
+		sdmmc_ciu_clk: sdmmc-ciu-clock {
+			compatible = "fixed-clock";
+			#clock-cells = <0>;
+			clock-frequency = <40000000>;
+			clock-output-names = "sdmmc-ciu";
+		};
+
+		sdmmc1: mmc@50083000 {
+			compatible = "snps,dw-mshc";
+			reg = <0x50083000 0x1000>;
+			interrupts-extended = <&clic0 22 23 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&sdmmc_biu_clk>, <&sdmmc_ciu_clk>;
+			clock-names = "biu", "ciu";
+			/*
+			 * C6 uses the normal four-bit SDIO data path.  The earlier
+			 * four-bit CMD52 CRC observation predated the GPIO43..48 IO_MUX
+			 * correction in the boot shim.  Hold the next data-path test at
+			 * 400 kHz to rule out timing before increasing the rate.
+			 */
+			bus-width = <4>;
+			max-frequency = <400000>;
+			clock-frequency = <40000000>;
+			non-removable;
+			broken-cd;
+			disable-wp;
+			cap-sdio-irq;
+			dma-noncoherent;
+			easystick,force-pio;
+			snps,slot-id = <1>;
+			status = "okay";
+		};
+
+		/* MWDT0 stage-0 system reset; Linux feeds it after probe.
+		 * 30s was enough for quiet bring-up, but Dropbear post-auth
+		 * encrypt/CHANNEL_EOF on this NOMMU STA path can stall feeds
+		 * long enough to trip HP_SYS_HP_WDT_RESET after SOCKET_WRITE_DONE.
+		 * Raise to 120s for M3-lab SSH acceptance; revisit once the
+		 * stall root cause is fixed. */
+		wdt0: watchdog@500c2000 {
+			compatible = "espressif,esp32p4-wdt";
+			reg = <0x500c2000 0x100>;
+			/* CLIC slot 20 is reserved for the C68 CPU1 IPI source 80. */
+			interrupts-extended = <&clic0 21 48 IRQ_TYPE_LEVEL_HIGH>;
+			timeout-sec = <120>;
+		};
+
+		/* Patched at runtime by boot-shim/main.c with the flash MMU VA. */
+		flash@deadbeef {
+			compatible = "mtd-rom";
+			reg = <0xdeadbeef 0xcafefade>;
+			bank-width = <4>;
+		};
+	};
+
+	reserved-memory {
+		#address-cells = <1>;
+		#size-cells = <1>;
+		ranges;
+		/* Kept small until NOMMU pool sizing is measured on Stamp-P4. */
+		linux_nommu_pool: nommu-userspace-pool@49a00000 {
+			compatible = "linux,nommu-userspace-pool";
+			reg = <0x49a00000 0x00600000>;
+		};
+	};
+};

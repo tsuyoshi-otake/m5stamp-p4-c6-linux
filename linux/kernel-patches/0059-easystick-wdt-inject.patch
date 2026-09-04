@@ -1,0 +1,53 @@
+Subject: [PATCH] easystick: independent MWDT injector for beat/capsule controls
+
+---
+diff --git a/drivers/watchdog/esp32p4_wdt.c b/drivers/watchdog/esp32p4_wdt.c
+--- a/drivers/watchdog/esp32p4_wdt.c	2026-09-02 06:45:10.472803024 +0000
++++ b/drivers/watchdog/esp32p4_wdt.c	2026-09-02 06:45:10.472803024 +0000
+@@ -228,6 +228,46 @@
+ 
+ 	return 0;
+ }
++#include <linux/irqflags.h>
++
++static noinline void easystick_wdt_inject_spin(void)
++{
++	for (;;)
++		cpu_relax();
++}
++
++static int easystick_wdt_inject_set(const char *val,
++				    const struct kernel_param *kp)
++{
++	unsigned int mode;
++	int ret;
++	unsigned long age = 0;
++
++	(void)kp;
++	ret = kstrtouint(val, 0, &mode);
++	if (ret)
++		return ret;
++	if (mode != 1u && mode != 2u)
++		return -EINVAL;
++	if (es_wdt_last_feed_jiffies)
++		age = jiffies - es_wdt_last_feed_jiffies;
++	pr_emerg("EASYSTICK_WDT INJECT mode=%u last_feed_age_jiffies=%lu\n",
++		 mode, age);
++	if (mode == 2u)
++		local_irq_disable();
++	easystick_wdt_inject_spin();
++	return 0;
++}
++
++static const struct kernel_param_ops easystick_wdt_inject_ops = {
++	.set = easystick_wdt_inject_set,
++};
++
++static unsigned int easystick_wdt_inject;
++module_param_cb(inject, &easystick_wdt_inject_ops, &easystick_wdt_inject, 0200);
++MODULE_PARM_DESC(inject,
++		 "1=IRQ-on while(1); 2=local_irq_disable then while(1)");
++
+ 
+ static int esp32p4_wdt_set_timeout(struct watchdog_device *wdd,
+ 				   unsigned int timeout)

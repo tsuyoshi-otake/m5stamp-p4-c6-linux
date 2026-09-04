@@ -1,0 +1,6 @@
+--- a/drivers/tty/serial/esp32_uart.c
++++ b/drivers/tty/serial/esp32_uart.c
+@@ -812,1 +812,2 @@
+-	.cons		= &esp32_uart_console,
++	/* EasyStick keeps USB-JTAG earlycon as the only kernel console. */
++	.cons		= NULL,

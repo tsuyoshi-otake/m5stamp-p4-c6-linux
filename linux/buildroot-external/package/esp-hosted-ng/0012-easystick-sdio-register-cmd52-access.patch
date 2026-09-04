@@ -1,0 +1,122 @@
+From: EasyStick maintainers <noreply@example.invalid>
+Subject: [PATCH] sdio: read and write slave registers one byte at a time
+
+Restores the register-access behaviour of the last known-good ESP32-P4 build
+(Linux 6.18.35 #29, 2026-08-10 10:48:40 UTC), which reached wlan0.  That build
+carried an uncommitted local edit to this file; it was destroyed by a forced
+submodule checkout and no upstream commit contains it.  It is reconstructed
+here from the retained module binary: in #29, esp_read_reg relocated against
+sdio_readb and had no sdio_memcpy_fromio call site at all, while esp_read_block
+kept both.
+
+Upstream esp_read_reg/esp_write_reg dispatch on size, so every 4-byte register
+access became a single CMD53 IO_RW_EXTENDED transfer.  On this P4/C6 port that
+returns zeros, so TOKEN_RDATA, INT_ST and PACKET_LEN all read 0 -- which
+presents as "Tx Pos = 0", no boot frame and no wlan0, while the slave still
+enumerates normally.  Registers are therefore accessed byte-wise over CMD52.
+
+The CMD53 data path is deliberately untouched: esp_read_block and
+esp_write_block keep their size dispatch, so bulk RX/TX still uses
+sdio_memcpy_fromio/toio.
+
+What this does not address: why the C6 register window rejects a CMD53
+multi-byte read on this host.  The DW-MMC controller, the 0x3FF address mask
+and the slave's own window decoding are all still candidates; this change
+avoids the transfer rather than explaining it.
+
+---
+ sdio/esp_sdio_api.c | 58 +++++++++++++++++++++++++++++++++++++++++--------
+ 1 file changed, 50 insertions(+), 8 deletions(-)
+
+diff --git a/sdio/esp_sdio_api.c b/sdio/esp_sdio_api.c
+index 1111111..2222222 100644
+--- a/sdio/esp_sdio_api.c
++++ b/sdio/esp_sdio_api.c
+@@ -107,14 +107,39 @@
+ 
+ int esp_read_reg(struct esp_sdio_context *context, u32 reg, u8 *data, u16 size, u8 is_lock_needed)
+ {
++	struct sdio_func *func = NULL;
++	int ret = 0;
++	u16 i;
++
+ 	/* Need to apply address mask when reading/writing slave registers */
+ 	reg &= ESP_ADDRESS_MASK;
+ 
+-	if (size <= 1) {
+-		return esp_read_byte(context, reg, data, is_lock_needed);
+-	} else {
+-		return esp_read_multi_byte(context, reg, data, size, is_lock_needed);
++	if (!context || !context->func || !data) {
++		esp_err("Invalid or incomplete arguments!\n");
++		return -1;
+ 	}
++
++	func = context->func;
++
++	if (is_lock_needed)
++		sdio_claim_host(func);
++
++	/* The ESP slave register window is served reliably over CMD52 only.
++	 * A CMD53 multi-byte read of this window returns zeros on the
++	 * ESP32-P4 host port, which silently zeroes TOKEN_RDATA, INT_ST and
++	 * PACKET_LEN.  Access registers one byte at a time; the CMD53 data
++	 * path is unaffected and stays in esp_read_block().
++	 */
++	for (i = 0; i < size; i++) {
++		data[i] = sdio_readb(func, reg + i, &ret);
++		if (ret)
++			break;
++	}
++
++	if (is_lock_needed)
++		sdio_release_host(func);
++
++	return ret;
+ }
+ 
+ int esp_read_block(struct esp_sdio_context *context, u32 reg, u8 *data, u16 size, u8 is_lock_needed)
+@@ -128,14 +153,39 @@
+ 
+ int esp_write_reg(struct esp_sdio_context *context, u32 reg, u8 *data, u16 size, u8 is_lock_needed)
+ {
++	struct sdio_func *func = NULL;
++	int ret = 0;
++	u16 i;
++
+ 	/* Need to apply address mask when reading/writing slave registers */
+ 	reg &= ESP_ADDRESS_MASK;
+ 
+-	if (size <= 1) {
+-		return esp_write_byte(context, reg, *data, is_lock_needed);
+-	} else {
+-		return esp_write_multi_byte(context, reg, data, size, is_lock_needed);
++	if (!context || !context->func || !data) {
++		esp_err("Invalid or incomplete arguments!\n");
++		return -1;
+ 	}
++
++	func = context->func;
++
++	if (is_lock_needed)
++		sdio_claim_host(func);
++
++	/* The ESP slave register window is served reliably over CMD52 only.
++	 * A CMD53 multi-byte read of this window returns zeros on the
++	 * ESP32-P4 host port, which silently zeroes TOKEN_RDATA, INT_ST and
++	 * PACKET_LEN.  Access registers one byte at a time; the CMD53 data
++	 * path is unaffected and stays in esp_write_block().
++	 */
++	for (i = 0; i < size; i++) {
++		sdio_writeb(func, data[i], reg + i, &ret);
++		if (ret)
++			break;
++	}
++
++	if (is_lock_needed)
++		sdio_release_host(func);
++
++	return ret;
+ }
+ 
+ int esp_write_block(struct esp_sdio_context *context, u32 reg, u8 *data, u16 size, u8 is_lock_needed)

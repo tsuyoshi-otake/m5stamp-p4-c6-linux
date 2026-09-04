@@ -1,0 +1,63 @@
+# M2: SDMMC Slot 1 and ESP-Hosted-NG SDIO host module dependencies.
+CONFIG_MMC=y
+CONFIG_MMC_BLOCK=y
+CONFIG_MMC_DW=y
+CONFIG_MMC_DW_PLTFM=y
+
+# Host GPIO controller for bank 1 (see the gpio1 node in the board DTS and
+# patch 0002-gpio-esp32p4.patch). GPIO_GENERIC and GPIOLIB_IRQCHIP are pulled
+# in by CONFIG_GPIO_ESP32P4's own `select`.
+#
+# This is NOT here to serve esp32_sdio's resetpin: the boot shim owns the C6
+# reset and runs before Linux, so patch 0002 leaves resetpin at
+# HOST_GPIO_PIN_INVALID. Measured 2026-08-11: enabling these options is what
+# made gpio_is_valid(42) succeed, which made a then-configured resetpin=42
+# live, which reset the card mid-enumeration from module init and hung the CIU
+# on PRV_DAT_WAIT at every retry frequency. Keep the controller; do not
+# reintroduce a live resetpin without moving the reset after enumeration.
+CONFIG_GPIOLIB=y
+CONFIG_GPIO_ESP32P4=y
+# IDMAC is not accepted until P4 descriptor/cache behavior is measured.
+# CONFIG_MMC_DW_IDMAC is not set
+CONFIG_MODULES=y
+CONFIG_NET=y
+CONFIG_NETLINK=y
+CONFIG_GENERIC_NETLINK=y
+CONFIG_PACKET=y
+CONFIG_UNIX=y
+CONFIG_INET=y
+CONFIG_NETDEVICES=y
+CONFIG_WIRELESS=y
+CONFIG_WLAN=y
+CONFIG_CFG80211=y
+CONFIG_RFKILL=y
+
+# The module USB-C is the Linux setup/recovery console.  The P4 USB
+# Serial/JTAG ACM block is not USB host mode and does not source VBUS.
+CONFIG_SERIAL_ESP32_ACM=y
+
+CONFIG_CMDLINE="earlycon=esp32p4usbjtag,mmio32,0x500d2000 console=ttyGS1,115200n8 keep_bootcon loglevel=8 root=/dev/mtdblock0 rootfstype=squashfs ro init=/sbin/init idle=poll"
+# Honor /chosen/bootargs from the flashed DTB.  FORCE=y made the 0014
+# cap=16 DTB rewrite a no-op: the device-tree string contained
+# dw_mmc.easystick_cmd53_rx_desc_bytes=16 and /proc/cmdline did not.
+# CONFIG_CMDLINE_FORCE is not set
+CONFIG_CMDLINE_FALLBACK=y
+
+# ESP-Hosted-NG includes the HCI cleanup/receive path even when the target
+# acceptance is Wi-Fi-only.  Keep the Bluetooth core built in so the SDIO
+# module has its bt_* symbols; do not select a separate Bluetooth transport.
+CONFIG_BT=y
+# CONFIG_BT_HCIBTSDIO is not set
+# CONFIG_BT_HCIUART is not set
+
+# M2 is IPv4 Wi-Fi bring-up only.  Keep the reference kernel's broad defaults
+# out of the flat Image so it remains inside the measured candidate map.  These
+# options are not needed by cfg80211, wpa_supplicant, DHCP, or esp32_sdio.
+# CONFIG_BPF is not set
+# CONFIG_IPV6 is not set
+# CONFIG_NET_NS is not set
+# CONFIG_INET_DIAG is not set
+# CONFIG_INET_TUNNEL is not set
+# CONFIG_NET_RX_BUSY_POLL is not set
+# CONFIG_KALLSYMS is not set
+# CONFIG_SLUB_DEBUG is not set

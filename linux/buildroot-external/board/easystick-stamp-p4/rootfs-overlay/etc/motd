@@ -1,0 +1,7 @@
+EasyStick Stamp-P4 experimental NOMMU Linux
+
+Initial account: pi
+Initial password: raspberry
+Change the password immediately with: passwd
+Network/SSH is experimental and may be unavailable until the C6 SDIO
+firmware and host driver are installed.

@@ -1,0 +1,9 @@
+# C68-only process observability.  The default UP profile keeps the stock
+# BusyBox configuration; this fragment is selected only by C68 SMP builds.
+CONFIG_TOP=y
+CONFIG_FEATURE_TOP_INTERACTIVE=y
+CONFIG_FEATURE_TOP_CPU_USAGE_PERCENTAGE=y
+CONFIG_FEATURE_TOP_CPU_GLOBAL_PERCENTS=y
+CONFIG_FEATURE_TOP_SMP_CPU=y
+CONFIG_FEATURE_TOP_SMP_PROCESS=y
+CONFIG_FEATURE_TOPMEM=y

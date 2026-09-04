@@ -1,0 +1,64 @@
+From: EasyStick maintainers <noreply@example.invalid>
+Subject: [PATCH] sdio: drop BOOT_CMD53/RXTRACE console dumps
+
+loglevel=8 keeps KERN_DEBUG on the console, so demoting the hex dump is not
+enough.  Remove the hot-path BOOT_CMD53_DATA print_hex_dump and RXTRACE
+pr_info calls from the quiet default image.  Functional RX paths are
+unchanged.  EASYSTICK_ESPHOSTED_DIAGNOSTICS=1 omits this patch.
+
+---
+diff --git a/sdio/esp_sdio.c b/sdio/esp_sdio.c
+--- a/sdio/esp_sdio.c
++++ b/sdio/esp_sdio.c
+@@ -232,9 +232,7 @@
+ static void esp_rx_trace_print_snapshot(const char *name,
+ 		const struct esp_rx_trace_snapshot *snapshot, u8 edge_len)
+ {
+-	pr_info("esp32_sdio: RXTRACE %s fp=%08x first=%*phN last=%*phN\n",
+-		name, snapshot->fingerprint, edge_len, snapshot->first,
+-		edge_len, snapshot->last);
++	/* quiet: RXTRACE omitted from console */
+ }
+ 
+ void esp_sdio_rx_trace_dump(void);
+@@ -245,20 +243,14 @@
+ 	u32 count = min_t(u32, newest, ESP_RX_TRACE_DEPTH);
+ 	u32 seq;
+ 
+-	pr_info("esp32_sdio: RXTRACE BEGIN count=%u newest=%u engine=unavailable dma_bus=unavailable idmac_desc=unavailable idmac_index=unavailable\n",
+-		count, newest);
++	/* quiet: RXTRACE omitted from console */
+ 	for (seq = newest - count + 1; seq <= newest; seq++) {
+ 		const struct esp_rx_trace_record *record =
+ 			&esp_rx_trace_ring[(seq - 1) % ESP_RX_TRACE_DEPTH];
+ 
+ 		if (READ_ONCE(record->valid_seq) != seq)
+ 			continue;
+-		pr_info("esp32_sdio: RXTRACE seq=%u slave_len=%u cmd53_len=%u addr=0x%x va=0x%lx host=mmc%u func=%u ret=%d rx_before=%u producer=%u rx_after=%u elapsed_ns=%llu\n",
+-			record->seq, record->slave_len, record->cmd53_len,
+-			record->cmd53_addr, record->buffer_va,
+-			record->host_index, record->func_num, record->ret,
+-			record->rx_before, record->producer_pos, record->rx_after,
+-			(unsigned long long)(record->completed_ns - record->started_ns));
++	/* quiet: RXTRACE omitted from console */
+ 		esp_rx_trace_print_snapshot("pre_dma",
+ 			&record->stage[ESP_RX_TRACE_PRE_DMA], record->edge_len);
+ 		esp_rx_trace_print_snapshot("post_dma",
+@@ -266,7 +258,7 @@
+ 		esp_rx_trace_print_snapshot("pre_parse",
+ 			&record->stage[ESP_RX_TRACE_PRE_PARSE], record->edge_len);
+ 	}
+-	pr_info("esp32_sdio: RXTRACE END\n");
++	/* quiet: RXTRACE omitted from console */
+ }
+ 
+ static struct esp_rx_trace_record *esp_rx_trace_begin(
+@@ -894,8 +886,6 @@
+ 	sdio_release_host(context->func);
+ 	esp_rx_trace_before_parse(trace, skb);
+ 
+-	print_hex_dump(KERN_INFO, "esp32_sdio: BOOT_CMD53_DATA: ", DUMP_PREFIX_NONE,
+-			16, 1, skb->data, min_t(u32, len_from_slave, 32), false);
+ 	header = (struct esp_payload_header *)skb->data;
+ 	len = le16_to_cpu(header->len);
+ 	offset = le16_to_cpu(header->offset);

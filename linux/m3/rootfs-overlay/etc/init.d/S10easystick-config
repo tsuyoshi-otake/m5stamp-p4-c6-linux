@@ -1,0 +1,39 @@
+#!/bin/sh
+
+# BusyBox ash in the RV32 NOMMU image does not implement `set -u`.
+set -e
+
+CONFIG_ROOT=/config/easystick
+KEY_DIR=${CONFIG_ROOT}/p4/.ssh
+HOSTKEY_DIR=${CONFIG_ROOT}/dropbear
+AUTHORIZED_KEYS=${KEY_DIR}/authorized_keys
+HOSTKEY=${HOSTKEY_DIR}/dropbear_ed25519_host_key
+
+start() {
+	# A squashfs root cannot retain credentials.  Do not start a network
+	# service unless the board-specific writable config mount is present.
+	if [ ! -d /config ] || [ ! -w /config ]; then
+		echo "M3: /config is not writable; SSH remains disabled"
+		return 0
+	fi
+
+	umask 077
+	mkdir -p "${KEY_DIR}" "${HOSTKEY_DIR}"
+	chown -R p4:p4 "${CONFIG_ROOT}/p4" 2>/dev/null || true
+	chmod 0700 "${KEY_DIR}"
+	if [ -f "${AUTHORIZED_KEYS}" ]; then
+		chmod 0600 "${AUTHORIZED_KEYS}"
+		chown p4:p4 "${AUTHORIZED_KEYS}" 2>/dev/null || true
+	fi
+
+	if [ ! -s "${HOSTKEY}" ]; then
+		printf '%s\n' "M3: generating per-device Dropbear ed25519 host key"
+		dropbearkey -t ed25519 -f "${HOSTKEY}" >/dev/null 2>&1
+		chmod 0600 "${HOSTKEY}"
+	fi
+}
+
+case "${1:-start}" in
+	start) start ;;
+	*) echo "Usage: $0 start" >&2; exit 1 ;;
+esac

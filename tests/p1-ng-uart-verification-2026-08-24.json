@@ -1,0 +1,73 @@
+{
+  "schema": 1,
+  "capture": "projects\\easystick-stamp-p4\\firmware\\tests\\p1-ng-uart-capture-2026-08-24.bin",
+  "bytes": 2495,
+  "sha256": "b52363e0a8631c05f982ba403e11a22a27ee8f2aef952917292b764941cb9636",
+  "expected_c6_application_sha256": "2ac39933c84c7688fb5d251ffc01bd15e53b665a272b6053dedca448e40e1827",
+  "c6_write_performed": false,
+  "ordered_step_markers": [
+    {
+      "step": 1,
+      "name": "C6_RESET",
+      "state": "PASS",
+      "offset": 1186,
+      "line": "\u001b[1;32muart:~$ \u001b[m\u001b[8D\u001b[JEASYSTICK_P1 STEP 01 C6_RESET PASS"
+    },
+    {
+      "step": 2,
+      "name": "SDIO_ENUMERATE",
+      "state": "PASS",
+      "offset": 1359,
+      "line": "\u001b[1;32muart:~$ \u001b[m\u001b[8D\u001b[JEASYSTICK_P1 STEP 02 SDIO_ENUMERATE PASS"
+    },
+    {
+      "step": 3,
+      "name": "FUNC1_ENABLE",
+      "state": "PASS",
+      "offset": 1426,
+      "line": "\u001b[1;32muart:~$ \u001b[m\u001b[8D\u001b[JEASYSTICK_P1 STEP 03 FUNC1_ENABLE PASS"
+    },
+    {
+      "step": 4,
+      "name": "CMD52",
+      "state": "PASS",
+      "offset": 1491,
+      "line": "\u001b[1;32muart:~$ \u001b[m\u001b[8D\u001b[JEASYSTICK_P1 STEP 04 CMD52 PASS addr=0x08c value=0x01"
+    },
+    {
+      "step": 6,
+      "name": "CMD53_512",
+      "state": "PASS",
+      "offset": 1571,
+      "line": "\u001b[1;32muart:~$ \u001b[m\u001b[8D\u001b[JEASYSTICK_P1 STEP 06 CMD53_512 PASS bytes=512 direction=TX"
+    },
+    {
+      "step": 7,
+      "name": "CMD53_REPEAT",
+      "state": "PASS",
+      "offset": 1656,
+      "line": "\u001b[1;32muart:~$ \u001b[m\u001b[8D\u001b[JEASYSTICK_P1 STEP 07 CMD53_REPEAT PASS frames=4 size=512"
+    },
+    {
+      "step": 5,
+      "name": "CMD53_SMALL",
+      "state": "PASS",
+      "offset": 1739,
+      "line": "\u001b[1;32muart:~$ \u001b[m\u001b[8D\u001b[JEASYSTICK_P1 STEP 05 CMD53_SMALL PASS bytes=40 direction=RX"
+    },
+    {
+      "step": 8,
+      "name": "ESP_HOSTED_INIT",
+      "state": "FAIL",
+      "offset": 2072,
+      "line": "\u001b[1;32muart:~$ \u001b[m\u001b[8D\u001b[JEASYSTICK_P1 STEP 08 ESP_HOSTED_INIT FAIL got=0x000000 expected=0x020c0c"
+    }
+  ],
+  "first_failure_step": 8,
+  "first_failure_line": "\u001b[1;32muart:~$ \u001b[m\u001b[8D\u001b[JEASYSTICK_P1 STEP 08 ESP_HOSTED_INIT FAIL got=0x000000 expected=0x020c0c",
+  "failure_marker_count": 2,
+  "negative_control_classification": "PROTOCOL_MISMATCH",
+  "negative_control_status": "NEGATIVE_CONTROL_OBSERVED",
+  "p1_status": "NOT_APPLICABLE",
+  "failures": []
+}

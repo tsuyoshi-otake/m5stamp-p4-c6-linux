@@ -1,0 +1,20 @@
+--- a/arch/riscv/kernel/head.S
++++ b/arch/riscv/kernel/head.S
+@@ -201,6 +201,17 @@
+ SYM_CODE_END(_start)
+ 
+ SYM_CODE_START(_start_kernel)
++	/* Temporary M1 bring-up marker: module USB-C exposes the
++	 * USB-Serial/JTAG FIFO at 0x500d2000; UART0 is on the carrier fixture. */
++	li t0, 0x500d2000
++	li t1, 75
++	sb t1, 0(t0)
++	li t1, 1
++	sw t1, 4(t0)
++	li t0, 0x500ca000
++	li t1, 85
++	sb t1, 0(t0)
++
+ 	/* Mask all interrupts */
+ 	csrw CSR_IE, zero
+ 	csrw CSR_IP, zero

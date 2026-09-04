@@ -1,0 +1,13 @@
+--- a/drivers/mmc/host/dw_mmc.c
++++ b/drivers/mmc/host/dw_mmc.c
+@@ -3130,2 +3130,9 @@
+ 	struct device *dev = host->dev;
++
++	/*
++	 * The ESP32-P4 NOMMU port has no coherent DMA allocation yet. Allow
++	 * this board to validate SDIO CMD53 with the controller FIFO path.
++	 */
++	if (device_property_present(dev, "easystick,force-pio"))
++		goto no_dma;
+ 
+	/*

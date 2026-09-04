@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "captured_utc_start": "2026-08-23T22:59:29.383975+00:00",
+  "captured_utc_end": "2026-08-23T22:59:59.445413+00:00",
+  "port": "COM10",
+  "baud": 115200,
+  "capture_seconds_requested": 30.0,
+  "reset_requested": true,
+  "bytes": 2495,
+  "sha256": "b52363e0a8631c05f982ba403e11a22a27ee8f2aef952917292b764941cb9636",
+  "file": "C:\\Codes\\tsuyoshi-otake\\easy-stick\\projects\\easystick-stamp-p4\\firmware\\tests\\p1-ng-uart-capture-2026-08-24.bin",
+  "operation": "raw byte capture; no UART commands transmitted"
+}

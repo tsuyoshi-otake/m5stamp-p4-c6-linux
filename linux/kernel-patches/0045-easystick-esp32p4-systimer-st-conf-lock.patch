@@ -1,0 +1,70 @@
+diff --git a/drivers/clocksource/timer-esp32p4-systimer.c b/drivers/clocksource/timer-esp32p4-systimer.c
+--- a/drivers/clocksource/timer-esp32p4-systimer.c
++++ b/drivers/clocksource/timer-esp32p4-systimer.c
+@@ -23,6 +23,7 @@
+ #include <linux/sched_clock.h>
+ #include <linux/smp.h>
+ #include <linux/sched.h>
++#include <linux/spinlock.h>
+ 
+ #include <asm/delay.h>		/* riscv_timebase */
+ 
+@@ -65,9 +66,10 @@
+ 
+ static void __iomem *st_base;
+ static unsigned int esp32p4_timer_irq[ESP32P4_TIMER_CPUS];
++static DEFINE_RAW_SPINLOCK(st_lock);
+ static unsigned int timer_arm_count[ESP32P4_TIMER_CPUS];
+ static unsigned int timer_irq_count[ESP32P4_TIMER_CPUS];
+ static unsigned int timer_event_count[ESP32P4_TIMER_CPUS];
+ static unsigned int timer_rearm_count[ESP32P4_TIMER_CPUS];
+ static unsigned int cpu0_setnext_count;
+ static unsigned int cpu1_setnext_count;
+@@ -111,7 +113,7 @@
+ 	.rating		= 300,
+ };
+ 
+-static void esp32p4_timer_stop(unsigned int cpu)
++static void __esp32p4_timer_stop(unsigned int cpu)
+ {
+ 	u32 conf;
+ 
+@@ -123,18 +125,29 @@
+ 	writel(BIT(cpu), st_base + ST_INT_CLR);
+ }
+ 
++static void esp32p4_timer_stop(unsigned int cpu)
++{
++	unsigned long flags;
++
++	raw_spin_lock_irqsave(&st_lock, flags);
++	__esp32p4_timer_stop(cpu);
++	raw_spin_unlock_irqrestore(&st_lock, flags);
++}
++
+ static int esp32p4_clkevt_set_next(unsigned long delta,
+ 				    struct clock_event_device *ce)
+ {
+ 	unsigned int cpu = smp_processor_id();
+ 	u64 target;
+ 	u32 bit;
++	unsigned long flags;
+ 
+ 	if (cpu >= ESP32P4_TIMER_CPUS || !esp32p4_timer_irq[cpu])
+ 		return -EINVAL;
+ 
+ 	bit = BIT(cpu);
+-	esp32p4_timer_stop(cpu);
++	raw_spin_lock_irqsave(&st_lock, flags);
++	__esp32p4_timer_stop(cpu);
+ 	target = esp32p4_systimer_read64() + delta;
+ 	writel((u32)(target >> 32) & 0xFFFFF,
+ 	       st_base + st_target_hi[cpu]);
+@@ -178,6 +191,7 @@
+ 				readl(st_base + ST_INT_ST));
+ 	}
+ 
++	raw_spin_unlock_irqrestore(&st_lock, flags);
+ 	return 0;
+ }
+ 

@@ -1,0 +1,408 @@
+diff --git a/drivers/clocksource/timer-esp32p4-systimer.c b/+++ b/drivers/clocksource/timer-esp32p4-systimer.c
+--- a/drivers/clocksource/timer-esp32p4-systimer.c
++++ b/drivers/clocksource/timer-esp32p4-systimer.c
+@@ -1,73 +1,79 @@
+ // SPDX-License-Identifier: GPL-2.0
+ /*
+- * ESP32-P4 SYSTIMER clocksource and clockevent driver
++ * ESP32-P4 SYSTIMER clocksource and per-hart clockevent driver
+  *
+  * The SYSTIMER is a 52-bit counter running at 16 MHz (XTAL).  It requires
+  * an explicit latch-then-read sequence to capture a consistent value.
+  *
+- * SYSTIMER alarm 0 is used for the clockevent.  The interrupt is routed
+- * through the ESP32-P4 interrupt matrix to CLIC slot 17 (first external
+- * peripheral slot), dispatched by the ESP32-P4 CLIC irqchip driver.
+- * INTMTX routing is handled by the CLIC irqchip driver via the 2-cell
+- * interrupt specifier in the DTS.
++ * Target 0/source 53 is the CPU0 clockevent and target 1/source 54 is the
++ * CPU1 clockevent.  The two target comparators share the counter but have
++ * independent alarm, clear, and INTMTX routes.
+  */
+ 
+ #define pr_fmt(fmt) "esp32p4-systimer: " fmt
+ 
+ #include <linux/clockchips.h>
+ #include <linux/clocksource.h>
++#include <linux/cpu.h>
++#include <linux/cpuhotplug.h>
+ #include <linux/interrupt.h>
++#include <linux/kernel.h>
+ #include <linux/of_address.h>
+ #include <linux/of_irq.h>
+ #include <linux/sched_clock.h>
++#include <linux/smp.h>
++
+ #include <asm/delay.h>		/* riscv_timebase */
+ 
+-/* SYSTIMER register byte offsets (struct size = 0x100) */
+-#define ST_CONF          0x00   /* clk_en[31], unit0_work_en[30], target0_work_en[24] */
+-#define ST_UNIT0_OP      0x04   /* update[30] (WT), valid[29] (RO) */
+-#define ST_TARGET0_HI    0x1C   /* target high 20 bits */
+-#define ST_TARGET0_LO    0x20   /* target low 32 bits */
+-#define ST_TARGET0_CONF  0x34   /* period_mode[30]=0 (oneshot), unit_sel[31]=0 (unit0) */
+-#define ST_UNIT0_VAL_HI  0x40   /* latched counter high 20 bits */
+-#define ST_UNIT0_VAL_LO  0x44   /* latched counter low 32 bits */
+-#define ST_COMP0_LOAD    0x50   /* write 1 to apply target_val[0] to comparator */
+-#define ST_INT_ENA       0x64   /* target0_int_ena[0] */
+-#define ST_INT_CLR       0x6C   /* target0_int_clr[0] (WT) */
+-#define ST_INT_ST        0x70   /* target0_int_st[0] (RO) */
+-
+-#define ST_CONF_CLK_EN         BIT(31)
+-#define ST_CONF_UNIT0_WORK_EN  BIT(30)
+-#define ST_CONF_TARGET0_EN     BIT(24)
+-#define ST_UNIT0_OP_UPDATE     BIT(30)
+-#define ST_UNIT0_OP_VALID      BIT(29)
+-
+-/* CLIC slot 17 is used for SYSTIMER (first external peripheral slot). */
+-#define CLIC_SLOT_SYSTIMER  17
+-
+-/*
+- * CLIC slot 17 is level-triggered (DTS: IRQ_TYPE_LEVEL_HIGH). The flow
+- * handler we install (handle_percpu_devid_irq) does not ack the CLIC,
+- * so INTIP latches on each rising edge and we must clear it from this
+- * ISR. Without this, the second alarm sees INTIP already pending and
+- * no new edge is delivered — scheduler tick dies after the first fire.
+- *
+- * CLIC source status is cleared by the ISR; no direct INTIP write is needed.
+- */
++#define ESP32P4_TIMER_CPUS	2
++
++/* SYSTIMER register byte offsets (struct size = 0x100). */
++#define ST_CONF			0x00
++#define ST_UNIT0_OP		0x04
++#define ST_TARGET0_HI		0x1C
++#define ST_TARGET0_LO		0x20
++#define ST_TARGET0_CONF		0x34
++#define ST_UNIT0_VAL_HI		0x40
++#define ST_UNIT0_VAL_LO		0x44
++#define ST_COMP0_LOAD		0x50
++#define ST_INT_ENA		0x64
++#define ST_INT_CLR		0x6C
++
++#define ST_CONF_CLK_EN		BIT(31)
++#define ST_CONF_UNIT0_WORK_EN	BIT(30)
++#define ST_UNIT0_OP_UPDATE	BIT(30)
++#define ST_UNIT0_OP_VALID	BIT(29)
++
++static const u32 st_target_hi[ESP32P4_TIMER_CPUS] = {
++	ST_TARGET0_HI, ST_TARGET0_HI + 0x08,
++};
++static const u32 st_target_lo[ESP32P4_TIMER_CPUS] = {
++	ST_TARGET0_LO, ST_TARGET0_LO + 0x08,
++};
++static const u32 st_target_conf[ESP32P4_TIMER_CPUS] = {
++	ST_TARGET0_CONF, ST_TARGET0_CONF + 0x04,
++};
++static const u32 st_comp_load[ESP32P4_TIMER_CPUS] = {
++	ST_COMP0_LOAD, ST_COMP0_LOAD + 0x04,
++};
++static const u32 st_target_enable[ESP32P4_TIMER_CPUS] = {
++	BIT(24), BIT(23),
++};
+ 
+ static void __iomem *st_base;
+-static unsigned int esp32p4_timer_irq;
+-
+-/* ------------------------------------------------------------------ */
+-/*  Counter read (52-bit, 16 MHz)                                      */
++static unsigned int esp32p4_timer_irq[ESP32P4_TIMER_CPUS];
++
++/* ------------------------------------------------------------------ */
++/* Counter read (52-bit, 16 MHz)                                      */
+ /* ------------------------------------------------------------------ */
+ 
+ static u64 notrace esp32p4_systimer_read64(void)
+ {
+ 	u32 hi, lo;
+ 
+-	/* Trigger latch of unit 0 counter */
++	/* Trigger latch of unit 0 counter. */
+ 	writel(ST_UNIT0_OP_UPDATE, st_base + ST_UNIT0_OP);
+-	/* Wait for the captured value to be valid (typically 2-3 cycles) */
++	/* Wait for the captured value to be valid (typically 2-3 cycles). */
+ 	while (!(readl(st_base + ST_UNIT0_OP) & ST_UNIT0_OP_VALID))
+ 		;
+ 	hi = readl(st_base + ST_UNIT0_VAL_HI) & 0xFFFFF;
+@@ -82,70 +88,132 @@
+ }
+ 
+ static struct clocksource esp32p4_clocksource = {
+-	.name   = "esp32p4-systimer",
+-	.rating = 300,
+-	.read   = esp32p4_cs_read,
+-	.mask   = CLOCKSOURCE_MASK(52),
+-	.flags  = CLOCK_SOURCE_IS_CONTINUOUS,
+-};
+-
+-/* ------------------------------------------------------------------ */
+-/*  Clockevent (oneshot via alarm 0)                                   */
++	.name	= "esp32p4-systimer",
++	.rating	= 300,
++	.read	= esp32p4_cs_read,
++	.mask	= CLOCKSOURCE_MASK(52),
++	.flags	= CLOCK_SOURCE_IS_CONTINUOUS,
++};
++
++/* ------------------------------------------------------------------ */
++/* Per-hart clockevents (oneshot via SYSTIMER target 0/1).             */
+ /* ------------------------------------------------------------------ */
+ 
+ static DEFINE_PER_CPU(struct clock_event_device, esp32p4_clock_event) = {
+-	.name     = "esp32p4-systimer",
+-	.features = CLOCK_EVT_FEAT_ONESHOT,
+-	.rating   = 300,
+-};
++	.name		= "esp32p4-systimer",
++	.features	= CLOCK_EVT_FEAT_ONESHOT,
++	.rating		= 300,
++};
++
++static void esp32p4_timer_stop(unsigned int cpu)
++{
++	u32 conf;
++
++	if (cpu >= ESP32P4_TIMER_CPUS)
++		return;
++
++	conf = readl(st_base + ST_CONF);
++	writel(conf & ~st_target_enable[cpu], st_base + ST_CONF);
++	writel(BIT(cpu), st_base + ST_INT_CLR);
++}
+ 
+ static int esp32p4_clkevt_set_next(unsigned long delta,
+ 				    struct clock_event_device *ce)
+ {
++	unsigned int cpu = smp_processor_id();
+ 	u64 target;
+-	u32 conf;
+-
+-	/* Disable alarm while reprogramming */
+-	conf = readl(st_base + ST_CONF);
+-	writel(conf & ~ST_CONF_TARGET0_EN, st_base + ST_CONF);
+-
++	u32 bit;
++
++	if (cpu >= ESP32P4_TIMER_CPUS || !esp32p4_timer_irq[cpu])
++		return -EINVAL;
++
++	bit = BIT(cpu);
++	esp32p4_timer_stop(cpu);
+ 	target = esp32p4_systimer_read64() + delta;
+-	writel((u32)(target >> 32) & 0xFFFFF, st_base + ST_TARGET0_HI);
+-	writel((u32)target,                    st_base + ST_TARGET0_LO);
+-
+-	/* Oneshot mode, unit 0 — clear period_mode and unit_sel */
+-	writel(0, st_base + ST_TARGET0_CONF);
+-
+-	/* Sync target value into hardware comparator */
+-	writel(1, st_base + ST_COMP0_LOAD);
+-
+-	/* Enable target-0 interrupt and re-arm alarm */
+-	writel(readl(st_base + ST_INT_ENA) | BIT(0), st_base + ST_INT_ENA);
+-	writel(readl(st_base + ST_CONF) | ST_CONF_TARGET0_EN, st_base + ST_CONF);
+-
++	writel((u32)(target >> 32) & 0xFFFFF,
++	       st_base + st_target_hi[cpu]);
++	writel((u32)target, st_base + st_target_lo[cpu]);
++
++	/* Oneshot mode, unit 0. */
++	writel(0, st_base + st_target_conf[cpu]);
++	/*
++	 * Each target has its own COMPx_LOAD register; the write-one trigger
++	 * is bit 0 in that per-target register, not the target's INT mask bit.
++	 */
++	writel(1, st_base + st_comp_load[cpu]);
++	writel(readl(st_base + ST_INT_ENA) | bit, st_base + ST_INT_ENA);
++	writel(readl(st_base + ST_CONF) | st_target_enable[cpu],
++	       st_base + ST_CONF);
++
++	return 0;
++}
++
++static int esp32p4_clkevt_shutdown(struct clock_event_device *ce)
++{
++	esp32p4_timer_stop(smp_processor_id());
+ 	return 0;
+ }
+ 
+ static irqreturn_t esp32p4_timer_interrupt(int irq, void *dev_id)
+ {
+-	struct clock_event_device *ce = this_cpu_ptr(&esp32p4_clock_event);
+-
+-	/* Disable alarm and clear pending interrupt at the SYSTIMER */
+-	writel(readl(st_base + ST_CONF) & ~ST_CONF_TARGET0_EN, st_base + ST_CONF);
+-	writel(BIT(0), st_base + ST_INT_CLR);
+-
++	struct clock_event_device *ce;
++	unsigned int cpu;
++
++	for (cpu = 0; cpu < ESP32P4_TIMER_CPUS; cpu++)
++		if (irq == esp32p4_timer_irq[cpu])
++			break;
++	if (cpu == ESP32P4_TIMER_CPUS)
++		return IRQ_NONE;
++
++	/*
++	 * The CLIC INTMTX route is present in both banks, but only the owning
++	 * CPU enables this per-CPU parent IRQ. Clear the matching global target
++	 * before entering the clockevent callback.
++	 */
++	esp32p4_timer_stop(cpu);
++	ce = this_cpu_ptr(&esp32p4_clock_event);
+ 	ce->event_handler(ce);
+ 	return IRQ_HANDLED;
+ }
+ 
+-/* ------------------------------------------------------------------ */
+-/*  Initialisation                                                      */
++static int esp32p4_timer_starting_cpu(unsigned int cpu)
++{
++	struct clock_event_device *ce;
++
++	if (cpu >= ESP32P4_TIMER_CPUS || !esp32p4_timer_irq[cpu])
++		return -EINVAL;
++
++	esp32p4_timer_stop(cpu);
++	ce = per_cpu_ptr(&esp32p4_clock_event, cpu);
++	ce->cpumask = cpumask_of(cpu);
++	ce->irq = esp32p4_timer_irq[cpu];
++	ce->set_next_event = esp32p4_clkevt_set_next;
++	ce->set_state_shutdown = esp32p4_clkevt_shutdown;
++	clockevents_config_and_register(ce, riscv_timebase, 100, ULONG_MAX);
++	enable_percpu_irq(esp32p4_timer_irq[cpu],
++			  irq_get_trigger_type(esp32p4_timer_irq[cpu]));
++	return 0;
++}
++
++static int esp32p4_timer_dying_cpu(unsigned int cpu)
++{
++	if (cpu >= ESP32P4_TIMER_CPUS || !esp32p4_timer_irq[cpu])
++		return -EINVAL;
++
++	esp32p4_timer_stop(cpu);
++	disable_percpu_irq(esp32p4_timer_irq[cpu]);
++	return 0;
++}
++
++/* ------------------------------------------------------------------ */
++/* Initialisation                                                      */
+ /* ------------------------------------------------------------------ */
+ 
+ static int __init esp32p4_systimer_init(struct device_node *np)
+ {
+ 	struct clock_event_device *ce;
+-	int ret;
++	u32 target_mask = BIT(0) | BIT(1);
++	int cpu, ret;
+ 
+ 	st_base = of_iomap(np, 0);
+ 	if (!st_base) {
+@@ -153,15 +217,17 @@
+ 		return -ENOMEM;
+ 	}
+ 
+-	/* Enable SYSTIMER register file clock and counter unit 0 */
+-	writel(readl(st_base + ST_CONF) | ST_CONF_CLK_EN | ST_CONF_UNIT0_WORK_EN,
++	/* Enable the register file and counter unit 0. */
++	writel(readl(st_base + ST_CONF) |
++	       ST_CONF_CLK_EN | ST_CONF_UNIT0_WORK_EN,
+ 	       st_base + ST_CONF);
+-
+-	/* Clear any stale alarm-0 interrupt */
+-	writel(BIT(0), st_base + ST_INT_CLR);
+-	writel(readl(st_base + ST_INT_ENA) & ~BIT(0), st_base + ST_INT_ENA);
+-
+-	/* clocksource */
++	writel(readl(st_base + ST_CONF) &
++	       ~(st_target_enable[0] | st_target_enable[1]),
++	       st_base + ST_CONF);
++	writel(target_mask, st_base + ST_INT_CLR);
++	writel(readl(st_base + ST_INT_ENA) & ~target_mask,
++	       st_base + ST_INT_ENA);
++
+ 	ret = clocksource_register_hz(&esp32p4_clocksource, riscv_timebase);
+ 	if (ret) {
+ 		pr_err("clocksource register failed (%d)\n", ret);
+@@ -169,38 +235,42 @@
+ 	}
+ 	sched_clock_register(esp32p4_systimer_read64, 52, riscv_timebase);
+ 
+-	/* clockevent — single core, configure directly for CPU 0 */
+-	esp32p4_timer_irq = irq_of_parse_and_map(np, 0);
+-	if (!esp32p4_timer_irq) {
+-		pr_err("failed to map timer IRQ\n");
+-		return -ENODEV;
+-	}
+-
+-	/*
+-	 * The CLIC domain map uses handle_edge_irq (non-percpu) by default.
+-	 * Promote this IRQ to percpu so the clock event subsystem can use
+-	 * request_percpu_irq / enable_percpu_irq on an SMP-capable kernel.
+-	 */
+-	irq_set_percpu_devid(esp32p4_timer_irq);
+-	irq_set_chip_and_handler(esp32p4_timer_irq,
+-				 irq_get_chip(esp32p4_timer_irq),
+-				 handle_percpu_devid_irq);
+-
+-	ret = request_percpu_irq(esp32p4_timer_irq, esp32p4_timer_interrupt,
+-				  "esp32p4-systimer", &esp32p4_clock_event);
++	for (cpu = 0; cpu < ESP32P4_TIMER_CPUS; cpu++) {
++		esp32p4_timer_irq[cpu] = irq_of_parse_and_map(np, cpu);
++		if (!esp32p4_timer_irq[cpu]) {
++			pr_err("failed to map timer IRQ for CPU%d\n", cpu);
++			return -ENODEV;
++		}
++		irq_set_percpu_devid(esp32p4_timer_irq[cpu]);
++		irq_set_chip_and_handler(esp32p4_timer_irq[cpu],
++					 irq_get_chip(esp32p4_timer_irq[cpu]),
++					 handle_percpu_devid_irq);
++		ret = request_percpu_irq(esp32p4_timer_irq[cpu],
++					 esp32p4_timer_interrupt,
++					 "esp32p4-systimer",
++					 &esp32p4_clock_event);
++		if (ret) {
++			pr_err("request_percpu_irq CPU%d failed (%d)\n", cpu, ret);
++			return ret;
++		}
++	}
++
++	ce = this_cpu_ptr(&esp32p4_clock_event);
++	ce->set_next_event = esp32p4_clkevt_set_next;
++	ce->set_state_shutdown = esp32p4_clkevt_shutdown;
++
++	ret = cpuhp_setup_state(CPUHP_AP_IRQ_ESP32P4_TIMER_STARTING,
++				"clockevents/esp32p4-systimer:starting",
++				esp32p4_timer_starting_cpu,
++				esp32p4_timer_dying_cpu);
+ 	if (ret) {
+-		pr_err("request_percpu_irq failed (%d)\n", ret);
++		pr_err("cpu hp setup state failed for SYSTIMER (%d)\n", ret);
+ 		return ret;
+ 	}
+ 
+-	ce = this_cpu_ptr(&esp32p4_clock_event);
+-	ce->cpumask = cpumask_of(0);
+-	ce->set_next_event = esp32p4_clkevt_set_next;
+-	clockevents_config_and_register(ce, riscv_timebase, 100, ULONG_MAX);
+-	enable_percpu_irq(esp32p4_timer_irq, IRQ_TYPE_NONE);
+-
+-	pr_info("SYSTIMER @ %lu Hz, IRQ %u (CLIC slot %d)\n",
+-		riscv_timebase, esp32p4_timer_irq, CLIC_SLOT_SYSTIMER);
++	pr_info("SYSTIMER @ %lu Hz, CPU0 IRQ %u/target0, CPU1 IRQ %u/target1\n",
++		riscv_timebase, esp32p4_timer_irq[0],
++		esp32p4_timer_irq[1]);
+ 	return 0;
+ }
+ 
+diff --git a/include/linux/cpuhotplug.h b/+++ b/include/linux/cpuhotplug.h
+--- a/include/linux/cpuhotplug.h
++++ b/include/linux/cpuhotplug.h
+@@ -145,6 +145,7 @@
+ 	CPUHP_AP_IRQ_SIFIVE_PLIC_STARTING,
+ 	CPUHP_AP_IRQ_ACLINT_SSWI_STARTING,
+ 	CPUHP_AP_IRQ_ESP32P4_IPI_STARTING,
++	CPUHP_AP_IRQ_ESP32P4_TIMER_STARTING,
+ 	CPUHP_AP_IRQ_RISCV_IMSIC_STARTING,
+ 	CPUHP_AP_IRQ_RISCV_SBI_IPI_STARTING,
+ 	CPUHP_AP_ARM_MVEBU_COHERENCY,

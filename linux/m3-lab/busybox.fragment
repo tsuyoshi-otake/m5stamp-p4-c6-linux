@@ -1,0 +1,18 @@
+# BusyBox services required by the NOMMU Dropbear inetd front-end and by
+# directional Wi-Fi bring-up diagnostics (ARP/ICMP/TCP/22 on the STA iface).
+CONFIG_INETD=y
+CONFIG_PASSWD=y
+CONFIG_MODPROBE=y
+CONFIG_INSMOD=y
+CONFIG_LSMOD=y
+CONFIG_RMMOD=y
+# Buildroot's stock udhcpc default.script calls the BusyBox mktemp
+# applet while applying a lease.
+CONFIG_MKTEMP=y
+CONFIG_SHA256SUM=y
+CONFIG_DEVMEM=y
+CONFIG_ARPING=y
+CONFIG_NETSTAT=y
+CONFIG_NC=y
+CONFIG_DEFAULT_MODULES_DIR="/lib/modules"
+CONFIG_DEFAULT_DEPMOD_FILE="modules.dep"

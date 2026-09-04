@@ -1,0 +1,123 @@
+From: EasyStick maintainers <noreply@example.invalid>
+Subject: [PATCH] sdio: trace token CMD52 boundaries for P4 diagnosis
+
+The P4 port reads the ESP slave token register one byte at a time over
+CMD52.  Emit a bounded UART-visible sequence around the token read so a
+hang can be separated into host claim, individual byte transfer, and host
+release.  This is diagnostic-only and changes no return value or retry policy.
+
+The trace is capped so the observer cannot become an unbounded printk source.
+It is intentionally selected only for the stacktrace/CMD52 diagnostic image.
+
+---
+ sdio/esp_sdio_api.c | 75 ++++++++++++++++++++++++++++++++++++++++++++++++----
+ 1 file changed, 69 insertions(+), 6 deletions(-)
+
+diff --git a/sdio/esp_sdio_api.c b/sdio/esp_sdio_api.c
+--- a/sdio/esp_sdio_api.c
++++ b/sdio/esp_sdio_api.c
+@@ -6,6 +6,8 @@
+  *
+  */
+ #include "utils.h"
++#include <linux/atomic.h>
++#include <linux/kernel.h>
+ #include <linux/mmc/sdio.h>
+ #include <linux/mmc/sdio_func.h>
+ #include <linux/mmc/sdio_ids.h>
+@@ -13,6 +15,31 @@
+ #include <linux/mmc/host.h>
+ #include "esp_sdio_api.h"
+ 
++#define EASYSTICK_CMD52_TRACE_CAP 128
++#define EASYSTICK_CMD52_TRACE_TOKEN_BASE \
++	(ESP_SLAVE_TOKEN_RDATA & ESP_ADDRESS_MASK)
++
++static atomic_t easystick_cmd52_trace_count = ATOMIC_INIT(0);
++
++static bool easystick_cmd52_trace_token(u32 reg)
++{
++	u32 base = EASYSTICK_CMD52_TRACE_TOKEN_BASE;
++
++	return reg >= base && reg < base + sizeof(u32);
++}
++
++static void easystick_cmd52_trace(const char *stage, u32 addr, u16 index,
++				  u16 size, u8 lock, u8 value, int ret)
++{
++	int seq = atomic_inc_return(&easystick_cmd52_trace_count);
++
++	if (seq > EASYSTICK_CMD52_TRACE_CAP)
++		return;
++	pr_emerg("ES_CMD52 seq=%d stage=%s addr=0x%x index=%u size=%u "
++		"lock=%u value=0x%02x ret=%d\n",
++		seq, stage, addr, index, size, lock, value, ret);
++}
++
+ static int esp_read_byte(struct esp_sdio_context *context, u32 reg, u8 *data, u8 is_lock_needed)
+ {
+ 	struct sdio_func *func = NULL;
+@@ -110,19 +137,31 @@
+ 	struct sdio_func *func = NULL;
+ 	int ret = 0;
+ 	u16 i;
++	bool trace_enabled;
+ 
+ 	/* Need to apply address mask when reading/writing slave registers */
+ 	reg &= ESP_ADDRESS_MASK;
++	trace_enabled = easystick_cmd52_trace_token(reg);
++	if (trace_enabled)
++		easystick_cmd52_trace("READ_BEGIN", reg, 0, size, is_lock_needed,
++				       0xff, 0);
+ 
+ 	if (!context || !context->func || !data) {
+ 		esp_err("Invalid or incomplete arguments!\n");
+ 		return -1;
+ 	}
+ 
+ 	func = context->func;
+ 
+-	if (is_lock_needed)
++	if (is_lock_needed) {
++		if (trace_enabled)
++			easystick_cmd52_trace("CLAIM_ENTER", reg, 0, size,
++					       is_lock_needed, 0xff, 0);
+ 		sdio_claim_host(func);
++		if (trace_enabled)
++			easystick_cmd52_trace("CLAIM_DONE", reg, 0, size,
++					       is_lock_needed, 0xff, 0);
++	}
+ 
+ 	/* The ESP slave register window is served reliably over CMD52 only.
+ 	 * A CMD53 multi-byte read of this window returns zeros on the
+@@ -131,13 +171,29 @@
+ 	 * path is unaffected and stays in esp_read_block().
+ 	 */
+ 	for (i = 0; i < size; i++) {
++		if (trace_enabled)
++			easystick_cmd52_trace("BYTE_ENTER", reg + i, i, size,
++					       is_lock_needed, 0xff, 0);
+ 		data[i] = sdio_readb(func, reg + i, &ret);
++		if (trace_enabled)
++			easystick_cmd52_trace("BYTE_DONE", reg + i, i, size,
++					       is_lock_needed, data[i], ret);
+ 		if (ret)
+ 			break;
+ 	}
+ 
+-	if (is_lock_needed)
++	if (is_lock_needed) {
++		if (trace_enabled)
++			easystick_cmd52_trace("RELEASE_ENTER", reg, i, size,
++					       is_lock_needed, 0xff, ret);
+ 		sdio_release_host(func);
++		if (trace_enabled)
++			easystick_cmd52_trace("RELEASE_DONE", reg, i, size,
++					       is_lock_needed, 0xff, ret);
++	}
++	if (trace_enabled)
++		easystick_cmd52_trace("READ_DONE", reg, i, size, is_lock_needed,
++				       0xff, ret);
+ 
+ 	return ret;
+ }

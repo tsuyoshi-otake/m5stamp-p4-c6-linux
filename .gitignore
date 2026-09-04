@@ -1,0 +1,42 @@
+# OS & Editor files
+.DS_Store
+Thumbs.db
+Desktop.ini
+.vscode/
+.idea/
+*.swp
+*~
+
+# Temporary & Log files
+*.tmp
+*.temp
+*.log
+*.bak
+*.diff.err
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Secrets & Local environment configs
+*.env
+*.env.*
+wpa_supplicant.conf
+*.key
+*.pem
+id_rsa*
+
+# Build artifacts & Tool outputs
+linux/out/
+linux/build/
+build/
+out/
+dist/
+*.bin
+*.img
+*.squashfs
+vmlinux
+Image
+*.elf
+*.tar.gz
+*.tar.xz

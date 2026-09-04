@@ -1,0 +1,61 @@
+Subject: [PATCH] mmc: dw_mmc: arm software DTO on SDIO writes too
+
+dw_mci_set_drto() was only called for DW_MCI_RECV_STATUS. A CMD53 write
+that finishes the command (CMD_DONE) but never raises DATA_OVER therefore
+sits in STATE_SENDING_DATA / STATE_DATA_BUSY with no software timer and
+no hardware DTO. mmc_wait_for_req() waits forever.
+
+Observed 2026-09-03 on Stamp-P4 Image b4575e14 leftover rst after SSH
+exec true: CMD53_BB VALID cmd_arg=0x97ec0000 cmd_done=1 idmac=1
+data_over=0 dto=0 end=0. idsts=NI|TI.
+
+The existing dto_timer already completes such a wait by synthesizing
+SDMMC_INT_DRTO. Arm it for SEND the same way as RECV.
+
+Signed-off-by: EasyStick <dev@localhost>
+---
+diff --git a/drivers/mmc/host/dw_mmc.c b/drivers/mmc/host/dw_mmc.c
+--- a/drivers/mmc/host/dw_mmc.c
++++ b/drivers/mmc/host/dw_mmc.c
+@@ -2164,11 +2164,11 @@
+ 			if (!test_and_clear_bit(EVENT_XFER_COMPLETE,
+ 						&host->pending_events)) {
+ 				/*
+-				 * If all data-related interrupts don't come
+-				 * within the given time in reading data state.
++				 * DATA_OVER / XFER_COMPLETE can also fail to
++				 * arrive on a write (IDMAC TI latched, no DTO).
++				 * Recv-only arming left that wait unbounded.
+ 				 */
+-				if (host->dir_status == DW_MCI_RECV_STATUS)
+-					dw_mci_set_drto(host);
++				dw_mci_set_drto(host);
+ 				break;
+ 			}
+ 
+@@ -2203,12 +2203,10 @@
+ 		case STATE_DATA_BUSY:
+ 			if (!dw_mci_clear_pending_data_complete(host)) {
+ 				/*
+-				 * If data error interrupt comes but data over
+-				 * interrupt doesn't come within the given time.
+-				 * in reading data state.
++				 * Same write-side hole as STATE_SENDING_DATA:
++				 * without DATA_OVER the request never ends.
+ 				 */
+-				if (host->dir_status == DW_MCI_RECV_STATUS)
+-					dw_mci_set_drto(host);
++				dw_mci_set_drto(host);
+ 				break;
+ 			}
+ 
+@@ -4293,6 +4293,9 @@ static void dw_mci_dto_timer(struct timer_list *t)
+ 		 * we should notify the driver to terminate current transfer
+ 		 * and report a data timeout to the core.
+ 		 */
++		dev_err(host->dev,
++			"EASYSTICK_MMC TX_DRTO state=%d dir=%u\n",
++			host->state, host->dir_status);
+ 		host->data_status = SDMMC_INT_DRTO;
+ 		trace = dw_mci_cmd53_trace_active(host);
+ 		if (trace)
