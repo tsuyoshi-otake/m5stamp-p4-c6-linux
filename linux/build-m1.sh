@@ -408,32 +408,44 @@ if $ssh_profile; then
 	if $lab_profile; then
 		cp -a -- "${script_dir}/m3-lab/." "$lab_stage/"
 		mkdir -p -- "${lab_provision_stage}/etc/easystick"
-		if [[ -n ${EASYSTICK_WIFI_SSID:-} || -n ${EASYSTICK_WIFI_PSK:-} ]]; then
-			[[ -n ${EASYSTICK_WIFI_SSID:-} && -n ${EASYSTICK_WIFI_PSK:-} ]] || {
-				echo "m3-lab Wi-Fi provisioning requires both EASYSTICK_WIFI_SSID and EASYSTICK_WIFI_PSK" >&2
-				exit 1
-			}
-			python3 - "${lab_provision_stage}/etc/easystick/wpa_supplicant.conf" <<'PY'
+		python3 - "${lab_provision_stage}/etc/easystick/wpa_supplicant.conf" <<'PY'
 import json
 import os
 import sys
 from pathlib import Path
 
 path = Path(sys.argv[1])
-ssid = os.environ["EASYSTICK_WIFI_SSID"]
-psk = os.environ["EASYSTICK_WIFI_PSK"]
-path.write_text(
-    "update_config=0\n"
-    "country=JP\n"
-    "network={\n"
-    f"\tssid={json.dumps(ssid, ensure_ascii=False)}\n"
-    f"\tpsk={json.dumps(psk, ensure_ascii=False)}\n"
-    "}\n",
-    encoding="utf-8",
-)
+mode = os.environ.get("EASYSTICK_WIFI_MODE", "ap")
+ssid = os.environ.get("EASYSTICK_WIFI_SSID", "m5")
+psk = os.environ.get("EASYSTICK_WIFI_PSK", "m5stamp-p4-c6")
+
+if mode == "ap":
+    conf = (
+        "update_config=0\n"
+        "ap_scan=1\n\n"
+        "network={\n"
+        f"\tssid={json.dumps(ssid, ensure_ascii=False)}\n"
+        "\tmode=2\n"
+        "\tfrequency=2437\n"
+        "\tkey_mgmt=WPA-PSK\n"
+        "\tproto=RSN\n"
+        "\tpairwise=CCMP\n"
+        "\tgroup=CCMP\n"
+        f"\tpsk={json.dumps(psk, ensure_ascii=False)}\n"
+        "}\n"
+    )
+else:
+    conf = (
+        "update_config=0\n"
+        "country=JP\n"
+        "network={\n"
+        f"\tssid={json.dumps(ssid, ensure_ascii=False)}\n"
+        f"\tpsk={json.dumps(psk, ensure_ascii=False)}\n"
+        "}\n"
+    )
+path.write_text(conf, encoding="utf-8")
 path.chmod(0o600)
 PY
-		fi
 	fi
 fi
 
@@ -590,7 +602,6 @@ patches=(
 	0010-mm-nommu-userspace-pool.patch
 	0014-riscv-signal-mcause-hardening.patch
 	0015-riscv-esp32p4-cache-thunk-hardening.patch
-	0016-clocksource-esp32p4-systimer-hardening.patch
 	0019-watchdog-esp32p4-mwdt.patch
 	0022-esp32p4-systimer-level-trigger.patch
 	0023-riscv-esp32p4-force-mpie-user-return.patch
@@ -601,6 +612,9 @@ patches=(
 		0028-esp32p4-usb-serial-jtag-acm.patch
 	0031-riscv-esp32p4-m-mode-userspace.patch
 )
+if ! $c68_profile; then
+	patches+=(0016-clocksource-esp32p4-systimer-hardening.patch)
+fi
 # m3-lab only: MWDT feed observe markers (timeout/policy unchanged).
 # m3-lab only: TCP/22 bidirectional progress ledger (0024-C2; observe-only).
 # It hooks hot TCP paths and emits KERN_EMERG records, so keep it opt-in:
@@ -944,7 +958,7 @@ cmd53_bb_pa_id="${EASYSTICK_CMD53_BB_PA:-none}"
 cmd53_bb_0052_sha_id="${EASYSTICK_CMD53_BB_0052_SHA256:-none}"
 cmd53_bb_0053_sha_id="${EASYSTICK_CMD53_BB_0053_SHA256:-none}"
 cmd53_bb_0054_sha_id="${EASYSTICK_CMD53_BB_0054_SHA256:-none}"
-profile_identity="profile-contract=20 profile=${profile} network=${network_profile} ssh=${ssh_profile} lab=${lab_profile} sdio-default-mhz=${sdio_default_mhz} wdt-test-timeout-s=${wdt_test_timeout_s} wdt-test-no-feed=${wdt_test_no_feed} stacktrace-diagnostics=${stacktrace_diagnostics} stacktrace-module-debug-strip=${stacktrace_diagnostics} esp-hosted-cmd52-trace=${cmd52_trace} esp-hosted-cmd52-marker=${cmd52_marker} ssh-ledger=${EASYSTICK_SSH_LEDGER:-0} tcp22-ledger=${EASYSTICK_TCP22_LEDGER:-0} esp-hosted-tx-ledger=${EASYSTICK_ESPHOSTED_TX_LEDGER:-0} esp-hosted-diagnostics=${EASYSTICK_ESPHOSTED_DIAGNOSTICS:-0} dw-mmc-cmd53-err-prov=${EASYSTICK_DW_MMC_CMD53_ERR_PROV:-0} cmd53-retention-bb=${EASYSTICK_CMD53_RETENTION_BB:-0} cmd53-bb-allow-pio=${cmd53_bb_allow_pio} cmd53-bb-pa=${cmd53_bb_pa_id} cmd53-bb-0052-sha=${cmd53_bb_0052_sha_id} cmd53-bb-0053-sha=${cmd53_bb_0053_sha_id} cmd53-bb-0054-sha=${cmd53_bb_0054_sha_id} force-pio=${EASYSTICK_SDIO_FORCE_PIO:-1} idmac-inv=${EASYSTICK_IDMAC_DESC_INVALIDATE:-0} idmac-nc=${EASYSTICK_IDMAC_NONCOHERENT_RING:-0} cmd53-rx-desc=${EASYSTICK_CMD53_RX_DESC_BYTES:-0} buildroot-jlevel=${EASYSTICK_BUILDROOT_JLEVEL:-auto} c68=${c68_profile} top=${c68_top_profile} stress=${c68_stress_profile} l3=${EASYSTICK_C68_L3_SMOKE:-0} tsens-linux=${EASYSTICK_TSENS_LINUX:-0} tsens-oracle=${EASYSTICK_TSENS_ORACLE:-0}"
+profile_identity="profile-contract=21 profile=${profile} network=${network_profile} ssh=${ssh_profile} lab=${lab_profile} sdio-default-mhz=${sdio_default_mhz} wdt-test-timeout-s=${wdt_test_timeout_s} wdt-test-no-feed=${wdt_test_no_feed} stacktrace-diagnostics=${stacktrace_diagnostics} stacktrace-module-debug-strip=${stacktrace_diagnostics} esp-hosted-cmd52-trace=${cmd52_trace} esp-hosted-cmd52-marker=${cmd52_marker} ssh-ledger=${EASYSTICK_SSH_LEDGER:-0} tcp22-ledger=${EASYSTICK_TCP22_LEDGER:-0} esp-hosted-tx-ledger=${EASYSTICK_ESPHOSTED_TX_LEDGER:-0} esp-hosted-diagnostics=${EASYSTICK_ESPHOSTED_DIAGNOSTICS:-0} dw-mmc-cmd53-err-prov=${EASYSTICK_DW_MMC_CMD53_ERR_PROV:-0} cmd53-retention-bb=${EASYSTICK_CMD53_RETENTION_BB:-0} cmd53-bb-allow-pio=${cmd53_bb_allow_pio} cmd53-bb-pa=${cmd53_bb_pa_id} cmd53-bb-0052-sha=${cmd53_bb_0052_sha_id} cmd53-bb-0053-sha=${cmd53_bb_0053_sha_id} cmd53-bb-0054-sha=${cmd53_bb_0054_sha_id} force-pio=${EASYSTICK_SDIO_FORCE_PIO:-1} idmac-inv=${EASYSTICK_IDMAC_DESC_INVALIDATE:-0} idmac-nc=${EASYSTICK_IDMAC_NONCOHERENT_RING:-0} cmd53-rx-desc=${EASYSTICK_CMD53_RX_DESC_BYTES:-0} buildroot-jlevel=${EASYSTICK_BUILDROOT_JLEVEL:-auto} c68=${c68_profile} top=${c68_top_profile} stress=${c68_stress_profile} l3=${EASYSTICK_C68_L3_SMOKE:-0} tsens-linux=${EASYSTICK_TSENS_LINUX:-0} tsens-oracle=${EASYSTICK_TSENS_ORACLE:-0}"
 
 set_config_value() {
 	local config=$1 key=$2 value=$3
@@ -1472,6 +1486,7 @@ PY
 			"${patch_stage}/0042-easystick-esp32p4-systimer-cpu1.patch" \
 			"${patch_stage}/0049-easystick-esp32p4-l3-smoke-workqueue.patch" \
 			"$vmlinux" "$image"; do
+			[[ -f "$f" ]] || continue
 			if contains_c68dead "$f"; then
 				echo "C68_GATE_FAIL: C68DEAD remains in $f" >&2
 				exit 1
@@ -1862,9 +1877,11 @@ fi
 if $lab_profile; then
 	set_config_value "${br_output}/.config" BR2_PACKAGE_LIBPCAP y
 	set_config_value "${br_output}/.config" BR2_PACKAGE_TCPDUMP y
+	set_config_value "${br_output}/.config" BR2_PACKAGE_MICROPYTHON_NOMMU y
 else
 	set_config_value "${br_output}/.config" BR2_PACKAGE_LIBPCAP "# BR2_PACKAGE_LIBPCAP is not set"
 	set_config_value "${br_output}/.config" BR2_PACKAGE_TCPDUMP "# BR2_PACKAGE_TCPDUMP is not set"
+	set_config_value "${br_output}/.config" BR2_PACKAGE_MICROPYTHON_NOMMU "# BR2_PACKAGE_MICROPYTHON_NOMMU is not set"
 fi
 set_config_value "${br_output}/.config" BR2_ROOTFS_OVERLAY "\"${rootfs_overlay}\""
 set_config_value "${br_output}/.config" BR2_ROOTFS_POST_BUILD_SCRIPT "\"${post_build_scripts}\""
@@ -1884,6 +1901,10 @@ else
 		BR2_PACKAGE_BUSYBOX_CONFIG_FRAGMENT_FILES \
 		"# BR2_PACKAGE_BUSYBOX_CONFIG_FRAGMENT_FILES is not set"
 fi
+if $network_profile; then
+	set_config_value "${br_output}/.config" BR2_PACKAGE_WPA_SUPPLICANT_AP_SUPPORT y
+	set_config_value "${br_output}/.config" BR2_PACKAGE_WPA_SUPPLICANT_CTRL_IFACE y
+fi
 make "${make_args[@]}" olddefconfig
 printf '%s\n' "$profile_identity" >"$profile_stamp"
 if ! $c68_top_profile &&
@@ -1899,6 +1920,8 @@ if $network_profile; then
 	# and compiler cache remain intact while ensuring the tested module matches
 	# the checked-in patch series.
 	make "${make_args[@]}" esp-hosted-ng-dirclean
+	make "${make_args[@]}" wpa_supplicant-dirclean
+	make "${make_args[@]}" busybox-dirclean
 fi
 if $ssh_profile; then
 	# Dropbear's localoptions header is appended during its extract hook.  A

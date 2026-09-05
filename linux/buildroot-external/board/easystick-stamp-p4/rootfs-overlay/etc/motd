@@ -1,7 +1,6 @@
-EasyStick Stamp-P4 experimental NOMMU Linux
+M5Stamp ESP32-P4 + C6 SDIO Linux
 
-Initial account: pi
-Initial password: raspberry
+Initial account: m5
+Initial password: m5stamp-p4-c6
 Change the password immediately with: passwd
-Network/SSH is experimental and may be unavailable until the C6 SDIO
-firmware and host driver are installed.
+Network/SSH is ready via Stamp-AddOn C6 SDIO Wi-Fi.

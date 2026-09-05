@@ -84,6 +84,32 @@ start() {
 	while [ "$i" -lt 30 ]; do
 		if ifconfig wlan0 >/dev/null 2>&1; then
 			echo "M3-lab: wlan0 appeared"
+
+			is_ap=0
+			if grep -q 'mode=2' /etc/easystick/wpa_supplicant.conf 2>/dev/null; then
+				is_ap=1
+			fi
+
+			if [ "$is_ap" -eq 1 ]; then
+				echo "M3-lab: starting SoftAP mode"
+				ifconfig wlan0 down 2>/dev/null || true
+				iw dev wlan0 set type __ap 2>/dev/null || iw dev wlan0 set type ap 2>/dev/null || true
+				ifconfig wlan0 192.168.4.1 netmask 255.255.255.0 up
+				wpa_supplicant -B -i wlan0 -c /etc/easystick/wpa_supplicant.conf
+				sleep 1
+				if command -v udhcpd >/dev/null 2>&1; then
+					mkdir -p /tmp /var/lib/misc
+					touch /tmp/udhcpd.leases
+					udhcpd -S /etc/udhcpd.conf &
+					echo "M3-lab: udhcpd started on wlan0 (192.168.4.1)"
+				else
+					echo "M3-lab: udhcpd not found, clients will require static IP (e.g. 192.168.4.2)"
+				fi
+				echo "M3-lab: SoftAP started (SSID: m5, IP: 192.168.4.1)"
+				ifconfig wlan0 2>/dev/null || true
+				return 0
+			fi
+
 			# ESP-Hosted registers wlan0 before userspace selects its initial
 			# nl80211 interface type.  Establish STA/managed mode before
 			# wpa_supplicant probes it.
@@ -118,7 +144,7 @@ start() {
 
 case "${1:-start}" in
 	start) start ;;
-	stop) killall wpa_supplicant udhcpc 2>/dev/null || true ;;
+	stop) killall wpa_supplicant udhcpc udhcpd 2>/dev/null || true ;;
 	*) echo "Usage: $0 {start|stop}" >&2; exit 1 ;;
 esac
 

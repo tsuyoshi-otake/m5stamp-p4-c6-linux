@@ -3,6 +3,7 @@ menu "EasyStick Stamp-P4 board options"
 source "$BR2_EXTERNAL_EASYSTICK_STAMP_P4_PATH/package/esp-hosted-ng/Config.in"
 source "$BR2_EXTERNAL_EASYSTICK_STAMP_P4_PATH/package/m5stamp-smp-smoke/Config.in"
 source "$BR2_EXTERNAL_EASYSTICK_STAMP_P4_PATH/package/m5stamp-smp-stress/Config.in"
+source "$BR2_EXTERNAL_EASYSTICK_STAMP_P4_PATH/package/micropython-nommu/Config.in"
 
 config BR2_PACKAGE_EASYSTICK_STAMP_P4_M1
 	bool "M1 minimal native Linux profile"

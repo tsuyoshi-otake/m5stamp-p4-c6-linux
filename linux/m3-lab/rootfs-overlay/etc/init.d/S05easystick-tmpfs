@@ -6,32 +6,44 @@ set -e
 # Mount writable tmpfs on /tmp before any consumer (S85 host keys, seedrng, etc.).
 # Root is squashfs (ro); without this, /tmp is a RO directory on the rootfs.
 
-es_tmpfs() {
+es_log() {
 	printf '%s\n' "$1"
 }
 
 start() {
-	es_tmpfs "ES_TMPFS BEGIN"
-	if mount | grep -q ' on /tmp type tmpfs'; then
-		es_tmpfs "ES_TMPFS ALREADY"
-		return 0
+	es_log "ES_TMPFS BEGIN"
+	if ! mount | grep -q ' on /tmp type tmpfs'; then
+		if ! grep -q '[[:space:]]tmpfs$' /proc/filesystems 2>/dev/null; then
+			es_log "ES_TMPFS NO_FS"
+			return 1
+		fi
+		# 8M tmpfs gives comfortable room for vi buffers, python scripts, and overlay upperdir.
+		if ! mount -t tmpfs -o mode=1777,size=8M tmpfs /tmp; then
+			es_log "ES_TMPFS MOUNT_FAIL"
+			return 1
+		fi
 	fi
-	if ! grep -q '[[:space:]]tmpfs$' /proc/filesystems 2>/dev/null; then
-		es_tmpfs "ES_TMPFS NO_FS"
-		return 1
+	touch /tmp/.easystick_tmpfs_ok && rm -f /tmp/.easystick_tmpfs_ok
+	es_log "ES_TMPFS OK"
+
+	# OverlayFS for writable /home, /root, /var/lib
+	if grep -q '[[:space:]]overlay$' /proc/filesystems 2>/dev/null; then
+		es_log "ES_OVERLAY BEGIN"
+		for d in /home /root /var/lib; do
+			if [ -d "$d" ]; then
+				tag=$(echo "$d" | tr '/' '_')
+				mkdir -p "/tmp/overlay${d}/upper" "/tmp/overlay${d}/work"
+				if mount -t overlay "overlay${tag}" -o "lowerdir=${d},upperdir=/tmp/overlay${d}/upper,workdir=/tmp/overlay${d}/work" "$d" 2>/dev/null; then
+					es_log "ES_OVERLAY OK: $d"
+				else
+					es_log "ES_OVERLAY FAIL: $d"
+				fi
+			fi
+		done
+		es_log "ES_OVERLAY COMPLETE"
+	else
+		es_log "ES_OVERLAY NO_FS"
 	fi
-	# 1M is enough for Dropbear host keys and small temp files; keep this
-	# single-variable until a later capacity policy is measured.
-	if ! mount -t tmpfs -o mode=1777,size=1M tmpfs /tmp; then
-		es_tmpfs "ES_TMPFS MOUNT_FAIL"
-		return 1
-	fi
-	if ! touch /tmp/.easystick_tmpfs_ok 2>/dev/null; then
-		es_tmpfs "ES_TMPFS WRITE_FAIL"
-		return 1
-	fi
-	rm -f /tmp/.easystick_tmpfs_ok
-	es_tmpfs "ES_TMPFS OK"
 }
 
 case "${1:-start}" in

@@ -1,0 +1,4 @@
+config BR2_PACKAGE_MICROPYTHON_NOMMU
+	bool "micropython-nommu"
+	help
+	  MicroPython port for RV32 NOMMU Linux (statically linked).

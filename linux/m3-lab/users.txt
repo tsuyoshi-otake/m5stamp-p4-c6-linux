@@ -1,4 +1,4 @@
 # username uid group gid password home shell groups comment
-# This hash is the public Raspberry-Pi-style lab credential and must be
-# changed immediately.  It is not used by the production M3 profile.
-pi 1000 pi 1000 $1$easystic$2Ms/.ldoGSWxG26ffkFnh0 /home/pi /bin/sh - EasyStick lab operator
+# Deliberate M5Stack first-boot account for the image.
+# Change this password immediately after the first successful login.
+m5 1000 m5 1000 $1$easystic$5DMG1YSbpJRAnz9BN0dYK. /home/m5 /bin/sh - M5Stack initial user
