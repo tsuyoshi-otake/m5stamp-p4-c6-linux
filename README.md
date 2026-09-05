@@ -8,6 +8,12 @@ A reproducible, native **Dual-Core SMP** RISC-V NOMMU Linux 6.18 distribution fo
 
 Boots out-of-the-box into **Wi-Fi SoftAP mode** with automatic DHCP, Dropbear SSH server, BusyBox `vi`, MicroPython (`python3`), and a writable OverlayFS on `/home`, `/root`, and `/var/lib`.
 
+<p align="center">
+  <img src="docs/images/ssh-session-dual-core-smp.png" alt="M5Stamp ESP32-P4 + C6 Dual-Core SMP SSH Session" width="650">
+  <br>
+  <em>Live SSH session on M5Stamp ESP32-P4 + C6 showing dual-core SMP operation (CPU0 and CPU1) via SDIO Wi-Fi.</em>
+</p>
+
 ---
 
 ## Key Features & Verified Hardware Capabilities

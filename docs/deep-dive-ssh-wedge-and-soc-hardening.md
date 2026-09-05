@@ -165,6 +165,12 @@ The rbtree corruption was not a bug in `lib/rbtree.c`. Rather, memory structures
 
 Following the integration of patches `0014`, `0015`, and `0016` into `linux/build-m1.sh`, the kernel was rebuilt and flashed to the Stamp-P4 target (`COM10`, IP `10.255.10.161`).
 
+<p align="center">
+  <img src="images/ssh-session-dual-core-smp.png" alt="M5Stamp ESP32-P4 + C6 Dual-Core SMP SSH Session" width="650">
+  <br>
+  <em>Figure 4.1: Live SSH session on M5Stamp ESP32-P4 + C6 showing dual-core SMP operation (CPU0 and CPU1) over SDIO Wi-Fi.</em>
+</p>
+
 ### Test 1: Single `exec_command("id")`
 - **Execution Time**: **0.141 seconds**
 - **Result**: `uid=1000(pi) gid=1000(pi) groups=1000(pi)`
