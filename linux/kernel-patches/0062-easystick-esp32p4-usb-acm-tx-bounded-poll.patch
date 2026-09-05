@@ -1,0 +1,38 @@
+--- a/drivers/tty/serial/esp32_acm.c
++++ b/drivers/tty/serial/esp32_acm.c
+@@ -138,13 +138,12 @@ static void esp32s3_acm_put_char(struct uart_port *port, u8 c)
+ 
+ static void esp32s3_acm_put_char_sync(struct uart_port *port, u8 c)
+ {
+-	unsigned long timeout = jiffies + HZ;
++	unsigned int tmout = 2000;
+ 
+ 	while (!esp32s3_acm_tx_fifo_free(port)) {
+-		if (time_after(jiffies, timeout)) {
+-			dev_warn(port->dev, "timeout waiting for TX FIFO\n");
++		if (--tmout == 0)
+ 			return;
+-		}
++		udelay(1);
+ 		cpu_relax();
+ 	}
+ 	esp32s3_acm_put_char(port, c);
+--- a/drivers/tty/serial/esp32_uart.c
++++ b/drivers/tty/serial/esp32_uart.c
+@@ -251,13 +251,12 @@ static void esp32_uart_put_char(struct uart_port *port, u8 c)
+ 
+ static void esp32_uart_put_char_sync(struct uart_port *port, u8 c)
+ {
+-	unsigned long timeout = jiffies + HZ;
++	unsigned int tmout = 2000;
+ 
+ 	while (esp32_uart_tx_fifo_cnt(port) >= ESP32_UART_TX_FIFO_SIZE) {
+-		if (time_after(jiffies, timeout)) {
+-			dev_warn(port->dev, "timeout waiting for TX FIFO\n");
++		if (--tmout == 0)
+ 			return;
+-		}
++		udelay(1);
+ 		cpu_relax();
+ 	}
+ 	esp32_uart_put_char(port, c);

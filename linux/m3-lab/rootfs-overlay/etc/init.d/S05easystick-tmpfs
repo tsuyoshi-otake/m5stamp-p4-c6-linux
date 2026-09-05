@@ -44,6 +44,13 @@ start() {
 	else
 		es_log "ES_OVERLAY NO_FS"
 	fi
+
+	# Seed the kernel RNG now that /var/lib is writable
+	if command -v seedrng >/dev/null 2>&1; then
+		mkdir -p /var/lib/seedrng
+		seedrng || true
+		es_log "ES_SEEDRNG OK"
+	fi
 }
 
 case "${1:-start}" in

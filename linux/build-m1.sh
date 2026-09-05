@@ -610,6 +610,7 @@ patches=(
 		0026-riscv-esp32p4-boot-markers.patch
 		0027-easystick-headless-uart-console.patch
 		0028-esp32p4-usb-serial-jtag-acm.patch
+		0062-easystick-esp32p4-usb-acm-tx-bounded-poll.patch
 	0031-riscv-esp32p4-m-mode-userspace.patch
 )
 if ! $c68_profile; then
@@ -760,6 +761,7 @@ for patch_name in "${patches[@]}"; do
 	      "$patch_name" == 0026-riscv-esp32p4-boot-markers.patch ||
 	      "$patch_name" == 0027-easystick-headless-uart-console.patch ||
 	      "$patch_name" == 0028-esp32p4-usb-serial-jtag-acm.patch ||
+	      "$patch_name" == 0062-easystick-esp32p4-usb-acm-tx-bounded-poll.patch ||
 	      "$patch_name" == 0008-easystick-dw-mmc-force-pio.patch ||
 	      "$patch_name" == 0009-easystick-dw-mmc-divider0.patch ||
 	      "$patch_name" == 0010-easystick-dw-mmc-cmd53-status.patch ||

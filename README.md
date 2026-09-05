@@ -35,6 +35,8 @@ Boots out-of-the-box into **Wi-Fi SoftAP mode** with automatic DHCP, Dropbear SS
   - L2 unified cache & DMA reentrancy hardening (`0015`).
   - Systimer 52-bit atomic multi-word read and missed-alarm mitigation (`0016`).
   - Dual-core systimer lock and CPU1 context switch tracking (`0042`, `0044`, `0045`, `0046`).
+  - USB CDC-ACM 64-byte TX FIFO bounded polling (`0062`), eliminating full-screen editor (`vi`) and TUI terminal lockups.
+  - Early CRNG entropy initialization via `seedrng` on OverlayFS, preventing `getrandom()` system call stalls.
   - SDIO DW-MMC host controller driver enhancements with software DTO and buffer pacing (`0032`, `0033`, `0060`, `0061`).
 
 ---
@@ -53,7 +55,7 @@ Boots out-of-the-box into **Wi-Fi SoftAP mode** with automatic DHCP, Dropbear SS
 
 ### 1. Download Release Package
 
-Download the latest release archive `m5stamp-p4-c6-linux-smp-v0.1.0.zip` from the [Releases](https://github.com/tsuyoshi-otake/m5stamp-p4-c6-linux/releases) page and extract it.
+Download the latest release archive `m5stamp-p4-c6-linux-smp-v0.1.1.zip` from the [Releases](https://github.com/tsuyoshi-otake/m5stamp-p4-c6-linux/releases) page and extract it.
 
 ### 2. Flash using `esptool.py`
 
@@ -418,6 +420,19 @@ This compiles:
 2. Linux 6.18 SMP kernel with RISC-V P4 patches and Stamp-P4 Device Tree
 3. Buildroot root filesystem with Busybox (vi, udhcpd), Dropbear SSH, MicroPython, and ESP-Hosted-NG (`esp32_sdio.ko`)
 4. Combined image artifacts ready for flashing
+
+---
+
+## SHA-256 Checksums (v0.1.1)
+
+```text
+640b5d496bff7235462cd727cf7bf58af7bd423f864ef1affcfd9d24eb2d31d2  bootloader.bin
+d076fd66f0f4bd3f9f423761ef10b73652f2359f190c5ffef0164f657c40d9d4  partition-table.bin
+3cda761f3fabd274b8eaa9a19eb91044ca5358e5255452c175e3238c1ae1b996  boot-shim.bin
+d30508110ac11764e0f0c7f44f7f9dd595f4f86032ef39066b9a27814abe8848  Image
+3a3b58e41d83ec5205678f054d377a721609e3843033c74a8228098eb5a5c34d  rootfs.squashfs
+0bdb2193ece4a50a6b8781cd17620fe3308bdbf1cd053aa55d06560ad3a432a8  easystick-stamp-p4.dtb
+```
 
 ---
 

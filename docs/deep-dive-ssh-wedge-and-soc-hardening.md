@@ -159,6 +159,19 @@ The rbtree corruption was not a bug in `lib/rbtree.c`. Rather, memory structures
      ```
   2. Check if target event time is in the past and immediately return `-ETIME` so the timer subsystem can reschedule.
 
+### 4. `0062-easystick-esp32p4-usb-acm-tx-bounded-poll.patch` (Terminal & `vi` Freeze Resolution)
+- **Root Cause**:
+  When full-screen terminal editors such as BusyBox `vi` initialize, they send escape sequences (`\033[6n` for Cursor Position Report / terminal dimensions).
+  On the ESP32-P4's hardware USB-Serial/JTAG (`ttyGS1`), the transmit FIFO is limited to 64 bytes. In the baseline ACM driver, writing to a full TX FIFO polled without an upper bound or timed out indefinitely when the host USB endpoint buffer was backpressured. This caused the calling task (or console thread) to hang in kernel mode, leading to complete terminal lockup.
+- **Fix**:
+  Implement `poll_timeout_us_atomic` in `esp32_acm_write()` with a bounded timeout (e.g. 5,000 µs), falling back cleanly if the FIFO does not drain rather than spinning indefinitely. This enables robust, lockup-free interactive operation for `vi`, MicroPython REPL, and ANSI TUI tools across both serial and SSH.
+
+### 5. Early CRNG Entropy Initialization (`seedrng` + OverlayFS)
+- **Root Cause**:
+  Linux kernel cryptographically secure pseudo-random number generator (`CRNG`) requires 256 bits of entropy. On a read-only rootfs (`SquashFS`), `seedrng` could not credit and write its `seed.credit` file to `/var/lib/seedrng`, causing `getrandom()` system calls to block during early boot until ambient entropy accumulated.
+- **Fix**:
+  Ensure `/var/lib` is mounted as a writable RAM OverlayFS during early startup (`S05easystick-tmpfs`) before `seedrng` executes. This allows `seedrng` to immediately inject and save 256 bits of seed, completing `random: crng init done` before Dropbear SSH or userland applications start.
+
 ---
 
 ## 4. Empirical Hardware Verification
