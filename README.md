@@ -30,7 +30,9 @@ Boots out-of-the-box into **Wi-Fi SoftAP mode** with automatic DHCP, Dropbear SS
   - **`vi` Editor**: Full-featured BusyBox `vi` with search, undo, visual buffers, and syntax assistance.
   - **MicroPython (`python3`)**: MicroPython v1.22.2 compiled with bFLT Load-to-Ram (`-r`) and position-independent code (`-fPIC`) for stable NOMMU execution.
   - **Writable Filesystem (OverlayFS)**: While the root filesystem is SquashFS (read-only for durability), RAM-backed OverlayFS is automatically mounted on `/home`, `/root`, and `/var/lib` so users can create, edit, and save scripts freely.
+  - **USB Mass Storage (`/boot` drive)**: The Type-A USB port (GPIO26/27) exposes a FAT-formatted 256KB `/boot` partition directly to Windows/Mac/Linux hosts. You can edit `cmdline.txt`, `config.txt`, and `wpa_supplicant.conf` directly from Windows Explorer without needing serial or SSH!
 - **Kernel & SoC Stabilization**:
+  - Full-Speed DWC2 USB OTG driver hardened with PIO mode and dedicated TX FIFO empty interrupt management, eliminating descriptor DMA coherency panics and enabling stable multi-block transfers.
   - Signal delivery `mcause` hardening (`0014`).
   - L2 unified cache & DMA reentrancy hardening (`0015`).
   - Systimer 52-bit atomic multi-word read and missed-alarm mitigation (`0016`).
@@ -55,7 +57,7 @@ Boots out-of-the-box into **Wi-Fi SoftAP mode** with automatic DHCP, Dropbear SS
 
 ### 1. Download Release Package
 
-Download the latest release archive `m5stamp-p4-c6-linux-smp-v0.1.1.zip` from the [Releases](https://github.com/tsuyoshi-otake/m5stamp-p4-c6-linux/releases) page and extract it.
+Download the latest release archive `m5stamp-p4-c6-linux-smp-v0.1.8.zip` from the [Releases](https://github.com/tsuyoshi-otake/m5stamp-p4-c6-linux/releases) page and extract it.
 
 ### 2. Flash using `esptool.py`
 
@@ -71,7 +73,8 @@ esptool.py --chip esp32p4 --port COM10 --baud 460800 \
     0x010000 boot-shim.bin \
     0x090000 Image \
     0x810000 rootfs.squashfs \
-    0x0f10000 easystick-stamp-p4.dtb
+    0x0f10000 easystick-stamp-p4.dtb \
+    0x0f40000 boot.img
 ```
 
 #### Flash Partition Map
@@ -84,18 +87,20 @@ esptool.py --chip esp32p4 --port COM10 --baud 460800 \
 | `0x090000` | `Image` | Linux 6.18 SMP RISC-V kernel binary |
 | `0x810000` | `rootfs.squashfs` | Read-only SquashFS root filesystem with Buildroot userland |
 | `0x0f10000` | `easystick-stamp-p4.dtb` | Compiled Flattened Device Tree for Stamp-P4 |
+| `0x0f40000` | `boot.img` | 256KB FAT12 `/boot` partition exposed via USB Mass Storage (Type-A) |
 
 ### 3. Connect & Use
 
 1. After flashing, the Stamp-P4 automatically reboots and starts SoftAP within ~10 seconds.
-2. On your laptop or smartphone, connect to Wi-Fi SSID **`m5`** using password **`m5stamp-p4-c6`**.
-3. Your device will receive an IP address such as `192.168.4.2`.
-4. Open a terminal and SSH into the board:
+2. **USB Mass Storage Configuration (Optional)**: Plug the board via USB Type-A into your PC. A 256KB FAT drive will appear, containing `cmdline.txt`, `config.txt`, and `wpa_supplicant.conf`. You can edit them using any text editor to configure Wi-Fi networks or boot arguments without booting Linux.
+3. On your laptop or smartphone, connect to Wi-Fi SSID **`m5`** using password **`m5stamp-p4-c6`**.
+4. Your device will receive an IP address such as `192.168.4.2`.
+5. Open a terminal and SSH into the board:
    ```bash
    ssh m5@192.168.4.1
    # Password: m5stamp-p4-c6
    ```
-5. You can now edit files and run Python programs immediately:
+6. You can now edit files and run Python programs immediately:
    ```bash
    vi hello.py
    python3 hello.py
