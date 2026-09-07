@@ -26,16 +26,8 @@ start() {
 	# that level still starves SDIO/ARP on this NOMMU target even after the
 	# quiet ESP-Hosted patches (0024/0025).  Drop console printk now so the
 	# lab SSH shot does not depend on a manual `dmesg -n 1` over ttyGS1.
-	dmesg -n 1 2>/dev/null || true
+	dmesg -n 4 2>/dev/null || true
 
-	# The boot shim is the sole owner of AddOn-C6 reset GPIO42.  Resetting from
-	# esp_init() races SDIO enumeration once CONFIG_GPIO_ESP32P4 makes GPIO42
-	# valid.  The host patch supplies the selected clock-arm default; this
-	# script only attests it and never passes resetpin=42.
-	# The SDIO arm is selected at build time.  mdev's modalias rule is removed
-	# by post-build so this script is the sole loader and can attest its input.
-	# If mdev still loaded it, fail closed rather than guessing which binary or
-	# default parameter was used.
 	WANT_MHZ="${ES_SDIO_MHZ:-}"
 	if [ -z "$WANT_MHZ" ] && [ -r /etc/easystick/sdio-clock-mhz ]; then
 		WANT_MHZ=$(cat /etc/easystick/sdio-clock-mhz)
@@ -75,9 +67,38 @@ start() {
 	MODULE_SHA256=$(sha256sum "$KO" 2>/dev/null)
 	MODULE_SHA256=${MODULE_SHA256%% *}
 	echo "ES_SDIO_LOAD_OK source=$MODULE_SOURCE requested_mhz=$WANT_MHZ module_param_mhz=$ACTUAL_PARAM_MHZ module_sha256=${MODULE_SHA256:-unavailable}"
-	if [ ! -f /etc/easystick/wpa_supplicant.conf ]; then
-		echo "M3-lab: no build-time Wi-Fi credentials; wlan0 will remain offline"
+
+	# If /boot is unmounted (for USB Mass Storage), temporarily mount /tmp/boot.img ro
+	# to sync any host-modified wpa_supplicant.conf or config.txt to /tmp
+	if [ -f /tmp/boot.img ] && [ ! -f /boot/wpa_supplicant.conf ]; then
+		mkdir -p /tmp/mnt_boot 2>/dev/null || true
+		if mount -t vfat -o ro,loop /tmp/boot.img /tmp/mnt_boot 2>/dev/null; then
+			if [ -f /tmp/mnt_boot/wpa_supplicant.conf ]; then
+				cp -f /tmp/mnt_boot/wpa_supplicant.conf /tmp/wpa_supplicant.conf 2>/dev/null || true
+			fi
+			if [ -f /tmp/mnt_boot/config.txt ]; then
+				cp -f /tmp/mnt_boot/config.txt /tmp/config.txt 2>/dev/null || true
+			fi
+			umount /tmp/mnt_boot 2>/dev/null || true
+		fi
+	fi
+
+	# Prefer /boot/wpa_supplicant.conf, then /tmp/wpa_supplicant.conf, then /etc/easystick
+	CONF=/etc/easystick/wpa_supplicant.conf
+	if [ -f /boot/wpa_supplicant.conf ]; then
+		CONF=/boot/wpa_supplicant.conf
+	elif [ -f /tmp/wpa_supplicant.conf ]; then
+		CONF=/tmp/wpa_supplicant.conf
+	fi
+
+	if [ ! -f "$CONF" ]; then
+		echo "M3-lab: no Wi-Fi credentials; wlan0 will remain offline"
 		return 0
+	fi
+
+	is_ap=0
+	if grep -q 'mode=2' "$CONF" 2>/dev/null; then
+		is_ap=1
 	fi
 
 	i=0
@@ -85,17 +106,12 @@ start() {
 		if ifconfig wlan0 >/dev/null 2>&1; then
 			echo "M3-lab: wlan0 appeared"
 
-			is_ap=0
-			if grep -q 'mode=2' /etc/easystick/wpa_supplicant.conf 2>/dev/null; then
-				is_ap=1
-			fi
-
 			if [ "$is_ap" -eq 1 ]; then
-				echo "M3-lab: starting SoftAP mode"
+				echo "M3-lab: starting SoftAP mode from $CONF"
 				ifconfig wlan0 down 2>/dev/null || true
 				iw dev wlan0 set type __ap 2>/dev/null || iw dev wlan0 set type ap 2>/dev/null || true
 				ifconfig wlan0 192.168.4.1 netmask 255.255.255.0 up
-				wpa_supplicant -B -i wlan0 -c /etc/easystick/wpa_supplicant.conf
+				wpa_supplicant -B -i wlan0 -c "$CONF"
 				sleep 1
 				if command -v udhcpd >/dev/null 2>&1; then
 					mkdir -p /tmp /var/lib/misc
@@ -103,28 +119,26 @@ start() {
 					udhcpd -S /etc/udhcpd.conf &
 					echo "M3-lab: udhcpd started on wlan0 (192.168.4.1)"
 				else
-					echo "M3-lab: udhcpd not found, clients will require static IP (e.g. 192.168.4.2)"
+					echo "M3-lab: udhcpd not found"
 				fi
-				echo "M3-lab: SoftAP started (SSID: m5, IP: 192.168.4.1)"
-				ifconfig wlan0 2>/dev/null || true
+				AP_SSID=$(grep 'ssid=' "$CONF" 2>/dev/null | head -n1 | cut -d'"' -f2)
+				echo "M3-lab: SoftAP started (SSID: ${AP_SSID:-m5}, IP: 192.168.4.1)"
 				return 0
 			fi
 
-			# ESP-Hosted registers wlan0 before userspace selects its initial
-			# nl80211 interface type.  Establish STA/managed mode before
-			# wpa_supplicant probes it.
+			# STA / managed mode
 			iw dev wlan0 set type managed || true
 			ifconfig wlan0 up
-			wpa_supplicant -B -i wlan0 -c /etc/easystick/wpa_supplicant.conf
+			wpa_supplicant -B -i wlan0 -c "$CONF"
 			j=0
 			while [ "$j" -lt 60 ]; do
 				if iw dev wlan0 link 2>/dev/null | grep -q 'Connected'; then
-					# Use the documented private-lab address immediately after
-					# association.  Avoiding the DHCP timeout/retry sequence
-					# leaves the ESP-Hosted SDIO TX-buffer window available for
-					# ARP and the first SSH connection.
-					echo "M3-lab: association complete; using static IPv4"
-					set_static_ip
+					echo "M3-lab: association complete; configuring IPv4"
+					if command -v udhcpc >/dev/null 2>&1; then
+						udhcpc -i wlan0 -n -q -t 5 2>/dev/null || set_static_ip
+					else
+						set_static_ip
+					fi
 					return 0
 				fi
 				j=$((j + 1))
@@ -145,7 +159,12 @@ start() {
 case "${1:-start}" in
 	start) start ;;
 	stop) killall wpa_supplicant udhcpc udhcpd 2>/dev/null || true ;;
-	*) echo "Usage: $0 {start|stop}" >&2; exit 1 ;;
+	restart)
+		killall wpa_supplicant udhcpc udhcpd 2>/dev/null || true
+		sleep 1
+		start
+		;;
+	*) echo "Usage: $0 {start|stop|restart}" >&2; exit 1 ;;
 esac
 
 exit 0

@@ -63,6 +63,14 @@ wifi_mode=ap
 maxcpus=1
 EOF
 		fi
+		# Cache /boot configuration files to /tmp so S40network can access them
+		# even after /boot is unmounted for USB Mass Storage
+		if [ -f /boot/wpa_supplicant.conf ]; then
+			cp -f /boot/wpa_supplicant.conf /tmp/wpa_supplicant.conf 2>/dev/null || true
+		fi
+		if [ -f /boot/config.txt ]; then
+			cp -f /boot/config.txt /tmp/config.txt 2>/dev/null || true
+		fi
 		# Flush and unmount /boot before exposing backing file to USB host
 		# to prevent concurrent filesystem cache corruption between Linux and Windows
 		sync
