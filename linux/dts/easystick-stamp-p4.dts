@@ -67,7 +67,7 @@
 		 * profiles; the base M1 image intentionally remains earlycon-only
 		 * until a UART fixture is attached.
 		 */
-		bootargs = "earlycon=esp32p4usbjtag,mmio32,0x500d2000 console=ttyGS1,115200n8 keep_bootcon loglevel=8 root=/dev/mtdblock0 rootfstype=squashfs ro init=/sbin/init idle=poll";
+		bootargs = "earlycon=esp32p4usbjtag,mmio32,0x500d2000 console=ttyGS1,115200n8 loglevel=4 root=/dev/mtdblock0 rootfstype=squashfs ro init=/sbin/init maxcpus=1";
 	};
 
 	soc: soc {
@@ -235,6 +235,21 @@
 			/* CLIC slot 20 is reserved for the C68 CPU1 IPI source 80. */
 			interrupts-extended = <&clic0 21 48 IRQ_TYPE_LEVEL_HIGH>;
 			timeout-sec = <120>;
+		};
+
+		/* Full-Speed USB OTG (DWC2) for Type-A port (GPIO26/27) */
+		usb_otg11: usb@50040000 {
+			compatible = "espressif,esp32p4-otg11", "snps,dwc2";
+			reg = <0x50040000 0x10000>;
+			interrupts-extended = <&clic0 24 103 IRQ_TYPE_LEVEL_HIGH>;
+			dr_mode = "peripheral";
+			maximum-speed = "full-speed";
+			hnp-disable;
+			srp-disable;
+			g-rx-fifo-size = <64>;
+			g-np-tx-fifo-size = <16>;
+			g-tx-fifo-size = <32 20 16 16 16 16>;
+			status = "okay";
 		};
 
 		/* Patched at runtime by boot-shim/main.c with the flash MMU VA. */

@@ -611,6 +611,7 @@ patches=(
 		0027-easystick-headless-uart-console.patch
 		0028-esp32p4-usb-serial-jtag-acm.patch
 		0062-easystick-esp32p4-usb-acm-tx-bounded-poll.patch
+		0063-easystick-dwc2-force-pio.patch
 	0031-riscv-esp32p4-m-mode-userspace.patch
 )
 if ! $c68_profile; then
@@ -762,6 +763,7 @@ for patch_name in "${patches[@]}"; do
 	      "$patch_name" == 0027-easystick-headless-uart-console.patch ||
 	      "$patch_name" == 0028-esp32p4-usb-serial-jtag-acm.patch ||
 	      "$patch_name" == 0062-easystick-esp32p4-usb-acm-tx-bounded-poll.patch ||
+	      "$patch_name" == 0063-easystick-dwc2-force-pio.patch ||
 	      "$patch_name" == 0008-easystick-dw-mmc-force-pio.patch ||
 	      "$patch_name" == 0009-easystick-dw-mmc-divider0.patch ||
 	      "$patch_name" == 0010-easystick-dw-mmc-cmd53-status.patch ||
@@ -891,6 +893,12 @@ if $c68_profile; then
 CONFIG_SERIAL_ESP32_ACM=y
 EOF
 	fi
+	cat >>"${kernel_config_fragment}" <<'EOF'
+
+# Ensure USB-Serial-JTAG ACM driver is always built-in so ttyGS1 console is functional
+CONFIG_SERIAL_ESP32_ACM=y
+CONFIG_SERIAL_ESP32_ACM_CONSOLE=y
+EOF
 	if [[ "${EASYSTICK_TSENS_LINUX:-0}" == "1" ]]; then
 		cat >>"${kernel_config_fragment}" <<'EOF'
 

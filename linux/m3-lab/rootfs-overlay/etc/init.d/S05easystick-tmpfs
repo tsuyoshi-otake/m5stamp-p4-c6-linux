@@ -3,46 +3,89 @@
 # BusyBox ash in the RV32 NOMMU image does not implement `set -u`.
 set -e
 
-# Mount writable tmpfs on /tmp before any consumer (S85 host keys, seedrng, etc.).
-# Root is squashfs (ro); without this, /tmp is a RO directory on the rootfs.
-
 es_log() {
 	printf '%s\n' "$1"
 }
 
 start() {
 	es_log "ES_TMPFS BEGIN"
-	if ! mount | grep -q ' on /tmp type tmpfs'; then
-		if ! grep -q '[[:space:]]tmpfs$' /proc/filesystems 2>/dev/null; then
-			es_log "ES_TMPFS NO_FS"
-			return 1
-		fi
-		# 8M tmpfs gives comfortable room for vi buffers, python scripts, and overlay upperdir.
-		if ! mount -t tmpfs -o mode=1777,size=8M tmpfs /tmp; then
-			es_log "ES_TMPFS MOUNT_FAIL"
-			return 1
-		fi
-	fi
-	touch /tmp/.easystick_tmpfs_ok && rm -f /tmp/.easystick_tmpfs_ok
+	mkdir -p /tmp 2>/dev/null || true
+	mount -t tmpfs -o mode=1777,size=16M tmpfs /tmp 2>/dev/null || true
 	es_log "ES_TMPFS OK"
 
 	# OverlayFS for writable /home, /root, /var/lib
-	if grep -q '[[:space:]]overlay$' /proc/filesystems 2>/dev/null; then
-		es_log "ES_OVERLAY BEGIN"
-		for d in /home /root /var/lib; do
-			if [ -d "$d" ]; then
-				tag=$(echo "$d" | tr '/' '_')
-				mkdir -p "/tmp/overlay${d}/upper" "/tmp/overlay${d}/work"
-				if mount -t overlay "overlay${tag}" -o "lowerdir=${d},upperdir=/tmp/overlay${d}/upper,workdir=/tmp/overlay${d}/work" "$d" 2>/dev/null; then
-					es_log "ES_OVERLAY OK: $d"
-				else
-					es_log "ES_OVERLAY FAIL: $d"
-				fi
-			fi
-		done
-		es_log "ES_OVERLAY COMPLETE"
+	es_log "ES_OVERLAY BEGIN"
+	for d in /home /root /var/lib; do
+		mkdir -p "$d" 2>/dev/null || true
+		mkdir -p "/tmp/overlay${d}/upper" "/tmp/overlay${d}/work" 2>/dev/null || true
+		if mount -t overlay overlay -o "lowerdir=${d},upperdir=/tmp/overlay${d}/upper,workdir=/tmp/overlay${d}/work" "$d" 2>/dev/null; then
+			es_log "ES_OVERLAY OK: $d"
+		else
+			es_log "ES_OVERLAY FAIL: $d"
+		fi
+	done
+	es_log "ES_OVERLAY COMPLETE"
+
+	# Mount 256KB FAT filesystem on /boot and start USB Mass Storage Gadget
+	es_log "ES_BOOT_FAT BEGIN"
+	if [ ! -f /tmp/boot.img ] && [ -f /etc/easystick/boot-template.img ]; then
+		cp -f /etc/easystick/boot-template.img /tmp/boot.img
+	fi
+
+	mkdir -p /boot 2>/dev/null || true
+	if [ -f /tmp/boot.img ]; then
+		if mount -t vfat -o loop,rw,sync,umask=0000 /tmp/boot.img /boot 2>/dev/null; then
+			es_log "ES_BOOT_FAT OK: mounted /tmp/boot.img on /boot"
+		else
+			es_log "ES_BOOT_FAT FAIL: fallback bind-mount"
+			mkdir -p /tmp/boot
+			mount --bind /tmp/boot /boot 2>/dev/null || true
+		fi
 	else
-		es_log "ES_OVERLAY NO_FS"
+		mkdir -p /tmp/boot
+		mount --bind /tmp/boot /boot 2>/dev/null || true
+	fi
+
+	# Initialize /boot files if not present
+	if [ -d /boot ]; then
+		if [ ! -f /boot/cmdline.txt ] && [ -r /proc/cmdline ]; then
+			cat /proc/cmdline > /boot/cmdline.txt 2>/dev/null || true
+		fi
+		if [ ! -f /boot/wpa_supplicant.conf ] && [ -r /etc/easystick/wpa_supplicant.conf ]; then
+			cp -f /etc/easystick/wpa_supplicant.conf /boot/wpa_supplicant.conf 2>/dev/null || true
+		fi
+		if [ ! -f /boot/config.txt ]; then
+			cat << 'EOF' > /boot/config.txt 2>/dev/null || true
+# EasyStick Stamp-P4 Boot & Hardware Configuration
+# Device: M5Stamp ESP32-P4 + C6 SDIO (EasyStick Stamp-P4)
+hostname=easystick
+wifi_mode=ap
+maxcpus=1
+EOF
+		fi
+		# Flush and unmount /boot before exposing backing file to USB host
+		# to prevent concurrent filesystem cache corruption between Linux and Windows
+		sync
+		umount /boot 2>/dev/null || true
+		es_log "ES_BOOT_FS SYNC_UMOUNT OK"
+	fi
+
+	# Start USB Mass Storage Gadget on Full-Speed DWC2 (Type-A port)
+	if [ -f /tmp/boot.img ]; then
+		es_log "ES_USB_GADGET STARTING"
+		if modprobe g_mass_storage file=/tmp/boot.img removable=1 stall=0 2>&1; then
+			es_log "ES_USB_GADGET OK: g_mass_storage enabled"
+		elif modprobe g_mass_storage 2>&1; then
+			es_log "ES_USB_GADGET OK: g_mass_storage enabled (modprobe.d)"
+		else
+			es_log "ES_USB_GADGET FAIL"
+		fi
+
+		# Now that g_mass_storage is ready, attach to USB host by enabling D+ pullup
+		if command -v devmem >/dev/null 2>&1; then
+			devmem 0x50080000 32 0x00163000 || true
+			es_log "ES_USB_GADGET ATTACH: D+ pullup enabled (0x00163000)"
+		fi
 	fi
 
 	# Seed the kernel RNG now that /var/lib is writable
@@ -50,6 +93,15 @@ start() {
 		mkdir -p /var/lib/seedrng
 		seedrng || true
 		es_log "ES_SEEDRNG OK"
+	fi
+
+	# Dump DWC2 status registers to syslog/dmesg for boot verification
+	if command -v devmem >/dev/null 2>&1; then
+		d_cfg=$(devmem 0x50040800 32 2>/dev/null || true)
+		d_sts=$(devmem 0x50040808 32 2>/dev/null || true)
+		d_ctl=$(devmem 0x50040804 32 2>/dev/null || true)
+		g_otg=$(devmem 0x50040000 32 2>/dev/null || true)
+		es_log "ES_DWC2_STATUS: DCFG=$d_cfg DSTS=$d_sts DCTL=$d_ctl GOTGCTL=$g_otg"
 	fi
 }
 
