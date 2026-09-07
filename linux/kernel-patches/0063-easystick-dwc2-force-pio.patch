@@ -1,3 +1,160 @@
+diff --git a/drivers/usb/dwc2/gadget.c b/drivers/usb/dwc2/gadget.c
+index a6c2b8de3908..e8073a048a42 100644
+--- a/drivers/usb/dwc2/gadget.c
++++ b/drivers/usb/dwc2/gadget.c
+@@ -105,6 +105,19 @@ static inline bool using_desc_dma(struct dwc2_hsotg *hsotg)
+ 	return hsotg->params.g_dma_desc;
+ }
+ 
++static inline void dwc2_hsotg_txfifo_empty_int(struct dwc2_hsotg *hsotg,
++					       struct dwc2_hsotg_ep *hs_ep,
++					       bool enable)
++{
++	if (!hsotg->dedicated_fifos || using_dma(hsotg) || !hs_ep->dir_in)
++		return;
++
++	if (enable)
++		dwc2_set_bit(hsotg, DIEPEMPMSK, 1 << hs_ep->index);
++	else
++		dwc2_clear_bit(hsotg, DIEPEMPMSK, 1 << hs_ep->index);
++}
++
+ /**
+  * dwc2_gadget_incr_frame_num - Increments the targeted frame number.
+  * @hs_ep: The endpoint
+@@ -516,8 +529,10 @@ static int dwc2_hsotg_write_fifo(struct dwc2_hsotg *hsotg,
+ 	to_write -= (buf_pos - hs_ep->last_load);
+ 
+ 	/* if there's nothing to write, get out early */
+-	if (to_write == 0)
++	if (to_write == 0) {
++		dwc2_hsotg_txfifo_empty_int(hsotg, hs_ep, false);
+ 		return 0;
++	}
+ 
+ 	if (periodic && !hsotg->dedicated_fifos) {
+ 		u32 epsize = dwc2_readl(hsotg, DIEPTSIZ(hs_ep->index));
+@@ -606,6 +621,8 @@ static int dwc2_hsotg_write_fifo(struct dwc2_hsotg *hsotg,
+ 			dwc2_hsotg_en_gsint(hsotg,
+ 					    periodic ? GINTSTS_PTXFEMP :
+ 					   GINTSTS_NPTXFEMP);
++		else
++			dwc2_hsotg_txfifo_empty_int(hsotg, hs_ep, true);
+ 	}
+ 
+ 	/* see if we can write data */
+@@ -635,6 +652,8 @@ static int dwc2_hsotg_write_fifo(struct dwc2_hsotg *hsotg,
+ 			dwc2_hsotg_en_gsint(hsotg,
+ 					    periodic ? GINTSTS_PTXFEMP :
+ 					   GINTSTS_NPTXFEMP);
++		else
++			dwc2_hsotg_txfifo_empty_int(hsotg, hs_ep, true);
+ 	}
+ 
+ 	dev_dbg(hsotg->dev, "write %d/%d, can_write %d, done %d\n",
+@@ -654,6 +673,11 @@ static int dwc2_hsotg_write_fifo(struct dwc2_hsotg *hsotg,
+ 
+ 	dwc2_writel_rep(hsotg, EPFIFO(hs_ep->index), data, to_write);
+ 
++	if (hs_req->req.actual < hs_ep->size_loaded)
++		dwc2_hsotg_txfifo_empty_int(hsotg, hs_ep, true);
++	else
++		dwc2_hsotg_txfifo_empty_int(hsotg, hs_ep, false);
++
+ 	return (to_write >= can_write) ? -ENOSPC : 0;
+ }
+ 
+@@ -666,6 +690,7 @@ static int dwc2_hsotg_write_fifo(struct dwc2_hsotg *hsotg,
+  */
+ static unsigned int get_ep_limit(struct dwc2_hsotg_ep *hs_ep)
+ {
++	struct dwc2_hsotg *hsotg = hs_ep->parent;
+ 	int index = hs_ep->index;
+ 	unsigned int maxsize;
+ 	unsigned int maxpkt;
+@@ -685,6 +710,16 @@ static unsigned int get_ep_limit(struct dwc2_hsotg_ep *hs_ep)
+ 	maxpkt--;
+ 	maxsize--;
+ 
++	if (index != 0) {
++		if (hsotg->hw_params.max_transfer_size &&
++		    maxsize > hsotg->hw_params.max_transfer_size)
++			maxsize = hsotg->hw_params.max_transfer_size;
++
++		if (hsotg->hw_params.max_packet_count &&
++		    maxpkt > hsotg->hw_params.max_packet_count)
++			maxpkt = hsotg->hw_params.max_packet_count;
++	}
++
+ 	/*
+ 	 * constrain by packet count if maxpkts*pktsize is greater
+ 	 * than the length register size.
+@@ -2141,6 +2176,8 @@ static void dwc2_hsotg_complete_request(struct dwc2_hsotg *hsotg,
+ 
+ 	dwc2_hsotg_handle_unaligned_buf_complete(hsotg, hs_ep, hs_req);
+ 
++	dwc2_hsotg_txfifo_empty_int(hsotg, hs_ep, false);
++
+ 	hs_ep->req = NULL;
+ 	list_del_init(&hs_req->queue);
+ 
+@@ -2655,6 +2692,7 @@ static int dwc2_hsotg_trytx(struct dwc2_hsotg *hsotg,
+ 	struct dwc2_hsotg_req *hs_req = hs_ep->req;
+ 
+ 	if (!hs_ep->dir_in || !hs_req) {
++		dwc2_hsotg_txfifo_empty_int(hsotg, hs_ep, false);
+ 		/**
+ 		 * if request is not enqueued, we disable interrupts
+ 		 * for endpoints, excepting ep0
+@@ -2671,6 +2709,7 @@ static int dwc2_hsotg_trytx(struct dwc2_hsotg *hsotg,
+ 		return dwc2_hsotg_write_fifo(hsotg, hs_ep, hs_req);
+ 	}
+ 
++	dwc2_hsotg_txfifo_empty_int(hsotg, hs_ep, false);
+ 	return 0;
+ }
+ 
+@@ -2799,8 +2838,12 @@ static u32 dwc2_gadget_read_ep_interrupts(struct dwc2_hsotg *hsotg,
+ 	u32 diepempmsk;
+ 
+ 	mask = dwc2_readl(hsotg, epmsk_reg);
+-	diepempmsk = dwc2_readl(hsotg, DIEPEMPMSK);
+-	mask |= ((diepempmsk >> idx) & 0x1) ? DIEPMSK_TXFIFOEMPTY : 0;
++	if (dir_in && hsotg->dedicated_fifos) {
++		mask &= ~DIEPMSK_TXFIFOEMPTY;
++		diepempmsk = dwc2_readl(hsotg, DIEPEMPMSK);
++		if ((diepempmsk >> idx) & 0x1)
++			mask |= DIEPMSK_TXFIFOEMPTY;
++	}
+ 	mask |= DXEPINT_SETUP_RCVD;
+ 
+ 	ints = dwc2_readl(hsotg, epint_reg);
+@@ -2836,6 +2879,7 @@ static void dwc2_gadget_handle_ep_disabled(struct dwc2_hsotg_ep *hs_ep)
+ 		int epctl = dwc2_readl(hsotg, epctl_reg);
+ 
+ 		dwc2_hsotg_txfifo_flush(hsotg, hs_ep->fifo_index);
++		dwc2_hsotg_txfifo_empty_int(hsotg, hs_ep, false);
+ 
+ 		if ((epctl & DXEPCTL_STALL) && (epctl & DXEPCTL_EPTYPE_BULK)) {
+ 			int dctl = dwc2_readl(hsotg, DCTL);
+@@ -3520,6 +3564,7 @@ void dwc2_hsotg_core_init_disconnected(struct dwc2_hsotg *hsotg,
+ 		dwc2_set_bit(hsotg, DCTL, DCTL_SERVICE_INTERVAL_SUPPORTED);
+ 
+ 	dwc2_writel(hsotg, 0, DAINTMSK);
++	dwc2_writel(hsotg, 0, DIEPEMPMSK);
+ 
+ 	dev_dbg(hsotg->dev, "EP0: DIEPCTL0=0x%08x, DOEPCTL0=0x%08x\n",
+ 		dwc2_readl(hsotg, DIEPCTL0),
+@@ -4281,6 +4326,7 @@ static int dwc2_hsotg_ep_disable(struct usb_ep *ep)
+ 
+ 	/* disable endpoint interrupts */
+ 	dwc2_hsotg_ctrl_epint(hsotg, hs_ep->index, hs_ep->dir_in, 0);
++	dwc2_hsotg_txfifo_empty_int(hsotg, hs_ep, false);
+ 
+ 	/* terminate all requests with shutdown */
+ 	kill_all_requests(hsotg, hs_ep, -ESHUTDOWN);
+diff --git a/drivers/usb/dwc2/params.c b/drivers/usb/dwc2/params.c
+index 091bfcfef753..488f414e5523 100644
 --- a/drivers/usb/dwc2/params.c
 +++ b/drivers/usb/dwc2/params.c
 @@ -303,8 +303,24 @@ static void dwc2_set_stm32mp15_hsotg_params(struct dwc2_hsotg *hsotg)
