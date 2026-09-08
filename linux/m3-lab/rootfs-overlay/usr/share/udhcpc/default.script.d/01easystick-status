@@ -1,0 +1,18 @@
+#!/bin/sh
+# EasyStick udhcpc hook to update status.txt on IP assignment or renewal
+
+ACTION="$1"
+
+case "$ACTION" in
+	bound|renew)
+		SSID=$(cat /tmp/wpa_supplicant.conf 2>/dev/null | grep 'ssid=' | head -n1 | cut -d'"' -f2)
+		[ -z "$SSID" ] && SSID=$(iw dev "${interface:-wlan0}" link 2>/dev/null | grep 'SSID:' | cut -d' ' -f2)
+		/usr/sbin/easystick-update-status "CONNECTED" "$ip" "$subnet" "$router" "${SSID:-none}" "sta"
+		;;
+	deconfig|leasefail)
+		SSID=$(cat /tmp/wpa_supplicant.conf 2>/dev/null | grep 'ssid=' | head -n1 | cut -d'"' -f2)
+		/usr/sbin/easystick-update-status "DISCONNECTED" "none" "none" "none" "${SSID:-none}" "sta"
+		;;
+esac
+
+exit 0

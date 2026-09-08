@@ -49,6 +49,7 @@ Boots out-of-the-box into **Wi-Fi SoftAP mode** with automatic DHCP, Dropbear SS
 | :--- | :--- | :--- | :--- | :--- |
 | **Wi-Fi SoftAP** | `m5` | — | `m5stamp-p4-c6` | WPA2-PSK, 2.4 GHz 802.11b/g/n |
 | **SSH (`dropbear`)**| `192.168.4.1:22` | `m5` | `m5stamp-p4-c6` | Default user with home directory `/home/m5` |
+| **USB Status (`F:\status.txt`)**| USB Type-A | — | — | Automatically displays current IP, SSID, and SSH command |
 | **Serial Console** | `COMx` (115200 8N1) | *(root shell)* | *(none)* | `ttyGS1` over USB-Serial/JTAG. Press `Enter` to activate |
 
 ---
@@ -92,7 +93,20 @@ esptool.py --chip esp32p4 --port COM10 --baud 460800 \
 ### 3. Connect & Use
 
 1. After flashing, the Stamp-P4 automatically reboots and starts SoftAP within ~10 seconds.
-2. **USB Mass Storage Configuration & Instant Reflection**: Plug the board via USB Type-A into your PC. A 256KB FAT drive (volume `EASYSTICK`) will appear, containing `cmdline.txt`, `config.txt`, and `wpa_supplicant.conf`. You can edit them using any text editor to configure Wi-Fi networks or boot arguments.
+2. **USB Mass Storage Configuration & Instant Reflection**: Plug the board via USB Type-A into your PC. A 256KB FAT drive (volume `EASYSTICK`) will appear, containing `cmdline.txt`, `config.txt`, `wpa_supplicant.conf`, and `status.txt`. You can edit them using any text editor to configure Wi-Fi networks or boot arguments.
+   - **Auto-Generated Status & Current IP (`status.txt`)**: No need to guess or scan the network for what IP address was assigned! Whenever Wi-Fi connects or DHCP assigns/renews an IP, the board automatically updates `status.txt` on the USB drive with the active IP address, MAC address, connection status, and ready-to-use SSH command. Simply open `F:\status.txt` on your PC:
+     ```ini
+     # EasyStick Stamp-P4 Network Status
+     status=CONNECTED
+     wifi_mode=sta
+     ssid=YOUR_SSID
+     ip_address=192.168.1.50
+     netmask=255.255.255.0
+     gateway=192.168.1.1
+     mac_address=10:BD:A3:9E:22:F4
+     ssh_command=ssh m5@192.168.1.50
+     updated_at=uptime 45s
+     ```
    - **Instant Dynamic Reflection**: When you save changes to `wpa_supplicant.conf` or `config.txt` on the USB drive, the background `easystick-bootsync` daemon automatically detects the changes, debounces the writes, syncs to PSRAM, and dynamically reconfigures the Wi-Fi connection without requiring a reboot!
    - **Reboot Persistence**: The valid FAT snapshot is continuously retained in reserved PSRAM (`0x499c0000`) and restored upon boot, ensuring your configurations survive across reboots.
 3. On your laptop or smartphone, connect to Wi-Fi SSID **`m5`** using password **`m5stamp-p4-c6`**.

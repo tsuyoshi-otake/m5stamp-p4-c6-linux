@@ -5,6 +5,7 @@ set -e
 
 set_static_ip() {
 	local tries=0
+	local ssid=$(grep 'ssid=' "$CONF" 2>/dev/null | head -n1 | cut -d'"' -f2)
 	while [ "$tries" -lt 10 ]; do
 		if ifconfig wlan0 10.255.10.161 netmask 255.255.255.0 up &&
 			ifconfig wlan0 2>/dev/null | grep -q 'inet addr:10.255.10.161'; then
@@ -12,6 +13,7 @@ set_static_ip() {
 				2>/dev/null || true
 			echo "M3-lab: static IPv4 fallback complete"
 			ifconfig wlan0 2>/dev/null || true
+			[ -x /usr/sbin/easystick-update-status ] && /usr/sbin/easystick-update-status "CONNECTED" "10.255.10.161" "255.255.255.0" "10.255.10.1" "${ssid:-none}" "sta" &
 			return 0
 		fi
 		tries=$((tries + 1))
@@ -19,6 +21,7 @@ set_static_ip() {
 	done
 	echo "M3-lab: static IPv4 fallback failed"
 	ifconfig wlan0 2>/dev/null || true
+	[ -x /usr/sbin/easystick-update-status ] && /usr/sbin/easystick-update-status "DISCONNECTED" "none" "none" "none" "${ssid:-none}" "sta" &
 }
 
 start() {
@@ -140,6 +143,7 @@ start() {
 				AP_SSID=$(grep 'ssid=' "$CONF" 2>/dev/null | head -n1 | cut -d'"' -f2)
 				echo "M3-lab: SoftAP started (SSID: ${AP_SSID:-m5}, IP: 192.168.4.1)"
 				[ -x /etc/init.d/S85easystick-ssh ] && /etc/init.d/S85easystick-ssh restart &
+				[ -x /usr/sbin/easystick-update-status ] && /usr/sbin/easystick-update-status "AP_ACTIVE" "192.168.4.1" "255.255.255.0" "192.168.4.1" "${AP_SSID:-m5}" "ap" &
 				return 0
 			fi
 
@@ -154,7 +158,7 @@ start() {
 				if iw dev wlan0 link 2>/dev/null | grep -q 'Connected'; then
 					echo "M3-lab: association complete; configuring IPv4"
 					if command -v udhcpc >/dev/null 2>&1; then
-						udhcpc -i wlan0 -n -q -t 5 2>/dev/null || set_static_ip
+						udhcpc -i wlan0 -n -t 5 2>/dev/null || set_static_ip
 					else
 						set_static_ip
 					fi
@@ -168,6 +172,8 @@ start() {
 			iw dev wlan0 link 2>/dev/null || true
 			ifconfig wlan0 2>/dev/null || true
 			echo "M3-lab: wlan0 did not associate"
+			sta_ssid=$(grep 'ssid=' "$CONF" 2>/dev/null | head -n1 | cut -d'"' -f2)
+			[ -x /usr/sbin/easystick-update-status ] && /usr/sbin/easystick-update-status "DISCONNECTED" "none" "none" "none" "${sta_ssid:-none}" "sta" &
 			return 0
 		fi
 		i=$((i + 1))
@@ -182,6 +188,7 @@ case "${1:-start}" in
 		killall wpa_supplicant udhcpc udhcpd 2>/dev/null || true
 		ifconfig wlan0 down 2>/dev/null || true
 		rm -rf /var/run/wpa_supplicant* 2>/dev/null || true
+		[ -x /usr/sbin/easystick-update-status ] && /usr/sbin/easystick-update-status "STOPPED" "none" "none" "none" "none" "none" &
 		;;
 	reload|restart)
 		killall wpa_supplicant udhcpc udhcpd 2>/dev/null || true

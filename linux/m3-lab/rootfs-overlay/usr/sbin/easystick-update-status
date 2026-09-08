@@ -1,0 +1,85 @@
+#!/bin/sh
+# EasyStick Network Status Updater for USB Mass Storage
+# Usage: easystick-update-status <STATUS> [IP] [NETMASK] [GATEWAY] [SSID] [MODE]
+
+STATUS="${1:-UNKNOWN}"
+IP="${2:-none}"
+NETMASK="${3:-none}"
+GATEWAY="${4:-none}"
+SSID="${5:-none}"
+MODE="${6:-sta}"
+
+BOOT_IMG="/tmp/boot.img"
+MNT_POINT="/tmp/.mnt_status"
+LAST_HASH_FILE="/tmp/.bootsync_last_hash"
+PSRAM_SEEK_BLOCKS=301504 # 0x499c0000 / 4096
+
+[ -f "$BOOT_IMG" ] || exit 0
+
+# If IP is not provided or is none, try to read from wlan0 if status is not explicitly DISCONNECTED
+if [ "$IP" = "none" ] || [ -z "$IP" ]; then
+	if [ "$STATUS" = "CONNECTED" ] || [ "$STATUS" = "AP_ACTIVE" ]; then
+		IP=$(ifconfig wlan0 2>/dev/null | grep 'inet addr:' | cut -d: -f2 | cut -d' ' -f1)
+		[ -z "$IP" ] && IP="none"
+	fi
+fi
+
+# Get MAC address of wlan0
+MAC="unknown"
+if [ -r /sys/class/net/wlan0/address ]; then
+	MAC=$(cat /sys/class/net/wlan0/address 2>/dev/null || echo "unknown")
+fi
+
+# Get current system uptime
+UPTIME=$(awk '{print int($1)}' /proc/uptime 2>/dev/null || echo "0")
+
+# If SSID not provided, try to detect from wpa_supplicant.conf or iw
+if [ "$SSID" = "none" ] || [ -z "$SSID" ]; then
+	if [ -f /tmp/wpa_supplicant.conf ]; then
+		SSID=$(grep 'ssid=' /tmp/wpa_supplicant.conf 2>/dev/null | head -n1 | cut -d'"' -f2)
+	fi
+	[ -z "$SSID" ] && SSID="none"
+fi
+
+# Check if status has actually changed compared to /tmp/.last_status
+# (Avoids redundant writes, ensures zero extra I/O and zero unnecessary CPU load)
+STATUS_STR="${STATUS}|${IP}|${NETMASK}|${GATEWAY}|${SSID}|${MODE}"
+LAST_STATUS=$(cat /tmp/.last_status 2>/dev/null || echo "")
+if [ "$STATUS_STR" = "$LAST_STATUS" ]; then
+	exit 0
+fi
+echo "$STATUS_STR" > /tmp/.last_status
+
+SSH_CMD="ssh m5@${IP}"
+[ "$IP" = "none" ] && SSH_CMD="none"
+
+mkdir -p "$MNT_POINT" 2>/dev/null || true
+if mount -t vfat -o loop,sync "$BOOT_IMG" "$MNT_POINT" 2>/dev/null; then
+	cat << EOF > "$MNT_POINT/status.txt"
+# EasyStick Stamp-P4 Network Status
+status=${STATUS}
+wifi_mode=${MODE}
+ssid=${SSID}
+ip_address=${IP}
+netmask=${NETMASK}
+gateway=${GATEWAY}
+mac_address=${MAC}
+ssh_command=${SSH_CMD}
+updated_at=uptime ${UPTIME}s
+EOF
+	umount "$MNT_POINT" 2>/dev/null || true
+
+	# Update hash file so bootsync daemon does not misinterpret this as host write
+	NEW_HASH=$(md5sum "$BOOT_IMG" 2>/dev/null | cut -d' ' -f1)
+	if [ -n "$NEW_HASH" ]; then
+		echo "$NEW_HASH" > "$LAST_HASH_FILE"
+	fi
+
+	# Sync updated boot image to reserved PSRAM (0x499c0000)
+	dd if="$BOOT_IMG" of=/dev/mem bs=4096 seek=$PSRAM_SEEK_BLOCKS count=64 conv=notrunc 2>/dev/null || true
+
+	echo "[status] Network status updated: status=${STATUS} ip=${IP} ssid=${SSID}"
+fi
+rmdir "$MNT_POINT" 2>/dev/null || true
+
+exit 0

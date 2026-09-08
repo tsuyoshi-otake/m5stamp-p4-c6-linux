@@ -43,6 +43,10 @@ log "Daemon started. Monitoring $BOOT_IMG (initial hash: $LAST_HASH)"
 
 while true; do
 	sleep 1
+	# Re-read last hash in case easystick-update-status updated it
+	if [ -f "$LAST_HASH_FILE" ]; then
+		LAST_HASH=$(cat "$LAST_HASH_FILE" 2>/dev/null || echo "$LAST_HASH")
+	fi
 	NEW_HASH=$(get_hash)
 
 	# If hash changed, host started writing
