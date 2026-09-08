@@ -451,15 +451,24 @@ This compiles:
 
 ---
 
-## SHA-256 Checksums (v0.1.1)
+## SHA-256 Checksums (v0.2.0-smp)
 
 ```text
-640b5d496bff7235462cd727cf7bf58af7bd423f864ef1affcfd9d24eb2d31d2  bootloader.bin
-d076fd66f0f4bd3f9f423761ef10b73652f2359f190c5ffef0164f657c40d9d4  partition-table.bin
-3cda761f3fabd274b8eaa9a19eb91044ca5358e5255452c175e3238c1ae1b996  boot-shim.bin
-d30508110ac11764e0f0c7f44f7f9dd595f4f86032ef39066b9a27814abe8848  Image
-3a3b58e41d83ec5205678f054d377a721609e3843033c74a8228098eb5a5c34d  rootfs.squashfs
-0bdb2193ece4a50a6b8781cd17620fe3308bdbf1cd053aa55d06560ad3a432a8  easystick-stamp-p4.dtb
+Raw 16MB Monolithic Image:
+f86bb8e1f402e0f4e48483b45b4bef5bd1f9c92df4a2582edc2102554f7f68d7  m5stamp-p4-c6-linux-smp-v0.2.0-16mb.bin.gz
+ab84834a9b017296834e79ee0d7af4fadcd0da9f2f043e843df6ca0d570a5aa5  m5stamp-p4-c6-linux-smp-v0.2.0-16mb.bin (uncompressed)
+
+Partition Archive:
+b8d6bdaac62c1bb24580f377e54e1e2671c62cf1d5373a3f33501908f8706692  m5stamp-p4-c6-linux-smp-v0.2.0.zip
+
+Individual Partitions:
+62aa88ee34366eb99a4440a8989e091e24f763feeaee5eac15ebc2041deb1fe4  bootloader.bin
+b242c213fa404d793fb8efabe7c85ec06fc54a654c9ca3297d287413d321ce48  partition-table.bin
+889cfdbfe82d8eab4da5706a059f3a681114b162c48acca019a4d72f8acc24e9  boot-shim.bin
+1a500a905c990b46dac13e508a6d9cd6df5bdc60fc4e4065e9ea12b314e04720  Image
+41e2f6d0ca9d5b378fd165a13ab53b69660a68c6949410704e7d4ca0039a2e18  rootfs.squashfs
+7a37f953e2cd48de1c3241f4ecd3522f63520b2e53f6b6ceb8fdcf29c6d83d9c  easystick-stamp-p4.dtb
+6ffa8d1e20dc703ee2066d293875785d83f706afff1d5370a3ba6ab6195392ab  boot.img
 ```
 
 ---
