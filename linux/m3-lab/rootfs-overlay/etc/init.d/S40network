@@ -158,7 +158,7 @@ start() {
 				if iw dev wlan0 link 2>/dev/null | grep -q 'Connected'; then
 					echo "M3-lab: association complete; configuring IPv4"
 					if command -v udhcpc >/dev/null 2>&1; then
-						udhcpc -i wlan0 -n -t 5 2>/dev/null || set_static_ip
+						udhcpc -i wlan0 -n -q -t 5 2>/dev/null || set_static_ip
 					else
 						set_static_ip
 					fi

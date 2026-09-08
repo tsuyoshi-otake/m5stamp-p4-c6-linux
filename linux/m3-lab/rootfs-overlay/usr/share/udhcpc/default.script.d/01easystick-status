@@ -1,17 +1,27 @@
 #!/bin/sh
 # EasyStick udhcpc hook to update status.txt on IP assignment or renewal
+# NOMMU-safe: zero subshells, zero pipes to prevent vfork issues in ash
 
 ACTION="$1"
 
 case "$ACTION" in
 	bound|renew)
-		SSID=$(cat /tmp/wpa_supplicant.conf 2>/dev/null | grep 'ssid=' | head -n1 | cut -d'"' -f2)
-		[ -z "$SSID" ] && SSID=$(iw dev "${interface:-wlan0}" link 2>/dev/null | grep 'SSID:' | cut -d' ' -f2)
-		/usr/sbin/easystick-update-status "CONNECTED" "$ip" "$subnet" "$router" "${SSID:-none}" "sta"
+		_ssid="none"
+		if [ -f /tmp/wpa_supplicant.conf ]; then
+			while IFS= read -r line; do
+				case "$line" in
+					*ssid=*|*ssid\ =*)
+						_ssid="${line#*\"}"
+						_ssid="${_ssid%\"*}"
+						break
+						;;
+				esac
+			done < /tmp/wpa_supplicant.conf
+		fi
+		[ -x /usr/sbin/easystick-update-status ] && /usr/sbin/easystick-update-status "CONNECTED" "$ip" "$subnet" "$router" "$_ssid" "sta"
 		;;
 	deconfig|leasefail)
-		SSID=$(cat /tmp/wpa_supplicant.conf 2>/dev/null | grep 'ssid=' | head -n1 | cut -d'"' -f2)
-		/usr/sbin/easystick-update-status "DISCONNECTED" "none" "none" "none" "${SSID:-none}" "sta"
+		[ -x /usr/sbin/easystick-update-status ] && /usr/sbin/easystick-update-status "DISCONNECTED" "none" "none" "none" "none" "sta"
 		;;
 esac
 
