@@ -71,22 +71,9 @@ start() {
 		echo "ES_SDIO_LOAD_OK source=$MODULE_SOURCE requested_mhz=$WANT_MHZ module_param_mhz=$ACTUAL_PARAM_MHZ module_sha256=${MODULE_SHA256:-unavailable}"
 	fi
 
-	# If /boot is unmounted (for USB Mass Storage), mount an isolated snapshot
-	# to sync any host-modified wpa_supplicant.conf or config.txt safely
-	if [ -f /tmp/boot.img ] && [ ! -f /boot/wpa_supplicant.conf ]; then
-		mkdir -p /tmp/mnt_boot 2>/dev/null || true
-		cp -f /tmp/boot.img /tmp/boot-snap.img 2>/dev/null || true
-		if mount -t vfat -o ro,loop /tmp/boot-snap.img /tmp/mnt_boot 2>/dev/null; then
-			if [ -s /tmp/mnt_boot/wpa_supplicant.conf ]; then
-				cp -f /tmp/mnt_boot/wpa_supplicant.conf /tmp/wpa_supplicant.conf 2>/dev/null || true
-			fi
-			if [ -s /tmp/mnt_boot/config.txt ]; then
-				cp -f /tmp/mnt_boot/config.txt /tmp/config.txt 2>/dev/null || true
-			fi
-			umount /tmp/mnt_boot 2>/dev/null || true
-		fi
-		rm -f /tmp/boot-snap.img 2>/dev/null || true
-	fi
+	# S05 cached the initial configuration before exporting boot.img.  Runtime
+	# updates are staged by easystick-bootsync only after a host SCSI eject;
+	# never inspect the backing image from a network reload while it is exported.
 
 	# Prefer /boot/wpa_supplicant.conf, then /tmp/wpa_supplicant.conf, then /etc/easystick
 	CONF=/etc/easystick/wpa_supplicant.conf

@@ -9,13 +9,16 @@ flash an image, or claim Linux support.
 from __future__ import annotations
 
 import json
+import argparse
+import hashlib
+import re
 import sys
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-NETLIST = ROOT.parent / "requirements" / "netlist.rev0.15.json"
 CONTRACT = ROOT / "board-contract.json"
+SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 
 def fail(message: str) -> None:
@@ -32,9 +35,42 @@ def load(path: Path) -> dict:
     raise AssertionError("unreachable")
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Validate the board contract against a pinned netlist export."
+    )
+    parser.add_argument(
+        "--netlist",
+        type=Path,
+        required=True,
+        help="path to the Rev0.15 netlist JSON export",
+    )
+    return parser.parse_args()
+
+
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
 def main() -> int:
-    netlist = load(NETLIST)
+    args = parse_args()
+    netlist_path = args.netlist.expanduser().resolve()
+    netlist = load(netlist_path)
     contract = load(CONTRACT)
+    source_netlist = contract.get("source_netlist", {})
+    expected_sha256 = source_netlist.get("sha256") if isinstance(source_netlist, dict) else None
+    if not isinstance(expected_sha256, str) or not SHA256.fullmatch(expected_sha256):
+        fail("board-contract.json must contain source_netlist.sha256")
+    actual_sha256 = sha256(netlist_path)
+    if actual_sha256 != expected_sha256:
+        fail(
+            f"netlist SHA-256 mismatch: {actual_sha256} != {expected_sha256} "
+            f"for {netlist_path}"
+        )
     required = netlist.get("requiredPaths", {})
     usb = required.get("usbA", {})
     stamp = usb.get("stampP4", {})
@@ -62,7 +98,7 @@ def main() -> int:
         return 1
 
     print("PASS: carrier USB, recovery, power, and Linux status contract")
-    print(f"PASS: checked {NETLIST.relative_to(ROOT.parent.parent)}")
+    print(f"PASS: checked {netlist_path}")
     return 0
 
 

@@ -2,7 +2,11 @@
   "schema": 1,
   "board": "EasyStick Stamp-P4 carrier Rev0.15 WIP",
   "status": "hardware_contract_only",
-  "source_netlist": "../requirements/netlist.rev0.15.json",
+  "source_netlist": {
+    "file": "netlist.rev0.15.json",
+    "sha256": "0147005d05654388e8ee6c03f769d2cea2d518dd3e8c4f5f631e8433b50babbc",
+    "provenance": "EasyStick Rev0.15 design export; supplied explicitly to tools/verify-board-contract.py and not stored in this repository."
+  },
   "module": {
     "part": "M5Stack Stamp-P4 / ESP32-P4NRW32",
     "flash_bytes": 16777216,

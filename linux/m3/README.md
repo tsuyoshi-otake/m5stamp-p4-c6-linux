@@ -35,20 +35,20 @@ Buildroot output directory and run `olddefconfig`:
 
 ```bash
 make -C "$BUILDROOT" O="$OUT" \
-  BR2_EXTERNAL="$REPO/projects/easystick-stamp-p4/firmware/linux/buildroot-external" \
+  BR2_EXTERNAL="$REPO/linux/buildroot-external" \
   easystick_stamp_p4_defconfig
-cat "$REPO/projects/easystick-stamp-p4/firmware/linux/m3/buildroot.fragment" >> "$OUT/.config"
+cat "$REPO/linux/m3/buildroot.fragment" >> "$OUT/.config"
 make -C "$BUILDROOT" O="$OUT" \
-  BR2_EXTERNAL="$REPO/projects/easystick-stamp-p4/firmware/linux/buildroot-external" \
+  BR2_EXTERNAL="$REPO/linux/buildroot-external" \
   olddefconfig
 make -C "$BUILDROOT" O="$OUT" \
-  BR2_EXTERNAL="$REPO/projects/easystick-stamp-p4/firmware/linux/buildroot-external"
+  BR2_EXTERNAL="$REPO/linux/buildroot-external"
 ```
 
 Run the profile-only check before starting a build:
 
 ```bash
-python3 "$REPO/projects/easystick-stamp-p4/firmware/linux/m3/verify-profile.py"
+python3 "$REPO/linux/m3/verify-profile.py"
 ```
 
 The profile deliberately does not enable Dropbear's client programs.  On a

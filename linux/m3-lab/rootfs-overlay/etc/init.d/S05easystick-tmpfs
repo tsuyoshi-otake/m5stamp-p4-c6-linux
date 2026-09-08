@@ -31,10 +31,11 @@ start() {
 	done
 	es_log "ES_OVERLAY COMPLETE"
 
-	# Mount 256KB FAT filesystem on /boot and start USB Mass Storage Gadget
+	# Mount the 256KB FAT filesystem locally only before exporting it. Once the
+	# LUN is attached, Linux must not mount or modify the backing image.
 	es_log "ES_BOOT_FAT BEGIN"
 	if [ ! -f /tmp/boot.img ]; then
-		# Try restoring boot.img from PSRAM reserved area (0x499c0000, 256KB) preloaded by boot-shim
+		# Restore the flashed boot image through the boot-shim PSRAM handoff.
 		# 0x499c0000 = 1234960384 bytes, 1234960384 / 4096 = 301504 blocks
 		if [ -c /dev/mem ]; then
 			es_log "ES_BOOT_FAT: attempting restore from PSRAM 0x499c0000"
@@ -118,7 +119,8 @@ EOF
 			es_log "ES_USB_GADGET FAIL"
 		fi
 
-		# Now that g_mass_storage is ready, attach to USB host by enabling D+ pullup
+			# Now that g_mass_storage is ready, attach to USB host by enabling D+ pullup.
+			# Runtime imports require a host-issued safe eject; bootsync never forces one.
 		if command -v devmem >/dev/null 2>&1; then
 			devmem 0x50080000 32 0x00163000 || true
 			es_log "ES_USB_GADGET ATTACH: D+ pullup enabled (0x00163000)"

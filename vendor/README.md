@@ -1,7 +1,7 @@
 # Pinned upstream source submodules
 
-The five directories in this folder are Git submodules pinned by the parent
-repository's index and `firmware/versions.lock.json`:
+The five directories in this folder are Git submodules pinned by this
+repository's index and `../versions.lock.json`:
 
 | Path | Purpose |
 | --- | --- |
@@ -28,5 +28,5 @@ blob filter during shallow fetch; its pinned commit is identical to the
 canonical `linux.git` lock entry.
 
 For an external source cache instead of the checked-in submodules, use
-`firmware/tools/fetch-sources.sh /absolute/path/to/cache`; both modes are
+`../tools/fetch-sources.sh /absolute/path/to/cache`; both modes are
 validated against the same immutable manifest.

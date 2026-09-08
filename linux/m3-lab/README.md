@@ -28,6 +28,23 @@ The generated Wi-Fi file is staged below the external build output and is not
 copied back into Git.  Check the artifact manifest before flashing and erase
 the external build directory when the test is complete.
 
+## USB-A boot configuration ownership
+
+The USB FAT image has exactly one owner. While it is exported through
+`g_mass_storage`, Linux neither mounts nor writes the backing image. After
+editing `config.txt` or `wpa_supplicant.conf`, use the host operating system's
+safe-eject action. The empty legacy LUN `file` attribute is the hand-off to
+`easystick-bootsync`; it validates a private read-only snapshot, applies the
+configuration, and reattaches the LUN. The daemon never uses `forced_eject`.
+
+Network status is written atomically to `/tmp/easystick-status.txt` for SSH or
+serial inspection. It is not written into the exported FAT image. A validated
+snapshot is staged in reserved PSRAM, and a normal reboot asks boot-shim to
+write the inactive flash slot, verify its CRC, and atomically switch redundant
+metadata. Power loss before the reboot loses the staged update; power loss
+during the flash operation leaves the previous slot selected. Wait for the
+serial `boot update committed` message before treating the edit as durable.
+
 ## SSH acceptance target (M2.5)
 
 After the C6 SDIO slave and P4 image have been validated, the lab image should

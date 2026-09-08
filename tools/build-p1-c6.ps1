@@ -8,9 +8,9 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
-$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..\..')).Path
+$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 if ([string]::IsNullOrWhiteSpace($IdfSource)) {
-    $IdfSource = Join-Path $repoRoot 'projects\easystick-stamp-p4\firmware\vendor\esp-idf'
+    $IdfSource = Join-Path $repoRoot 'vendor\esp-idf'
 }
 
 $expectedC6 = '3f0d1076749afdb589f00c075d8dce895e3dd32d'
@@ -20,7 +20,7 @@ $image = 'espressif/idf:v5.5.3'
 $defaults = @(
     '/work/c6/slave/sdkconfig.defaults.esp32c6',
     '/work/c6/slave/sdkconfig.ci.sdio',
-    '/work/repo/projects/easystick-stamp-p4/firmware/zephyr-p1/c6/sdkconfig.p1.defaults'
+    '/work/repo/zephyr-p1/c6/sdkconfig.p1.defaults'
 ) -join ';'
 
 foreach ($path in @($C6Source, $IdfSource)) {

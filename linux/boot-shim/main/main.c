@@ -7,13 +7,13 @@
  * patch the DTB's mtd-rom placeholder, and jump to Linux in M-mode. C6,
  * SDIO, USB gadget, and network initialization do not belong in this shim.
  *
- * This file is a build skeleton until the locked ESP-IDF checkout and reviewed
- * P4 Linux patch series are available. It writes only a validated watchdog
- * crash capsule to the dedicated crashlog partition; bad Linux artifacts still
- * restart without touching the boot map.
+ * Flash writes are restricted to validated watchdog crash capsules and the
+ * inactive boot-image A/B slot. Bad Linux artifacts still restart without
+ * touching the boot map.
  */
 
 #include <inttypes.h>
+#include <stddef.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
@@ -67,6 +67,7 @@
 #include "soc/gpio_sig_map.h"
 #include "soc/gpio_pins.h"
 #include "driver/gpio.h"
+#include "boot_ab.h"
 
 static void easystick_usb_otg_init(void)
 {
@@ -103,6 +104,232 @@ volatile uint32_t c13_frame_patched IRAM_DATA_ATTR;
 #define BOOT_LOAD_PA 0x499c0000u
 #define MMU_PAGE_BYTES 0x10000u
 #define RISCV_IMAGE_MAGIC 0x5643534952ULL
+
+_Static_assert(sizeof(struct boot_update_request) == 20,
+	       "boot update request protocol changed");
+_Static_assert(sizeof(struct boot_metadata) == 32,
+	       "boot metadata layout changed");
+
+static uint32_t ieee_crc32_update(uint32_t crc, const uint8_t *data,
+				  uint32_t bytes)
+{
+	while (bytes--) {
+		crc ^= *data++;
+		for (unsigned int bit = 0; bit < 8; ++bit)
+			crc = (crc >> 1) ^ ((crc & 1u) ? 0xedb88320u : 0u);
+	}
+	return crc;
+}
+
+static uint32_t ieee_crc32(const void *data, uint32_t bytes)
+{
+	return ieee_crc32_update(0xffffffffu, data, bytes) ^ 0xffffffffu;
+}
+
+static esp_err_t partition_crc32(const esp_partition_t *part, uint32_t bytes,
+				 uint32_t *crc_out)
+{
+	uint8_t buf[1024];
+	uint32_t offset = 0;
+	uint32_t crc = 0xffffffffu;
+
+	if (bytes > part->size)
+		return ESP_ERR_INVALID_SIZE;
+	while (offset < bytes) {
+		uint32_t count = bytes - offset;
+		if (count > sizeof(buf))
+			count = sizeof(buf);
+		esp_err_t err = esp_partition_read(part, offset, buf, count);
+		if (err != ESP_OK)
+			return err;
+		crc = ieee_crc32_update(crc, buf, count);
+		offset += count;
+	}
+	*crc_out = crc ^ 0xffffffffu;
+	return ESP_OK;
+}
+
+static bool boot_metadata_valid(const esp_partition_t *meta,
+				const esp_partition_t *slots[2],
+				struct boot_metadata *record)
+{
+	uint32_t actual_crc;
+
+	if (!meta || meta->size < sizeof(*record) ||
+	    esp_partition_read(meta, 0, record, sizeof(*record)) != ESP_OK)
+		return false;
+	if (record->magic != BOOT_META_MAGIC ||
+	    record->version != BOOT_META_VERSION ||
+	    record->commit_word != BOOT_META_COMMIT || record->slot > 1 ||
+	    record->image_bytes != BOOT_IMAGE_BYTES || !slots[record->slot] ||
+	    slots[record->slot]->size < BOOT_IMAGE_BYTES)
+		return false;
+	if (record->record_crc32 != ieee_crc32(record,
+					      offsetof(struct boot_metadata, record_crc32)))
+		return false;
+	if (partition_crc32(slots[record->slot], record->image_bytes,
+			    &actual_crc) != ESP_OK)
+		return false;
+	return actual_crc == record->image_crc32;
+}
+
+static bool generation_is_newer(uint32_t candidate, uint32_t current)
+{
+	return (int32_t)(candidate - current) > 0;
+}
+
+static void clear_boot_update_request(void)
+{
+	volatile struct boot_update_request *request =
+		(volatile struct boot_update_request *)(uintptr_t)BOOT_UPDATE_REQUEST_PA;
+
+	/* Clearing the commit field first makes any torn clear safely invalid. */
+	request->commit_word = 0;
+	cache_hal_writeback_addr(BOOT_UPDATE_REQUEST_PA,
+				 sizeof(*request));
+	cache_hal_invalidate_addr(BOOT_UPDATE_REQUEST_PA,
+				  sizeof(*request));
+}
+
+static bool boot_update_request_valid(struct boot_update_request *request)
+{
+	const volatile struct boot_update_request *src =
+		(const volatile struct boot_update_request *)(uintptr_t)BOOT_UPDATE_REQUEST_PA;
+
+	cache_hal_invalidate_addr(BOOT_UPDATE_REQUEST_PA, sizeof(*request));
+	memcpy(request, (const void *)src, sizeof(*request));
+	if (request->magic != BOOT_REQUEST_MAGIC ||
+	    request->version != BOOT_REQUEST_VERSION ||
+	    request->image_bytes != BOOT_IMAGE_BYTES ||
+	    request->commit_word != BOOT_REQUEST_COMMIT)
+		return false;
+	return ieee_crc32((const void *)(uintptr_t)BOOT_LOAD_PA,
+			  BOOT_IMAGE_BYTES) == request->image_crc32;
+}
+
+static bool write_boot_metadata(const esp_partition_t *meta,
+				const struct boot_metadata *record)
+{
+	const uint32_t commit_offset = offsetof(struct boot_metadata, commit_word);
+	struct boot_metadata readback;
+	esp_err_t err;
+
+	if (!meta || meta->size < 0x1000u)
+		return false;
+	err = esp_partition_erase_range(meta, 0, 0x1000u);
+	if (err != ESP_OK)
+		return false;
+	err = esp_partition_write(meta, 0, record, commit_offset);
+	if (err != ESP_OK)
+		return false;
+	/* The only transition which makes this sector bootable is last. */
+	err = esp_partition_write(meta, commit_offset, &record->commit_word,
+				  sizeof(record->commit_word));
+	if (err != ESP_OK)
+		return false;
+	if (esp_partition_read(meta, 0, &readback, sizeof(readback)) != ESP_OK)
+		return false;
+	return memcmp(&readback, record, sizeof(readback)) == 0;
+}
+
+/* Select an already verified image, optionally committing a Linux-staged
+ * update.  The inactive slot and inactive metadata sector are the only flash
+ * erase targets, leaving a bootable image and metadata record on power loss. */
+static const esp_partition_t *select_boot_partition(void)
+{
+	const esp_partition_t *slots[2] = {
+		esp_partition_find_first(ESP_PARTITION_TYPE_DATA,
+					 ESP_PARTITION_SUBTYPE_ANY, "boot"),
+		esp_partition_find_first(ESP_PARTITION_TYPE_DATA,
+					 ESP_PARTITION_SUBTYPE_ANY, "boot_alt"),
+	};
+	const esp_partition_t *metas[2] = {
+		esp_partition_find_first(ESP_PARTITION_TYPE_DATA,
+					 ESP_PARTITION_SUBTYPE_ANY, "bootmeta0"),
+		esp_partition_find_first(ESP_PARTITION_TYPE_DATA,
+					 ESP_PARTITION_SUBTYPE_ANY, "bootmeta1"),
+	};
+	struct boot_metadata records[2];
+	bool valid[2];
+	int selected_meta = -1;
+	uint32_t selected_slot = 0;
+	struct boot_update_request request;
+
+	if (!slots[0] || slots[0]->size < BOOT_IMAGE_BYTES) {
+		ESP_LOGW(TAG, "boot slot0 missing or too small");
+		return NULL;
+	}
+	valid[0] = boot_metadata_valid(metas[0], slots, &records[0]);
+	valid[1] = boot_metadata_valid(metas[1], slots, &records[1]);
+	if (valid[0] && (!valid[1] ||
+			 generation_is_newer(records[0].generation, records[1].generation)))
+		selected_meta = 0;
+	else if (valid[1])
+		selected_meta = 1;
+	if (selected_meta >= 0)
+		selected_slot = records[selected_meta].slot;
+	else
+		ESP_LOGW(TAG, "boot metadata unavailable; falling back to slot0");
+
+	if (boot_update_request_valid(&request)) {
+		uint32_t active_crc = 0;
+		bool same_image = partition_crc32(slots[selected_slot], BOOT_IMAGE_BYTES,
+						 &active_crc) == ESP_OK &&
+				  active_crc == request.image_crc32;
+		if (same_image) {
+			ESP_LOGI(TAG, "boot update already active; clearing request");
+			clear_boot_update_request();
+		} else if (slots[1u - selected_slot] &&
+			   slots[1u - selected_slot]->size >= BOOT_IMAGE_BYTES) {
+			uint32_t inactive_slot = 1u - selected_slot;
+			uint32_t verify_crc = 0;
+			struct boot_metadata next = {
+				.magic = BOOT_META_MAGIC,
+				.version = BOOT_META_VERSION,
+				.generation = selected_meta >= 0 ?
+					records[selected_meta].generation + 1u : 1u,
+				.slot = inactive_slot,
+				.image_bytes = BOOT_IMAGE_BYTES,
+				.image_crc32 = request.image_crc32,
+				.commit_word = BOOT_META_COMMIT,
+			};
+			next.record_crc32 = ieee_crc32(&next,
+						      offsetof(struct boot_metadata, record_crc32));
+			if (esp_partition_erase_range(slots[inactive_slot], 0,
+						      BOOT_IMAGE_BYTES) == ESP_OK &&
+			    esp_partition_write(slots[inactive_slot], 0,
+						(const void *)(uintptr_t)BOOT_LOAD_PA,
+						BOOT_IMAGE_BYTES) == ESP_OK &&
+			    partition_crc32(slots[inactive_slot], BOOT_IMAGE_BYTES,
+					    &verify_crc) == ESP_OK &&
+			    verify_crc == request.image_crc32 &&
+			    write_boot_metadata(metas[selected_meta == 0 ? 1 : 0], &next)) {
+				selected_slot = inactive_slot;
+				selected_meta = selected_meta == 0 ? 1 : 0;
+				records[selected_meta] = next;
+				ESP_LOGI(TAG, "boot update committed: generation=%" PRIu32
+					 " slot=%" PRIu32 " crc=%08" PRIx32,
+					 next.generation, next.slot, next.image_crc32);
+			} else {
+				ESP_LOGE(TAG, "boot update failed; retaining active slot=%" PRIu32,
+					 selected_slot);
+				return slots[selected_slot];
+			}
+			clear_boot_update_request();
+		} else {
+			ESP_LOGE(TAG, "boot update cannot proceed; inactive slot missing");
+			return slots[selected_slot];
+		}
+	}
+
+	if (selected_meta >= 0)
+		ESP_LOGI(TAG, "boot selection: generation=%" PRIu32 " slot=%" PRIu32
+			 " crc=%08" PRIx32, records[selected_meta].generation,
+			 records[selected_meta].slot, records[selected_meta].image_crc32);
+	else
+		ESP_LOGW(TAG, "boot selection: legacy fallback slot0");
+	return slots[selected_slot];
+}
 
 static void fatal_restart(const char *reason)
 {
@@ -499,20 +726,17 @@ void app_main(void)
 	if (load_partition(dtb_part, DTB_LOAD_PA, dtb_part->size) != ESP_OK)
 		fatal_restart("DTB copy failed");
 
-	const esp_partition_t *boot_part = esp_partition_find_first(
-		ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_ANY, "boot");
+	const esp_partition_t *boot_part = select_boot_partition();
 	if (boot_part) {
-		uint32_t boot_bytes = boot_part->size;
-		if (boot_bytes > 0x40000u)
-			boot_bytes = 0x40000u;
-		if (load_partition(boot_part, BOOT_LOAD_PA, boot_bytes) == ESP_OK) {
-			ESP_LOGI(TAG, "boot partition loaded to PSRAM 0x%08x (%" PRIu32 " bytes)",
-				 BOOT_LOAD_PA, boot_bytes);
+		if (load_partition(boot_part, BOOT_LOAD_PA, BOOT_IMAGE_BYTES) == ESP_OK) {
+			/* The selected, CRC-validated flash slot is authoritative. */
+			ESP_LOGI(TAG, "boot slot loaded from flash to PSRAM 0x%08x (%u bytes; flash is authoritative)",
+				 BOOT_LOAD_PA, BOOT_IMAGE_BYTES);
 		} else {
-			ESP_LOGW(TAG, "boot partition copy to PSRAM failed; continuing");
+			ESP_LOGW(TAG, "boot slot copy to PSRAM failed; continuing");
 		}
 	} else {
-		ESP_LOGW(TAG, "boot partition not found in partition table");
+		ESP_LOGW(TAG, "no valid boot slot available");
 	}
 
 	const void *rootfs_va = NULL;

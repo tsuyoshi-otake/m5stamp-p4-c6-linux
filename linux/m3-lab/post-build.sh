@@ -17,7 +17,11 @@ rm -f "${TARGET_DIR}/etc/init.d/S10easystick-config"
 for path in \
 	"${TARGET_DIR}/etc/init.d/S05easystick-tmpfs" \
 	"${TARGET_DIR}/etc/init.d/S40network" \
+	"${TARGET_DIR}/etc/init.d/S45bootsync" \
 	"${TARGET_DIR}/etc/init.d/S85easystick-ssh" \
+	"${TARGET_DIR}/usr/sbin/easystick-bootsync" \
+	"${TARGET_DIR}/usr/sbin/easystick-usb-lun" \
+	"${TARGET_DIR}/usr/sbin/easystick-update-status" \
 	"${TARGET_DIR}/etc/inetd.conf"; do
 	if [ ! -f "${path}" ]; then
 		echo "M3-lab file missing from rootfs: ${path}" >&2
@@ -27,5 +31,9 @@ done
 
 chmod 0755 "${TARGET_DIR}/etc/init.d/S05easystick-tmpfs"
 chmod 0755 "${TARGET_DIR}/etc/init.d/S40network"
+chmod 0755 "${TARGET_DIR}/etc/init.d/S45bootsync"
 chmod 0755 "${TARGET_DIR}/etc/init.d/S85easystick-ssh"
+chmod 0755 "${TARGET_DIR}/usr/sbin/easystick-bootsync"
+chmod 0755 "${TARGET_DIR}/usr/sbin/easystick-usb-lun"
+chmod 0755 "${TARGET_DIR}/usr/sbin/easystick-update-status"
 chmod 0644 "${TARGET_DIR}/etc/inetd.conf"

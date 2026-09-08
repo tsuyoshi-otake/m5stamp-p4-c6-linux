@@ -15,4 +15,11 @@ Before adding `stamp-p4.dts`, M0 must provide or confirm:
 
 The carrier-level facts that are safe to consume from scripts are in
 [`../board-contract.json`](../board-contract.json) and are checked against the
-Rev0.15 netlist by `../tools/verify-board-contract.py`.
+Rev0.15 netlist by `../tools/verify-board-contract.py`. The netlist is a
+separately managed hardware-design export, so provide it explicitly; its
+SHA-256 must match the value pinned in the contract:
+
+```bash
+python3 ../tools/verify-board-contract.py \
+  --netlist /absolute/path/to/netlist.rev0.15.json
+```

@@ -1,133 +1,160 @@
 #!/bin/sh
-# EasyStick BootSync Daemon
-# Monitors host modifications to /tmp/boot.img (USB Mass Storage backing file),
-# debounces writes, validates snapshot, updates PSRAM reservation, and reloads network.
+# Import boot.img only after the USB host has issued SCSI eject. The empty LUN
+# file attribute is the ownership hand-off; this daemon never forces eject.
 
 BOOT_IMG="/tmp/boot.img"
-SNAP_IMG="/tmp/boot-snap.img"
+LUN_CTL="/usr/sbin/easystick-usb-lun"
+BOOT_COMMIT="/usr/sbin/easystick-boot-commit"
 MNT_POINT="/tmp/mnt_snap"
 LAST_HASH_FILE="/tmp/.bootsync_last_hash"
-PSRAM_SEEK_BLOCKS=301504 # 0x499c0000 / 4096 = 301504 (0x499c0000 = 1234960384)
 
 log() {
 	echo "[bootsync] $1"
 }
 
-get_boot_hash() {
-	if [ -f "$BOOT_IMG" ]; then
-		md5sum "$BOOT_IMG" > /tmp/.cur_boot_hash 2>/dev/null
-		read CURRENT_HASH _ < /tmp/.cur_boot_hash
-		rm -f /tmp/.cur_boot_hash
-	else
-		CURRENT_HASH=""
-	fi
-}
-
-get_check_hash() {
-	if [ -f "$BOOT_IMG" ]; then
-		md5sum "$BOOT_IMG" > /tmp/.chk_boot_hash 2>/dev/null
-		read CHECK_HASH _ < /tmp/.chk_boot_hash
-		rm -f /tmp/.chk_boot_hash
-	else
-		CHECK_HASH=""
-	fi
+boot_hash() {
+	HASH=""
+	[ -f "$1" ] || return 1
+	line=$(md5sum "$1" 2>/dev/null) || return 1
+	HASH=${line%% *}
+	[ -n "$HASH" ]
 }
 
 file_changed() {
 	[ ! -f "$2" ] && return 0
-	md5sum "$1" > /tmp/.h1 2>/dev/null
-	md5sum "$2" > /tmp/.h2 2>/dev/null
-	read _h1 _ < /tmp/.h1
-	read _h2 _ < /tmp/.h2
-	rm -f /tmp/.h1 /tmp/.h2
-	[ "$_h1" != "$_h2" ]
+	boot_hash "$1" || return 0
+	left=$HASH
+	boot_hash "$2" || return 0
+	[ "$left" != "$HASH" ]
+}
+
+lun_state() {
+	LUN_STATE=$($LUN_CTL state 2>/dev/null) || LUN_STATE="error"
+}
+
+reattach() {
+	if ! $LUN_CTL reattach >/dev/null 2>&1; then
+		log "ERROR: could not reattach boot.img; USB storage remains unavailable"
+		return 1
+	fi
+	log "USB storage reattached"
 }
 
 mkdir -p "$MNT_POINT"
-
-# Initial wait for boot.img to appear
-while [ ! -f "$BOOT_IMG" ]; do
+while [ ! -f "$BOOT_IMG" ] || [ ! -x "$LUN_CTL" ]; do
 	sleep 2
 done
 
-# Initialize reference hash
-get_boot_hash
-LAST_HASH="$CURRENT_HASH"
-echo "$LAST_HASH" > "$LAST_HASH_FILE"
-log "Daemon started. Monitoring $BOOT_IMG (initial hash: $LAST_HASH)"
+LAST_STATE=""
+log "Daemon started; use the host's safe-eject action to apply configuration"
 
 while true; do
 	sleep 1
-	# Re-read last hash in case easystick-update-status updated it
-	if [ -f "$LAST_HASH_FILE" ]; then
-		read LAST_HASH _ < "$LAST_HASH_FILE"
+	lun_state
+	if [ "$LUN_STATE" != "$LAST_STATE" ]; then
+		log "ownership=$LUN_STATE"
+		LAST_STATE=$LUN_STATE
 	fi
-	get_boot_hash
-	NEW_HASH="$CURRENT_HASH"
+	[ "$LUN_STATE" = "device-owned" ] || continue
 
-	# If hash changed, host started writing
-	if [ -n "$NEW_HASH" ] && [ "$NEW_HASH" != "$LAST_HASH" ]; then
-		log "Write activity detected on $BOOT_IMG, debouncing..."
-		
-		# Debounce: wait until hash stays identical for 3 consecutive seconds
-		SETTLE_COUNT=0
-		while [ "$SETTLE_COUNT" -lt 3 ]; do
-			sleep 1
-			get_check_hash
-			if [ "$CHECK_HASH" = "$NEW_HASH" ]; then
-				SETTLE_COUNT=$((SETTLE_COUNT + 1))
-			else
-				NEW_HASH="$CHECK_HASH"
-				SETTLE_COUNT=0
-			fi
-		done
+	SNAP_IMG="/tmp/boot-snap.$$"
+	WPA_STAGE="/tmp/.bootsync-wpa.$$"
+	CFG_STAGE="/tmp/.bootsync-config.$$"
+	rm -f "$SNAP_IMG" "$WPA_STAGE" "$CFG_STAGE"
 
-		log "Write settled (quiescent). Verifying snapshot..."
+	if ! cp -f "$BOOT_IMG" "$SNAP_IMG" 2>/dev/null; then
+		log "ERROR: snapshot copy failed"
+		reattach
+		continue
+	fi
+	lun_state
+	if [ "$LUN_STATE" != "device-owned" ]; then
+		log "ERROR: ownership changed during snapshot"
+		rm -f "$SNAP_IMG"
+		continue
+	fi
 
-		# Create an isolated snapshot to prevent mounting active backing file directly
-		cp -f "$BOOT_IMG" "$SNAP_IMG" 2>/dev/null || continue
+	IMG_SIZE=$(wc -c < "$SNAP_IMG" 2>/dev/null || echo 0)
+	if [ "$IMG_SIZE" -ne 262144 ]; then
+		log "ERROR: rejected boot image size=$IMG_SIZE (expected 262144)"
+		rm -f "$SNAP_IMG"
+		reattach
+		continue
+	fi
+	if ! boot_hash "$SNAP_IMG"; then
+		log "ERROR: could not hash snapshot"
+		rm -f "$SNAP_IMG"
+		reattach
+		continue
+	fi
+	NEW_HASH=$HASH
 
-		# Test mounting the snapshot
-		if mount -t vfat -o ro,loop "$SNAP_IMG" "$MNT_POINT" 2>/dev/null; then
-			CONFIG_CHANGED=0
+	if ! mount -t vfat -o ro,loop "$SNAP_IMG" "$MNT_POINT" 2>/dev/null; then
+		log "ERROR: rejected invalid FAT snapshot"
+		rm -f "$SNAP_IMG"
+		reattach
+		continue
+	fi
 
-			# Verify & extract wpa_supplicant.conf
-			if [ -s "$MNT_POINT/wpa_supplicant.conf" ]; then
-				if file_changed "$MNT_POINT/wpa_supplicant.conf" /tmp/wpa_supplicant.conf; then
-					cp -f "$MNT_POINT/wpa_supplicant.conf" /tmp/wpa_supplicant.conf
-					log "Extracted updated wpa_supplicant.conf"
-					CONFIG_CHANGED=1
-				fi
-			fi
-
-			# Verify & extract config.txt
-			if [ -s "$MNT_POINT/config.txt" ]; then
-				if file_changed "$MNT_POINT/config.txt" /tmp/config.txt; then
-					cp -f "$MNT_POINT/config.txt" /tmp/config.txt
-					log "Extracted updated config.txt"
-					CONFIG_CHANGED=1
-				fi
-			fi
-
-			umount "$MNT_POINT" 2>/dev/null || true
-
-			# If valid configuration changes were found, apply them to runtime
-			if [ "$CONFIG_CHANGED" -eq 1 ]; then
-				log "Configuration changed! Reloading network in background..."
-				/etc/init.d/S40network reload >/dev/null 2>&1 &
-			fi
-
-			# Sync valid snapshot to PSRAM reserved memory (0x499c0000)
-			if dd if="$SNAP_IMG" of=/dev/mem bs=4096 seek=$PSRAM_SEEK_BLOCKS count=64 conv=notrunc 2>/dev/null; then
-				log "PSRAM boot reservation (0x499c0000) updated"
-			fi
-		else
-			log "WARNING: Snapshot mount failed (FAT corruption or incomplete write). Ignoring."
+	VALID=1
+	for name in wpa_supplicant.conf config.txt; do
+		path="$MNT_POINT/$name"
+		[ ! -e "$path" ] && continue
+		size=$(wc -c < "$path" 2>/dev/null || echo 65537)
+		if [ ! -f "$path" ] || [ "$size" -le 0 ] || [ "$size" -gt 65536 ]; then
+			log "ERROR: rejected $name size=$size"
+			VALID=0
 		fi
+	done
+	if [ "$VALID" -eq 1 ]; then
+		[ ! -f "$MNT_POINT/wpa_supplicant.conf" ] ||
+			cp -f "$MNT_POINT/wpa_supplicant.conf" "$WPA_STAGE" || VALID=0
+		[ ! -f "$MNT_POINT/config.txt" ] ||
+			cp -f "$MNT_POINT/config.txt" "$CFG_STAGE" || VALID=0
+	fi
+	if ! umount "$MNT_POINT" 2>/dev/null; then
+		log "ERROR: snapshot unmount failed"
+		VALID=0
+	fi
+	if [ "$VALID" -ne 1 ]; then
+		rm -f "$SNAP_IMG" "$WPA_STAGE" "$CFG_STAGE"
+		reattach
+		continue
+	fi
 
-		rm -f "$SNAP_IMG" 2>/dev/null || true
+	CONFIG_CHANGED=0
+	if [ -f "$WPA_STAGE" ] && file_changed "$WPA_STAGE" /tmp/wpa_supplicant.conf; then
+		mv -f "$WPA_STAGE" /tmp/wpa_supplicant.conf
+		CONFIG_CHANGED=1
+	fi
+	if [ -f "$CFG_STAGE" ] && file_changed "$CFG_STAGE" /tmp/config.txt; then
+		mv -f "$CFG_STAGE" /tmp/config.txt
+		CONFIG_CHANGED=1
+	fi
+	rm -f "$WPA_STAGE" "$CFG_STAGE"
 
-		LAST_HASH="$NEW_HASH"
-		echo "$LAST_HASH" > "$LAST_HASH_FILE"
+	# The helper copies and verifies the exact snapshot in PSRAM, then writes
+	# a commit record last.  Boot-shim validates that record and performs the
+	# A/B flash update during the next normal reboot.
+	if [ -x "$BOOT_COMMIT" ] && "$BOOT_COMMIT" "$SNAP_IMG"; then
+		log "Validated snapshot staged for durable A/B commit hash=$NEW_HASH"
+	else
+		log "ERROR: durable boot-image staging failed; no reboot commit requested"
+		rm -f "$SNAP_IMG"
+		reattach
+		continue
+	fi
+	rm -f "$SNAP_IMG"
+	echo "$NEW_HASH" > "$LAST_HASH_FILE"
+
+	if ! reattach; then
+		continue
+	fi
+	LAST_STATE="host-owned"
+	if [ "$CONFIG_CHANGED" -eq 1 ]; then
+		log "Configuration changed; reloading network"
+		/etc/init.d/S40network reload >/dev/null 2>&1 &
+	else
+		log "Validated snapshot contained no configuration change"
 	fi
 done

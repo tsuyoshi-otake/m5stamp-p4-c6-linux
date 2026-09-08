@@ -873,6 +873,9 @@ fi
 if $network_profile; then
 	cat "${firmware_root}/linux/m2/kernel.config.fragment" >>"${kernel_config_fragment}"
 fi
+if $lab_profile; then
+	cat "${firmware_root}/linux/m3-lab/kernel.config.fragment" >>"${kernel_config_fragment}"
+fi
 if [[ "$stacktrace_diagnostics" == "1" ]]; then
 	cat >>"${kernel_config_fragment}" <<'EOF'
 
@@ -1247,6 +1250,19 @@ c68_fail_closed_after_linux() {
 		echo "C68_GATE_FAIL: missing $kernel_config" >&2
 		exit 1
 	}
+	if $lab_profile; then
+		for expected in \
+			"CONFIG_USB_GADGET=y" \
+			"CONFIG_USB_F_MASS_STORAGE=m" \
+			"CONFIG_USB_MASS_STORAGE=m" \
+			"CONFIG_BLK_DEV_LOOP=y" \
+			"CONFIG_VFAT_FS=y"; do
+			grep -Fqx -- "$expected" "$kernel_config" || {
+				echo "M3_LAB_GATE_FAIL: kernel .config missing ${expected}" >&2
+				exit 1
+			}
+		done
+	fi
 	if $c68_profile; then
 		for expected in \
 			"CONFIG_SMP=y" \
@@ -1661,6 +1677,18 @@ profile_fail_closed_after_rootfs() {
 			echo "profile gate failed: SSH profile has no Dropbear config" >&2
 			exit 1
 		}
+		if $lab_profile; then
+			for required in \
+				"${target}/etc/init.d/S45bootsync" \
+				"${target}/usr/sbin/easystick-bootsync" \
+				"${target}/usr/sbin/easystick-usb-lun" \
+				"${target}/usr/sbin/easystick-update-status"; do
+				[[ -x "$required" ]] || {
+					echo "m3-lab rootfs check failed: required executable missing or not executable: ${required}" >&2
+					exit 1
+				}
+			done
+		fi
 	else
 		expected="# BR2_PACKAGE_DROPBEAR is not set"
 		grep -Fqx -- "$expected" "$config" || {
@@ -1888,10 +1916,15 @@ if $lab_profile; then
 	set_config_value "${br_output}/.config" BR2_PACKAGE_LIBPCAP y
 	set_config_value "${br_output}/.config" BR2_PACKAGE_TCPDUMP y
 	set_config_value "${br_output}/.config" BR2_PACKAGE_MICROPYTHON_NOMMU y
+	# The PSRAM-to-flash A/B commit request is deliberately restricted to the
+	# m3-lab USB configuration workflow.  Other profiles may read the boot
+	# image, but cannot stage a durable replacement.
+	set_config_value "${br_output}/.config" BR2_PACKAGE_EASYSTICK_BOOT_COMMIT y
 else
 	set_config_value "${br_output}/.config" BR2_PACKAGE_LIBPCAP "# BR2_PACKAGE_LIBPCAP is not set"
 	set_config_value "${br_output}/.config" BR2_PACKAGE_TCPDUMP "# BR2_PACKAGE_TCPDUMP is not set"
 	set_config_value "${br_output}/.config" BR2_PACKAGE_MICROPYTHON_NOMMU "# BR2_PACKAGE_MICROPYTHON_NOMMU is not set"
+	set_config_value "${br_output}/.config" BR2_PACKAGE_EASYSTICK_BOOT_COMMIT "# BR2_PACKAGE_EASYSTICK_BOOT_COMMIT is not set"
 fi
 set_config_value "${br_output}/.config" BR2_ROOTFS_OVERLAY "\"${rootfs_overlay}\""
 set_config_value "${br_output}/.config" BR2_ROOTFS_POST_BUILD_SCRIPT "\"${post_build_scripts}\""
@@ -2034,7 +2067,8 @@ if $ssh_profile; then
 		for expected in \
 			"BR2_PACKAGE_DROPBEAR_CLIENT=y" \
 			"BR2_PACKAGE_LIBPCAP=y" \
-			"BR2_PACKAGE_TCPDUMP=y"; do
+			"BR2_PACKAGE_TCPDUMP=y" \
+			"BR2_PACKAGE_EASYSTICK_BOOT_COMMIT=y"; do
 			grep -Fqx -- "${expected}" "${br_output}/.config" || {
 				echo "m3-lab config check failed: ${expected}" >&2
 				exit 1
@@ -2048,6 +2082,10 @@ if $ssh_profile; then
 		[[ -x "${br_output}/target/usr/bin/tcpdump" || \
 		   -x "${br_output}/target/usr/sbin/tcpdump" ]] || {
 			echo "m3-lab check failed: tcpdump missing" >&2
+			exit 1
+		}
+		[[ -x "${br_output}/target/usr/sbin/easystick-boot-commit" ]] || {
+			echo "m3-lab check failed: boot commit helper missing" >&2
 			exit 1
 		}
 	else

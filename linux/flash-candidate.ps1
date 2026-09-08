@@ -3,13 +3,11 @@ param(
 	[Parameter(Mandatory = $true)]
 	[string] $Port,
 
-	[Parameter(Mandatory = $true)]
-	[string] $PythonPath,
+	[string] $PythonPath = "python",
 
-	[Parameter(Mandatory = $true)]
-	[string] $ArtifactsDirectory,
+	[Alias("ArtifactsDir")]
+	[string] $ArtifactsDirectory = $PSScriptRoot,
 
-	[Parameter(Mandatory = $true)]
 	[string] $StockReadback,
 
 	[switch] $AllowCandidateWrite,
@@ -26,10 +24,8 @@ if (-not $AllowCandidateWrite) {
 	throw "Refusing candidate write. Re-run with -AllowCandidateWrite after reviewing the M2 map, stock readback, and recovery procedure."
 }
 
-$scriptRoot = (Resolve-Path -LiteralPath $PSScriptRoot).Path
-$repoRoot = (Resolve-Path -LiteralPath (Join-Path $scriptRoot "..\..\..\..")).Path
 $artifactRoot = (Resolve-Path -LiteralPath $ArtifactsDirectory).Path
-$stockPath = (Resolve-Path -LiteralPath $StockReadback).Path
+$stockPath = $null
 
 function Assert-File([string] $Name, [UInt32] $MaxBytes) {
 	$path = Join-Path $artifactRoot $Name
@@ -43,12 +39,17 @@ function Assert-File([string] $Name, [UInt32] $MaxBytes) {
 	return $path
 }
 
-if ((Get-Item -LiteralPath $stockPath).Length -ne 0x1000000) {
-	throw "Stock readback must be exactly 16 MiB: $stockPath"
-}
-$stockHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $stockPath).Hash.ToLowerInvariant()
-if ($stockHash -ne $ExpectedStockSha256.ToLowerInvariant()) {
-	throw "Stock readback SHA-256 mismatch: got $stockHash, expected $ExpectedStockSha256"
+if ($StockReadback) {
+	$stockPath = (Resolve-Path -LiteralPath $StockReadback).Path
+	if ((Get-Item -LiteralPath $stockPath).Length -ne 0x1000000) {
+		throw "Stock readback must be exactly 16 MiB: $stockPath"
+	}
+	$stockHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $stockPath).Hash.ToLowerInvariant()
+	if ($stockHash -ne $ExpectedStockSha256.ToLowerInvariant()) {
+		throw "Stock readback SHA-256 mismatch: got $stockHash, expected $ExpectedStockSha256"
+	}
+} else {
+	$stockHash = "not supplied"
 }
 
 $artifacts = @(
@@ -74,7 +75,11 @@ if ($LASTEXITCODE -ne 0 -or $versionOutput -notmatch "4\.8\.1") {
 
 Write-Host "P4 candidate write gate passed"
 Write-Host "  port=$Port"
-Write-Host "  stock=$stockPath"
+if ($stockPath) {
+	Write-Host "  stock=$stockPath"
+} else {
+	Write-Host "  stock=not supplied"
+}
 Write-Host "  stock_sha256=$stockHash"
 Write-Host "  artifacts=$artifactRoot"
 Write-Host "  C6 write: none (COM10 is the P4 module USB-C path)"
@@ -132,6 +137,25 @@ if ($LASTEXITCODE -ne 0) {
 	throw "P4 candidate verify failed. Do not continue to Linux acceptance; restore the stock readback."
 }
 
+# Reset A/B selection only after slot0 has been written and verified.  A power
+# loss before this point leaves the previously selected slot bootable; after
+# the erase, boot-shim deliberately falls back to the newly verified slot0.
+if (-not $PreserveBoot) {
+	$metadataArgs = @(
+		"-m", "esptool", "--chip", "esp32p4", "--port", $Port,
+		"--baud", "460800", "--before", "default_reset", "--after", "hard_reset",
+		"erase_region", "0xfc0000", "0x2000"
+	)
+	& $PythonPath @metadataArgs
+	if ($LASTEXITCODE -ne 0) {
+		throw "P4 A/B metadata reset failed. Re-run the same release flash command."
+	}
+}
+
 Write-Host "P4 candidate write and verify passed"
-Write-Host "Recovery command (only after entering ROM mode):"
-Write-Host "  $PythonPath -m esptool --chip esp32p4 --port $Port write_flash 0x0 $stockPath"
+if ($stockPath) {
+	Write-Host "Recovery command (only after entering ROM mode):"
+	Write-Host "  $PythonPath -m esptool --chip esp32p4 --port $Port write_flash 0x0 $stockPath"
+} else {
+	Write-Warning "No stock readback was supplied; keep the release image available for recovery."
+}

@@ -270,6 +270,13 @@
 			no-map;
 		};
 
+		/* Linux writes this last after staging a new boot image above.
+		 * The boot shim consumes and clears the request before loading Linux. */
+		boot_update_request_res: boot-update-request@499bf000 {
+			reg = <0x499bf000 0x00001000>;
+			no-map;
+		};
+
 		linux_nommu_pool: nommu-userspace-pool@49a00000 {
 			compatible = "linux,nommu-userspace-pool";
 			reg = <0x49a00000 0x00600000>;

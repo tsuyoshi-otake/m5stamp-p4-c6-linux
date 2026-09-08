@@ -1,0 +1,66 @@
+#!/bin/sh
+# Report and control the single legacy g_mass_storage LUN used by M3-lab.
+# A non-empty LUN file attribute means the USB host owns boot.img.  The only
+# supported hand-off to Linux is a host-issued SCSI eject, which clears it.
+
+BOOT_IMG="${EASYSTICK_BOOT_IMG:-/tmp/boot.img}"
+SYS_CLASS_UDC_ROOT="${EASYSTICK_SYS_CLASS_UDC_ROOT:-/sys/class/udc}"
+
+find_lun_file() {
+	LUN_FILE=""
+	COUNT=0
+	# g_mass_storage publishes each legacy LUN below the UDC device.  A shell
+	# glob avoids spawning find, which can fail under fragmented NOMMU memory.
+	for candidate in "$SYS_CLASS_UDC_ROOT"/*/device/udc/*/gadget/lun*/file; do
+		[ -f "$candidate" ] || continue
+		dir=${candidate%/file}
+		[ -f "$dir/forced_eject" ] && [ -f "$dir/ro" ] || continue
+		LUN_FILE=$candidate
+		COUNT=$((COUNT + 1))
+	done
+	[ "$COUNT" -eq 1 ] || {
+		echo "ERROR: expected one g_mass_storage LUN, found $COUNT" >&2
+		return 1
+	}
+}
+
+read_backing_file() {
+	BACKING=$(head -n 1 "$LUN_FILE" 2>/dev/null) || return 1
+}
+
+find_lun_file || exit 2
+read_backing_file || exit 2
+
+case "${1:-state}" in
+	state)
+		if [ -z "$BACKING" ]; then
+			echo "device-owned"
+		elif [ "$BACKING" = "$BOOT_IMG" ]; then
+			echo "host-owned"
+		else
+			echo "ERROR: unexpected LUN backing file: $BACKING" >&2
+			exit 2
+		fi
+		;;
+	reattach)
+		[ -z "$BACKING" ] || {
+			echo "ERROR: refusing to replace an attached LUN" >&2
+			exit 2
+		}
+		[ -f "$BOOT_IMG" ] || {
+			echo "ERROR: missing $BOOT_IMG" >&2
+			exit 2
+		}
+		printf '%s\n' "$BOOT_IMG" > "$LUN_FILE" || exit 2
+		read_backing_file || exit 2
+		[ "$BACKING" = "$BOOT_IMG" ] || {
+			echo "ERROR: LUN reattach did not persist" >&2
+			exit 2
+		}
+		echo "host-owned"
+		;;
+	*)
+		echo "Usage: $0 {state|reattach}" >&2
+		exit 2
+		;;
+esac

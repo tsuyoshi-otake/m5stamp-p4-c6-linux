@@ -5,7 +5,7 @@ set -euo pipefail
 
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 firmware_root=$(cd -- "${script_dir}/.." && pwd)
-repo_root=$(cd -- "${firmware_root}/../../.." && pwd)
+repo_root=${firmware_root}
 
 if [[ $# -eq 1 && "$1" == "--vendor" ]]; then
   command -v git >/dev/null || { echo "git is required" >&2; exit 1; }

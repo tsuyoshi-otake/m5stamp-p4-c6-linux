@@ -28,7 +28,10 @@
     { "name": "dtb", "offset": "0xf10000", "size_bytes": "0x010000", "kind": "flattened-device-tree", "artifact": true },
     { "name": "crashlog", "offset": "0xf20000", "size_bytes": "0x020000", "kind": "writable-crash-capsule", "artifact": false },
     { "name": "boot", "offset": "0xf40000", "size_bytes": "0x040000", "kind": "fat-boot-image", "artifact": true },
-    { "name": "tail-reserve", "offset": "0xf80000", "size_bytes": "0x080000", "kind": "reserved" }
+    { "name": "boot_alt", "offset": "0xf80000", "size_bytes": "0x040000", "kind": "fat-boot-image-ab-slot", "artifact": false },
+    { "name": "bootmeta0", "offset": "0xfc0000", "size_bytes": "0x001000", "kind": "boot-image-ab-metadata", "artifact": false },
+    { "name": "bootmeta1", "offset": "0xfc1000", "size_bytes": "0x001000", "kind": "boot-image-ab-metadata", "artifact": false },
+    { "name": "tail-reserve", "offset": "0xfc2000", "size_bytes": "0x03e000", "kind": "reserved" }
   ],
   "invariants": {
     "one_hp_core": true,

@@ -1,10 +1,13 @@
-# Candidate map only; flash-layout.json is the authoritative write gate.
+# M1 candidate map only; flash-layout.json is the authoritative write gate.
 # Name,      Type, SubType, Offset,   Size,     Flags
 nvs,         data, nvs,     0x9000,   0x6000,
 phy_init,    data, phy,     0xf000,   0x1000,
 factory,     app,  factory, 0x10000,  0x80000,
-kernel,      data, 0x58,    0x90000,  0x780000,
-rootfs,      data, 0x58,    0x810000, 0x700000,
+kernel,      data, 0x58,    0x90000,  0x680000,
+rootfs,      data, 0x58,    0x710000, 0x800000,
 dtb,         data, 0x58,    0xf10000, 0x10000,
 crashlog,    data, 0x58,    0xf20000, 0x20000,
 boot,        data, 0x58,    0xf40000, 0x40000,
+boot_alt,    data, 0x58,    0xf80000, 0x40000,
+bootmeta0,   data, 0x58,    0xfc0000, 0x01000,
+bootmeta1,   data, 0x58,    0xfc1000, 0x01000,

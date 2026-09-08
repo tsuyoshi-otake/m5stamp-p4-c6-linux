@@ -8,6 +8,18 @@ Host-side build evidence is also recorded here when it is explicitly marked
 as non-flashing and non-acceptance evidence; see
 [`m1-build-2026-08-09.md`](m1-build-2026-08-09.md).
 
+The current static/runtime-fixture checks can be run without hardware:
+
+```bash
+python3 linux/tests/test-boot-config-contract.py
+sh linux/tests/test-m3-lab-usb-lun.sh
+sh linux/tests/test-m3-lab-status.sh
+```
+
+The LUN test uses a temporary fake sysfs tree. It verifies ownership hand-off
+and reattachment only; the safe-eject path still requires target hardware and
+a real USB host before release acceptance.
+
 The required evidence is tracked by Issue #6:
 
 - M0: ten recoverable flash/reset cycles and archived stock images;

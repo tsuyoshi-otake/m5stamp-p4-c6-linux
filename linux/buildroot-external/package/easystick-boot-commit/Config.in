@@ -1,0 +1,7 @@
+config BR2_PACKAGE_EASYSTICK_BOOT_COMMIT
+	bool "EasyStick boot image A/B commit helper"
+	help
+	  Installs the privileged helper that copies a validated 256 KiB boot
+	  image to PSRAM and publishes a CRC-protected commit request for the
+	  boot shim.  The shim applies the image to its inactive flash slot on
+	  the next normal reboot.

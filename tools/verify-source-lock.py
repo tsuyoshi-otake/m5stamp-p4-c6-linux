@@ -11,7 +11,9 @@ from pathlib import Path
 
 
 LOCK = Path(__file__).resolve().parents[1] / "versions.lock.json"
-REPO_ROOT = LOCK.parents[3]
+# This repository used to live below projects/easystick-stamp-p4/firmware.
+# The lock file now lives at the repository root, alongside .gitmodules.
+REPO_ROOT = LOCK.parent
 SHA1 = re.compile(r"^[0-9a-f]{40}$")
 REQUIRED = {
     "why2025_linux_reference",

@@ -10,6 +10,10 @@ CONFIG_RMMOD=y
 # applet while applying a lease.
 CONFIG_MKTEMP=y
 CONFIG_SHA256SUM=y
+# Keep find available for diagnostics; the boot hot path uses shell globbing so
+# it does not depend on allocating a separate process under NOMMU pressure.
+CONFIG_FIND=y
+CONFIG_FEATURE_FIND_PATH=y
 CONFIG_NTPD=y
 CONFIG_HWCLOCK=y
 CONFIG_SYSLOGD=y
