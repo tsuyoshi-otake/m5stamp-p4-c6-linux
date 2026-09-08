@@ -58,14 +58,21 @@ Boots out-of-the-box into **Wi-Fi SoftAP mode** with automatic DHCP, Dropbear SS
 
 ### 1. Download Release Package
 
-Download the latest release archive `m5stamp-p4-c6-linux-smp-v0.2.0.zip` from the [Releases](https://github.com/tsuyoshi-otake/m5stamp-p4-c6-linux/releases) page and extract it.
+Download either the monolithic 16MB raw flash image or the partition zip package from the [Releases](https://github.com/tsuyoshi-otake/m5stamp-p4-c6-linux/releases) page:
+- **`m5stamp-p4-c6-linux-smp-v0.2.0-16mb.bin.gz`**: Single 16MB raw flash image (simplest, flash to `0x0`).
+- **`m5stamp-p4-c6-linux-smp-v0.2.0.zip`**: Individual partition binaries with automated PowerShell flash script.
 
 ### 2. Flash using `esptool.py`
 
 Connect the M5Stamp-P4 via its USB-C port to your computer. Identify your serial port (e.g., `COM10` on Windows or `/dev/ttyACM0` on Linux/macOS).
 
-Run the following command:
+#### Option A: Monolithic 16MB Raw Image Flash (Recommended)
+```bash
+gzip -d m5stamp-p4-c6-linux-smp-v0.2.0-16mb.bin.gz
+esptool.py --chip esp32p4 --port COM10 --baud 460800 write_flash 0x0 m5stamp-p4-c6-linux-smp-v0.2.0-16mb.bin
+```
 
+#### Option B: Multi-Partition Flash
 ```bash
 esptool.py --chip esp32p4 --port COM10 --baud 460800 \
     --before default_reset --after hard_reset write_flash -z \
