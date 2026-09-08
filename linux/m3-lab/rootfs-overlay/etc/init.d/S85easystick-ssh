@@ -38,13 +38,17 @@ start() {
 	fi
 	es_hk "ES_HOSTKEY NONEMPTY_OK"
 
+	# Ensure devpts permissions and free high-order buddy pages for SSH sessions
+	mount -o remount,gid=5,mode=620,ptmxmode=0666 /dev/pts 2>/dev/null || true
+	echo 3 > /proc/sys/vm/drop_caches 2>/dev/null || true
+
 	# inetd listens on 0.0.0.0:22.  Do not gate on a network interface name:
 	# this port's STA iface has been wlan0, upstream esp-hosted may use
 	# ethsta0, and either may appear after this script runs.
 	if ! pidof inetd >/dev/null 2>&1; then
 		es_hk "ES_HOSTKEY INETD_START"
 		printf '%s\n' "M3-lab: starting password-enabled Dropbear on TCP/22"
-		/usr/sbin/inetd /etc/inetd.conf
+		/usr/sbin/inetd -f /etc/inetd.conf &
 	else
 		es_hk "ES_HOSTKEY INETD_ALREADY"
 		printf '%s\n' "M3-lab: inetd already running"
@@ -52,9 +56,9 @@ start() {
 }
 
 restart() {
-	killall inetd 2>/dev/null || true
-	sleep 1
-	start
+	if ! pidof inetd >/dev/null 2>&1; then
+		start
+	fi
 }
 
 case "${1:-start}" in

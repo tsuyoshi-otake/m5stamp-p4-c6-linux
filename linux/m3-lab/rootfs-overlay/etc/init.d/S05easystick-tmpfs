@@ -13,6 +13,11 @@ start() {
 	mount -t tmpfs -o mode=1777,size=16M tmpfs /tmp 2>/dev/null || true
 	es_log "ES_TMPFS OK"
 
+	# Fix devpts ptmx permissions and optimize VM memory fragmentation
+	mount -o remount,gid=5,mode=620,ptmxmode=0666 /dev/pts 2>/dev/null || true
+	echo 4096 > /proc/sys/vm/min_free_kbytes 2>/dev/null || true
+	echo 500 > /proc/sys/vm/vfs_cache_pressure 2>/dev/null || true
+
 	# OverlayFS for writable /home, /root, /var/lib
 	es_log "ES_OVERLAY BEGIN"
 	for d in /home /root /var/lib; do

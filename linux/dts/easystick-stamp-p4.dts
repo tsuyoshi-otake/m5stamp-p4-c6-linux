@@ -267,6 +267,7 @@
 		/* Kept small until NOMMU pool sizing is measured on Stamp-P4. */
 		boot_partition_res: boot-partition-res@499c0000 {
 			reg = <0x499c0000 0x00040000>;
+			no-map;
 		};
 
 		linux_nommu_pool: nommu-userspace-pool@49a00000 {

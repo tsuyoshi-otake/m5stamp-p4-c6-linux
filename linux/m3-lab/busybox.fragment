@@ -11,7 +11,6 @@ CONFIG_RMMOD=y
 CONFIG_MKTEMP=y
 CONFIG_SHA256SUM=y
 CONFIG_DEVMEM=y
-CONFIG_ARPING=y
 CONFIG_NETSTAT=y
 CONFIG_NC=y
 CONFIG_UDHCPD=y
@@ -32,5 +31,102 @@ CONFIG_FEATURE_VI_SETOPTS=y
 CONFIG_FEATURE_VI_SET=y
 CONFIG_FEATURE_VI_WIN_RESIZE=y
 CONFIG_FEATURE_VI_ASK_TERMINAL=y
-CONFIG_FEATURE_VI_UNDO=y
-CONFIG_FEATURE_VI_UNDO_QUEUE=y
+
+# ==============================================================================
+# NOMMU Memory Optimization: Disable bulky non-essential applets to bring
+# total RAM load requirement below 480KB (order 7 / 512KB buddy limit).
+# Target: ~460KB - 475KB (comfortably under 512KB with args and stack).
+# ==============================================================================
+# 1. Bulky math / utilities (~30KB)
+# CONFIG_BC is not set
+# CONFIG_DC is not set
+# CONFIG_FEATURE_BC_INTERACTIVE is not set
+# CONFIG_FEATURE_BC_LONG_OPTIONS is not set
+# CONFIG_FACTOR is not set
+
+# 2. IProute2 suite (~20KB) - S40network uses standard ifconfig/route/iw
+# CONFIG_IP is not set
+# CONFIG_IPADDR is not set
+# CONFIG_IPLINK is not set
+# CONFIG_IPROUTE is not set
+# CONFIG_FEATURE_IP_ADDRESS is not set
+# CONFIG_FEATURE_IP_LINK is not set
+# CONFIG_FEATURE_IP_ROUTE is not set
+
+# 3. Bulky network clients & services (~20KB)
+# CONFIG_NTPD is not set
+# CONFIG_IFUP is not set
+# CONFIG_IFDOWN is not set
+# CONFIG_FEATURE_IFUPDOWN_EXTERNAL_DHCP is not set
+# CONFIG_FEATURE_IFUPDOWN_IP is not set
+# CONFIG_FEATURE_IFUPDOWN_IPV4 is not set
+# CONFIG_WGET is not set
+# CONFIG_FEATURE_WGET_FTP is not set
+# CONFIG_TELNET is not set
+# CONFIG_FEATURE_TELNET_AUTOLOGIN is not set
+# CONFIG_FEATURE_TELNET_TTYPE is not set
+# CONFIG_FEATURE_TELNET_WIDTH is not set
+# CONFIG_ARPING is not set
+
+# 4. Decompressors & formats (~15KB) - squashfs/kernel handled by OS
+# CONFIG_BZCAT is not set
+# CONFIG_FEATURE_BZIP2_DECOMPRESS is not set
+# CONFIG_XZCAT is not set
+# CONFIG_LZCAT is not set
+# CONFIG_LZOPCAT is not set
+# CONFIG_UNLZOP is not set
+# CONFIG_ZCAT is not set
+
+# 5. Miscellaneous non-essential CLI utilities (~25KB)
+# CONFIG_STTY is not set
+# CONFIG_HEXEDIT is not set
+# CONFIG_TREE is not set
+# CONFIG_FOLD is not set
+# CONFIG_TS is not set
+# CONFIG_TSORT is not set
+# CONFIG_NL is not set
+# CONFIG_PASTE is not set
+# CONFIG_ASCII is not set
+# CONFIG_BASE32 is not set
+# CONFIG_UUDECODE is not set
+# CONFIG_UUENCODE is not set
+# CONFIG_LSSCSI is not set
+# CONFIG_I2CTRANSFER is not set
+# CONFIG_FSFREEZE is not set
+# CONFIG_FREERAMDISK is not set
+# CONFIG_GETFATTR is not set
+# CONFIG_SETFATTR is not set
+# CONFIG_SVC is not set
+# CONFIG_SVOK is not set
+# CONFIG_SETPRIV is not set
+# CONFIG_MKE2FS is not set
+# CONFIG_MKDOSFS is not set
+# CONFIG_CKSUM is not set
+# CONFIG_CRC32 is not set
+# CONFIG_SHA1SUM is not set
+# CONFIG_SHA3SUM is not set
+# CONFIG_SHA512SUM is not set
+# CONFIG_DOS2UNIX is not set
+# CONFIG_UNIX2DOS is not set
+# CONFIG_W is not set
+# CONFIG_WHO is not set
+# CONFIG_WHOAMI is not set
+# CONFIG_OD is not set
+# CONFIG_START_STOP_DAEMON is not set
+# CONFIG_FEATURE_START_STOP_DAEMON_FANCY is not set
+# CONFIG_FEATURE_START_STOP_DAEMON_LONG_OPTIONS is not set
+# CONFIG_FEATURE_MOUNT_CIFS is not set
+# CONFIG_FALLOCATE is not set
+# CONFIG_SHRED is not set
+# CONFIG_HWCLOCK is not set
+# CONFIG_NPROC is not set
+# CONFIG_NUKE is not set
+# CONFIG_RESUME is not set
+# CONFIG_SETSERIAL is not set
+# CONFIG_TRUNCATE is not set
+# CONFIG_UNLINK is not set
+# CONFIG_LINK is not set
+# CONFIG_PARTPROBE is not set
+# CONFIG_DNSDOMAINNAME is not set
+# CONFIG_MESG is not set
+# CONFIG_MIM is not set
