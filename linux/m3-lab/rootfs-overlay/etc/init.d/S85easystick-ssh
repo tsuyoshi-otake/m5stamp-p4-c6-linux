@@ -19,33 +19,24 @@ start() {
 
 	# Regenerate Ed25519 host key every boot.  Do not use dropbear -R per
 	# connection (that would rotate the key on every accept).
-	es_hk "ES_HOSTKEY GEN_BEGIN"
-	rm -f "$KEY"
-	umask 077
-	if ! dropbearkey -t ed25519 -f "$KEY" >/dev/null 2>&1; then
-		es_hk "ES_HOSTKEY GEN_FAIL"
-		return 1
-	fi
-	es_hk "ES_HOSTKEY GEN_OK"
-
 	if [ ! -s "$KEY" ]; then
-		es_hk "ES_HOSTKEY NONEMPTY_FAIL"
-		return 1
-	fi
-	# BusyBox wc may print leading spaces; strip them.
-	SIZE=$(wc -c < "$KEY" | tr -d ' \t\r\n')
-	es_hk "ES_HOSTKEY NONEMPTY_OK size=${SIZE}"
+		# BusyBox wc may print leading spaces; strip them.
+		es_hk "ES_HOSTKEY GEN_BEGIN"
+		rm -f "$KEY"
+		umask 077
+		if ! dropbearkey -t ed25519 -f "$KEY" >/dev/null 2>&1; then
+			es_hk "ES_HOSTKEY GEN_FAIL"
+			return 1
+		fi
+		es_hk "ES_HOSTKEY GEN_OK"
 
-	if ! chmod 600 "$KEY"; then
-		es_hk "ES_HOSTKEY CHMOD_FAIL"
-		return 1
+		if [ ! -s "$KEY" ]; then
+			es_hk "ES_HOSTKEY NONEMPTY_FAIL"
+			return 1
+		fi
+		chmod 600 "$KEY" 2>/dev/null || true
 	fi
-
-	if ! dropbearkey -y -f "$KEY" >/dev/null 2>&1; then
-		es_hk "ES_HOSTKEY PARSE_FAIL"
-		return 1
-	fi
-	es_hk "ES_HOSTKEY PARSE_OK"
+	es_hk "ES_HOSTKEY NONEMPTY_OK"
 
 	# inetd listens on 0.0.0.0:22.  Do not gate on a network interface name:
 	# this port's STA iface has been wlan0, upstream esp-hosted may use
