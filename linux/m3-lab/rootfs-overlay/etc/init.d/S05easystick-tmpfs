@@ -28,8 +28,32 @@ start() {
 
 	# Mount 256KB FAT filesystem on /boot and start USB Mass Storage Gadget
 	es_log "ES_BOOT_FAT BEGIN"
-	if [ ! -f /tmp/boot.img ] && [ -f /etc/easystick/boot-template.img ]; then
-		cp -f /etc/easystick/boot-template.img /tmp/boot.img
+	if [ ! -f /tmp/boot.img ]; then
+		# Try restoring boot.img from PSRAM reserved area (0x499c0000, 256KB) preloaded by boot-shim
+		# 0x499c0000 = 1234960384 bytes, 1234960384 / 4096 = 301504 blocks
+		if [ -c /dev/mem ]; then
+			es_log "ES_BOOT_FAT: attempting restore from PSRAM 0x499c0000"
+			dd if=/dev/mem bs=4096 skip=301504 count=64 of=/tmp/boot.img 2>/dev/null || true
+		fi
+		# Verify whether /tmp/boot.img is a valid 256KB FAT image (test mount)
+		IMG_SZ=$(wc -c < /tmp/boot.img 2>/dev/null || echo 0)
+		VALID_FAT=0
+		if [ "$IMG_SZ" -eq 262144 ]; then
+			mkdir -p /tmp/.test_mnt_fat
+			if mount -t vfat -o ro,loop /tmp/boot.img /tmp/.test_mnt_fat 2>/dev/null; then
+				umount /tmp/.test_mnt_fat 2>/dev/null || true
+				VALID_FAT=1
+			fi
+			rm -rf /tmp/.test_mnt_fat 2>/dev/null || true
+		fi
+		if [ "$VALID_FAT" -ne 1 ]; then
+			es_log "ES_BOOT_FAT: PSRAM image invalid or empty; using boot-template.img"
+			if [ -f /etc/easystick/boot-template.img ]; then
+				cp -f /etc/easystick/boot-template.img /tmp/boot.img
+			fi
+		else
+			es_log "ES_BOOT_FAT: successfully restored valid FAT image from PSRAM"
+		fi
 	fi
 
 	mkdir -p /boot 2>/dev/null || true

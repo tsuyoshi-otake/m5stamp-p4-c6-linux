@@ -1,0 +1,113 @@
+#!/bin/sh
+# EasyStick BootSync Daemon
+# Monitors host modifications to /tmp/boot.img (USB Mass Storage backing file),
+# debounces writes, validates snapshot, updates PSRAM reservation, and reloads network.
+
+BOOT_IMG="/tmp/boot.img"
+SNAP_IMG="/tmp/boot-snap.img"
+MNT_POINT="/tmp/mnt_snap"
+LAST_HASH_FILE="/tmp/.bootsync_last_hash"
+PSRAM_SEEK_BLOCKS=301504 # 0x499c0000 / 4096 = 301504 (0x499c0000 = 1234960384)
+
+log() {
+	echo "[bootsync] $1"
+}
+
+get_hash() {
+	if [ -f "$BOOT_IMG" ]; then
+		md5sum "$BOOT_IMG" 2>/dev/null | cut -d' ' -f1
+	else
+		echo ""
+	fi
+}
+
+file_changed() {
+	[ ! -f "$2" ] && return 0
+	_h1=$(md5sum "$1" 2>/dev/null | cut -d' ' -f1)
+	_h2=$(md5sum "$2" 2>/dev/null | cut -d' ' -f1)
+	[ "$_h1" != "$_h2" ]
+}
+
+mkdir -p "$MNT_POINT"
+
+# Initial wait for boot.img to appear
+while [ ! -f "$BOOT_IMG" ]; do
+	sleep 2
+done
+
+# Initialize reference hash
+CURRENT_HASH=$(get_hash)
+LAST_HASH="$CURRENT_HASH"
+echo "$LAST_HASH" > "$LAST_HASH_FILE"
+log "Daemon started. Monitoring $BOOT_IMG (initial hash: $LAST_HASH)"
+
+while true; do
+	sleep 1
+	NEW_HASH=$(get_hash)
+
+	# If hash changed, host started writing
+	if [ -n "$NEW_HASH" ] && [ "$NEW_HASH" != "$LAST_HASH" ]; then
+		log "Write activity detected on $BOOT_IMG, debouncing..."
+		
+		# Debounce: wait until hash stays identical for 3 consecutive seconds
+		SETTLE_COUNT=0
+		while [ "$SETTLE_COUNT" -lt 3 ]; do
+			sleep 1
+			CHECK_HASH=$(get_hash)
+			if [ "$CHECK_HASH" = "$NEW_HASH" ]; then
+				SETTLE_COUNT=$((SETTLE_COUNT + 1))
+			else
+				NEW_HASH="$CHECK_HASH"
+				SETTLE_COUNT=0
+			fi
+		done
+
+		log "Write settled (quiescent). Verifying snapshot..."
+
+		# Create an isolated snapshot to prevent mounting active backing file directly
+		cp -f "$BOOT_IMG" "$SNAP_IMG" 2>/dev/null || continue
+
+		# Test mounting the snapshot
+		if mount -t vfat -o ro,loop "$SNAP_IMG" "$MNT_POINT" 2>/dev/null; then
+			CONFIG_CHANGED=0
+
+			# Verify & extract wpa_supplicant.conf
+			if [ -s "$MNT_POINT/wpa_supplicant.conf" ]; then
+				if file_changed "$MNT_POINT/wpa_supplicant.conf" /tmp/wpa_supplicant.conf; then
+					cp -f "$MNT_POINT/wpa_supplicant.conf" /tmp/wpa_supplicant.conf
+					log "Extracted updated wpa_supplicant.conf"
+					CONFIG_CHANGED=1
+				fi
+			fi
+
+			# Verify & extract config.txt
+			if [ -s "$MNT_POINT/config.txt" ]; then
+				if file_changed "$MNT_POINT/config.txt" /tmp/config.txt; then
+					cp -f "$MNT_POINT/config.txt" /tmp/config.txt
+					log "Extracted updated config.txt"
+					CONFIG_CHANGED=1
+				fi
+			fi
+
+			umount "$MNT_POINT" 2>/dev/null || true
+
+			# If valid configuration changes were found, apply them to runtime
+			if [ "$CONFIG_CHANGED" -eq 1 ]; then
+				log "Configuration changed! Reloading network in background..."
+				/etc/init.d/S40network reload >/dev/null 2>&1 &
+			fi
+
+			# Sync valid snapshot to PSRAM reserved memory (0x499c0000)
+			if dd if="$SNAP_IMG" of=/dev/mem bs=4096 seek=$PSRAM_SEEK_BLOCKS count=64 conv=notrunc 2>/dev/null; then
+				log "PSRAM boot reservation (0x499c0000) updated"
+			fi
+		else
+			log "WARNING: Snapshot mount failed (FAT corruption or incomplete write). Ignoring."
+		fi
+
+		rm -f "$SNAP_IMG" 2>/dev/null || true
+
+		LAST_HASH="$NEW_HASH"
+		echo "$LAST_HASH" > "$LAST_HASH_FILE"
+	fi
+done

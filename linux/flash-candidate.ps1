@@ -14,6 +14,8 @@ param(
 
 	[switch] $AllowCandidateWrite,
 
+	[switch] $PreserveBoot,
+
 	[string] $ExpectedStockSha256 = "229459f251eaf6222f0c07968702d72a3818e520da1788ce465027d969020c24"
 )
 
@@ -55,9 +57,11 @@ $artifacts = @(
 	@{ Address = "0x10000"; Name = "boot-shim.bin"; Max = 0x80000 },
 	@{ Address = "0x90000"; Name = "Image"; Max = 0x780000 },
 	@{ Address = "0x810000"; Name = "rootfs.squashfs"; Max = 0x700000 },
-	@{ Address = "0xf10000"; Name = "easystick-stamp-p4.dtb"; Max = 0x10000 },
-	@{ Address = "0xf40000"; Name = "boot.img"; Max = 0x40000 }
+	@{ Address = "0xf10000"; Name = "easystick-stamp-p4.dtb"; Max = 0x10000 }
 )
+if (-not $PreserveBoot) {
+	$artifacts += @{ Address = "0xf40000"; Name = "boot.img"; Max = 0x40000 }
+}
 $paths = @{}
 foreach ($artifact in $artifacts) {
 	$paths[$artifact.Name] = Assert-File $artifact.Name $artifact.Max

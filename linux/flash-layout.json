@@ -27,7 +27,8 @@
     { "name": "rootfs", "offset": "0x710000", "size_bytes": "0x800000", "kind": "squashfs-mtd-rom", "artifact": true, "power_of_two": true },
     { "name": "dtb", "offset": "0xf10000", "size_bytes": "0x010000", "kind": "flattened-device-tree", "artifact": true },
     { "name": "crashlog", "offset": "0xf20000", "size_bytes": "0x020000", "kind": "writable-crash-capsule", "artifact": false },
-    { "name": "tail-reserve", "offset": "0xf40000", "size_bytes": "0x0c0000", "kind": "reserved" }
+    { "name": "boot", "offset": "0xf40000", "size_bytes": "0x040000", "kind": "fat-boot-image", "artifact": true },
+    { "name": "tail-reserve", "offset": "0xf80000", "size_bytes": "0x080000", "kind": "reserved" }
   ],
   "invariants": {
     "one_hp_core": true,

@@ -1,0 +1,24 @@
+#!/bin/sh
+# Start the EasyStick boot partition sync & runtime reload daemon
+
+case "${1:-start}" in
+	start)
+		echo "Starting easystick-bootsync daemon..."
+		/usr/sbin/easystick-bootsync &
+		;;
+	stop)
+		echo "Stopping easystick-bootsync daemon..."
+		killall easystick-bootsync 2>/dev/null || true
+		;;
+	restart)
+		killall easystick-bootsync 2>/dev/null || true
+		sleep 1
+		/usr/sbin/easystick-bootsync &
+		;;
+	*)
+		echo "Usage: $0 {start|stop|restart}" >&2
+		exit 1
+		;;
+esac
+
+exit 0

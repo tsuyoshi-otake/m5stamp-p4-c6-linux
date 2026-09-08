@@ -265,6 +265,10 @@
 		#size-cells = <1>;
 		ranges;
 		/* Kept small until NOMMU pool sizing is measured on Stamp-P4. */
+		boot_partition_res: boot-partition-res@499c0000 {
+			reg = <0x499c0000 0x00040000>;
+		};
+
 		linux_nommu_pool: nommu-userspace-pool@49a00000 {
 			compatible = "linux,nommu-userspace-pool";
 			reg = <0x49a00000 0x00600000>;

@@ -57,7 +57,7 @@ Boots out-of-the-box into **Wi-Fi SoftAP mode** with automatic DHCP, Dropbear SS
 
 ### 1. Download Release Package
 
-Download the latest release archive `m5stamp-p4-c6-linux-smp-v0.1.8.zip` from the [Releases](https://github.com/tsuyoshi-otake/m5stamp-p4-c6-linux/releases) page and extract it.
+Download the latest release archive `m5stamp-p4-c6-linux-smp-v0.2.0.zip` from the [Releases](https://github.com/tsuyoshi-otake/m5stamp-p4-c6-linux/releases) page and extract it.
 
 ### 2. Flash using `esptool.py`
 
@@ -92,7 +92,9 @@ esptool.py --chip esp32p4 --port COM10 --baud 460800 \
 ### 3. Connect & Use
 
 1. After flashing, the Stamp-P4 automatically reboots and starts SoftAP within ~10 seconds.
-2. **USB Mass Storage Configuration (Optional)**: Plug the board via USB Type-A into your PC. A 256KB FAT drive will appear, containing `cmdline.txt`, `config.txt`, and `wpa_supplicant.conf`. You can edit them using any text editor to configure Wi-Fi networks or boot arguments without booting Linux.
+2. **USB Mass Storage Configuration & Instant Reflection**: Plug the board via USB Type-A into your PC. A 256KB FAT drive (volume `EASYSTICK`) will appear, containing `cmdline.txt`, `config.txt`, and `wpa_supplicant.conf`. You can edit them using any text editor to configure Wi-Fi networks or boot arguments.
+   - **Instant Dynamic Reflection**: When you save changes to `wpa_supplicant.conf` or `config.txt` on the USB drive, the background `easystick-bootsync` daemon automatically detects the changes, debounces the writes, syncs to PSRAM, and dynamically reconfigures the Wi-Fi connection without requiring a reboot!
+   - **Reboot Persistence**: The valid FAT snapshot is continuously retained in reserved PSRAM (`0x499c0000`) and restored upon boot, ensuring your configurations survive across reboots.
 3. On your laptop or smartphone, connect to Wi-Fi SSID **`m5`** using password **`m5stamp-p4-c6`**.
 4. Your device will receive an IP address such as `192.168.4.2`.
 5. Open a terminal and SSH into the board:

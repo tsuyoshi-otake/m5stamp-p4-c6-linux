@@ -61,6 +61,37 @@
 #include "m2_sdmmc.h"
 #endif
 
+#include "hal/usb_wrap_ll.h"
+#include "soc/usb_wrap_struct.h"
+#include "esp_rom_gpio.h"
+#include "soc/gpio_sig_map.h"
+#include "soc/gpio_pins.h"
+#include "driver/gpio.h"
+
+static void easystick_usb_otg_init(void)
+{
+	ESP_LOGI("easystick-otg", "enabling USB OTG 1.1 (FS GPIO26/27) clock and PHY...");
+	_usb_wrap_ll_enable_bus_clock(true);
+	_usb_wrap_ll_reset_register();
+	usb_wrap_ll_phy_set_defaults(&USB_WRAP);
+	usb_wrap_ll_phy_select(&USB_WRAP, 1);
+
+	/* Force USB OTG 1.1 into peripheral device mode with active VBUS session */
+	esp_rom_gpio_connect_in_signal(GPIO_MATRIX_CONST_ONE_INPUT, USB_OTG11_IDDIG_PAD_IN_IDX, false);
+	esp_rom_gpio_connect_in_signal(GPIO_MATRIX_CONST_ONE_INPUT, USB_SRP_BVALID_PAD_IN_IDX, false);
+	esp_rom_gpio_connect_in_signal(GPIO_MATRIX_CONST_ONE_INPUT, USB_OTG11_VBUSVALID_PAD_IN_IDX, false);
+	esp_rom_gpio_connect_in_signal(GPIO_MATRIX_CONST_ZERO_INPUT, USB_OTG11_AVALID_PAD_IN_IDX, false);
+
+	/* Configure drive capability for USB D- (GPIO26) and D+ (GPIO27) */
+	gpio_set_drive_capability(GPIO_NUM_26, GPIO_DRIVE_CAP_3);
+	gpio_set_drive_capability(GPIO_NUM_27, GPIO_DRIVE_CAP_3);
+
+	/* Keep D+ pullup OFF during boot so host does not enumerate prematurely */
+	USB_WRAP.otg_conf.pad_pull_override = 1;
+	USB_WRAP.otg_conf.dp_pullup = 0;
+	gpio_pullup_dis(GPIO_NUM_27);
+}
+
 static const char *TAG = "easystick-boot";
 
 /* Patched ESP-IDF vectors.S C13 hook; must stay linked (zero = inert). */
@@ -69,6 +100,7 @@ volatile uint32_t c13_frame_patched IRAM_DATA_ATTR;
 
 #define KERNEL_LOAD_PA 0x48000000u
 #define DTB_LOAD_PA 0x48800000u
+#define BOOT_LOAD_PA 0x499c0000u
 #define MMU_PAGE_BYTES 0x10000u
 #define RISCV_IMAGE_MAGIC 0x5643534952ULL
 
@@ -448,6 +480,8 @@ void app_main(void)
 	/* M2 opts in to the raw Slot 1 bootstrap; M1 keeps the proven path. */
 	easystick_m2_sdmmc_init();
 	#endif
+	/* Enable Full-Speed USB OTG (DWC2) for Type-A USB Gadget */
+	easystick_usb_otg_init();
 	const esp_partition_t *kernel = esp_partition_find_first(
 		ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_ANY, "kernel");
 	const esp_partition_t *dtb_part = esp_partition_find_first(
@@ -464,6 +498,22 @@ void app_main(void)
 		fatal_restart("kernel copy failed");
 	if (load_partition(dtb_part, DTB_LOAD_PA, dtb_part->size) != ESP_OK)
 		fatal_restart("DTB copy failed");
+
+	const esp_partition_t *boot_part = esp_partition_find_first(
+		ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_ANY, "boot");
+	if (boot_part) {
+		uint32_t boot_bytes = boot_part->size;
+		if (boot_bytes > 0x40000u)
+			boot_bytes = 0x40000u;
+		if (load_partition(boot_part, BOOT_LOAD_PA, boot_bytes) == ESP_OK) {
+			ESP_LOGI(TAG, "boot partition loaded to PSRAM 0x%08x (%" PRIu32 " bytes)",
+				 BOOT_LOAD_PA, boot_bytes);
+		} else {
+			ESP_LOGW(TAG, "boot partition copy to PSRAM failed; continuing");
+		}
+	} else {
+		ESP_LOGW(TAG, "boot partition not found in partition table");
+	}
 
 	const void *rootfs_va = NULL;
 	esp_partition_mmap_handle_t rootfs_handle = 0;

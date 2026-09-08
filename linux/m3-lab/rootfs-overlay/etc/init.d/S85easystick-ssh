@@ -60,7 +60,15 @@ start() {
 	fi
 }
 
+restart() {
+	killall inetd 2>/dev/null || true
+	sleep 1
+	start
+}
+
 case "${1:-start}" in
 	start) start ;;
-	*) echo "Usage: $0 start" >&2; exit 1 ;;
+	restart|reload) restart ;;
+	stop) killall inetd 2>/dev/null || true ;;
+	*) echo "Usage: $0 {start|stop|restart|reload}" >&2; exit 1 ;;
 esac
