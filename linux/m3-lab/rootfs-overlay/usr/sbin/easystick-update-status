@@ -19,7 +19,9 @@ PSRAM_SEEK_BLOCKS=301504 # 0x499c0000 / 4096
 # If IP is not provided or is none, try to read from wlan0 if status is not explicitly DISCONNECTED
 if [ "$IP" = "none" ] || [ -z "$IP" ]; then
 	if [ "$STATUS" = "CONNECTED" ] || [ "$STATUS" = "AP_ACTIVE" ]; then
-		IP=$(ifconfig wlan0 2>/dev/null | grep 'inet addr:' | cut -d: -f2 | cut -d' ' -f1)
+		ifconfig wlan0 > /tmp/.ifc 2>/dev/null
+		IP=$(grep 'inet addr:' /tmp/.ifc 2>/dev/null | cut -d: -f2 | cut -d' ' -f1)
+		rm -f /tmp/.ifc
 		[ -z "$IP" ] && IP="none"
 	fi
 fi
@@ -27,11 +29,15 @@ fi
 # Get MAC address of wlan0
 MAC="unknown"
 if [ -r /sys/class/net/wlan0/address ]; then
-	MAC=$(cat /sys/class/net/wlan0/address 2>/dev/null || echo "unknown")
+	read MAC < /sys/class/net/wlan0/address 2>/dev/null || MAC="unknown"
 fi
 
 # Get current system uptime
-UPTIME=$(awk '{print int($1)}' /proc/uptime 2>/dev/null || echo "0")
+UPTIME="0"
+if [ -r /proc/uptime ]; then
+	read UPTIME _ < /proc/uptime
+	UPTIME="${UPTIME%%.*}"
+fi
 
 # If SSID not provided, try to detect from wpa_supplicant.conf or iw
 if [ "$SSID" = "none" ] || [ -z "$SSID" ]; then
@@ -44,7 +50,10 @@ fi
 # Check if status has actually changed compared to /tmp/.last_status
 # (Avoids redundant writes, ensures zero extra I/O and zero unnecessary CPU load)
 STATUS_STR="${STATUS}|${IP}|${NETMASK}|${GATEWAY}|${SSID}|${MODE}"
-LAST_STATUS=$(cat /tmp/.last_status 2>/dev/null || echo "")
+LAST_STATUS=""
+if [ -f /tmp/.last_status ]; then
+	read LAST_STATUS < /tmp/.last_status
+fi
 if [ "$STATUS_STR" = "$LAST_STATUS" ]; then
 	exit 0
 fi
@@ -70,7 +79,9 @@ EOF
 	umount "$MNT_POINT" 2>/dev/null || true
 
 	# Update hash file so bootsync daemon does not misinterpret this as host write
-	NEW_HASH=$(md5sum "$BOOT_IMG" 2>/dev/null | cut -d' ' -f1)
+	md5sum "$BOOT_IMG" > /tmp/.bh 2>/dev/null
+	read NEW_HASH _ < /tmp/.bh
+	rm -f /tmp/.bh
 	if [ -n "$NEW_HASH" ]; then
 		echo "$NEW_HASH" > "$LAST_HASH_FILE"
 	fi

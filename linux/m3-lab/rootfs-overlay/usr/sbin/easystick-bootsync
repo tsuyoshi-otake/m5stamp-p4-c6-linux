@@ -13,18 +13,33 @@ log() {
 	echo "[bootsync] $1"
 }
 
-get_hash() {
+get_boot_hash() {
 	if [ -f "$BOOT_IMG" ]; then
-		md5sum "$BOOT_IMG" 2>/dev/null | cut -d' ' -f1
+		md5sum "$BOOT_IMG" > /tmp/.cur_boot_hash 2>/dev/null
+		read CURRENT_HASH _ < /tmp/.cur_boot_hash
+		rm -f /tmp/.cur_boot_hash
 	else
-		echo ""
+		CURRENT_HASH=""
+	fi
+}
+
+get_check_hash() {
+	if [ -f "$BOOT_IMG" ]; then
+		md5sum "$BOOT_IMG" > /tmp/.chk_boot_hash 2>/dev/null
+		read CHECK_HASH _ < /tmp/.chk_boot_hash
+		rm -f /tmp/.chk_boot_hash
+	else
+		CHECK_HASH=""
 	fi
 }
 
 file_changed() {
 	[ ! -f "$2" ] && return 0
-	_h1=$(md5sum "$1" 2>/dev/null | cut -d' ' -f1)
-	_h2=$(md5sum "$2" 2>/dev/null | cut -d' ' -f1)
+	md5sum "$1" > /tmp/.h1 2>/dev/null
+	md5sum "$2" > /tmp/.h2 2>/dev/null
+	read _h1 _ < /tmp/.h1
+	read _h2 _ < /tmp/.h2
+	rm -f /tmp/.h1 /tmp/.h2
 	[ "$_h1" != "$_h2" ]
 }
 
@@ -36,7 +51,7 @@ while [ ! -f "$BOOT_IMG" ]; do
 done
 
 # Initialize reference hash
-CURRENT_HASH=$(get_hash)
+get_boot_hash
 LAST_HASH="$CURRENT_HASH"
 echo "$LAST_HASH" > "$LAST_HASH_FILE"
 log "Daemon started. Monitoring $BOOT_IMG (initial hash: $LAST_HASH)"
@@ -45,9 +60,10 @@ while true; do
 	sleep 1
 	# Re-read last hash in case easystick-update-status updated it
 	if [ -f "$LAST_HASH_FILE" ]; then
-		LAST_HASH=$(cat "$LAST_HASH_FILE" 2>/dev/null || echo "$LAST_HASH")
+		read LAST_HASH _ < "$LAST_HASH_FILE"
 	fi
-	NEW_HASH=$(get_hash)
+	get_boot_hash
+	NEW_HASH="$CURRENT_HASH"
 
 	# If hash changed, host started writing
 	if [ -n "$NEW_HASH" ] && [ "$NEW_HASH" != "$LAST_HASH" ]; then
@@ -57,7 +73,7 @@ while true; do
 		SETTLE_COUNT=0
 		while [ "$SETTLE_COUNT" -lt 3 ]; do
 			sleep 1
-			CHECK_HASH=$(get_hash)
+			get_check_hash
 			if [ "$CHECK_HASH" = "$NEW_HASH" ]; then
 				SETTLE_COUNT=$((SETTLE_COUNT + 1))
 			else
