@@ -115,7 +115,7 @@ esptool.py --chip esp32p4 --port COM10 --baud 460800 \
 2. **Optional USB Mass Storage Configuration**: If using the [EasyStick carrier](#optional-hardware-easystick-usb-mass-storage-carrier), disconnect the Stamp-P4 USB-C cable after flashing, then plug the carrier's USB Type-A connection into your PC. Do not power USB-A and USB-C simultaneously. A 256KB FAT drive (volume `EASYSTICK`) will appear with `cmdline.txt`, `config.txt`, and `wpa_supplicant.conf`. Without this carrier or equivalent USB wiring, skip this step and use Wi-Fi/SSH or the USB-C serial console.
    - Edit and save the configuration, then use the operating system's **Eject / Safely Remove** action. The host-issued SCSI eject transfers ownership of the image back to Linux; only then does `easystick-bootsync` validate the FAT snapshot and reload the network.
    - Do not reconnect or remove power until the serial log reports `USB storage reattached`. Invalid or incomplete FAT images are rejected and the previous runtime configuration remains active.
-   - Live network status is available as `/tmp/easystick-status.txt` over SSH or serial. Linux deliberately does not update `status.txt` inside the FAT image while that image is owned by the USB host.
+   - Live network status is available as `/tmp/easystick-status.txt` over SSH or serial. The exported USB drive is strictly dedicated to boot configuration (`cmdline.txt`, `config.txt`, `wpa_supplicant.conf`).
    - Imported settings are applied immediately and staged in PSRAM. Reboot the board normally to commit the validated image to the inactive flash slot. The boot shim verifies the image CRC, switches metadata only after readback succeeds, and retains the previous slot if power is lost during the flash update.
    - Power loss before that reboot discards the staged change. Wait for `boot update committed` in the serial log before removing power if the setting must survive the next boot.
 3. On your laptop or smartphone, connect to Wi-Fi SSID **`m5`** using password **`m5stamp-p4-c6`**.
@@ -487,20 +487,20 @@ This compiles:
 
 ```text
 Raw 16MB Monolithic Image:
-bba9687b5cfb48a09762323fb4e3df41429ac330d9533e111cd04b5009d75a31  m5stamp-p4-c6-linux-smp-v0.2.1-16mb.bin.gz
-0c592ad4706d0619a400eac5d8195976dc90a9d96ede35441fbbf38b28fd1402  m5stamp-p4-c6-linux-smp-v0.2.1-16mb.bin (uncompressed)
+40a2eeb0352325dd281ede298f7302806c4f981e719b6921ec8f772539e76cd4  m5stamp-p4-c6-linux-smp-v0.2.1-16mb.bin.gz
+a7092726773c069315370ad75072b6f1a5d394cfc3085b8de8bad7d7139b02c2  m5stamp-p4-c6-linux-smp-v0.2.1-16mb.bin (uncompressed)
 
 Partition Archive:
-9bc86d965ed56c9682480d22c1fdea718f58b7afe824a37377831fb1fc023505  m5stamp-p4-c6-linux-smp-v0.2.1.zip
+a58898b681f8d4f1c48550b0f455f23bab569713ed510aa4aea4985bff11b6fb  m5stamp-p4-c6-linux-smp-v0.2.1.zip
 
 Individual Partitions:
-b3023138043f2fe666dc699f91edc94a27baf9236c70d9008992cd6977983e10  bootloader.bin
-7937656f29960d53b63010b51836e233d092e067e320cde5778ec43e04218870  partition-table.bin
-b263efdfd2f412eb5fa408350c44b1337b3c06ea9038b3929d75b846a8fa95ad  boot-shim.bin
-0e46f0032a90b7dfe88fb66dbb94e98ae8730e7fc002d52b56da6735dbd435b2  Image
-2b9dbd914944b5d3058bbfa7501a7b082cf9f40cc64c58f3a2de8a3c21d07a0a  rootfs.squashfs
-cda3cbe1f944e5c6f5dd25dcca2017158cb3248542f8068c8a9bdfbfd9944989  easystick-stamp-p4.dtb
-6ffa8d1e20dc703ee2066d293875785d83f706afff1d5370a3ba6ab6195392ab  boot.img
+62aa88ee34366eb99a4440a8989e091e24f763feeaee5eac15ebc2041deb1fe4  bootloader.bin
+b242c213fa404d793fb8efabe7c85ec06fc54a654c9ca3297d287413d321ce48  partition-table.bin
+889cfdbfe82d8eab4da5706a059f3a681114b162c48acca019a4d72f8acc24e9  boot-shim.bin
+1a500a905c990b46dac13e508a6d9cd6df5bdc60fc4e4065e9ea12b314e04720  Image
+41e2f6d0ca9d5b378fd165a13ab53b69660a68c6949410704e7d4ca0039a2e18  rootfs.squashfs
+7a37f953e2cd48de1c3241f4ecd3522f63520b2e53f6b6ceb8fdcf29c6d83d9c  easystick-stamp-p4.dtb
+025a7a9ead81e18d6a89c9c3886566270cf990dfbeec1d5d2830f81d1ebc96eb  boot.img
 ```
 
 ---
