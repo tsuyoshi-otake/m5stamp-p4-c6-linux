@@ -1,0 +1,2 @@
+ded24db7f214f068b369dbf78dbc2e76bff63fb29e8bce0c223440224a2bf281  EasyStick_StampP4_Rev0.15_WIP_Schematic.pdf
+2eb754f10094348dfffd9ea51a8b5968ab54e99188a360e17a60941669a08d9f  EasyStick_StampP4_Rev0.15_WIP_Gerber.zip

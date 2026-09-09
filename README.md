@@ -30,7 +30,7 @@ Boots out-of-the-box into **Wi-Fi SoftAP mode** with automatic DHCP, Dropbear SS
   - **`vi` Editor**: Full-featured BusyBox `vi` with search, undo, visual buffers, and syntax assistance.
   - **MicroPython (`python3`)**: MicroPython v1.22.2 compiled with bFLT Load-to-Ram (`-r`) and position-independent code (`-fPIC`) for stable NOMMU execution.
   - **Writable Filesystem (OverlayFS)**: While the root filesystem is SquashFS (read-only for durability), RAM-backed OverlayFS is mounted on `/home`, `/root`, and `/var/lib` so users can create and edit scripts during the current boot. Its contents are lost when power is removed.
-  - **USB Mass Storage (`/boot` drive)**: The Type-A USB port (GPIO26/27) exposes a FAT-formatted 256KB `/boot` partition directly to Windows/Mac/Linux hosts. A safe eject applies validated settings immediately; a normal reboot commits the image through redundant A/B flash slots.
+  - **USB Mass Storage (`/boot` drive, optional hardware)**: With the [optional EasyStick carrier](#optional-hardware-easystick-usb-mass-storage-carrier), its Type-A USB connection (GPIO26/27) exposes a FAT-formatted 256KB `/boot` configuration drive to Windows/Mac/Linux hosts. A safe eject applies validated settings immediately; a normal reboot commits the image through redundant A/B flash slots.
 - **Kernel & SoC Stabilization**:
   - Full-Speed DWC2 USB OTG driver hardened with PIO mode and dedicated TX FIFO empty interrupt management, eliminating descriptor DMA coherency panics and enabling stable multi-block transfers.
   - Signal delivery `mcause` hardening (`0014`).
@@ -112,7 +112,7 @@ esptool.py --chip esp32p4 --port COM10 --baud 460800 \
 ### 3. Connect & Use
 
 1. After flashing, the Stamp-P4 automatically reboots and starts SoftAP within ~10 seconds.
-2. **USB Mass Storage Configuration**: Plug the board via USB Type-A into your PC. A 256KB FAT drive (volume `EASYSTICK`) will appear with `cmdline.txt`, `config.txt`, and `wpa_supplicant.conf`.
+2. **Optional USB Mass Storage Configuration**: If using the [EasyStick carrier](#optional-hardware-easystick-usb-mass-storage-carrier), disconnect the Stamp-P4 USB-C cable after flashing, then plug the carrier's USB Type-A connection into your PC. Do not power USB-A and USB-C simultaneously. A 256KB FAT drive (volume `EASYSTICK`) will appear with `cmdline.txt`, `config.txt`, and `wpa_supplicant.conf`. Without this carrier or equivalent USB wiring, skip this step and use Wi-Fi/SSH or the USB-C serial console.
    - Edit and save the configuration, then use the operating system's **Eject / Safely Remove** action. The host-issued SCSI eject transfers ownership of the image back to Linux; only then does `easystick-bootsync` validate the FAT snapshot and reload the network.
    - Do not reconnect or remove power until the serial log reports `USB storage reattached`. Invalid or incomplete FAT images are rejected and the previous runtime configuration remains active.
    - Live network status is available as `/tmp/easystick-status.txt` over SSH or serial. Linux deliberately does not update `status.txt` inside the FAT image while that image is owned by the USB host.
@@ -130,6 +130,33 @@ esptool.py --chip esp32p4 --port COM10 --baud 460800 \
    vi hello.py
    python3 hello.py
    ```
+
+---
+
+## Optional Hardware: EasyStick USB Mass Storage Carrier
+
+The **EasyStick Stamp-P4 Rev0.15** carrier is an optional convenience board for
+using the USB mass-storage configuration drive without separately wiring the
+Stamp-P4's Full-Speed USB signals. It is not required for Linux boot, Wi-Fi,
+SSH, or the Stamp-P4 USB-C serial console; the Stamp-AddOn C6 and its SDIO
+connection are still required for Wi-Fi.
+
+- **Easy configuration from a PC**: plug the carrier's USB-A connection into
+  your computer to access the `EASYSTICK` drive with the release firmware.
+- **Separate USB functions**: the carrier routes GPIO26 (D−) / GPIO27 (D+)
+  for mass storage. The Stamp-P4's USB-C flashing/serial connection is not
+  this mass-storage port.
+- **Configuration storage, not a general-purpose USB disk**: the drive is
+  256KB; follow the safe-eject and normal-reboot procedure above to persist
+  changes. It does not expose the root filesystem or RAM-backed home directory.
+- **Open hardware files**: [schematic PDF, Gerber ZIP, checksums, and assembly
+  notes](board/hardware/README.md), licensed under MIT. Rev0.15 has been
+  manufactured and used successfully by the project owner.
+
+Use only one USB power input at a time. The carrier is a separate hardware
+option, not a required purchase or a component included in the firmware
+download. Equivalent hardware must provide the appropriate USB data, ground,
+power, and protection connections; GPIO wiring alone is not sufficient.
 
 ---
 
@@ -406,9 +433,12 @@ This was resolved by integrating three essential ESP32-P4 SoC hardening patches:
 
 ## Repository Structure
 
+Optional EasyStick Rev0.15 [schematics and PCB Gerbers](board/hardware/README.md)
+are available under the MIT License, with assembly and reproduction notes.
+
 ```text
 .
-├── board/                 # Hardware contract and pinout specifications
+├── board/                 # Hardware contract, pinouts, and MIT-licensed schematics/Gerbers
 ├── docs/                  # Architecture, troubleshooting, and post-mortem deep dives
 │   └── deep-dive-ssh-wedge-and-soc-hardening.md
 ├── linux/                 # Linux kernel, Buildroot, boot-shim, and integration
