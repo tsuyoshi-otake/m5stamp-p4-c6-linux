@@ -23,7 +23,7 @@ the lock and the submodules. The network-facing components are:
 
 | Component | Where it is pinned | Watch |
 |---|---|---|
-| Linux stable (6.18.y) | `linux_base` in `versions.lock.json` | stable releases, `linux-cve-announce` |
+| Linux stable (7.2.y) | `linux_base` in `versions.lock.json` | stable releases, `linux-cve-announce` |
 | Dropbear, wpa_supplicant, BusyBox, uClibc-ng | the Buildroot commit in `versions.lock.json` | Buildroot LTS point releases, upstream advisories |
 | ESP-Hosted NG (P4 driver and C6 firmware) | `esp_hosted_ng` in `versions.lock.json` | Espressif advisories |
 | ESP-IDF (boot shim, C6 build) | `esp_idf` in `versions.lock.json` | Espressif advisories |

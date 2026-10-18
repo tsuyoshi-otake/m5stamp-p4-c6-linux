@@ -4,9 +4,7 @@
 [![Platform](https://img.shields.io/badge/platform-ESP32--P4%20%2B%20ESP32--C6-orange.svg)](https://m5stack.com)
 [![CPU](https://img.shields.io/badge/SMP-Experimental%20Dual--Core%20RV32IMAC-yellow.svg)](https://github.com/tsuyoshi-otake/m5stamp-p4-c6-linux/releases)
 
-A reproducible RISC-V NOMMU Linux 6.18 distribution (SMP kernel; the shipped image runs on one core, dual-core is experimental, see below) for the **M5Stack Stamp-P4** carrier board paired with **Stamp-AddOn C6** (via 4-bit SDIO interface).
-
-> **Branch note (`kernel-7.2`)**: this branch carries a work-in-progress port to Linux 7.2.11 (`versions.lock.json`, `vendor/linux`, and the Buildroot kernel version are pinned to 7.2.11). All hardware-validation claims in this document were measured on 6.18.x images; 7.2.11 has not been validated on hardware.
+A reproducible RISC-V NOMMU Linux 7.2 distribution (SMP kernel; the shipped image runs on one core, dual-core is experimental, see below) for the **M5Stack Stamp-P4** carrier board paired with **Stamp-AddOn C6** (via 4-bit SDIO interface).
 
 Boots out-of-the-box into **Wi-Fi SoftAP mode** with automatic DHCP, Dropbear SSH server, BusyBox `vi`, MicroPython (`python3`), and a writable OverlayFS on `/home`, `/root`, and `/var/lib`.
 
@@ -21,7 +19,7 @@ Boots out-of-the-box into **Wi-Fi SoftAP mode** with automatic DHCP, Dropbear SS
 ## Key Features & Verified Hardware Capabilities
 
 - **SoC Target**: ESP32-P4 (Dual-Core RV32IMAC / ilp32, CPU clock 360 MHz as reported by the boot-shim, 32 MiB PSRAM, 16 MiB SPI Flash).
-- **SMP (experimental)**: The kernel is built with SMP (`Linux 6.18.57 #1 SMP riscv32 GNU/Linux`), but the shipped DTB boots with `maxcpus=1`, so only CPU0 is online (`/sys/devices/system/cpu/online` = `0`). With `maxcpus=2`, about one boot in five stalls during userland start (issue #5): CPU1 stops accepting any interrupt (timer and IPI stay pending and enabled) and the rest of the system waits on it. Adding `isolcpus=1` to the kernel command line avoided the stall in 17 of 17 boots and a 568 s soak, but leaves CPU1 almost unused; see `linux/tests/m3-lab-hardware-validation-2026-10-14.md`. A stalled board may need a re-flash over USB. `maxcpus` in `/boot/config.txt` is informational and is not read by anything.
+- **SMP (experimental)**: The kernel is built with SMP (`Linux 7.2.11 #1 SMP riscv32 GNU/Linux`), but the shipped DTB boots with `maxcpus=1`, so only CPU0 is online (`/sys/devices/system/cpu/online` = `0`). With `maxcpus=2` (measured on 6.18; not re-checked on 7.2), about one boot in five stalls during userland start (issue #5): CPU1 stops accepting any interrupt (timer and IPI stay pending and enabled) and the rest of the system waits on it. Adding `isolcpus=1` to the kernel command line avoided the stall in 17 of 17 boots and a 568 s soak, but leaves CPU1 almost unused; see `linux/tests/m3-lab-hardware-validation-2026-10-14.md`. A stalled board may need a re-flash over USB. `maxcpus` in `/boot/config.txt` is informational and is not read by anything.
 - **Wi-Fi Companion**: ESP32-C6 (M5Stack Stamp-AddOn C6) connected via 4-bit SDIO (5 MHz by default, up to 40 MHz with `sdio_mhz=`, see [SDIO clock](#c6-firmware-security-features--regulatory-notes)).
 - **Out-of-the-Box SoftAP**:
   - Broadcasts a per-device SSID **`m5-XXXX`** with a WPA2-PSK passphrase generated on first boot (see [Per-device credentials](#per-device-credentials)).
@@ -100,22 +98,23 @@ Every board gets its own credentials on first boot; no SSID or password is share
 
 ### 1. Download Release Package
 
-> **v0.2.5** is built and published the same way as v0.2.2 to v0.2.4: the assets
+> **v0.3.0** is built and published the same way as v0.2.2 to v0.2.5: the assets
 > are the CI build that was flashed and checked on hardware, and the tag run refuses
-> any asset whose hash is not in `linux/tests/v0.2.5-hardware-validation-2026-10-17.md`.
-> Changes since v0.2.4 (#34):
-> - Pico-style autorun: `main.py`, `main.sh` or a bFLT `main` saved on the USB
->   drive runs as `m5` at boot and restarts when a new version is saved
->   ([details](#5-autorun-from-the-usb-drive-pico-style)).  Changing only the
->   `autorun=` lines in `config.txt` does not reload Wi-Fi.
-> - MicroPython now has the unix port's standard modules (`time`, `socket`,
->   `json`, `asyncio`, ...); the previous build had only `os` and `sys`.
-> - About 65 more commands after login (`awk`, `less`, `top`, `free`, `tar`,
->   `wget`, `timeout`, ...) from `busybox-tools`, and an SSH login message that
->   lists them.  `timeout` is patched to work on NOMMU.
-> - Fixed: after Wi-Fi settings were changed from the drive, `/etc/resolv.conf`
->   was readable only by root until the next boot, so `m5` could not resolve
->   host names.
+> any asset whose hash is not in `linux/tests/v0.3.0-hardware-validation-2026-10-18.md`.
+> Changes since v0.2.5 (#36):
+> - The kernel moves from Linux 6.18.35 to **7.2.11**.  The board patches were
+>   ported to 7.2; the user-visible behaviour is meant to be the same as v0.2.5
+>   and the same hardware checks pass.
+> - Four fixes were needed on top of the port, all on paths that upstream does
+>   not test without an MMU: the NOMMU process-memory pool registers with the
+>   new reserved-memory API (the first 7.2 build stopped at boot), `/dev/mem`
+>   `mmap` works again on NOMMU (the drive save and `devmem` use it), the
+>   preemption model stays `PREEMPT_NONE` as on 6.18, and the Wi-Fi driver names
+>   `WQ_PERCPU` for its workqueues.
+> - Dual-core (`maxcpus=2`) was not re-checked on 7.2; it stays experimental.
+> - The 6.18 line was also updated to 6.18.57 and checked on hardware
+>   (`linux/tests/linux-6.18.57-hardware-validation-2026-10-18.md`, branch
+>   `kernel-6.18.57`).  It is kept as the fallback and is not released.
 >
 > **Known issue in v0.2.3 and earlier:** `vi` started without a file name freezes
 > the board until the watchdog resets it; start `vi` with a file name
@@ -126,8 +125,8 @@ Every board gets its own credentials on first boot; no SSID or password is share
 > the GPL corresponding source (`*-legal-info.tar.gz`, #31).
 
 Download either the monolithic 16MB raw flash image or the partition zip package from the [Releases](https://github.com/tsuyoshi-otake/m5stamp-p4-c6-linux/releases) page:
-- **`m5stamp-p4-c6-linux-smp-v0.2.5-16mb.bin.gz`**: Single 16MB raw flash image (simplest, flash to `0x0`).
-- **`m5stamp-p4-c6-linux-smp-v0.2.5.zip`**: Individual partition binaries with automated PowerShell flash script.
+- **`m5stamp-p4-c6-linux-smp-v0.3.0-16mb.bin.gz`**: Single 16MB raw flash image (simplest, flash to `0x0`).
+- **`m5stamp-p4-c6-linux-smp-v0.3.0.zip`**: Individual partition binaries with automated PowerShell flash script.
 
 ### 2. Flash using `esptool.py`
 
@@ -135,8 +134,8 @@ Connect the M5Stamp-P4 via its USB-C port to your computer. Identify your serial
 
 #### Option A: Monolithic 16MB Raw Image Flash (Recommended)
 ```bash
-gzip -d m5stamp-p4-c6-linux-smp-v0.2.5-16mb.bin.gz
-esptool.py --chip esp32p4 --port COM10 --baud 460800 write_flash 0x0 m5stamp-p4-c6-linux-smp-v0.2.5-16mb.bin
+gzip -d m5stamp-p4-c6-linux-smp-v0.3.0-16mb.bin.gz
+esptool.py --chip esp32p4 --port COM10 --baud 460800 write_flash 0x0 m5stamp-p4-c6-linux-smp-v0.3.0-16mb.bin
 ```
 
 #### Option B: Release PowerShell Script
@@ -170,7 +169,7 @@ esptool.py --chip esp32p4 --port COM10 --baud 460800 \
 | `0x002000` | `bootloader.bin` | ESP-IDF 1st stage bootloader |
 | `0x008000` | `partition-table.bin` | ESP32-P4 Flash partition table |
 | `0x010000` | `boot-shim.bin` | Secondary boot-shim (PSRAM, SDIO matrix, CPU1 release, jump to Linux) |
-| `0x090000` | `Image` | Linux 6.18 SMP RISC-V kernel binary |
+| `0x090000` | `Image` | Linux 7.2 SMP RISC-V kernel binary |
 | `0x810000` | `rootfs.squashfs` | Read-only SquashFS root filesystem with Buildroot userland |
 | `0x0f10000` | `easystick-stamp-p4.dtb` | Compiled Flattened Device Tree for Stamp-P4 |
 | `0x0f40000` | `boot.img` | 256KB FAT12 `/boot` slot 0 exposed via USB Mass Storage (Type-A) |
@@ -415,7 +414,7 @@ Launch the interactive REPL anytime by running `python3`:
 
 ```bash
 $ python3
-MicroPython v1.22.2 on 2026-10-17; linux [GCC 13.4.0] version
+MicroPython v1.22.2 on 2026-10-18; linux [GCC 13.4.0] version
 Use Ctrl-D to exit, Ctrl-E for paste mode
 >>> 2 ** 16
 65536
@@ -423,7 +422,7 @@ Use Ctrl-D to exit, Ctrl-E for paste mode
 >>> print("Platform:", sys.platform)
 Platform: linux
 >>> print("Version :", sys.version)
-Version : 3.4.0; MicroPython v1.22.2 on 2026-10-17
+Version : 3.4.0; MicroPython v1.22.2 on 2026-10-18
 >>> [x * x for x in range(8)]
 [0, 1, 4, 9, 16, 25, 36, 49]
 ```
@@ -625,30 +624,30 @@ cd m5stamp-p4-c6-linux
 
 This compiles:
 1. ESP-IDF `boot-shim` for dual-core CPU1 release and SDIO initialization
-2. Linux 6.18 SMP kernel with RISC-V P4 patches and Stamp-P4 Device Tree
+2. Linux 7.2 SMP kernel with RISC-V P4 patches and Stamp-P4 Device Tree
 3. Buildroot root filesystem with Busybox (vi, udhcpd), Dropbear SSH, MicroPython, and ESP-Hosted-NG (`esp32_sdio.ko`)
 4. Combined image artifacts ready for flashing
 
 ---
 
-## SHA-256 Checksums (v0.2.5)
+## SHA-256 Checksums (v0.3.0)
 
 ```text
 Raw 16MB Monolithic Image:
-1081d463e45fc2074124fbcc3e055ac608770a9e86f0f77255cd0837fc094d91  m5stamp-p4-c6-linux-smp-v0.2.5-16mb.bin.gz
-58de1b7bfe5cc0095d728e078134e07776e4f659f6c89fe3cb807517538d734b  m5stamp-p4-c6-linux-smp-v0.2.5-16mb.bin (uncompressed)
+5947bde55beb0dee0ae3700e297e79826a5923c11180f01c2b57a0380cb9bb24  m5stamp-p4-c6-linux-smp-v0.3.0-16mb.bin.gz
+be3d392529ec421e581d0900c34ed562d10de1f83e3fbf0e110b206b7f0ad726  m5stamp-p4-c6-linux-smp-v0.3.0-16mb.bin (uncompressed)
 
 Partition Archive:
-3c9349822d915ea5f37e077c12162286e9292e8174b88dd6b19f2770324336c0  m5stamp-p4-c6-linux-smp-v0.2.5.zip
+13b2ffc74727b8932ca589357c819543cf707d305ba74043068e7cd41b318680  m5stamp-p4-c6-linux-smp-v0.3.0.zip
 
 Individual Partitions:
-bb3b7a865118960ac5668dd69b3c56a0e06d7350455b4270ddbf97347fc4bd98  bootloader.bin
+d27ee1a10a0da3b717250e3eeb92898ea777090bb3625ae5e594f0f10f12db23  bootloader.bin
 7937656f29960d53b63010b51836e233d092e067e320cde5778ec43e04218870  partition-table.bin
-4c5b438c339df936b9456e6588b642eb0c4eba779a080333ddd3555c8c135ef3  boot-shim.bin
-10a8a1505c6f9836932c49e32e17d8ad0a7ae61205f43ee28cd7c384d301337e  Image
-57157678ce36b2aa0bc507c3335b31fa70dc0ed71fdc0d97dc4fe4cf76c3af83  rootfs.squashfs
+2d077704bcf07451b9555cfb7c17a523d83f7aab28e2b7de9f349b06c0a35fb9  boot-shim.bin
+d5e8ee3cd74d60e75741952635a1ada763691c687b9afcf6aa6c601b39f72688  Image
+7843498f22f4c1ab250f7d6e271f24153c5b2d7577d9eeb31e82b0e696c18869  rootfs.squashfs
 a12b18e1347ade36c499c79338ff7125bd4140bf56c64ecfedce8f93b4d3a852  easystick-stamp-p4.dtb
-62d9816fa7156d42cf2c9752f2804e69345109486a15f416925b5ca1a9bcc992  boot.img
+c834953c62d30ae35c946f1d2dd8f16dd52f1959f31d7c294e66ad00922defbc  boot.img
 ```
 
 ---
@@ -659,7 +658,7 @@ The images contain third-party software under its own licenses. Corresponding so
 
 | Component | License |
 |---|---|
-| Linux 6.18.57 + patches, `esp32_sdio.ko` | GPL-2.0 |
+| Linux 7.2.11 + patches, `esp32_sdio.ko` | GPL-2.0 |
 | BusyBox | GPL-2.0 |
 | uClibc-ng | LGPL-2.1 |
 | Dropbear | MIT |

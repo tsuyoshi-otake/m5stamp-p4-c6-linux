@@ -5,7 +5,7 @@ repository's index and `../versions.lock.json`:
 
 | Path | Purpose |
 | --- | --- |
-| `linux/` | Linux v6.18.35 base for the RV32 NOMMU port |
+| `linux/` | Linux v7.2.11 base for the RV32 NOMMU port |
 | `buildroot/` | Buildroot 2025.02.15 rootfs and toolchain framework |
 | `esp-idf/` | ESP-IDF v5.5.3 P4 boot-shim and C6 firmware framework |
 | `esp-hosted/` | ESP-Hosted-NG SDIO transport |
