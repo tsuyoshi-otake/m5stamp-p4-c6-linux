@@ -96,8 +96,50 @@ applied, and `CONFIG_FEATURE_SU_SYSLOG=y` in the busybox-su `.config`.
 The drive's `config.txt` was back to its value before the tests (md5
 unchanged) and no key file was left on it.
 
-Each login also logs `dropbear: wtmpx_write: problem opening /var/log/wtmp`,
-as in v0.3.1: the image has no wtmp/utmp and no `who`/`last`.
+Each login also logged `dropbear: wtmpx_write: problem opening /var/log/wtmp`,
+as in v0.3.1: the image had no wtmp/utmp and no `who`/`last`.  That is
+fixed below.
+
+## Login records (2026-10-19)
+
+bc6fcca on `main`, local build `issue37-e`, flashed the same way:
+
+```
+206b844ac20b92d7ad9779ed2f19e5252f906bc56eef8300e676c62be357a494  bootloader.bin
+7937656f29960d53b63010b51836e233d092e067e320cde5778ec43e04218870  partition-table.bin
+582f3a5624e96321298e4ed8aafe6186a3872f38b5cb98344ec446f4cf39de60  boot-shim.bin
+17f6ab23ab317a6f9b40c3d95f946258bfbc4877a41421d71bcb991abc202ce3  Image
+b03d3817d1419fa83690e7a3e8dd2d0270a6b938331f48cc70304a3f3d67f365  rootfs.squashfs
+a12b18e1347ade36c499c79338ff7125bd4140bf56c64ecfedce8f93b4d3a852  easystick-stamp-p4.dtb
+fad995bf9548815f6ef7430a1e5f2d3d7b0fef13ddfd5b14c83b7aaa89d118a1  boot.img
+```
+
+Before the change, creating the two files by hand on the `issue37-c` image
+was enough for Dropbear to record a login (384-byte records, 768 bytes per
+login and logout) and the warning stopped.  `/tmp` (and so `/var/log`) is
+`/dev/ram0`, a 1979 KB ext2 ramdisk with 1709 KB free, shared with `/home`.
+
+| Check | Result |
+|---|---|
+| Boot | `check-boot-log.py` 11/11; `/var/run/utmp`, `/var/log/wtmp`, `/var/log/wtmp.1` empty, `-rw-rw-r-- root utmp` |
+| Two terminal sessions held, commands run as m5 from a third connection | `who` and `w` list both (`pts/0`, `pts/1`, login time, client address); `users` prints `m5 m5`; `uptime` says `2 users`; `last` shows both `still logged in` |
+| After both exit | `who` prints nothing; `last` shows them with logout times |
+| Commands run without a terminal (`ssh host cmd`) | not recorded, as in OpenSSH |
+| Rotation: 2 + 18 + 18 paced logins (72 records, 29184 bytes), then 8 logins at once | rotated once inside the burst: `wtmp.1` 32640 bytes (85 records), `wtmp` 2688 bytes (7 records); 85 + 7 = 92, every record kept, both sizes multiples of 384; no `wtmpx` warning in `/run/messages`; both files still `root:utmp 0664` |
+| `last -f /var/log/wtmp.1` as m5 | 46 logins (2 + 36 + 8) |
+| m5 writing `wtmp` or `wtmp.1` | `Permission denied` |
+
+The first build of this change (`issue37-d`) renamed `wtmp` to `wtmp.1`
+instead.  On the board every rename failed with `Operation not permitted`
+and `wtmp` grew past the limit: the Dropbear session process runs as the
+user (`Uid: 1000 1000 1000 1000`, `Gid: 1000 1000 43 1000`, no
+capabilities) and switches its effective group to `utmp` only while it
+writes the records, so it cannot rename in the sticky `/tmp`.  The patch
+now copies `wtmp` over `wtmp.1` and empties it, under `flock()`.
+
+BusyBox inetd stops listening for 60 s after 20 connections within a
+minute (`inetd.conf`, #25), so the logins above were paced; an unpaced
+first try hit `22/tcp: too many connections, pausing` as designed.
 
 ## Not covered
 
