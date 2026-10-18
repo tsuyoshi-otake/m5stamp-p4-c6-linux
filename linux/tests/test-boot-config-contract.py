@@ -121,6 +121,39 @@ def main() -> None:
     # Password and keys are applied live by bootsync and at boot by S05.
     assert ". /usr/lib/easystick/credentials.sh" in bootsync
     assert ". /usr/lib/easystick/credentials.sh" in s05
+
+    # #37: root over SSH is key-only (-g kept, -w gone); a setuid su-only
+    # BusyBox and root_password= cover su.  The image shadow stays locked.
+    inetd = read("linux/m3-lab/rootfs-overlay/etc/inetd.conf")
+    assert "dropbear -i -g -r" in inetd
+    assert " -w " not in inetd
+    credentials = read(
+        "linux/m3-lab/rootfs-overlay/usr/lib/easystick/credentials.sh"
+    )
+    assert "install_root_keys" in credentials
+    assert "chmod 700" in credentials and "chmod 600" in credentials
+    assert "chown -R 0:0" in credentials
+    assert "apply_root_password" in credentials
+    assert "root_password" in credentials
+    assert "install_root_keys /boot/root_authorized_keys" in s05
+    assert "apply_root_password /boot/credentials.txt" in s05
+    assert "root_password=$rpw" in s05
+    assert "install_root_keys \"$STAGE/root_authorized_keys\"" in bootsync
+    assert "root_authorized_keys" in bootsync
+    assert "apply_root_password \"$STAGE/credentials.txt\"" in bootsync
+    su_pkg = read("linux/buildroot-external/package/busybox-su/busybox-su.mk")
+    assert "4755" in su_pkg and "BUSYBOX_SU_PERMISSIONS" in su_pkg
+    su_config = read(
+        "linux/buildroot-external/package/busybox-su/busybox-su.config"
+    )
+    assert "CONFIG_SU=y\n" in su_config
+    assert "CONFIG_FEATURE_SUID=y\n" in su_config
+    assert "# CONFIG_FEATURE_SU_CHECKS_SHELLS is not set" in su_config
+    busybox_fragment = read("linux/m3-lab/busybox.fragment")
+    assert "# CONFIG_SU is not set" in busybox_fragment
+    assert "BR2_PACKAGE_BUSYBOX_SU" in build
+    post_build = read("linux/m3-lab/post-build.sh")
+    assert "root:!:" in post_build
     assert "mount -t vfat" not in updater
     assert "BOOT_IMG" not in updater
     assert "boot-snap.img" not in network

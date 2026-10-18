@@ -14,6 +14,11 @@ Known limitations of the current images (see the issue tracker for details):
   arbitrary firmware. [docs/security-hardening.md](docs/security-hardening.md)
   lists what a product build would need; none of it is tested.
 - The USB-C serial console (`ttyGS1`) gives an unauthenticated root shell.
+- Root is reachable over the network (#37): `su` with the per-device
+  `root_password=` from `credentials.txt` on the USB drive, or SSH as root
+  with a key installed from the drive's `root_authorized_keys` (password
+  login for root stays disabled). Anyone who can read or write the drive —
+  or the flash — holds these.
 
 ## Third-party components
 

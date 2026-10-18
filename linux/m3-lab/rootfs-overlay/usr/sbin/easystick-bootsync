@@ -18,7 +18,8 @@ es_log() {
 	log "$1"
 }
 
-# apply_password and install_keys, shared with S05easystick-tmpfs.
+# apply_password, apply_root_password, install_keys and install_root_keys,
+# shared with S05easystick-tmpfs.
 . /usr/lib/easystick/credentials.sh
 # The drive's main.py/main.sh/main (#34).
 . /usr/lib/easystick/autorun.sh
@@ -189,7 +190,7 @@ import_snapshot() {
 
 	VALID=1
 	mkdir -p "$STAGE"
-	for name in wpa_supplicant.conf config.txt credentials.txt authorized_keys; do
+	for name in wpa_supplicant.conf config.txt credentials.txt authorized_keys root_authorized_keys; do
 		path="$MNT_POINT/$name"
 		[ ! -e "$path" ] && continue
 		size=$(wc -c < "$path" 2>/dev/null || echo 65537)
@@ -253,9 +254,11 @@ import_snapshot() {
 	if [ -f "$STAGE/credentials.txt" ] &&
 		file_changed "$STAGE/credentials.txt" /tmp/credentials.txt; then
 		apply_password "$STAGE/credentials.txt"
+		apply_root_password "$STAGE/credentials.txt"
 		mv -f "$STAGE/credentials.txt" /tmp/credentials.txt
 	fi
 	[ -f "$STAGE/authorized_keys" ] && install_keys "$STAGE/authorized_keys"
+	[ -f "$STAGE/root_authorized_keys" ] && install_root_keys "$STAGE/root_authorized_keys"
 	rm -rf "$STAGE"
 
 	release

@@ -46,6 +46,7 @@ generate_credentials() {
 	wait_crng || es_log "ES_CREDENTIALS WARN: CRNG not reported ready; using /dev/urandom anyway"
 	id=$(rand_str 4 '0-9A-F')
 	pw=$(rand_str 12 "$CRED_CHARS")
+	rpw=$(rand_str 12 "$CRED_CHARS")
 	case "$id" in
 		[0-4]*) ch=1 ;;
 		[5-9A]*) ch=6 ;;
@@ -55,10 +56,12 @@ generate_credentials() {
 		echo "# EasyStick credentials, generated on first boot."
 		echo "# password= is the SSH/console password of user m5.  Edit and save it:"
 		echo "# it is applied a few seconds later and at every boot."
+		echo "# root_password= is the su password of root (#37), same rules."
 		echo "# The Wi-Fi settings in effect are wpa_supplicant.conf (ssid/psk) and"
 		echo "# config.txt (channel=); ssid/psk below are the generated values."
 		echo "device_id=$id"
 		echo "password=$pw"
+		echo "root_password=$rpw"
 	} > /boot/credentials.txt
 	if is_default_wifi /boot/wpa_supplicant.conf; then
 		psk=$(rand_str 12 "$CRED_CHARS")
@@ -86,14 +89,15 @@ generate_credentials() {
 		fi
 		# The template's static status.txt still names the old shared SSID.
 		rm -f /boot/status.txt
-		es_log "ES_CREDENTIALS NEW: ssid=m5-$id psk=$psk channel=$ch user=m5 password=$pw"
+		es_log "ES_CREDENTIALS NEW: ssid=m5-$id psk=$psk channel=$ch user=m5 password=$pw root_password=$rpw"
 	else
-		es_log "ES_CREDENTIALS NEW: user=m5 password=$pw (custom wpa_supplicant.conf kept)"
+		es_log "ES_CREDENTIALS NEW: user=m5 password=$pw root_password=$rpw (custom wpa_supplicant.conf kept)"
 	fi
 	es_log "ES_CREDENTIALS: also in credentials.txt on the USB drive and /tmp/credentials.txt (root)"
 }
 
-# apply_password and install_keys; bootsync uses them too.
+# apply_password, apply_root_password, install_keys, install_root_keys;
+# bootsync uses them too.
 . /usr/lib/easystick/credentials.sh
 # autorun_stage (#34).
 . /usr/lib/easystick/autorun.sh
@@ -286,6 +290,8 @@ hostname=easystick
 #wifi_pmf=1
 # Keys only over SSH; needs an authorized_keys file on this drive.
 #ssh_password_auth=no
+# root SSH login is key-only: put a root_authorized_keys file on this drive
+# (#37).  su uses root_password= in credentials.txt.
 # maxcpus is fixed in the DTB (maxcpus=1); this file does not change the CPU count.
 EOF
 		fi
@@ -296,9 +302,22 @@ EOF
 			else
 				es_log "ES_CREDENTIALS FAIL: could not write credentials to /boot"
 			fi
+		elif ! grep -q '^root_password=' /boot/credentials.txt; then
+			# Upgrade (#37): a credentials.txt from an older image has no
+			# root_password=.  Generate one and append it; the commit below
+			# writes it to flash like the first-boot credentials.
+			rpw=$(rand_str 12 "$CRED_CHARS")
+			if printf 'root_password=%s\n' "$rpw" >> /boot/credentials.txt; then
+				CRED_NEW=1
+				es_log "ES_CREDENTIALS NEW: root_password=$rpw (added for su)"
+			else
+				es_log "ES_CREDENTIALS FAIL: could not add root_password= to /boot/credentials.txt"
+			fi
 		fi
 		apply_password /boot/credentials.txt || true
+		apply_root_password /boot/credentials.txt || true
 		install_keys /boot/authorized_keys || true
+		install_root_keys /boot/root_authorized_keys || true
 		if [ -f /boot/credentials.txt ]; then
 			cp -f /boot/credentials.txt /tmp/credentials.txt 2>/dev/null || true
 			chmod 600 /tmp/credentials.txt 2>/dev/null || true
