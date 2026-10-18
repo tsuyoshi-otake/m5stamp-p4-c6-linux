@@ -27,7 +27,7 @@ Boots out-of-the-box into **Wi-Fi SoftAP mode** with automatic DHCP, Dropbear SS
 - **Pre-installed Developer Tools**:
   - **SSH Server**: Password-enabled Dropbear on TCP port 22 (user `m5`, per-device password from `credentials.txt`). inetd accepts up to 20 new connections a minute, then stops listening for 60 s.
   - **`vi` Editor**: Full-featured BusyBox `vi` with search, undo, visual buffers, and syntax assistance.
-  - **Shell commands**: the main BusyBox carries the shell and the commands scripts use (`grep`, `sed`, `find`, `ps`, `df`, `dmesg`, `ping`, `nc`, ...). The m3-lab image adds `busybox-tools`, a third BusyBox with about 65 everyday commands the main one leaves out to stay under the 512 KB NOMMU allocation: `awk`, `less`, `top`, `free`, `uptime`, `pgrep`/`pkill`, `watch`, `timeout`, `stat`, `diff`, `patch`, `hexdump`, `xxd`, `tar`, `gzip`, `unzip`, `wget` (HTTP only), `nslookup`, `traceroute`, `ip` and more. It is loaded only while one of them runs (about 430 KB of the user pool). `sudo`, `nano`, `curl`, `file`, `dig` and `lsblk` are not available: they need an MMU, a wide-character toolchain or more RAM than the board has. The SSH login message (`/etc/motd`) lists the common commands by group; `busybox --list` and `busybox-tools --list` print everything. `ping` is BusyBox's small variant: `ping HOST` prints `HOST is alive!` and takes no options such as `-c`. `traceroute` needs a raw socket, so it works only as root.
+  - **Shell commands**: the main BusyBox carries the shell and the commands scripts use (`grep`, `sed`, `find`, `ps`, `df`, `dmesg`, `ping`, `nc`, ...). The m3-lab image adds `busybox-tools`, a third BusyBox with about 65 everyday commands the main one leaves out to stay under the 512 KB NOMMU allocation: `awk`, `less`, `top`, `free`, `uptime`, `pgrep`/`pkill`, `watch`, `timeout`, `stat`, `diff`, `patch`, `hexdump`, `xxd`, `tar`, `gzip`, `unzip`, `wget` (HTTP only), `nslookup`, `traceroute`, `ip` and more. It is loaded only while one of them runs (about 430 KB of the user pool). `sudo`, `nano`, `curl`, `file`, `dig` and `lsblk` are not available: they need an MMU, a wide-character toolchain or more RAM than the board has. There is no `su` either: root is available only on the USB-C serial console, and SSH refuses root logins (#37). The SSH login message (`/etc/motd`) lists the common commands by group; `busybox --list` and `busybox-tools --list` print everything. `ping` is BusyBox's small variant: `ping HOST` prints `HOST is alive!` and takes no options such as `-c`. `traceroute` needs a raw socket, so it works only as root.
   - **MicroPython (`python3`)**: MicroPython v1.22.2 compiled with bFLT Load-to-Ram (`-r`) and position-independent code (`-fPIC`) for stable NOMMU execution. It has the unix port's standard modules (`time`, `socket`, `select`, `json`, `re`, `struct`, `random`, `hashlib`, `binascii`, `collections`, `asyncio`, ...) without threads, TLS, `ffi`, `framebuf` or complex numbers, to stay under the 512 KB NOMMU allocation.
   - **Pico-style autorun**: `main.py`, `main.sh` or a bFLT `main` saved on the USB drive runs as `m5` at boot and restarts when a new version is saved ([details](#5-autorun-from-the-usb-drive-pico-style)).
   - **Writable Filesystem (OverlayFS)**: While the root filesystem is SquashFS (read-only for durability), RAM-backed OverlayFS is mounted on `/home`, `/root`, and `/var/lib` so users can create and edit scripts during the current boot. Its contents are lost when power is removed.
@@ -98,10 +98,17 @@ Every board gets its own credentials on first boot; no SSID or password is share
 
 ### 1. Download Release Package
 
-> **v0.3.0** is built and published the same way as v0.2.2 to v0.2.5: the assets
+> **v0.3.1** is built and published the same way as v0.2.2 to v0.3.0: the assets
 > are the CI build that was flashed and checked on hardware, and the tag run refuses
-> any asset whose hash is not in `linux/tests/v0.3.0-hardware-validation-2026-10-18.md`.
-> Changes since v0.2.5 (#36):
+> any asset whose hash is not in `linux/tests/v0.3.1-hardware-validation-2026-10-18.md`.
+> Changes since v0.3.0:
+> - A `main.sh` saved with CRLF line ends runs again (#34). On v0.2.5 and v0.3.0
+>   it failed with `syntax error`, because the step that strips CR never ran.
+>   The kernel is built from the same source and the DTB is unchanged.
+> - Dual-core (`maxcpus=2`) was checked on 7.2: 3 of 10 boots were usable (#5),
+>   so it stays experimental and off.
+>
+> v0.3.0 changes since v0.2.5 (#36):
 > - The kernel moves from Linux 6.18.35 to **7.2.11**.  The board patches were
 >   ported to 7.2; the user-visible behaviour is meant to be the same as v0.2.5
 >   and the same hardware checks pass.
@@ -111,7 +118,6 @@ Every board gets its own credentials on first boot; no SSID or password is share
 >   `mmap` works again on NOMMU (the drive save and `devmem` use it), the
 >   preemption model stays `PREEMPT_NONE` as on 6.18, and the Wi-Fi driver names
 >   `WQ_PERCPU` for its workqueues.
-> - Dual-core (`maxcpus=2`) was not re-checked on 7.2; it stays experimental.
 > - The 6.18 line was also updated to 6.18.57 and checked on hardware
 >   (`linux/tests/linux-6.18.57-hardware-validation-2026-10-18.md`, branch
 >   `kernel-6.18.57`).  It is kept as the fallback and is not released.
@@ -125,8 +131,8 @@ Every board gets its own credentials on first boot; no SSID or password is share
 > the GPL corresponding source (`*-legal-info.tar.gz`, #31).
 
 Download either the monolithic 16MB raw flash image or the partition zip package from the [Releases](https://github.com/tsuyoshi-otake/m5stamp-p4-c6-linux/releases) page:
-- **`m5stamp-p4-c6-linux-smp-v0.3.0-16mb.bin.gz`**: Single 16MB raw flash image (simplest, flash to `0x0`).
-- **`m5stamp-p4-c6-linux-smp-v0.3.0.zip`**: Individual partition binaries with automated PowerShell flash script.
+- **`m5stamp-p4-c6-linux-smp-v0.3.1-16mb.bin.gz`**: Single 16MB raw flash image (simplest, flash to `0x0`).
+- **`m5stamp-p4-c6-linux-smp-v0.3.1.zip`**: Individual partition binaries with automated PowerShell flash script.
 
 ### 2. Flash using `esptool.py`
 
@@ -134,8 +140,8 @@ Connect the M5Stamp-P4 via its USB-C port to your computer. Identify your serial
 
 #### Option A: Monolithic 16MB Raw Image Flash (Recommended)
 ```bash
-gzip -d m5stamp-p4-c6-linux-smp-v0.3.0-16mb.bin.gz
-esptool.py --chip esp32p4 --port COM10 --baud 460800 write_flash 0x0 m5stamp-p4-c6-linux-smp-v0.3.0-16mb.bin
+gzip -d m5stamp-p4-c6-linux-smp-v0.3.1-16mb.bin.gz
+esptool.py --chip esp32p4 --port COM10 --baud 460800 write_flash 0x0 m5stamp-p4-c6-linux-smp-v0.3.1-16mb.bin
 ```
 
 #### Option B: Release PowerShell Script
@@ -630,24 +636,24 @@ This compiles:
 
 ---
 
-## SHA-256 Checksums (v0.3.0)
+## SHA-256 Checksums (v0.3.1)
 
 ```text
 Raw 16MB Monolithic Image:
-5947bde55beb0dee0ae3700e297e79826a5923c11180f01c2b57a0380cb9bb24  m5stamp-p4-c6-linux-smp-v0.3.0-16mb.bin.gz
-be3d392529ec421e581d0900c34ed562d10de1f83e3fbf0e110b206b7f0ad726  m5stamp-p4-c6-linux-smp-v0.3.0-16mb.bin (uncompressed)
+70693e52392bd91028d0e71f51c6e70c0e16dc05ce90e8a9361bad2a1d298ac8  m5stamp-p4-c6-linux-smp-v0.3.1-16mb.bin.gz
+1e015111bd09fa11e800c1d21eb0fafbec59d55a5c9bc188930f24363e690645  m5stamp-p4-c6-linux-smp-v0.3.1-16mb.bin (uncompressed)
 
 Partition Archive:
-13b2ffc74727b8932ca589357c819543cf707d305ba74043068e7cd41b318680  m5stamp-p4-c6-linux-smp-v0.3.0.zip
+8224516b6a518143444fd6ff1e8c281bbe838f5aac26db1add0bee8550f2fa09  m5stamp-p4-c6-linux-smp-v0.3.1.zip
 
 Individual Partitions:
-d27ee1a10a0da3b717250e3eeb92898ea777090bb3625ae5e594f0f10f12db23  bootloader.bin
+28697715cb57c89ddbf4acfe2b002a1281b04e69e387345e676bee13cf2f876d  bootloader.bin
 7937656f29960d53b63010b51836e233d092e067e320cde5778ec43e04218870  partition-table.bin
-2d077704bcf07451b9555cfb7c17a523d83f7aab28e2b7de9f349b06c0a35fb9  boot-shim.bin
-d5e8ee3cd74d60e75741952635a1ada763691c687b9afcf6aa6c601b39f72688  Image
-7843498f22f4c1ab250f7d6e271f24153c5b2d7577d9eeb31e82b0e696c18869  rootfs.squashfs
+af25c1bebfc2fb8ce19fe9418d256238edee16219800864ff512aeb2fe352c6d  boot-shim.bin
+36f48933fee0ee7cc6b24011aa877fd014a61652c2fce1b2d9be18bf22a294f6  Image
+568a9479e9a9cb600c8d1e79f82a1ebf09c66a69d31fd1cf676fd360bdec1299  rootfs.squashfs
 a12b18e1347ade36c499c79338ff7125bd4140bf56c64ecfedce8f93b4d3a852  easystick-stamp-p4.dtb
-c834953c62d30ae35c946f1d2dd8f16dd52f1959f31d7c294e66ad00922defbc  boot.img
+1135767ff6a448a55064d6f8779111485b2e88907076ab42eba1cc1558e7b078  boot.img
 ```
 
 ---
