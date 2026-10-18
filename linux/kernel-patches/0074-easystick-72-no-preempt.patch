@@ -1,0 +1,10 @@
+--- a/arch/riscv/Kconfig
++++ b/arch/riscv/Kconfig
+@@ -43,6 +43,7 @@
+ 	select ARCH_HAS_NON_OVERLAPPING_ADDRESS_SPACE
+ 	select ARCH_HAS_PMEM_API
+ 	select ARCH_HAS_PREEMPT_LAZY
++	select ARCH_NO_PREEMPT
+ 	select ARCH_HAS_PREPARE_SYNC_CORE_CMD
+ 	select ARCH_HAS_PTDUMP if MMU
+ 	select ARCH_HAS_PTE_SPECIAL

@@ -717,6 +717,15 @@ patches+=(0071-easystick-nommu-access-ok.patch)
 # /sys/kernel/easystick/boot_commit writes a staged /boot image to the
 # inactive A/B slot at once, so a USB drive edit needs no reboot.
 patches+=(0072-easystick-esp32p4-bootflash.patch)
+# Keep the 6.18 preemption model on 7.2: upstream 7dadeaa6e851 restricts
+# PREEMPT_NONE to ARCH_NO_PREEMPT arches, so riscv would silently get
+# PREEMPT_LAZY.  Select ARCH_NO_PREEMPT so PREEMPT_NONE remains available.
+patches+=(0074-easystick-72-no-preempt.patch)
+# 7.2's f_op->mmap_prepare conversion requests an MMAP_REMAP_PFN action
+# that the NOMMU action backend rejects with -EINVAL, breaking /dev/mem
+# mmap (devmem tool, boot-shim staging area).  Skip the action on NOMMU;
+# NOMMU_MAP_DIRECT already places the VMA at the physical address.
+patches+=(0075-easystick-nommu-devmem-mmap.patch)
 # C67-L2-STAGE: observe-only SMP breadcrumbs in smpboot.c (no behaviour change).
 if [[ "${EASYSTICK_C67_SMP_STAGE:-0}" == "1" || "${EASYSTICK_C68_CLEAN_RELEASE:-0}" == "1" ]]; then
 	patches+=(0037-easystick-c67-l2-stage-smpboot.patch)
@@ -1041,6 +1050,12 @@ CONFIG_DEBUG_INFO_DWARF4=y
 CONFIG_FRAME_POINTER=y
 EOF
 fi
+cat >>"${kernel_config_fragment}" <<'EOF'
+
+# Paired with 0074-easystick-72-no-preempt.patch (ARCH_NO_PREEMPT):
+# keep the 6.18 preemption model through olddefconfig on 7.2.
+CONFIG_PREEMPT_NONE=y
+EOF
 if $c68_profile; then
 	cat "${firmware_root}/linux/c68/linux.config.fragment" >>"${kernel_config_fragment}"
 	if $c68_top_profile; then
