@@ -119,7 +119,8 @@ if [ -n "${BR2_CONFIG:-}" ] &&
 fi
 
 # Lock root: an empty root password would give passwordless root as soon as a
-# getty/login is used.  SSH already rejects root (-w -g).
+# getty/login is used.  SSH takes root by key only (-g), and
+# credentials.sh lifts the lock at runtime from root_password= (#37).
 if [ -f "${TARGET_DIR}/etc/shadow" ]; then
 	sed -i 's/^root:[^:]*:/root:!:/' "${TARGET_DIR}/etc/shadow"
 fi

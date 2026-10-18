@@ -257,8 +257,16 @@ import_snapshot() {
 		apply_root_password "$STAGE/credentials.txt"
 		mv -f "$STAGE/credentials.txt" /tmp/credentials.txt
 	fi
-	[ -f "$STAGE/authorized_keys" ] && install_keys "$STAGE/authorized_keys"
-	[ -f "$STAGE/root_authorized_keys" ] && install_root_keys "$STAGE/root_authorized_keys"
+	if [ -f "$STAGE/authorized_keys" ]; then
+		install_keys "$STAGE/authorized_keys"
+	else
+		revoke_keys m5 /home/m5 authorized_keys
+	fi
+	if [ -f "$STAGE/root_authorized_keys" ]; then
+		install_root_keys "$STAGE/root_authorized_keys"
+	else
+		revoke_keys root /root root_authorized_keys
+	fi
 	rm -rf "$STAGE"
 
 	release

@@ -65,7 +65,8 @@ obtain a DHCP lease (or a documented static lab address) and accept an
 [PASS] DUT still alive (no reboot during the shot)
 ```
 
-Do not connect as `root`; inetd runs Dropbear with `-w` (no root login).
+Connect as `m5`.  Root logs in by key only (`dropbear -g`), and only after a
+`root_authorized_keys` file is put on the drive (#37).
 
 `S85easystick-ssh` starts inetd on `0.0.0.0:22` without waiting for `wlan0`
 or `ethsta0`.

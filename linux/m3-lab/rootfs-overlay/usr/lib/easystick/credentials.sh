@@ -61,6 +61,7 @@ install_keys() {
 	chmod 700 "$d"
 	chmod 600 "$d/authorized_keys"
 	n=$(grep -c '' "$d/authorized_keys" || true)
+	: > /run/.es-keys-m5
 	es_log "ES_SSH_KEYS: $n key(s) installed for m5 from authorized_keys"
 }
 
@@ -76,5 +77,16 @@ install_root_keys() {
 	chmod 700 "$d"
 	chmod 600 "$d/authorized_keys"
 	n=$(grep -c '' "$d/authorized_keys" || true)
+	: > /run/.es-keys-root
 	es_log "ES_SSH_KEYS: $n key(s) installed for root from root_authorized_keys"
+}
+
+# A key file deleted from the drive revokes the keys it installed at once
+# (#37), as deleting authorized_keys does elsewhere.  The /run marker keeps
+# keys added by hand over SSH when the drive never had the file.
+# $1 user, $2 home, $3 drive file name.
+revoke_keys() {
+	[ -e "/run/.es-keys-$1" ] || return 0
+	rm -f "$2/.ssh/authorized_keys" "/run/.es-keys-$1"
+	es_log "ES_SSH_KEYS: $3 removed from the drive; keys for $1 revoked"
 }

@@ -141,6 +141,12 @@ def main() -> None:
     assert "install_root_keys \"$STAGE/root_authorized_keys\"" in bootsync
     assert "root_authorized_keys" in bootsync
     assert "apply_root_password \"$STAGE/credentials.txt\"" in bootsync
+    # A key file deleted from the drive revokes only the keys it installed.
+    assert ": > /run/.es-keys-m5" in credentials
+    assert ": > /run/.es-keys-root" in credentials
+    assert '[ -e "/run/.es-keys-$1" ] || return 0' in credentials
+    assert "revoke_keys m5 /home/m5 authorized_keys" in bootsync
+    assert "revoke_keys root /root root_authorized_keys" in bootsync
     su_pkg = read("linux/buildroot-external/package/busybox-su/busybox-su.mk")
     assert "4755" in su_pkg and "BUSYBOX_SU_PERMISSIONS" in su_pkg
     su_config = read(
@@ -148,6 +154,13 @@ def main() -> None:
     )
     assert "CONFIG_SU=y\n" in su_config
     assert "CONFIG_FEATURE_SUID=y\n" in su_config
+    assert "CONFIG_FEATURE_SU_SYSLOG=y\n" in su_config
+    assert "CONFIG_FEATURE_SHADOWPASSWDS=y\n" in su_config
+    su_patch = read(
+        "linux/buildroot-external/package/busybox-su/"
+        "0001-libbb-a-locked-password-never-matches.patch"
+    )
+    assert "if (pw_pass[0] == '!' || pw_pass[0] == '*')" in su_patch
     assert "# CONFIG_FEATURE_SU_CHECKS_SHELLS is not set" in su_config
     busybox_fragment = read("linux/m3-lab/busybox.fragment")
     assert "# CONFIG_SU is not set" in busybox_fragment
