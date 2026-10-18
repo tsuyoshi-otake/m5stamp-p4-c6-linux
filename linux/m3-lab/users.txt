@@ -5,4 +5,8 @@
 # (generated per device on first boot, #24/#30).  `*`, unlike `!`, still lets
 # Dropbear accept authorized_keys.  `passwd` does not persist on the
 # read-only rootfs.
+# root (#37): the image shadow keeps `root:!` (post-build.sh); at boot
+# root_password= from credentials.txt is hashed into the runtime shadow for
+# `su`, and the drive's root_authorized_keys installs to /root/.ssh so
+# Dropbear accepts root by key only (`-g` in inetd.conf).
 m5 1000 m5 1000 * /home/m5 /bin/sh - M5Stack initial user

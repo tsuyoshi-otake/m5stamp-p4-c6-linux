@@ -2107,6 +2107,8 @@ if $lab_profile; then
 	set_config_value "${br_output}/.config" BR2_PACKAGE_EASYSTICK_RESPAWN y
 	# init, inetd, syslogd and udhcpd from a minimal second BusyBox (#23).
 	set_config_value "${br_output}/.config" BR2_PACKAGE_BUSYBOX_DAEMONS y
+	# A setuid su-only BusyBox: m5 -> root over SSH (#37).
+	set_config_value "${br_output}/.config" BR2_PACKAGE_BUSYBOX_SU y
 	# awk, less, tar, wget, top, ... from a third BusyBox, loaded only when run.
 	set_config_value "${br_output}/.config" BR2_PACKAGE_BUSYBOX_TOOLS y
 else
@@ -2293,6 +2295,7 @@ if $ssh_profile; then
 			"BR2_PACKAGE_EASYSTICK_MDNS=y" \
 			"BR2_PACKAGE_EASYSTICK_RESPAWN=y" \
 			"BR2_PACKAGE_BUSYBOX_DAEMONS=y" \
+			"BR2_PACKAGE_BUSYBOX_SU=y" \
 			"BR2_PACKAGE_BUSYBOX_TOOLS=y"; do
 			grep -Fqx -- "${expected}" "${br_output}/.config" || {
 				echo "m3-lab config check failed: ${expected}" >&2
@@ -2309,7 +2312,23 @@ if $ssh_profile; then
 				exit 1
 			}
 		done
+		# /bin/su is the only setuid file and points at the small su-only
+		# BusyBox (#37); the main busybox must stay non-setuid.
+		[[ "$(readlink "${br_output}/target/bin/su")" == *busybox-su ]] || {
+			echo "m3-lab check failed: /bin/su does not point at busybox-su" >&2
+			exit 1
+		}
+		su_mode=$(stat -c %a "${br_output}/target/bin/busybox-su")
+		[[ "$su_mode" == 4755 ]] || {
+			echo "m3-lab check failed: busybox-su mode is ${su_mode}, want 4755" >&2
+			exit 1
+		}
 		# Each exec copies the whole image; one allocation must fit 512 KB.
+		su_bytes=$(stat -c %s "${br_output}/target/bin/busybox-su")
+		(( su_bytes < 256 * 1024 )) || {
+			echo "m3-lab check failed: busybox-su is ${su_bytes} bytes" >&2
+			exit 1
+		}
 		tools_bytes=$(stat -c %s "${br_output}/target/bin/busybox-tools")
 		(( tools_bytes < 480 * 1024 )) || {
 			echo "m3-lab check failed: busybox-tools is ${tools_bytes} bytes" >&2

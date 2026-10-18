@@ -1,0 +1,9 @@
+config BR2_PACKAGE_BUSYBOX_SU
+	bool "setuid su-only BusyBox"
+	depends on BR2_PACKAGE_BUSYBOX
+	help
+	  A third minimal BusyBox that contains only the su applet,
+	  installed setuid root as /bin/busybox-su with /bin/su linked
+	  to it (#37).  The main BusyBox keeps CONFIG_SU unset so the
+	  only setuid binary in the image is this ~100 KB one, not the
+	  450 KB full applet set.

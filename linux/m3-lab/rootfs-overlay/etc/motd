@@ -3,6 +3,8 @@ M5Stamp ESP32-P4 + C6 SDIO Linux  (NOMMU, BusyBox)
 Account m5.  The password is password= in credentials.txt on the USB drive
 (root: /tmp/credentials.txt).  Edit it and save: the board writes the drive
 to flash a few seconds later and applies it.  No eject or reboot is needed.
+su asks for root_password= from credentials.txt; SSH as root needs a
+root_authorized_keys file on the drive.
 
 Commands
   files    ls cp mv rm mkdir find xargs stat tree du df tar gzip unzip

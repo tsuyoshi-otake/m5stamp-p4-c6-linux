@@ -188,6 +188,8 @@ hostname=easystick
 #country=JP
 # Keys only over SSH; needs an authorized_keys file on this drive.
 #ssh_password_auth=no
+# root SSH login is key-only: put a root_authorized_keys file on this drive
+# (#37).  su uses root_password= in credentials.txt.
 # SDIO clock to the C6 in MHz (1, 2, 5, 10, 20, 40), capped by the DTB.
 #sdio_mhz=5
 # Reset the board if userland stops responding or SSH (inetd) stays down.
