@@ -63,10 +63,44 @@ is not recorded here.
 `config.txt` was back to its value before the tests (md5 unchanged) and the
 test keys were removed from the drive.
 
+## Additions (2026-10-19)
+
+f8922b5 on `main`, local build `issue37-c`, flashed the same way
+over the `issue37-b` drive:
+
+```
+5e939d85df20b09db7b52277c91b1ef202b26b6804b314f7fe69ce6ae29912f2  bootloader.bin
+7937656f29960d53b63010b51836e233d092e067e320cde5778ec43e04218870  partition-table.bin
+9af335180fa519f57a6abb37fe7101b149e947a2c3c17a280d41eb18bb1bb0b6  boot-shim.bin
+17f6ab23ab317a6f9b40c3d95f946258bfbc4877a41421d71bcb991abc202ce3  Image
+45536f8c5a41277db88cc437b0163a7977ea44f74b14298424883d2ae630c4f8  rootfs.squashfs
+a12b18e1347ade36c499c79338ff7125bd4140bf56c64ecfedce8f93b4d3a852  easystick-stamp-p4.dtb
+b9c8919bccd5c3c144b33df9736f18d977392498867aabb53908096ceeb99234  boot.img
+```
+
+The build log shows `0001-libbb-a-locked-password-never-matches.patch`
+applied, and `CONFIG_FEATURE_SU_SYSLOG=y` in the busybox-su `.config`.
+
+| Check | Result |
+|---|---|
+| Boot | `check-boot-log.py` 11/11 on every boot below (6 boots) |
+| `su -` wrong, then right password | `su: incorrect password` about 3 s after the password (BusyBox's failure delay), then a root shell; `/run/messages` (`-rw------- root root`) has `auth.notice su: - pts/0 m5:root` and `auth.notice su: + pts/0 m5:root` |
+| `root_authorized_keys` saved to the live drive, then deleted | root key login OK 1 s after the write; refused 1 s after the delete; `ES_SSH_KEYS: root_authorized_keys removed from the drive; keys for root revoked`, `/root/.ssh` empty, `/run/.es-keys-root` gone |
+| The same with `authorized_keys` (m5) | m5 key login OK 6 s after the write, refused 6 s after the delete |
+| A key added by hand as m5 over SSH (`$HOME/.ssh/authorized_keys`, no file on the drive) | kept across two drive imports; m5 key login still OK |
+| `root_password=short` saved, then a reset | `root login stays locked`, `/etc/shadow` `root:!:`; `su` wrong password: `su: incorrect password` after 3.1 s and `su: - pts/0 m5:root` logged (was `su: bad salt` with no log or delay) |
+| `ssh_password_auth=no` with only `root_authorized_keys`, then a reset | `ssh_password_auth=no ignored: no authorized_keys installed`, password-enabled Dropbear; m5 password login OK; root key OK; root by root password or m5 password refused |
+| `ssh_password_auth=no` with both key files, then a reset | `starting key-only Dropbear on TCP/22 (ssh_password_auth=no)`; root key OK, m5 key OK; any password login refused (`allowed types: ['publickey']`); `su` from the m5 key session works and is logged |
+| Both key files and the setting deleted from the live drive, then a reset | both revoked at once (`ES_SSH_KEYS ... revoked` for m5 and root); after the reset password-enabled Dropbear, m5 password login OK, every root login refused |
+
+The drive's `config.txt` was back to its value before the tests (md5
+unchanged) and no key file was left on it.
+
+Each login also logs `dropbear: wtmpx_write: problem opening /var/log/wtmp`,
+as in v0.3.1: the image has no wtmp/utmp and no `who`/`last`.
+
 ## Not covered
 
 - A first boot from a blank drive (the generation code is shared with the
-  m5 password; only the upgrade path was run).
-- `ssh_password_auth=no` together with a root key.
-- Removing `root_authorized_keys` without a reboot: the installed key stays
-  in `/root/.ssh` until the next boot (README says so).
+  m5 password; only the upgrade path was run here).  The v0.3.2 release
+  check writes the whole 16 MB image, which includes a factory drive.
