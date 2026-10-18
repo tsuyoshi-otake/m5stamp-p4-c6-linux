@@ -157,6 +157,6 @@ CONFIG_MKE2FS=y
 # CONFIG_SYSLOGD is not set
 # CONFIG_UDHCPD is not set
 
-# #37: su lives in busybox-su, a separate setuid binary; keep it out of the
-# main image so a busybox.links cleanup can never ship a second /bin/su.
+# #37: su lives in busybox-su, a separate setuid binary; keep it out of this
+# one (close to the 512 KB allocation) so /bin/su has a single owner.
 # CONFIG_SU is not set
