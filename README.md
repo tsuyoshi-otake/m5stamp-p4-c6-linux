@@ -19,7 +19,7 @@ Boots out-of-the-box into **Wi-Fi SoftAP mode** with automatic DHCP, Dropbear SS
 ## Key Features & Verified Hardware Capabilities
 
 - **SoC Target**: ESP32-P4 (Dual-Core RV32IMAC / ilp32, CPU clock 360 MHz as reported by the boot-shim, 32 MiB PSRAM, 16 MiB SPI Flash).
-- **SMP (experimental)**: The kernel is built with SMP (`Linux 7.2.11 #1 SMP riscv32 GNU/Linux`), but the shipped DTB boots with `maxcpus=1`, so only CPU0 is online (`/sys/devices/system/cpu/online` = `0`). With `maxcpus=2` (measured on 6.18; not re-checked on 7.2), about one boot in five stalls during userland start (issue #5): CPU1 stops accepting any interrupt (timer and IPI stay pending and enabled) and the rest of the system waits on it. Adding `isolcpus=1` to the kernel command line avoided the stall in 17 of 17 boots and a 568 s soak, but leaves CPU1 almost unused; see `linux/tests/m3-lab-hardware-validation-2026-10-14.md`. A stalled board may need a re-flash over USB. `maxcpus` in `/boot/config.txt` is informational and is not read by anything.
+- **SMP (experimental)**: The kernel is built with SMP (`Linux 7.2.11 #1 SMP riscv32 GNU/Linux`), but the shipped DTB boots with `maxcpus=1`, so only CPU0 is online (`/sys/devices/system/cpu/online` = `0`). With `maxcpus=2`, about one boot in five stalled during userland start on 6.18, and on 7.2.11 only 3 of 10 boots were usable (issue #5, `linux/tests/v0.3.0-feature-checks-2026-10-18.md`): CPU1 stops accepting any interrupt (timer and IPI stay pending and enabled) and the rest of the system waits on it. Adding `isolcpus=1` to the kernel command line avoided the stall in 17 of 17 boots and a 568 s soak, but leaves CPU1 almost unused; see `linux/tests/m3-lab-hardware-validation-2026-10-14.md`. A stalled board may need a re-flash over USB. `maxcpus` in `/boot/config.txt` is informational and is not read by anything.
 - **Wi-Fi Companion**: ESP32-C6 (M5Stack Stamp-AddOn C6) connected via 4-bit SDIO (5 MHz by default, up to 40 MHz with `sdio_mhz=`, see [SDIO clock](#c6-firmware-security-features--regulatory-notes)).
 - **Out-of-the-Box SoftAP**:
   - Broadcasts a per-device SSID **`m5-XXXX`** with a WPA2-PSK passphrase generated on first boot (see [Per-device credentials](#per-device-credentials)).
@@ -513,7 +513,7 @@ few seconds later, with no eject or reboot. The first of these runs:
 | File on the drive | Runs as |
 | :--- | :--- |
 | `main.py` | `python3 main.py` (MicroPython) |
-| `main.sh` | `sh main.sh` (BusyBox shell; CRLF line ends are fine) |
+| `main.sh` | `sh main.sh` (BusyBox shell; CRLF line ends are fine, except on the v0.2.5–v0.3.0 images, where they fail with `syntax error`: save with LF there) |
 | `main` | a RISC-V NOMMU flat binary (bFLT, see below) |
 
 - The other `*.py` files at the top of the drive and a `lib/` folder are copied
