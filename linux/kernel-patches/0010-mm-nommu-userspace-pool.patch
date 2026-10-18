@@ -251,10 +251,10 @@ index ed3934bc2de4..1f08242e92de 100644
  
 diff --git a/mm/nommu_userspace_pool.c b/mm/nommu_userspace_pool.c
 new file mode 100644
-index 000000000000..eb58a7464c3d
+index 000000000000..5b53e13f0b70
 --- /dev/null
 +++ b/mm/nommu_userspace_pool.c
-@@ -0,0 +1,113 @@
+@@ -0,0 +1,119 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * Reserved-memory pool for large NOMMU user-space mmap allocations.
@@ -352,7 +352,8 @@ index 000000000000..eb58a7464c3d
 +}
 +core_initcall(nommu_userspace_pool_init);
 +
-+static int __init nommu_userspace_pool_rmem(struct reserved_mem *rmem)
++static int __init nommu_userspace_pool_rmem(unsigned long fdt_node,
++					    struct reserved_mem *rmem)
 +{
 +	if (pool_size) {
 +		pr_warn("multiple pool regions declared; ignoring %pa\n",
@@ -366,5 +367,10 @@ index 000000000000..eb58a7464c3d
 +		pool_size / SZ_1K, &pool_phys);
 +	return 0;
 +}
++
++static const struct reserved_mem_ops nommu_userspace_pool_rmem_ops = {
++	.node_init = nommu_userspace_pool_rmem,
++};
++
 +RESERVEDMEM_OF_DECLARE(nommu_userspace_pool, "linux,nommu-userspace-pool",
-+		       nommu_userspace_pool_rmem);
++		       &nommu_userspace_pool_rmem_ops);

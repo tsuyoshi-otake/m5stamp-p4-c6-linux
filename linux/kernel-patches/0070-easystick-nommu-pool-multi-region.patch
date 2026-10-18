@@ -41,7 +41,7 @@ diff --git a/mm/nommu_userspace_pool.c b/mm/nommu_userspace_pool.c
  		return 0;
  
  	user_pool = gen_pool_create(PAGE_SHIFT, NUMA_NO_NODE);
-@@ -78,35 +81,39 @@
+@@ -78,19 +81,22 @@
  	 * no ioremap is needed and the memory is cached, matching how
  	 * userspace expects to see its text/data.
  	 */
@@ -75,8 +75,9 @@ diff --git a/mm/nommu_userspace_pool.c b/mm/nommu_userspace_pool.c
  	return 0;
  }
  core_initcall(nommu_userspace_pool_init);
- 
- static int __init nommu_userspace_pool_rmem(struct reserved_mem *rmem)
+@@ -98,16 +104,17 @@
+ static int __init nommu_userspace_pool_rmem(unsigned long fdt_node,
+ 					    struct reserved_mem *rmem)
  {
 -	if (pool_size) {
 -		pr_warn("multiple pool regions declared; ignoring %pa\n",
@@ -97,4 +98,4 @@ diff --git a/mm/nommu_userspace_pool.c b/mm/nommu_userspace_pool.c
 +		(size_t)(rmem->size / SZ_1K), &rmem->base);
  	return 0;
  }
- RESERVEDMEM_OF_DECLARE(nommu_userspace_pool, "linux,nommu-userspace-pool",
+ 
