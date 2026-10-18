@@ -69,7 +69,10 @@ autorun_stage() {
 			cp -r "$1/lib" "$AUTORUN_NEW/lib" || return 1
 		fi
 		# Editors on Windows save CRLF, which sh reads as part of each word.
-		for f in "$AUTORUN_NEW"/*.sh; do
+		# Unquoted: hush escapes a quoted "-" as "\-" and uClibc glob() does
+		# not unescape a directory part, so "$AUTORUN_NEW" (it has a "-")
+		# followed by a glob never expands.
+		for f in $AUTORUN_NEW/*.sh; do
 			[ -f "$f" ] || continue
 			tr -d '\r' < "$f" > "$f.lf" && mv -f "$f.lf" "$f"
 		done

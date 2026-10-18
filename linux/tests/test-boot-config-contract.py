@@ -83,6 +83,9 @@ def main() -> None:
     assert 'chpst -u "$AUTORUN_USER" kill' in autorun
     assert "AUTORUN_USER=m5\n" in autorun
     assert "for n in main.py main.sh main; do" in autorun
+    # hush + uClibc glob() leave a glob unexpanded after a quoted "-".
+    assert "for f in $AUTORUN_NEW/*.sh; do" in autorun
+    assert '"$AUTORUN_NEW"/*' not in autorun
     assert '[ "$magic" != bFLT ]' in autorun
     assert "v=${v%%[!A-Za-z0-9._-]*}" in autorun
     # The main BusyBox find has no -type; a failed find hashed nothing, so
