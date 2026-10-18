@@ -1,0 +1,33 @@
+From: EasyStick maintainers <noreply@example.invalid>
+Subject: [PATCH] esp32_sdio: name WQ_PERCPU explicitly in alloc_workqueue
+
+Linux 7.x WARN_ONCE()s when alloc_workqueue() gets neither WQ_PERCPU
+nor WQ_UNBOUND (workqueue is migrating to unbound-by-default).
+flags=0 meant the legacy bound per-CPU pool, so spell WQ_PERCPU to
+keep identical behaviour on 6.18 and 7.x.  The create_*() and
+alloc_ordered_workqueue() helpers already OR in WQ_UNBOUND and need
+no change.
+
+---
+diff --git a/main.c b/main.c
+index 8fb6d3d..75664a1 100644
+--- a/main.c
++++ b/main.c
+@@ -1049,7 +1049,7 @@
+ 	memset(&adapter, 0, sizeof(adapter));
+ 
+ 	/* Prepare interface RX work */
+-	adapter.if_rx_workqueue = alloc_workqueue("ESP_IF_RX_WORK_QUEUE", 0, 0);
++	adapter.if_rx_workqueue = alloc_workqueue("ESP_IF_RX_WORK_QUEUE", WQ_PERCPU, 0);
+ 
+ 	if (!adapter.if_rx_workqueue) {
+ 		deinit_adapter();
+@@ -1060,7 +1060,7 @@
+ 
+ 	skb_queue_head_init(&adapter.events_skb_q);
+ 
+-	adapter.events_wq = alloc_workqueue("ESP_EVENTS_WORKQUEUE", WQ_HIGHPRI, 0);
++	adapter.events_wq = alloc_workqueue("ESP_EVENTS_WORKQUEUE", WQ_HIGHPRI | WQ_PERCPU, 0);
+ 
+ 	if (!adapter.events_wq) {
+ 		deinit_adapter();
