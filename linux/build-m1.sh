@@ -2318,9 +2318,12 @@ if $ssh_profile; then
 			echo "m3-lab check failed: /bin/su does not point at busybox-su" >&2
 			exit 1
 		}
-		su_mode=$(stat -c %a "${br_output}/target/bin/busybox-su")
-		[[ "$su_mode" == 4755 ]] || {
-			echo "m3-lab check failed: busybox-su mode is ${su_mode}, want 4755" >&2
+		# BUSYBOX_SU_PERMISSIONS applies the setuid bit only inside the
+		# image (target/ keeps 0755), so read the mode from the squashfs.
+		setuid=$("${br_output}/host/bin/unsquashfs" -lln \
+			"${br_output}/images/rootfs.squashfs" | awk '$1 ~ /^-..s/ {print $1, $2, $NF}')
+		[[ "$setuid" == "-rwsr-xr-x 0/0 squashfs-root/bin/busybox-su" ]] || {
+			echo "m3-lab check failed: setuid files in rootfs.squashfs: ${setuid:-none}" >&2
 			exit 1
 		}
 		# Each exec copies the whole image; one allocation must fit 512 KB.
