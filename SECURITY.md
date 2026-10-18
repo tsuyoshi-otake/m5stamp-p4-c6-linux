@@ -19,6 +19,9 @@ Known limitations of the current images (see the issue tracker for details):
   with a key installed from the drive's `root_authorized_keys` (password
   login for root stays disabled). Anyone who can read or write the drive —
   or the flash — holds these.
+- Two files are setuid root: `/bin/busybox-su` (`su` only) and the main
+  `/bin/busybox`, as Buildroot installs it (`ping` and `passwd` keep root;
+  BusyBox drops root for applets that do not).
 
 ## Third-party components
 

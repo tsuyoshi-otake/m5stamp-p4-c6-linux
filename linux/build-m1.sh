@@ -2312,17 +2312,18 @@ if $ssh_profile; then
 				exit 1
 			}
 		done
-		# /bin/su is the only setuid file and points at the small su-only
-		# BusyBox (#37); the main busybox must stay non-setuid.
+		# /bin/su points at the small su-only BusyBox (#37).
 		[[ "$(readlink "${br_output}/target/bin/su")" == *busybox-su ]] || {
 			echo "m3-lab check failed: /bin/su does not point at busybox-su" >&2
 			exit 1
 		}
-		# BUSYBOX_SU_PERMISSIONS applies the setuid bit only inside the
-		# image (target/ keeps 0755), so read the mode from the squashfs.
+		# The setuid files are exactly the main BusyBox (Buildroot's
+		# BUSYBOX_PERMISSIONS; ping keeps root, other applets drop
+		# root) and busybox-su.  The permissions table applies the bit only
+		# inside the image (target/ keeps 0755), so read the squashfs.
 		setuid=$("${br_output}/host/bin/unsquashfs" -lln \
 			"${br_output}/images/rootfs.squashfs" | awk '$1 ~ /^-..s/ {print $1, $2, $NF}')
-		[[ "$setuid" == "-rwsr-xr-x 0/0 squashfs-root/bin/busybox-su" ]] || {
+		[[ "$setuid" == "-rwsr-xr-x 0/0 squashfs-root/bin/busybox"$'\n'"-rwsr-xr-x 0/0 squashfs-root/bin/busybox-su" ]] || {
 			echo "m3-lab check failed: setuid files in rootfs.squashfs: ${setuid:-none}" >&2
 			exit 1
 		}

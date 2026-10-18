@@ -41,9 +41,9 @@ define BUSYBOX_SU_BUILD_CMDS
 	$(BUSYBOX_MAKE_ENV) $(MAKE) $(BUSYBOX_MAKE_OPTS) -C $(@D) busybox
 endef
 
-# The only setuid file in the image: m5 -> root over SSH (#37).  The plain
-# install lands 0755; the permissions table applies the setuid bit so the
-# squashfs keeps it.
+# setuid root for m5 -> root over SSH (#37), like the main /bin/busybox
+# (Buildroot's BUSYBOX_PERMISSIONS).  The plain install lands 0755; the
+# permissions table applies the setuid bit so the squashfs keeps it.
 define BUSYBOX_SU_PERMISSIONS
 	/bin/busybox-su f 4755 0 0 - - - - -
 endef
