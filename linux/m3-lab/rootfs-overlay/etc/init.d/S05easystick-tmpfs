@@ -164,6 +164,15 @@ start() {
 		( umask 077; syslogd -O /run/messages -s 32 -b 1 ) 2>/dev/null || true
 	fi
 
+	# Login records (#37), root:utmp 0664 as on Debian so m5 can run who and
+	# last.  Dropbear writes them with the utmp group but cannot create them,
+	# and copies wtmp (on this /tmp ramdisk) over wtmp.1 at 32 KiB (dropbear
+	# patch 0011), so wtmp.1 must exist too.
+	for f in /var/run/utmp /var/log/wtmp /var/log/wtmp.1; do
+		{ : > "$f" && chown root:utmp "$f" && chmod 664 "$f"; } 2>/dev/null ||
+			es_log "ES_LOGIN_RECORDS FAIL: $f"
+	done
+
 	# ramoops records of the previous boot (#26; absent in images built
 	# with EASYSTICK_PSTORE=0).
 	if [ -d /sys/fs/pstore ] && grep -qw pstore /proc/filesystems 2>/dev/null; then

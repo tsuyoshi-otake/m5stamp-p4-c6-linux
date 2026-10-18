@@ -1,0 +1,84 @@
+Rotate /var/log/wtmp at 32 KiB
+
+On the EasyStick images /var/log is /tmp, a 2 MB ext2 ramdisk shared with
+/home, and no logrotate runs.  Each SSH login with a terminal adds two
+384-byte records (login and logout), so wtmp would grow until the ramdisk
+is full.  Rotate it where it is written: once the next record would take
+it past 32 KiB, copy it over wtmp.1 and empty it.  That keeps about 85
+logins in wtmp plus wtmp.1, as /run/messages keeps 32 KB plus one old
+copy.
+
+The record is written by the session process, which runs as the user
+with utmp as its effective group, so it cannot rename in the sticky /tmp
+or create a root-owned file; copying keeps both files root:utmp 0664 as
+the boot script made them.  Every writer now takes flock() on wtmp, so a
+record appended by another login cannot fall between the copy and the
+truncation.  Dropbear is the only writer (the serial console is not a
+login).
+
+--- a/src/loginrec.c
++++ b/src/loginrec.c
+@@ -157,6 +157,7 @@
+ #include "loginrec.h"
+ #include "dbutil.h"
+ #include "atomicio.h"
++#include <sys/file.h>
+ 
+ /**
+  ** prototypes for helper functions in this file
+@@ -1033,6 +1034,45 @@
+  **/
+ 
+ #ifdef USE_WTMPX
++/* EasyStick: /var/log/wtmp is on the small /tmp ramdisk and nothing else
++ * rotates it.  When the next record would take it past WTMPX_ROTATE_SIZE,
++ * copy it over wtmp.1 and empty it.  It is copied, not renamed: after
++ * authentication this process runs as the user and only switches its
++ * effective group to utmp (svr-auth.c), so it can write both files but
++ * cannot rename in the sticky /tmp or give a new file to root.  Both are
++ * created root:utmp 0664 at boot and never replaced.  The caller holds
++ * flock() on fd, so no record is appended between the copy and the
++ * truncation. */
++#define WTMPX_ROTATE_SIZE (32 * 1024)
++
++static void
++wtmpx_rotate(int fd)
++{
++	struct stat st;
++	char chunk[4 * sizeof(struct utmpx)];
++	ssize_t n;
++	int in, out;
++
++	if (fstat(fd, &st) != 0 ||
++	    st.st_size + (off_t)sizeof(struct utmpx) <= WTMPX_ROTATE_SIZE)
++		return;
++	if ((out = open(WTMPX_FILE ".1", O_WRONLY|O_TRUNC, 0)) < 0) {
++		dropbear_log(LOG_WARNING, "wtmpx_write: problem opening %s.1: %s; "
++		    "dropping the old records", WTMPX_FILE, strerror(errno));
++	} else {
++		if ((in = open(WTMPX_FILE, O_RDONLY, 0)) >= 0) {
++			while ((n = read(in, chunk, sizeof(chunk))) > 0)
++				if (atomicio(vwrite, out, chunk, n) != (size_t)n)
++					break;
++			(void)close(in);
++		}
++		(void)close(out);
++	}
++	if (ftruncate(fd, 0) != 0)
++		dropbear_log(LOG_WARNING, "wtmpx_write: cannot rotate %s: %s",
++		    WTMPX_FILE, strerror(errno));
++}
++
+ /* write a wtmpx entry direct to the end of the file */
+ /* This is a slight modification of code in OpenBSD's logwtmp.c */
+ static int
+@@ -1046,6 +1086,9 @@
+ 		    WTMPX_FILE, strerror(errno));
+ 		return 0;
+ 	}
++	/* One writer at a time; close() below releases the lock. */
++	(void)flock(fd, LOCK_EX);
++	wtmpx_rotate(fd);
+ 
+ 	if (fstat(fd, &buf) == 0)
+ 		if (atomicio(vwrite, fd, utx, sizeof(*utx)) != sizeof(*utx)) {

@@ -9,6 +9,7 @@ They are numbered after the m3-lab ledger series
 | Patch | Fixes |
 | --- | --- |
 | `0010-easystick-vfork-child-shared-memory.patch` | A command run over SSH ended with `Bad packet length` / `Connection corrupted` instead of its exit status. |
+| `0011-easystick-wtmp-rotate.patch` | `/var/log/wtmp` grew without limit on the 2 MB `/tmp` ramdisk. |
 
 ## 0010: the vfork() child rewrote the server's memory
 
@@ -33,3 +34,26 @@ or runs `exit()`, both of which act on the server's memory.
 A check for "it worked" must include the client's exit status: the remote
 `echo rc=$?` prints before the crash, so `id` output plus `rc=0` alone does
 not show that the session ended cleanly.
+
+## 0011: wtmp is rotated at 32 KiB
+
+S05 creates `/var/run/utmp` and `/var/log/wtmp` (#37) so that `who`, `w`,
+`users` and `last` work. `/var/log` is `/tmp`, a 2 MB ext2 ramdisk shared with
+`/home`, and nothing like logrotate runs, while every SSH login with a
+terminal adds two 384-byte records. Dropbear is the only writer, so it
+rotates the file itself: once the next record would take `wtmp` past 32 KiB it
+is copied over `wtmp.1` (the previous `wtmp.1` is dropped) and emptied. The two
+files hold about 85 logins, as `/run/messages` keeps 32 KB plus one old copy
+(#26).
+
+The first version renamed `wtmp` and created a new one, and on the board every
+rename failed with `Operation not permitted`: after authentication Dropbear's
+session process runs as the user (`Uid: 1000`) and switches its effective
+group to `utmp` only to write the records (`svr-auth.c`). It can write the
+`root:utmp 0664` files but cannot rename in the sticky `/tmp` or give a new
+file to root. Copying needs only write access, and S05 creates `wtmp.1` too,
+so both files stay root-owned and the user cannot edit them. Every writer
+takes `flock()` on `wtmp`, so a record from another login cannot fall between
+the copy and the truncation.
+Commands run without a terminal (`ssh host cmd`) are not recorded, as in
+OpenSSH.

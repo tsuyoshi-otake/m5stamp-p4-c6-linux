@@ -2347,7 +2347,8 @@ if $ssh_profile; then
 			echo "m3-lab check failed: micropython needs $((mpy_bss_end + mpy_stack)) bytes of RAM" >&2
 			exit 1
 		}
-		for link in usr/bin/awk usr/bin/less bin/tar usr/bin/wget usr/bin/top usr/bin/free usr/bin/chpst; do
+		for link in usr/bin/awk usr/bin/less bin/tar usr/bin/wget usr/bin/top usr/bin/free usr/bin/chpst \
+			usr/bin/who usr/bin/w usr/bin/users usr/bin/last; do
 			[[ "$(readlink "${br_output}/target/${link}")" == *busybox-tools ]] || {
 				echo "m3-lab check failed: ${link} does not point at busybox-tools" >&2
 				exit 1

@@ -11,6 +11,7 @@ Commands
   text     cat less head tail grep sed awk cut sort uniq wc tr diff vi
   system   ps top free uptime dmesg kill pkill pgrep watch timeout lsmod
   network  ifconfig ip ping nslookup traceroute netstat nc wget arp
+  users    id whoami who w last su passwd
   other    python3 (MicroPython)  hexdump xxd md5sum sha256sum date bc
 
 Autorun: main.py, main.sh or main on the USB drive runs as m5 at boot and

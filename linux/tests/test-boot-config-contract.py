@@ -167,6 +167,20 @@ def main() -> None:
     assert "BR2_PACKAGE_BUSYBOX_SU" in build
     post_build = read("linux/m3-lab/post-build.sh")
     assert "root:!:" in post_build
+    # Login records: S05 creates utmp/wtmp for Dropbear, busybox-tools
+    # reads them, and Dropbear rotates wtmp on the /tmp ramdisk.
+    assert "for f in /var/run/utmp /var/log/wtmp /var/log/wtmp.1; do" in s05
+    assert 'chown root:utmp "$f" && chmod 664 "$f"' in s05
+    for opt in ("FEATURE_UTMP", "FEATURE_WTMP", "WHO", "W", "USERS", "LAST"):
+        assert f"CONFIG_{opt}=y\n" in tools_config, opt
+    assert "usr/bin/who usr/bin/w usr/bin/users usr/bin/last; do" in build
+    wtmp_patch = read("linux/m3/dropbear-patches/0011-easystick-wtmp-rotate.patch")
+    assert "+#define WTMPX_ROTATE_SIZE (32 * 1024)" in wtmp_patch
+    assert "+\t(void)flock(fd, LOCK_EX);\n+\twtmpx_rotate(fd);" in wtmp_patch
+    assert '+\tif ((out = open(WTMPX_FILE ".1", O_WRONLY|O_TRUNC, 0)) < 0) {' in wtmp_patch
+    assert "rename(" not in wtmp_patch
+    assert '"${script_dir}/m3/dropbear-patches/"*.patch' in build
+    assert "who w last" in motd
     assert "mount -t vfat" not in updater
     assert "BOOT_IMG" not in updater
     assert "boot-snap.img" not in network
