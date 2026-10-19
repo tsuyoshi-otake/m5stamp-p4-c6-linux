@@ -423,7 +423,7 @@ vi script.py
 
 ## Tutorial: MicroPython (`python3`) Programming
 
-The image comes pre-installed with **MicroPython v1.22.2** compiled specifically for RISC-V RV32 NOMMU architectures using bFLT Load-to-Ram (`-r`), position-independent code (`-fPIC`), and an expanded 32 KB execution stack.
+The image comes pre-installed with **MicroPython v1.22.2** compiled specifically for RISC-V RV32 NOMMU architectures using bFLT Load-to-Ram (`-r`), position-independent code (`-fPIC`), and a 48 KB execution stack. Recursion is checked against that stack: about 140 nested Python calls fit (fewer in closures), and deeper recursion raises `RuntimeError: maximum recursion depth exceeded` (images up to v0.3.2 had a 32 KB stack and crashed with a segmentation fault instead).
 
 Available modules: `os`, `sys`, `time` (`sleep`, `sleep_ms`, `ticks_ms`, `localtime`), `socket`, `select`, `json`, `re`, `struct`, `random`, `math`, `hashlib` (`sha256` only; `sha1` and `md5` come with TLS, which is not built), `binascii`, `collections`, `array`, `io`, `errno`, `heapq`, `gc`, `platform`, `termios` and `asyncio`. Threads (`_thread`), TLS (`ssl`), `ffi`, `framebuf`, `cmath` and `deflate` are not built in. The kernel has no IPv6, so pick the IPv4 entry from `socket.getaddrinfo()`:
 
