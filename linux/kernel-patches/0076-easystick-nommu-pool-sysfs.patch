@@ -29,7 +29,7 @@ duplicate "easystick" sysfs directory.
 
 ---
 diff --git a/mm/nommu_userspace_pool.c b/mm/nommu_userspace_pool.c
-mm/nommu_userspace_pool.c
+--- a/mm/nommu_userspace_pool.c
 +++ b/mm/nommu_userspace_pool.c
 @@ -18,14 +18,20 @@
  
@@ -177,7 +177,7 @@ mm/nommu_userspace_pool.c
 +}
 +device_initcall(nommu_pool_sysfs_init);
 diff --git a/include/linux/nommu_userspace_pool.h b/include/linux/nommu_userspace_pool.h
-include/linux/nommu_userspace_pool.h
+--- a/include/linux/nommu_userspace_pool.h
 +++ b/include/linux/nommu_userspace_pool.h
 @@ -10,9 +10,18 @@
  
@@ -208,7 +208,7 @@ include/linux/nommu_userspace_pool.h
  {
  	return NULL;
 diff --git a/drivers/misc/esp32p4-bootflash.c b/drivers/misc/esp32p4-bootflash.c
-drivers/misc/esp32p4-bootflash.c
+--- a/drivers/misc/esp32p4-bootflash.c
 +++ b/drivers/misc/esp32p4-bootflash.c
 @@ -33,6 +33,7 @@
  #include <linux/kernel.h>

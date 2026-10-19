@@ -106,6 +106,17 @@ apply_root_password() {
 # one and renamed over it, and a failed build removes the keys rather than
 # leaving a partial file, so keys taken out of the drive file never stay
 # valid.
+# A printf that hits ENOSPC inside the loop does not fail the loop, so read
+# the file back: it must hold $2 complete lines (a cut-off last line has no
+# newline).  Builtins only.
+es_keys_complete() {
+	c=0
+	while IFS= read -r l; do
+		c=$((c + 1))
+	done < "$1"
+	[ -z "$l" ] && [ "$c" -eq "$2" ]
+}
+
 es_install_keys() {
 	[ -f "$1" ] || return 0
 	d=$3/.ssh
@@ -131,7 +142,7 @@ es_install_keys() {
 				printf '%s\n' "$l"
 				n=$((n + 1))
 			done < "$1"
-		} > "$tmp" 2>/dev/null; then
+		} > "$tmp" 2>/dev/null || ! es_keys_complete "$tmp" "$n"; then
 		rm -f "$tmp" "$d/authorized_keys"
 		es_log "ES_SSH_KEYS FAIL: cannot write $d/authorized_keys (is /tmp full?); no keys for $2 until the next save or boot"
 		return 1

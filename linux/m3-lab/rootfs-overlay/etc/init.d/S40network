@@ -30,6 +30,12 @@ net_tick() {
 	fi
 }
 
+# bootsync runs "apply" with stdout on /dev/null (a full restart is chatty);
+# the per-key results go to the console next to bootsync's own lines.
+net_note() {
+	echo "$1" > /dev/console 2>/dev/null || echo "$1"
+}
+
 # Signal every running process named $1 ($2 = signal) with builtins only;
 # killall/pidof are execs.
 sig_if_running() {
@@ -501,6 +507,15 @@ apply_wpa_hup() {
 	[ "$cur" = "$CONF" ] || return 1
 	wpa_alive || return 1
 	kill -HUP "$p" 2>/dev/null || return 1
+	# operstate is still "up" from the old association right after the
+	# signal.  A reconfigure deauthenticates first; if the link never
+	# drops, the new conf was rejected and the old one is still in use.
+	n=0
+	while sta_authorized; do
+		[ "$n" -ge 3 ] && return 1
+		n=$((n + 1))
+		net_tick 1
+	done
 	n=0
 	while [ "$n" -lt 15 ]; do
 		sta_authorized && break
@@ -512,7 +527,7 @@ apply_wpa_hup() {
 	sig_if_running udhcpc USR2
 	net_tick 1
 	sig_if_running udhcpc USR1
-	echo "M3-lab: Wi-Fi settings applied without a restart (wpa_supplicant reloaded)"
+	net_note "M3-lab: Wi-Fi settings applied without a restart (wpa_supplicant reloaded)"
 	return 0
 }
 
@@ -552,7 +567,7 @@ net_dispatch() {
 			full|wifi_mode)
 				full=1 ;;
 			ssh_password_auth|sdio_mhz|watchdog|maxcpus)
-				echo "ES_CONFIG: $k= changed; applies at the next boot" ;;
+				net_note "ES_CONFIG: $k= changed; applies at the next boot" ;;
 			autorun*|auto_reboot)
 				# autorun_* is applied by bootsync's autorun_apply;
 				# auto_reboot is re-read on every save.
@@ -584,14 +599,17 @@ net_dispatch() {
 			wifi_ssid|wifi_psk|wifi_pmf|ssid|wpa_supplicant.conf)
 				hup=1 ;;
 			*)
-				echo "ES_CONFIG: $k has no targeted apply; restarting the network"
+				net_note "ES_CONFIG: $k has no targeted apply; restarting the network"
 				full=1 ;;
 		esac
 	done
 	if [ "$full" -eq 1 ]; then
 		net_reload_seq
 	elif [ "$hup" -eq 1 ]; then
-		apply_wpa_hup || net_reload_seq
+		apply_wpa_hup || {
+			net_note "M3-lab: Wi-Fi reload without a restart failed; restarting the network"
+			net_reload_seq
+		}
 	fi
 	return 0
 }
