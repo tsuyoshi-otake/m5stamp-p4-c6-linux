@@ -19,3 +19,6 @@ again when you save a new version.  easystick-autorun status|log|stop|start
 
 Full list: busybox --list ; busybox-tools --list
 Not available: sudo, nano, curl, file (no MMU on this CPU).
+NOMMU: each process ~0.5 MB of a 10 MB pool; keep a few commands in flight.
+Transient "Allocation of length ... failed" means retry; see nommu_pool in
+/sys/kernel/easystick or easystick-info.

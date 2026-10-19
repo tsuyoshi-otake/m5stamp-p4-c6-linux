@@ -100,11 +100,12 @@ def main() -> None:
     assert "MICROPY_CONFIG_ROM_LEVEL_EXTRA_FEATURES" in variant
     assert "mpy_bss_end + mpy_stack < 496 * 1024" in build
     # Editing autorun= must not reload Wi-Fi; the README build line needs -fPIC.
-    assert "net_settings_changed \"$STAGE/$name\" \"/tmp/$name\"" in bootsync
+    # #39: bootsync diffs config.txt per key and calls S40network apply.
+    assert "net_changed_keys \"$STAGE/$name\" \"/tmp/$name\"" in bootsync
     assert "riscv32-linux-gcc -Os -fPIC -Wl,-elf2flt" in readme
-    # bootsync runs under umask 077; a network reload from it wrote resolv.conf
+    # bootsync runs under umask 077; a network apply from it wrote resolv.conf
     # 0600, so m5 could not resolve names.  Its children get a login umask.
-    assert "( umask 022; exec /etc/init.d/S40network reload )" in bootsync
+    assert "( umask 022; exec /etc/init.d/S40network apply $NET_KEYS )" in bootsync
     assert "/etc/init.d/S40network reload >/dev/null 2>&1 &" not in bootsync
     assert "\t\tumask 022\n" in autorun
     # The login message must not tell users to eject and reboot any more.
@@ -186,6 +187,70 @@ def main() -> None:
     assert "mount -t vfat" not in updater
     assert "BOOT_IMG" not in updater
     assert "boot-snap.img" not in network
+
+    # #39: S40network apply KEY... exists; boot-only keys only log, unknown
+    # keys take the full restart, and applies serialise through a mkdir lock
+    # plus the pending file.
+    assert "apply)" in network and 'net_apply "$@"' in network
+    assert "ssh_password_auth|sdio_mhz|watchdog|maxcpus)" in network
+    assert "ES_CONFIG: $k= changed; applies at the next boot" in network
+    assert "wifi_ssid|wifi_psk|wifi_pmf|ssid|wpa_supplicant.conf)" in network
+    assert "has no targeted apply; restarting the network" in network
+    assert "kill -HUP \"$p\"" in network
+    assert "sig_if_running udhcpc USR2" in network
+    assert "sig_if_running udhcpc USR1" in network
+    assert "/run/.netapply.lock" in network
+    assert "/run/.netapply.pending" in network
+    assert 'mkdir "$NET_LOCK"' in network
+    assert 'kill -0 "$p"' in network
+    assert "net_reload_seq" in network
+    # #40: wait loops use the FIFO read -t, not an external sleep; the
+    # udhcpc hook chain is sourced; the kernel modprobe helper is emptied.
+    assert "sleep 1" not in network
+    assert 'sleep "$t"' not in network
+    assert 'read -r -t "$1" _' in network
+    assert "net_tick 1" in network
+    assert "/proc/sys/kernel/modprobe" in network
+    udhcpc_script = read(
+        "linux/m3-lab/rootfs-overlay/usr/share/udhcpc/default.script"
+    )
+    assert '. "${hook}"' in udhcpc_script
+    assert '"${hook}" "$ACTION"' not in udhcpc_script
+    udhcpc_hook = read(
+        "linux/m3-lab/rootfs-overlay/usr/share/udhcpc/default.script.d/"
+        "01easystick-status"
+    )
+    assert ". /usr/sbin/easystick-update-status" in udhcpc_hook
+    assert "exit 0" not in udhcpc_hook
+    assert "cat $TMPFILE" not in udhcpc_script
+    # #40: /sys/kernel/easystick/nommu_pool comes from a new patch in the
+    # series; the status tools read it with builtins and tolerate absence.
+    pool_patch = read(
+        "linux/kernel-patches/0076-easystick-nommu-pool-sysfs.patch"
+    )
+    for needle in (
+        "nommu_pool",
+        "sysfs_create_file",
+        "largest_free",
+        "alloc_fail",
+        "fallback",
+        "easystick_kobj",
+        "device_initcall",
+    ):
+        assert needle in pool_patch, needle
+    assert "patches+=(0076-easystick-nommu-pool-sysfs.patch)" in build
+    info = read("linux/m3-lab/rootfs-overlay/usr/sbin/easystick-info")
+    assert "/sys/kernel/easystick/nommu_pool" in info
+    assert "pool_used=" in updater and "pool_largest_free=" in updater
+    assert "pool_alloc_fail=" in updater
+    # #40: a failed credentials/keys apply reports 1 so bootsync keeps the
+    # old file and retries; installs rename over the live file.
+    assert "cred_ok=0" in bootsync
+    assert 'mv -f "$STAGE/credentials.txt" /tmp/credentials.txt' in bootsync
+    assert "ES_CREDENTIALS FAIL" in credentials
+    assert credentials.count("return 1") >= 4
+    assert "/run/shadow.tmp" in credentials
+    assert ".authorized_keys.new" in credentials
 
     assert "*/gadget/lun*/file" in lun
     assert '"$dir/forced_eject"' in lun
