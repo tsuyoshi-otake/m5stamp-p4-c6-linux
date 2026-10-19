@@ -132,7 +132,9 @@ def main() -> None:
     )
     assert "install_root_keys" in credentials
     assert "chmod 700" in credentials and "chmod 600" in credentials
-    assert "chown -R 0:0" in credentials
+    assert "es_install_keys \"$1\" root /root 0:0" in credentials
+    assert "ES_SSH_KEYS FAIL" in credentials
+    assert "mke2fs -q -m 2 " in s05
     assert "apply_root_password" in credentials
     assert "root_password" in credentials
     assert "install_root_keys /boot/root_authorized_keys" in s05

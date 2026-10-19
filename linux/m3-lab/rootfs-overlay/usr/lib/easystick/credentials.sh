@@ -49,36 +49,42 @@ apply_root_password() {
 	es_apply_user_password "$1" root root_password "root login stays locked"
 }
 
+# Install the keys of drive file $1 as $3/.ssh/authorized_keys for user $2
+# (owner $4); $5 is the drive file name for the log.  /home and /root are on
+# the /tmp ramdisk, which can be full: the copy is checked against the size
+# of the keys, and a short one is removed rather than left half-written, so
+# keys taken out of the drive file never stay valid.
+es_install_keys() {
+	[ -f "$1" ] || return 0
+	d=$3/.ssh
+	new=/run/.es-keys-new.$$
+	cr=$(printf '\r')
+	sed -e "s/$cr\$//" "$1" | grep -v '^[[:space:]]*#' | grep -v '^[[:space:]]*$' > "$new" || true
+	n=$(grep -c '' "$new" || true)
+	if mkdir -p "$d" 2>/dev/null && cat "$new" > "$d/authorized_keys" 2>/dev/null &&
+	   [ "$(wc -c < "$d/authorized_keys")" -eq "$(wc -c < "$new")" ]; then
+		chown -R "$4" "$d" 2>/dev/null || true
+		chmod 700 "$d"
+		chmod 600 "$d/authorized_keys"
+		: > "/run/.es-keys-$2"
+		es_log "ES_SSH_KEYS: $n key(s) installed for $2 from $5"
+	else
+		rm -f "$d/authorized_keys"
+		es_log "ES_SSH_KEYS FAIL: cannot write $d/authorized_keys (is /tmp full?); no keys for $2 until the next save or boot"
+	fi
+	rm -f "$new"
+}
+
 # authorized_keys on the USB drive -> /home/m5/.ssh (#25).  /home is a tmpfs
 # overlay, so this runs every boot and the drive stays the source of truth.
 install_keys() {
-	[ -f "$1" ] || return 0
-	d=/home/m5/.ssh
-	cr=$(printf '\r')
-	mkdir -p "$d"
-	sed -e "s/$cr\$//" "$1" | grep -v '^[[:space:]]*#' | grep -v '^[[:space:]]*$' > "$d/authorized_keys" || true
-	chown -R 1000:1000 "$d" 2>/dev/null || true
-	chmod 700 "$d"
-	chmod 600 "$d/authorized_keys"
-	n=$(grep -c '' "$d/authorized_keys" || true)
-	: > /run/.es-keys-m5
-	es_log "ES_SSH_KEYS: $n key(s) installed for m5 from authorized_keys"
+	es_install_keys "$1" m5 /home/m5 1000:1000 authorized_keys
 }
 
 # root_authorized_keys on the USB drive -> /root/.ssh (#37).  Same mechanism
 # as install_keys; Dropbear's -g keeps root to keys only.
 install_root_keys() {
-	[ -f "$1" ] || return 0
-	d=/root/.ssh
-	cr=$(printf '\r')
-	mkdir -p "$d"
-	sed -e "s/$cr\$//" "$1" | grep -v '^[[:space:]]*#' | grep -v '^[[:space:]]*$' > "$d/authorized_keys" || true
-	chown -R 0:0 "$d" 2>/dev/null || true
-	chmod 700 "$d"
-	chmod 600 "$d/authorized_keys"
-	n=$(grep -c '' "$d/authorized_keys" || true)
-	: > /run/.es-keys-root
-	es_log "ES_SSH_KEYS: $n key(s) installed for root from root_authorized_keys"
+	es_install_keys "$1" root /root 0:0 root_authorized_keys
 }
 
 # A key file deleted from the drive revokes the keys it installed at once

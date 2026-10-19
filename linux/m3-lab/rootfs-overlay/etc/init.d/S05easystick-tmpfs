@@ -107,7 +107,10 @@ start() {
 	mkdir -p /tmp 2>/dev/null || true
 	# NOMMU: tmpfs is ramfs here and ignores size=, so /tmp is ext2 on the
 	# 2 MB brd ramdisk to give it a hard cap (#17).  ramfs is the fallback.
-	if mke2fs -q -m 0 -i 4096 /dev/ram0 >/dev/null 2>&1 &&
+	# /home, /root and /var/log share it; 2% (about 40 KB) is reserved for
+	# root so a user who fills it cannot stop the key and config updates
+	# that bootsync writes there (#37).
+	if mke2fs -q -m 2 -i 4096 /dev/ram0 >/dev/null 2>&1 &&
 	   mount -t ext2 /dev/ram0 /tmp 2>/dev/null; then
 		chmod 1777 /tmp
 		rmdir /tmp/lost+found 2>/dev/null || true
