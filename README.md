@@ -118,6 +118,12 @@ Every board gets its own credentials on first boot; no SSID or password is share
 > - The image now has two setuid files, the main BusyBox and `/bin/busybox-su`;
 >   the build checks both in the squashfs.
 >
+> **Known issue in v0.3.2:** a user can fill the 2 MB `/tmp` ramdisk (shared with
+> `/home` and `/root`); a `root_authorized_keys` saved while it is full is not
+> installed, although the serial log says it is.  Free the space and save the file
+> again, or reboot.  Fixed on `main` (2% reserved for root, `ES_SSH_KEYS FAIL`;
+> `linux/tests/v0.3.2-followup-checks-2026-10-19.md`).
+>
 > v0.3.1 changes since v0.3.0:
 > - A `main.sh` saved with CRLF line ends runs again (#34). On v0.2.5 and v0.3.0
 >   it failed with `syntax error`, because the step that strips CR never ran.
