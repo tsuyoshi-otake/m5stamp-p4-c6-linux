@@ -167,8 +167,8 @@ inserts `linux/c68/cpu1.dts.inc` at build time.
 `0077-easystick-esp32p4-mret-trace.patch` (`EASYSTICK_C68_MRET_TRACE=1`,
 C68 profile only) is an observe-only #5 diagnostic: entry.S records a
 per-CPU ring of trap entries (raw mcause incl. hardware MPIL, mepc,
-mstatus, mintstatus on interrupt frames only — `csrr` of `0xfb1` on a
-deaf CPU1 stops the core, so exceptions carry `0xffffffff`), a ring of
+mstatus; the mintstatus slot is always `0xffffffff`, since `csrr` of
+`0xfb1` at trap entry was an illegal instruction at boot), a ring of
 mret writes (the mcause the exit shim restores, mepc, PT_TP vs tp,
 status), an interrupt-only ring that freezes when the hart goes deaf
 (snapshots the all-traps and mret seqs), and an 8-entry post-interrupt

@@ -12,11 +12,10 @@ per-CPU rings plus a bounded post-interrupt buffer, all written inline
 in entry.S:
 
 - ES_TRAP (64x8, every trap): {seq, raw mcause, mepc, mscratch, mstatus,
-  mintstatus, mtval, 0}.  mintstatus (0xfb1) is read ONLY when raw
-  mcause bit 31 is set: on a deaf CPU1 a csrr of 0xfb1 stops the core
-  for good and a latched hart still takes exceptions, so interrupt
-  delivery is the only safe precondition.  Exception records carry
-  0xffffffff.
+  mintstatus, mtval, 0}.  The mintstatus slot is always 0xffffffff:
+  csrr 0xfb1 at trap entry raised an illegal-instruction exception on
+  CPU0's first interrupt at boot, and on a deaf CPU1 it stops the core
+  for good.  The interrupted level is in the raw mcause's MPIL field.
 - ES_MRET (64x8, every mret): the exact mcause the shim restores, mepc,
   PT_TP vs tp, and the written mstatus.  es_mret_bad_mpil counts writes
   whose MPIL field is nonzero -- the shim already forces MPIL=0, so a
@@ -48,7 +47,7 @@ console dump does not depend on it.
 ---
 --- a/arch/riscv/kernel/entry.S	2026-10-19 15:51:54.152471400 +0900
 +++ b/arch/riscv/kernel/entry.S	2026-10-19 16:27:57.526385100 +0900
-@@ -197,6 +197,85 @@
+@@ -197,6 +197,81 @@
  	csrr s5, CSR_SCRATCH
  #ifdef CONFIG_SOC_ESP32P4
  	/*
@@ -58,11 +57,11 @@ console dump does not depend on it.
 +	 * strips it for exceptions and the exit shim always writes 0).
 +	 * t0-t6 are free (already saved).
 +	 *
-+	 * mintstatus (0xfb1) is read ONLY for interrupt frames (raw mcause
-+	 * bit 31 set): on a deaf CPU1 a csrr of 0xfb1 stops the core for
-+	 * good, and a latched hart still takes exceptions -- only interrupt
-+	 * delivery proves the front-end is alive.  Non-interrupt records
-+	 * carry 0xffffffff so 0 stays a meaningful mintstatus value.
++	 * mintstatus (0xfb1) is never read here; its slot holds 0xffffffff.
++	 * csrr 0xfb1 raised an illegal-instruction exception on CPU0's
++	 * first interrupt at boot (E1 build, before the CLIC is in use),
++	 * and on a deaf CPU1 it stops the core for good.  The interrupted
++	 * level is in the raw mcause's MPIL field instead.
 +	 *
 +	 * Interrupt frames also go to the ES_IRQ ring, which freezes when
 +	 * the hart stops accepting interrupts; each record snapshots the
@@ -94,9 +93,9 @@ console dump does not depend on it.
 +	sw   s1, 16(t6)
 +	sw   s3, 24(t6)
 +	sw   zero, 28(t6)
-+	bgez s4, .Les_trap_not_irq
-+	csrr t4, 0xfb1			/* mintstatus: interrupt frames only */
++	li   t4, -1			/* mintstatus slot: never read, see above */
 +	sw   t4, 20(t6)
++	bgez s4, .Les_trap_logged
 +	/* ES_IRQ record + ES_POST reset */
 +	la   t2, es_irq_idx
 +	add  t2, t2, t1
@@ -113,7 +112,7 @@ console dump does not depend on it.
 +	sw   s4, 4(t2)
 +	sw   s2, 8(t2)
 +	sw   s1, 12(t2)
-+	csrr t5, 0xfb1
++	li   t5, -1			/* mintstatus slot: never read */
 +	sw   t5, 16(t2)
 +	sw   t3, 20(t2)			/* all-traps seq at this interrupt */
 +	la   t5, es_mret_idx
@@ -124,17 +123,13 @@ console dump does not depend on it.
 +	la   t5, es_post_idx
 +	add  t5, t5, t1
 +	sw   zero, 0(t5)		/* arm ES_POST for this window */
-+	j    .Les_trap_logged
-+.Les_trap_not_irq:
-+	li   t4, -1			/* mintstatus deliberately not read */
-+	sw   t4, 20(t6)
 +.Les_trap_logged:
 +	fence rw, rw
 +	/*
  	 * CLIC v0.9 bidirectional shim (entry side):
  	 * mstatus.MPP[12:11] and mstatus.MPIE[7] are hardwired to 0 on this
  	 * core; the real saved IE lives in mcause[27] (MPIE).
-@@ -488,6 +567,78 @@
+@@ -488,6 +563,78 @@
  	or    a3, a3, a4
  .Lesp32p4_keep_mpie:
  	csrw  CSR_CAUSE, a3
@@ -232,7 +227,7 @@ console dump does not depend on it.
 +	esp32p4_mret_trace_tick(cpu);
  	return IRQ_HANDLED;
  }
-
+ 
 --- a/arch/riscv/kernel/Makefile	2026-10-19 15:51:54.575627000 +0900
 +++ b/arch/riscv/kernel/Makefile	2026-10-19 15:56:41.101799400 +0900
 @@ -128,3 +128,5 @@
@@ -258,9 +253,9 @@ new file mode 100644
 + *                          trap_seq, mret_seq, 0}
 + *   ES_POST (<=8/window)  same layout as ES_MRET
 + *
-+ * mintstatus is sampled only on interrupt frames (raw mcause bit 31): a
-+ * csrr of 0xfb1 on a deaf CPU1 stops the core, and a latched hart still
-+ * takes exceptions, so exception entries carry the 0xffffffff sentinel.
++ * The mintstatus slots always hold 0xffffffff: csrr 0xfb1 at trap entry
++ * was an illegal instruction on CPU0's first interrupt at boot, and on
++ * a deaf CPU1 it stops the core.  The raw mcause carries the MPIL.
 + *
 + * ES_IRQ freezes when a hart goes deaf -- comparing its newest trap_seq /
 + * mret_seq against the live es_trap_idx/es_mret_idx counts exactly how
