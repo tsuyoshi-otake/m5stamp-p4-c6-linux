@@ -590,8 +590,11 @@ net_dispatch() {
 		case "$k" in
 			full|wifi_mode)
 				full=1 ;;
-			ssh_password_auth|sdio_mhz|watchdog|maxcpus)
+			ssh_password_auth|sdio_mhz|watchdog)
 				net_note "ES_CONFIG: $k= changed; applies at the next boot" ;;
+			maxcpus)
+				# Nothing reads it: the CPU count is built into the image.
+				net_note "ES_CONFIG: maxcpus= has no effect; the CPU count is built into the image" ;;
 			autorun*|auto_reboot)
 				# autorun_* is applied by bootsync's autorun_apply;
 				# auto_reboot is re-read on every save.

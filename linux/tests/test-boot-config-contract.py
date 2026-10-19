@@ -190,10 +190,12 @@ def main() -> None:
 
     # #39: S40network apply KEY... exists; boot-only keys only log, unknown
     # keys take the full restart, and applies serialise through a mkdir lock
-    # plus the pending file.
+    # plus the pending file.  maxcpus= is read by nothing (#5), so it must
+    # not claim to apply at the next boot.
     assert "apply)" in network and 'net_apply "$@"' in network
-    assert "ssh_password_auth|sdio_mhz|watchdog|maxcpus)" in network
+    assert "ssh_password_auth|sdio_mhz|watchdog)" in network
     assert "ES_CONFIG: $k= changed; applies at the next boot" in network
+    assert "ES_CONFIG: maxcpus= has no effect" in network
     assert "wifi_ssid|wifi_psk|wifi_pmf|ssid|wpa_supplicant.conf)" in network
     assert "has no targeted apply; restarting the network" in network
     assert "kill -HUP \"$p\"" in network
