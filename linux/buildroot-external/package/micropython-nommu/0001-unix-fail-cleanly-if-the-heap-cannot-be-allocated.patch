@@ -1,0 +1,26 @@
+unix: fail cleanly if the heap cannot be allocated
+
+main_() passed the result of malloc(heap_size) straight to gc_init(),
+which clears the allocation table through it.  On NOMMU the heap has to
+be one contiguous block, so malloc() fails whenever memory is short or
+fragmented, and the process died with SIGSEGV storing to address 0
+instead of reporting the error.  Print a MemoryError line and exit 1.
+
+Upstream-Status: Pending
+
+--- a/ports/unix/main.c
++++ b/ports/unix/main.c
+@@ -505,6 +505,13 @@
+     #if MICROPY_ENABLE_GC
+     #if !MICROPY_GC_SPLIT_HEAP
+     char *heap = malloc(heap_size);
++    if (heap == NULL) {
++        // gc_init() would clear the allocation table through NULL.  On
++        // NOMMU the heap is one contiguous block, so this happens whenever
++        // memory is short or fragmented.
++        fprintf(stderr, "MemoryError: can't allocate %ld bytes for the heap\n", heap_size);
++        return 1;
++    }
+     gc_init(heap, heap + heap_size);
+     #else
+     assert(MICROPY_GC_SPLIT_HEAP_N_HEAPS > 0);
