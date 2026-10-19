@@ -54,6 +54,14 @@ AFTER_46, BEFORE_47, and AFTER_47 in separate words.
 When the marker is enabled, the module also exposes the root-only
 cmd52_marker_shot parameter; writing 1 to it clears the four stage words and
 re-arms MAGIC/ARMED after normal Wi-Fi startup for one clean shot.
+
+#5 SMP options (all require the C68 profile, EASYSTICK_C68_CLEAN_RELEASE=1):
+Set EASYSTICK_C68_MAXCPUS=2 to rewrite the staged DTS bootargs and
+CONFIG_CMDLINE to maxcpus=2, letting CPU1 come up (same-length rewrite).
+Set EASYSTICK_C68_MRET_TRACE=1 to add 0077: per-CPU trap/mret rings that
+record the mcause each mret restores and a CPU0 watch (ES5_WATCH).
+Set EASYSTICK_C68_DEAF_RESET=1 to add 0078: MWDT-restart the chip when
+CPU1 stops taking interrupts (ES5_RESET).  Both default OFF.
 EOF
 }
 
@@ -262,6 +270,31 @@ if [[ "${EASYSTICK_C68_CLEAN_RELEASE:-0}" == "1" ]]; then
 fi
 if [[ "${EASYSTICK_TSENS_LINUX:-0}" == "1" && "$c68_profile" != true ]]; then
 	echo "EASYSTICK_TSENS_LINUX requires the C68 profile" >&2
+	exit 2
+fi
+# #5 diagnostics/mitigations: opt-in patches and the maxcpus=2 experiment.
+case "${EASYSTICK_C68_MAXCPUS:-1}" in
+	1|2) ;;
+	*) echo "EASYSTICK_C68_MAXCPUS must be 1 or 2" >&2; exit 2 ;;
+esac
+case "${EASYSTICK_C68_MRET_TRACE:-0}" in
+	0|1) ;;
+	*) echo "EASYSTICK_C68_MRET_TRACE must be 0 or 1" >&2; exit 2 ;;
+esac
+case "${EASYSTICK_C68_DEAF_RESET:-0}" in
+	0|1) ;;
+	*) echo "EASYSTICK_C68_DEAF_RESET must be 0 or 1" >&2; exit 2 ;;
+esac
+if [[ "${EASYSTICK_C68_MAXCPUS:-1}" == "2" && "$c68_profile" != true ]]; then
+	echo "EASYSTICK_C68_MAXCPUS=2 requires the C68 profile" >&2
+	exit 2
+fi
+if [[ "${EASYSTICK_C68_MRET_TRACE:-0}" == "1" && "$c68_profile" != true ]]; then
+	echo "EASYSTICK_C68_MRET_TRACE requires the C68 profile" >&2
+	exit 2
+fi
+if [[ "${EASYSTICK_C68_DEAF_RESET:-0}" == "1" && "$c68_profile" != true ]]; then
+	echo "EASYSTICK_C68_DEAF_RESET requires the C68 profile" >&2
 	exit 2
 fi
 c68_stress_profile=false
@@ -747,6 +780,16 @@ if [[ "${EASYSTICK_C68_CLEAN_RELEASE:-0}" == "1" ]]; then
 	if [[ "${EASYSTICK_C68_DEAF_TRACE:-0}" == "1" ]]; then
 		patches+=(0068-easystick-esp32p4-deaf-cpu-trace.patch)
 	fi
+	# #5 diagnostic: per-CPU trap/mret rings + CPU0 watch (ES5_WATCH).
+	# Records the mcause each mret restores and counts nonzero MPIL.
+	if [[ "${EASYSTICK_C68_MRET_TRACE:-0}" == "1" ]]; then
+		patches+=(0077-easystick-esp32p4-mret-trace.patch)
+	fi
+	# #5 mitigation: MWDT-restart the chip when CPU1 stops taking
+	# interrupts (ES5_RESET), so a latched boot becomes one retry.
+	if [[ "${EASYSTICK_C68_DEAF_RESET:-0}" == "1" ]]; then
+		patches+=(0078-easystick-esp32p4-deaf-reset.patch)
+	fi
 	if [[ "${EASYSTICK_C68_TIMER_OBSERVE:-0}" == "1" ]]; then
 		patches+=(0044-easystick-esp32p4-systimer-observe-cpu1.patch)
 	fi
@@ -899,6 +942,8 @@ for patch_name in "${patches[@]}"; do
 	      "$patch_name" == 0070-easystick-nommu-pool-multi-region.patch ||
 	      "$patch_name" == 0071-easystick-nommu-access-ok.patch ||
 	      "$patch_name" == 0072-easystick-esp32p4-bootflash.patch ||
+	      "$patch_name" == 0077-easystick-esp32p4-mret-trace.patch ||
+	      "$patch_name" == 0078-easystick-esp32p4-deaf-reset.patch ||
 	      "$patch_name" == 0056-easystick-wdt-stacktrace.patch ||
 	      "$patch_name" == 0055-easystick-sdio-clock-attest.patch ||
 	      "$patch_name" == 0060-easystick-dw-mmc-tx-software-dto.patch ||
@@ -959,6 +1004,9 @@ printf '%s\n' "stacktrace-diagnostics: ${stacktrace_diagnostics}" >>"${patch_sta
 printf '%s\n' "esp-hosted-cmd52-trace: ${cmd52_trace}" >>"${patch_stage}/SOURCE.txt"
 printf '%s\n' "esp-hosted-cmd52-marker: ${cmd52_marker}" >>"${patch_stage}/SOURCE.txt"
 printf '%s\n' "esp-hosted-cmd52-shot-gate: ${cmd52_marker}" >>"${patch_stage}/SOURCE.txt"
+printf '%s\n' "c68-maxcpus: ${EASYSTICK_C68_MAXCPUS:-1}" >>"${patch_stage}/SOURCE.txt"
+printf '%s\n' "c68-mret-trace: ${EASYSTICK_C68_MRET_TRACE:-0}" >>"${patch_stage}/SOURCE.txt"
+printf '%s\n' "c68-deaf-reset: ${EASYSTICK_C68_DEAF_RESET:-0}" >>"${patch_stage}/SOURCE.txt"
 
 # Linux 6.12+ expects out-of-tree DTS overlays to retain their vendor
 # directory and Makefile.  Keep the board DTS single-sourced in Git, then
@@ -1088,6 +1136,24 @@ EOF
 		"${dts_stage}/espressif/easystick-stamp-p4.dts" \
 		"${firmware_root}/linux/c68/cpu1.dts.inc" \
 		"${firmware_root}/linux/c68/ipi.dts.inc"
+	if [[ "${EASYSTICK_C68_MAXCPUS:-1}" == "2" ]]; then
+		# #5 experiment: let CPU1 actually come up.  "maxcpus=1" ->
+		# "maxcpus=2" is a same-length rewrite, so the DTB layout is
+		# unchanged.  Update both sources: the DT bootargs win on this
+		# kernel (CONFIG_CMDLINE_FORCE is unset); the CONFIG_CMDLINE
+		# copy stays in sync.
+		[[ $(grep -c 'maxcpus=1' "${dts_stage}/espressif/easystick-stamp-p4.dts") == 1 ]] || {
+			echo "MAXCPUS_GATE_FAIL: expected exactly one maxcpus=1 in the staged DTS" >&2
+			exit 1
+		}
+		[[ $(grep -c 'maxcpus=1' "${kernel_config_fragment}") == 1 ]] || {
+			echo "MAXCPUS_GATE_FAIL: expected exactly one maxcpus=1 in the staged config" >&2
+			exit 1
+		}
+		sed -i 's/maxcpus=1/maxcpus=2/' \
+			"${dts_stage}/espressif/easystick-stamp-p4.dts"
+		sed -i 's/maxcpus=1/maxcpus=2/' "${kernel_config_fragment}"
+	fi
 else
 	if grep -q 'cpu@1' "${dts_stage}/espressif/easystick-stamp-p4.dts"; then
 		echo "UP DTS gate failed: staged DTB source contains cpu@1" >&2

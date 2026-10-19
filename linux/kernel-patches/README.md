@@ -164,6 +164,21 @@ Committed `linux.config` remains `CONFIG_SMP=n` and the board DTS remains
 `cpu@0` only. The C68 profile appends `linux/c68/linux.config.fragment` and
 inserts `linux/c68/cpu1.dts.inc` at build time.
 
+`0077-easystick-esp32p4-mret-trace.patch` (`EASYSTICK_C68_MRET_TRACE=1`,
+C68 profile only) is an observe-only #5 diagnostic: entry.S records a
+per-CPU ring of trap entries (raw mcause incl. hardware MPIL, mepc,
+mstatus, mintstatus, mtval) and of mret writes (the mcause the exit shim
+restores, mepc, PT_TP vs tp, status), counts nonzero-MPIL mret writes in
+`es_mret_bad_mpil`, and a CPU0 timer-tick watch dumps the rings as
+ES5_WATCH/ES5_TRAP/ES5_MRET lines when CPU1's stamp goes stale.
+
+`0078-easystick-esp32p4-deaf-reset.patch` (`EASYSTICK_C68_DEAF_RESET=1`,
+C68 profile only) is the matching #5 mitigation: a per-CPU jiffies stamp
+written by each CPU's own SYSTIMER interrupt lets CPU0 notice a deaf
+CPU1 within ~2 s and take the chip down through `emergency_restart()`
+(MWDT) with a panic() backstop, so a latched boot becomes one bounded
+retry.  Both default OFF.
+
 This directory documents a real dependency boundary while the series is
 still under review. A clean build must fail early if the baseline symbols are
 absent rather than silently dropping UART, watchdog, or NOMMU support during

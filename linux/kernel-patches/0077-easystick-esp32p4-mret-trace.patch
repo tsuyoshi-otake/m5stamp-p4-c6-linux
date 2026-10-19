@@ -1,0 +1,283 @@
+Subject: [PATCH] easystick: esp32p4 mret/mcause ring trace for the CPU1 interrupt latch (#5)
+
+The CPU1 CLIC acceptance latch leaves pending+enabled interrupts
+untaken while the hart keeps running.  The "stale mcause" hypothesis is
+that some return path executes mret with a nonzero mcause.MPIL
+(bits 23:16), latching mintstatus.mil to 0xFF so every interrupt lands
+below threshold forever.
+
+Observe-only recorder, applied only for C68 diagnostic builds
+(EASYSTICK_C68_MRET_TRACE=1, requires the C68 SMP series):
+
+- entry.S saves two per-CPU 64-entry rings of 8-word records inline in
+  the trap entry and exit paths:
+  * ES_TRAP at trap entry -- the raw mcause (interrupt frames carry
+    the hardware MPIL of the interrupted context), mepc, mscratch,
+    mstatus, mintstatus, mtval.  mintstatus is safe to sample here and
+    nowhere else: the recorded trap was just delivered, so this hart is
+    not latched.  Reading it anywhere else on a possibly-deaf CPU1 is
+    what the 0068 captures showed can stop the core for good.
+  * ES_MRET at the single mret site, immediately after the exit shim
+    programs CSR_CAUSE -- the exact mcause word the mret will restore,
+    with the rewritten mepc, PT_TP vs tp (user/kernel target) and the
+    written mstatus.
+- es_mret_bad_mpil counts mret writes whose MPIL field is nonzero and
+  es_mret_bad_cause keeps the first offending word; the current shim
+  already forces MPIL=0, so a zero count on a deaf boot is the hardware
+  falsification of the stale-mcause hypothesis.
+- drivers/clocksource/timer-esp32p4-systimer.c calls
+  esp32p4_mret_trace_tick() from each CPU's own SYSTIMER interrupt.
+  CPU1's stamp stops when it goes deaf; CPU0's tick sees the stale
+  stamp within ~2 s and prints the rings once as ES5_WATCH/ES5_TRAP/
+  ES5_MRET lines, plus the 0067 cache-sync lock word.  No CLIC CSR is
+  read on CPU1 from this path.
+- esp32p4_mret_trace.c holds the rings and the dump.  CPU0 alone prints
+  (a second output source is noise); the ring data itself is stamped by
+  whichever CPU executes the exit shim.
+
+All state is plain RAM written with a fence after each record, so the
+latest records survive an MWDT reset into the pstore preserved area if
+backing is enabled later; the console dump does not depend on it.
+
+---
+--- a/arch/riscv/kernel/entry.S	2026-10-19 15:51:54.152471400 +0900
++++ b/arch/riscv/kernel/entry.S	2026-10-19 15:55:28.480422600 +0900
+@@ -197,6 +197,39 @@
+ 	csrr s5, CSR_SCRATCH
+ #ifdef CONFIG_SOC_ESP32P4
+ 	/*
++	 * #5 ES_TRAP record (0077): stash the raw trap state before the
++	 * shim rewrites anything.  s4 is the raw mcause -- for interrupt
++	 * frames this is the only place its MPIL field survives (PT_CAUSE
++	 * strips it for exceptions and the exit shim always writes 0).
++	 * Record layout: {seq, mcause, mepc, mscratch, mstatus,
++	 * mintstatus, mtval, 0}.  t0-t6 are free (already saved).
++	 * mintstatus (0xfb1) is safe to sample exactly here: the trap we
++	 * are recording was just delivered, so this hart is not latched.
++	 */
++	lw   t0, TASK_TI_CPU(tp)
++	slli t1, t0, 2
++	la   t2, es_trap_idx
++	add  t2, t2, t1
++	lw   t3, 0(t2)
++	addi t4, t3, 1
++	sw   t4, 0(t2)
++	andi t4, t3, 63
++	slli t4, t4, 5
++	slli t5, t0, 11
++	la   t6, es_trap_buf
++	add  t6, t6, t5
++	add  t6, t6, t4
++	sw   t3, 0(t6)
++	sw   s4, 4(t6)
++	sw   s2, 8(t6)
++	sw   s5, 12(t6)
++	sw   s1, 16(t6)
++	csrr t4, 0xfb1
++	sw   t4, 20(t6)
++	sw   s3, 24(t6)
++	sw   zero, 28(t6)
++	fence rw, rw
++	/*
+ 	 * CLIC v0.9 bidirectional shim (entry side):
+ 	 * mstatus.MPP[12:11] and mstatus.MPIE[7] are hardwired to 0 on this
+ 	 * core; the real saved IE lives in mcause[27] (MPIE).
+@@ -488,6 +521,50 @@
+ 	or    a3, a3, a4
+ .Lesp32p4_keep_mpie:
+ 	csrw  CSR_CAUSE, a3
++	/*
++	 * #5 ES_MRET record (0077): log the mcause this mret will restore
++	 * {seq, mcause_w, mepc_w, pttp, tp, status_w, 0, 0} and flag the
++	 * write if its MPIL field is nonzero.  The shim's mask already
++	 * forces MPIL=0, so es_mret_bad_mpil staying at 0 on a deaf boot
++	 * is the hardware falsification of the "stale-mcause mret"
++	 * hypothesis; a nonzero count would identify the offending frame.
++	 * a2/a3 still hold mepc/mcause, a0 holds pt_regs->status; PT_TP
++	 * is reloaded because a4 is clobbered on the user-return branch.
++	 * t0-t6 are free.
++	 */
++	lw   t0, TASK_TI_CPU(tp)
++	slli t1, t0, 2
++	la   t2, es_mret_idx
++	add  t2, t2, t1
++	lw   t3, 0(t2)
++	addi t4, t3, 1
++	sw   t4, 0(t2)
++	andi t4, t3, 63
++	slli t4, t4, 5
++	slli t5, t0, 11
++	la   t6, es_mret_buf
++	add  t6, t6, t5
++	add  t6, t6, t4
++	REG_L t5, PT_TP(sp)
++	sw   t3, 0(t6)
++	sw   a3, 4(t6)
++	sw   a2, 8(t6)
++	sw   t5, 12(t6)
++	sw   tp, 16(t6)
++	sw   a0, 20(t6)
++	sw   zero, 24(t6)
++	sw   zero, 28(t6)
++	li   t4, 0x00FF0000
++	and  t5, a3, t4
++	beqz t5, .Les_mret_mpil_ok
++	la   t4, es_mret_bad_mpil
++	lw   t5, 0(t4)
++	addi t5, t5, 1
++	sw   t5, 0(t4)
++	la   t4, es_mret_bad_cause
++	sw   a3, 0(t4)
++.Les_mret_mpil_ok:
++	fence rw, rw
+ #endif
+ 
+ 	REG_L x1,  PT_RA(sp)
+--- a/drivers/clocksource/timer-esp32p4-systimer.c	2026-10-19 15:51:54.764879200 +0900
++++ b/drivers/clocksource/timer-esp32p4-systimer.c	2026-10-19 15:56:31.919005900 +0900
+@@ -26,6 +26,9 @@
+ 
+ #include <asm/delay.h>		/* riscv_timebase */
+ 
++/* #5 diagnostic (0077): trap/mret ring watch, esp32p4_mret_trace.c */
++void esp32p4_mret_trace_tick(unsigned int cpu);
++
+ #define ESP32P4_TIMER_CPUS	2
+ 
+ /* SYSTIMER register byte offsets (struct size = 0x100). */
+@@ -214,6 +217,7 @@
+ 	 * before entering the clockevent callback.
+ 	 */
+ 	esp32p4_timer_stop(cpu);
++	esp32p4_mret_trace_tick(cpu);
+ 	ce = this_cpu_ptr(&esp32p4_clock_event);
+ 	ce->event_handler(ce);
+ 	return IRQ_HANDLED;
+--- a/arch/riscv/kernel/Makefile	2026-10-19 15:51:54.575627000 +0900
++++ b/arch/riscv/kernel/Makefile	2026-10-19 15:56:41.101799400 +0900
+@@ -128,3 +128,5 @@
+ 
+ obj-$(CONFIG_GENERIC_CPU_VULNERABILITIES) += bugs.o
+ obj-$(CONFIG_RISCV_USER_CFI) += usercfi.o
++
++obj-$(CONFIG_SOC_ESP32P4) += esp32p4_mret_trace.o
+diff --git a/arch/riscv/kernel/esp32p4_mret_trace.c b/arch/riscv/kernel/esp32p4_mret_trace.c
+new file mode 100644
+--- /dev/null
++++ b/arch/riscv/kernel/esp32p4_mret_trace.c
+@@ -0,0 +1,115 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * #5 diagnostic (C68 diagnostic builds): per-CPU trap/mret rings for the
++ * CPU1 CLIC interrupt-acceptance latch.  entry.S writes two records per
++ * trap, one at entry (raw mcause with its hardware MPIL) and one at the
++ * single mret site (the mcause the exit shim is about to restore); the
++ * record layouts are fixed by the entry.S asm and documented there:
++ *
++ *   ES_TRAP {seq, mcause, mepc, mscratch, mstatus, mintstatus, mtval, 0}
++ *   ES_MRET {seq, mcause_w, mepc_w, pttp, tp, status_w, 0, 0}
++ *
++ * esp32p4_mret_trace_tick() is called from each CPU's own SYSTIMER
++ * interrupt handler.  CPU1's stamp stops when it stops taking
++ * interrupts; CPU0's tick then prints the rings once as ES5_WATCH
++ * lines.  No CLIC CSR is read on
++ * CPU1 from this path: mintstatus is only sampled by a hart on itself,
++ * inside ES_TRAP, where the recorded trap proves it is not latched.
++ *
++ * es_mret_bad_mpil counts the mret writes whose MPIL field was nonzero
++ * (the exit shim forces MPIL=0, so any nonzero count IS the stale-mcause
++ * bug); es_mret_bad_cause keeps the first such word.
++ */
++
++#include <linux/cpumask.h>
++#include <linux/jiffies.h>
++#include <linux/kernel.h>
++#include <linux/printk.h>
++#include <linux/smp.h>
++#include <linux/spinlock.h>
++#include <linux/types.h>
++
++#include <asm/cacheflush.h>	/* esp32p4_cache_sync_lock (patch 0067) */
++
++#define ES_REC_WORDS	8
++#define ES_RING		64
++
++u32 es_trap_buf[NR_CPUS][ES_RING][ES_REC_WORDS];
++u32 es_mret_buf[NR_CPUS][ES_RING][ES_REC_WORDS];
++u32 es_trap_idx[NR_CPUS];
++u32 es_mret_idx[NR_CPUS];
++u32 es_mret_bad_mpil;
++u32 es_mret_bad_cause;
++
++/*
++ * Defined by patch 0067 (drivers/cache/esp32p4_cache.c) and declared in
++ * asm/cacheflush.h; the weak fallback lets this patch also be applied
++ * without 0067 -- the dump then just prints the zeroed lock word.
++ */
++raw_spinlock_t esp32p4_cache_sync_lock __weak;
++
++/* per-CPU jiffies stamp, written by that CPU's own timer interrupt */
++static unsigned long es_tick_jif[NR_CPUS];
++static int es_watch_done;
++
++#define ES_WATCH_STALENESS	(2 * HZ)
++
++static void esp32p4_mret_trace_dump(unsigned int cpu)
++{
++	unsigned int c, i, n;
++
++	pr_emerg("ES5_WATCH cpu%u silent: cpu0 stamp jif=%lu cpu1 stamp jif=%lu bad_mpil=%u bad_cause=%08x cachelock=%08x\n",
++		 cpu, es_tick_jif[0], es_tick_jif[1],
++		 READ_ONCE(es_mret_bad_mpil), READ_ONCE(es_mret_bad_cause),
++		 *(volatile u32 *)&esp32p4_cache_sync_lock);
++	pr_emerg("ES5_WATCH seq cpu0 trap=%u mret=%u cpu1 trap=%u mret=%u\n",
++		 READ_ONCE(es_trap_idx[0]), READ_ONCE(es_mret_idx[0]),
++		 READ_ONCE(es_trap_idx[1]), READ_ONCE(es_mret_idx[1]));
++
++	for (c = 0; c < NR_CPUS; c++) {
++		n = READ_ONCE(es_mret_idx[c]);
++		if (n > ES_RING)
++			n = ES_RING;
++		for (i = 0; i < n; i++) {
++			const u32 *r =
++			    es_mret_buf[c][(n - 1 - i) & (ES_RING - 1)];
++
++			pr_emerg("ES5_MRET cpu%u [%3u] %08x %08x %08x %08x %08x %08x %08x %08x\n",
++				 c, i, r[0], r[1], r[2], r[3], r[4], r[5],
++				 r[6], r[7]);
++		}
++	}
++	for (c = 0; c < NR_CPUS; c++) {
++		n = READ_ONCE(es_trap_idx[c]);
++		if (n > ES_RING)
++			n = ES_RING;
++		for (i = 0; i < n; i++) {
++			const u32 *r =
++			    es_trap_buf[c][(n - 1 - i) & (ES_RING - 1)];
++
++			pr_emerg("ES5_TRAP cpu%u [%3u] %08x %08x %08x %08x %08x %08x %08x %08x\n",
++				 c, i, r[0], r[1], r[2], r[3], r[4], r[5],
++				 r[6], r[7]);
++		}
++	}
++}
++
++void esp32p4_mret_trace_tick(unsigned int cpu);
++void esp32p4_mret_trace_tick(unsigned int cpu)
++{
++	unsigned long last, now = jiffies;
++
++	if (cpu >= NR_CPUS)
++		return;
++	WRITE_ONCE(es_tick_jif[cpu], now);
++	if (cpu != 0 || num_online_cpus() < 2 || !cpu_online(1) ||
++	    es_watch_done)
++		return;
++
++	last = READ_ONCE(es_tick_jif[1]);
++	if (!last || time_before(now, last + ES_WATCH_STALENESS))
++		return;
++
++	es_watch_done = 1;
++	esp32p4_mret_trace_dump(cpu);
++}
