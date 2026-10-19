@@ -18,6 +18,30 @@ conf_get() {
 UNQUOTE='s/^"//;s/"[ 	]*$//;'
 NOSPACE='s/ //g;'
 
+# sleep is not a NOFORK applet, so `sleep 1` in a wait loop is a vfork+exec
+# (~480 KB on NOMMU) every second (#40).  Like bootsync's tick(): read -t on
+# a FIFO nobody writes waits inside the shell itself.
+NET_TICK_FIFO=/run/.es-net-tick
+net_tick() {
+	if [ -p "$NET_TICK_FIFO" ]; then
+		read -r -t "$1" _ 0<> "$NET_TICK_FIFO" 2>/dev/null || true
+	else
+		sleep "$1"
+	fi
+}
+
+# Signal every running process named $1 ($2 = signal) with builtins only;
+# killall/pidof are execs.
+sig_if_running() {
+	for f in /proc/[0-9]*/comm; do
+		c=""
+		read -r c < "$f" 2>/dev/null || continue
+		[ "$c" = "$1" ] || continue
+		pid=${f%/comm}
+		kill "-$2" "${pid#/proc/}" 2>/dev/null || true
+	done
+}
+
 conf_ssid() {
 	conf_get ssid "$1" "$UNQUOTE"
 }
@@ -43,7 +67,7 @@ run_dhcp() {
 			return 0
 		fi
 		n=$((n + 1))
-		sleep 1
+		net_tick 1
 	done
 	return 1
 }
@@ -71,7 +95,7 @@ stop_wpa() {
 	# Its 1.8 MB block must be free before the next one can be loaded.
 	n=0
 	while killall -0 wpa_supplicant 2>/dev/null && [ "$n" -lt 10 ]; do
-		sleep 1
+		net_tick 1
 		n=$((n + 1))
 	done
 }
@@ -98,7 +122,7 @@ sta_authorized() {
 # usually works on a respawn 5 s later, so give it two before falling back.
 wpa_settled() {
 	for t in 3 6 6 6; do
-		sleep "$t"
+		net_tick "$t"
 		wpa_alive && return 0
 	done
 	return 1
@@ -223,6 +247,26 @@ config_wifi() {
 	echo "M3-lab: Wi-Fi config generated from config.txt (ssid=$w_ssid mode=${w_mode:-sta}${w_pmf:+ pmf=optional})"
 }
 
+# Choose the effective wpa_supplicant conf and config.txt the same way at
+# boot and on a live apply: /boot, then /tmp, then the built-in defaults;
+# config_wifi may switch CONF to the generated /run/wpa_cfg.conf.
+select_conf() {
+	CONF=/etc/easystick/wpa_supplicant.conf
+	if [ -f /boot/wpa_supplicant.conf ]; then
+		CONF=/boot/wpa_supplicant.conf
+	elif [ -f /tmp/wpa_supplicant.conf ]; then
+		CONF=/tmp/wpa_supplicant.conf
+	fi
+
+	CFG=/etc/easystick/config.txt
+	if [ -f /boot/config.txt ]; then
+		CFG=/boot/config.txt
+	elif [ -f /tmp/config.txt ]; then
+		CFG=/tmp/config.txt
+	fi
+	config_wifi || true
+}
+
 # No RTC: set the clock once from NTP after a station lease (#25).  -q exits
 # after the first sync so no daemon stays resident.  ntp_server= in config.txt
 # overrides the pool; ntp_server=none disables it.
@@ -311,26 +355,19 @@ start() {
 		echo "ES_SDIO_LOAD_OK source=$MODULE_SOURCE requested_mhz=$WANT_MHZ module_param_mhz=$ACTUAL_PARAM_MHZ module_sha256=${MODULE_SHA256:-unavailable}"
 	fi
 
+	# All modules the image needs were just insmod'ed (or modprobe'd in
+	# S05); nothing loads on demand later.  An empty helper name makes the
+	# kernel's request_module() return without forking /sbin/modprobe --
+	# a ~480 KB BusyBox exec observed inside every reload (#40).  If a
+	# driver ever does need a lazy module it must be added to the explicit
+	# insmod list above instead.
+	: > /proc/sys/kernel/modprobe 2>/dev/null || true
+
 	# S05 cached the initial configuration before exporting boot.img.  Runtime
 	# updates are staged by easystick-bootsync only after a host SCSI eject;
 	# never inspect the backing image from a network reload while it is exported.
 
-	# Prefer /boot/wpa_supplicant.conf, then /tmp/wpa_supplicant.conf, then /etc/easystick
-	CONF=/etc/easystick/wpa_supplicant.conf
-	if [ -f /boot/wpa_supplicant.conf ]; then
-		CONF=/boot/wpa_supplicant.conf
-	elif [ -f /tmp/wpa_supplicant.conf ]; then
-		CONF=/tmp/wpa_supplicant.conf
-	fi
-
-	# Also check config.txt to see if explicit wifi_mode or credentials were provided
-	CFG=/etc/easystick/config.txt
-	if [ -f /boot/config.txt ]; then
-		CFG=/boot/config.txt
-	elif [ -f /tmp/config.txt ]; then
-		CFG=/tmp/config.txt
-	fi
-	config_wifi || true
+	select_conf
 
 	is_ap=0
 	if [ -f "$CFG" ]; then
@@ -369,7 +406,7 @@ start() {
 				rm -rf /var/run/wpa_supplicant* 2>/dev/null || true
 				apply_channel || true
 				start_wpa
-				sleep 1
+				net_tick 1
 				if command -v udhcpd >/dev/null 2>&1; then
 					mkdir -p /tmp /var/lib/misc
 					touch /run/udhcpd.leases
@@ -409,7 +446,7 @@ start() {
 					return 0
 				fi
 				j=$((j + 1))
-				sleep 1
+				net_tick 1
 			done
 			echo "M3-lab: wlan0 link status after timeout"
 			iw dev wlan0 link 2>/dev/null || true
@@ -427,10 +464,169 @@ start() {
 			return 0
 		fi
 		i=$((i + 1))
-		sleep 1
+		net_tick 1
 	done
 	echo "M3-lab: wlan0 did not appear"
 }
+
+# The existing full restart, shared by "reload"/"restart" and by apply for
+# wifi_mode or anything without a targeted handler (#39).
+net_reload_seq() {
+	stop_udhcpd
+	stop_wpa
+	killall udhcpc 2>/dev/null || true
+	ifconfig wlan0 down 2>/dev/null || true
+	rm -rf /var/run/wpa_supplicant* 2>/dev/null || true
+	net_tick 1
+	start
+}
+
+# Wi-Fi credential keys with the mode still "sta": regenerate the conf and
+# SIGHUP the running wpa_supplicant (2.x re-reads its -c file and keeps the
+# OLD config if the new one does not parse, so a broken save degrades to
+# "still on the old network" rather than killing the daemon), then make
+# udhcpc release and renew the lease.  No 1.8 MB re-exec (#39).  Returns 1
+# whenever the HUP path cannot apply the change; the caller then runs the
+# full restart, which keeps the /etc/easystick/wpa_supplicant.conf fallback.
+apply_wpa_hup() {
+	select_conf
+	# A SoftAP conf is rebuilt, not reloaded.
+	if grep -q '^[[:space:]]*mode=2' "$CONF" 2>/dev/null; then
+		return 1
+	fi
+	# wpa_supplicant re-reads the -c file it was started with; a different
+	# conf path needs a re-exec.
+	cur=""
+	read -r cur 2>/dev/null < /run/.es-wpa-conf || true
+	[ "$cur" = "$CONF" ] || return 1
+	wpa_alive || return 1
+	kill -HUP "$p" 2>/dev/null || return 1
+	n=0
+	while [ "$n" -lt 15 ]; do
+		sta_authorized && break
+		n=$((n + 1))
+		net_tick 1
+	done
+	sta_authorized || return 1
+	# Release the old lease, then ask for a new one on the new network.
+	sig_if_running udhcpc USR2
+	net_tick 1
+	sig_if_running udhcpc USR1
+	echo "M3-lab: Wi-Fi settings applied without a restart (wpa_supplicant reloaded)"
+	return 0
+}
+
+# One apply/reload at a time (#39): a second requester appends its keys to
+# /run/.netapply.pending and returns; the lock holder drains the file when
+# it finishes.  The lock is an mkdir (atomic in hush); a holder killed
+# mid-run leaves a stale lock, so a requester whose mkdir fails checks the
+# recorded PID and steals the lock when that process is gone.  /run is
+# tmpfs, so a reboot clears both files.
+NET_LOCK=/run/.netapply.lock
+NET_PENDING=/run/.netapply.pending
+
+net_acquire() {
+	if mkdir "$NET_LOCK" 2>/dev/null; then
+		echo $$ > "$NET_LOCK/pid"
+		return 0
+	fi
+	p=""
+	read -r p 2>/dev/null < "$NET_LOCK/pid" || true
+	if [ -n "$p" ] && ! kill -0 "$p" 2>/dev/null; then
+		rm -rf "$NET_LOCK"
+		if mkdir "$NET_LOCK" 2>/dev/null; then
+			echo $$ > "$NET_LOCK/pid"
+			return 0
+		fi
+	fi
+	return 1
+}
+
+# Run the actions for one batch of queued request tokens.  Unknown keys are
+# never ignored: they get the full restart (#39).
+net_dispatch() {
+	full=0
+	hup=0
+	for k in "$@"; do
+		case "$k" in
+			full|wifi_mode)
+				full=1 ;;
+			ssh_password_auth|sdio_mhz|watchdog|maxcpus)
+				echo "ES_CONFIG: $k= changed; applies at the next boot" ;;
+			autorun*|auto_reboot)
+				# autorun_* is applied by bootsync's autorun_apply;
+				# auto_reboot is re-read on every save.
+				;;
+			debug)
+				if [ "$(conf_get debug /tmp/config.txt "$NOSPACE")" = "1" ]; then
+					dmesg -n 8 2>/dev/null || true
+				else
+					dmesg -n 4 2>/dev/null || true
+				fi ;;
+			hostname)
+				h=$(conf_get hostname /tmp/config.txt "$NOSPACE")
+				[ -n "$h" ] && hostname "$h" 2>/dev/null || true
+				# easystick-mdns answers with gethostname() per query,
+				# so the new name serves mDNS with no restart or HUP.
+				;;
+			country)
+				apply_country || true ;;
+			ntp_server)
+				# Read on the next lease's sync_time; nothing to do now.
+				;;
+			channel)
+				# A different SoftAP frequency means rebuilding the AP;
+				# in station mode the key is unused.
+				select_conf
+				if grep -q '^[[:space:]]*mode=2' "$CONF" 2>/dev/null; then
+					full=1
+				fi ;;
+			wifi_ssid|wifi_psk|wifi_pmf|ssid|wpa_supplicant.conf)
+				hup=1 ;;
+			*)
+				echo "ES_CONFIG: $k has no targeted apply; restarting the network"
+				full=1 ;;
+		esac
+	done
+	if [ "$full" -eq 1 ]; then
+		net_reload_seq
+	elif [ "$hup" -eq 1 ]; then
+		apply_wpa_hup || net_reload_seq
+	fi
+	return 0
+}
+
+net_apply() {
+	case " $* " in
+		*" full "*) echo full > "$NET_PENDING" ;;
+		*) echo "$*" >> "$NET_PENDING" ;;
+	esac
+	net_acquire || return 0
+	rounds=0
+	while :; do
+		passes=0
+		while [ -s "$NET_PENDING" ] && [ "$passes" -lt 5 ]; do
+			passes=$((passes + 1))
+			reqs=""
+			while IFS= read -r l || [ -n "$l" ]; do
+				reqs="$reqs $l"
+			done < "$NET_PENDING"
+			rm -f "$NET_PENDING"
+			net_dispatch $reqs
+		done
+		rm -rf "$NET_LOCK"
+		# A request written between the last drain and the unlock had no
+		# holder to drain it; pick it up ourselves.  If another requester
+		# already holds the lock it drains the file instead.
+		[ -s "$NET_PENDING" ] || break
+		rounds=$((rounds + 1))
+		[ "$rounds" -ge 4 ] && break
+		net_acquire || break
+	done
+	return 0
+}
+
+[ -p "$NET_TICK_FIFO" ] || mkfifo -m 600 "$NET_TICK_FIFO" 2>/dev/null || true
 
 case "${1:-start}" in
 	start) start ;;
@@ -443,15 +639,13 @@ case "${1:-start}" in
 		[ -x /usr/sbin/easystick-update-status ] && /usr/sbin/easystick-update-status "STOPPED" "none" "none" "none" "none" "none" &
 		;;
 	reload|restart)
-		stop_udhcpd
-		stop_wpa
-		killall udhcpc 2>/dev/null || true
-		ifconfig wlan0 down 2>/dev/null || true
-		rm -rf /var/run/wpa_supplicant* 2>/dev/null || true
-		sleep 1
-		start
+		net_apply full
 		;;
-	*) echo "Usage: $0 {start|stop|restart|reload}" >&2; exit 1 ;;
+	apply)
+		shift
+		net_apply "$@"
+		;;
+	*) echo "Usage: $0 {start|stop|restart|reload|apply KEY...}" >&2; exit 1 ;;
 esac
 
 exit 0

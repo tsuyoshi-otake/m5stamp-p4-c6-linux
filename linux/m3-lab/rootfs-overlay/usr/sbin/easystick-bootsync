@@ -71,19 +71,62 @@ lun_state() {
 	esac
 }
 
-# config.txt $1 differs from $2 in more than the autorun lines.  Switching a
-# program on or off must not drop Wi-Fi and the SSH sessions with it.
-net_settings_changed() {
-	[ -f "$2" ] || return 0
-	grep -v '^autorun' "$1" > /run/.bootsync-cfg-new
-	grep -v '^autorun' "$2" > /run/.bootsync-cfg-old
-	if file_changed /run/.bootsync-cfg-new /run/.bootsync-cfg-old; then
-		cfg_changed=0
-	else
-		cfg_changed=1
+# config.txt diffing (#39): normalise both files the way S40network's
+# conf_get reads them -- UTF-8 BOM on line 1, CRs, leading blanks, comments
+# and blank lines dropped, blanks around "=" collapsed -- into key=value
+# lines.  autorun* keys go to autorun_apply, not the network.  One sed per
+# file; the comparison is shell builtins only, because every external
+# command is a ~480 KB exec on this NOMMU board.
+cfg_norm() {
+	bom=$(printf '\357\273\277')
+	cr=$(printf '\r')
+	sed -n -e "1s/^$bom//" -e "s/$cr\$//" \
+		-e "s/^[[:blank:]]*//" \
+		-e "/^#/d" -e "/^$/d" -e "/=/!d" \
+		-e "s/[[:blank:]]*=[[:blank:]]*/=/" \
+		-e "/^autorun[^=]*=/d" \
+		-e p "$1" > "$2" 2>/dev/null
+}
+
+# CHANGED_KEYS = the config.txt keys whose effective value differs between
+# $1 (new) and $2 (old).  The first occurrence of a key wins, matching
+# conf_get's early "q".  Returns 0 when anything changed; "full" when there
+# is no baseline to diff against.
+net_changed_keys() {
+	CHANGED_KEYS=""
+	[ -f "$2" ] || { CHANGED_KEYS=full; return 0; }
+	NORM_NEW=/run/.bootsync-cfg-new
+	NORM_OLD=/run/.bootsync-cfg-old
+	if ! cfg_norm "$1" "$NORM_NEW" || ! cfg_norm "$2" "$NORM_OLD"; then
+		rm -f "$NORM_NEW" "$NORM_OLD"
+		CHANGED_KEYS=full
+		return 0
 	fi
-	rm -f /run/.bootsync-cfg-new /run/.bootsync-cfg-old
-	return "$cfg_changed"
+	seen=""
+	while IFS= read -r l || [ -n "$l" ]; do
+		k=${l%%=*}
+		case " $seen " in *" $k "*) continue ;; esac
+		seen="$seen$k "
+		v=${l#*=}
+		nv=""
+		found=0
+		while IFS= read -r nl || [ -n "$nl" ]; do
+			case "$nl" in
+				"$k="*) nv=${nl#*=}; found=1; break ;;
+			esac
+		done < "$NORM_NEW"
+		if [ "$found" -eq 0 ] || [ "$nv" != "$v" ]; then
+			CHANGED_KEYS="$CHANGED_KEYS $k"
+		fi
+	done < "$NORM_OLD"
+	while IFS= read -r nl || [ -n "$nl" ]; do
+		k=${nl%%=*}
+		case " $seen " in *" $k "*) continue ;; esac
+		seen="$seen$k "
+		CHANGED_KEYS="$CHANGED_KEYS $k"
+	done < "$NORM_NEW"
+	rm -f "$NORM_NEW" "$NORM_OLD"
+	[ -n "$CHANGED_KEYS" ]
 }
 
 FLASH_HASH_FILE="/run/.boot-flash-md5"
@@ -240,22 +283,36 @@ import_snapshot() {
 	rm -f "$SNAP_IMG"
 
 	# Publish the new config only after it is saved, so a failed save leaves
-	# /tmp untouched and a retry still sees the change.
-	NET_CHANGED=0
+	# /tmp untouched and a retry still sees the change.  NET_KEYS collects
+	# the changed settings for S40network apply; a file that could not be
+	# published stays old in /tmp and diffs again at the next save.
+	NET_KEYS=""
 	for name in wpa_supplicant.conf config.txt; do
 		if [ -f "$STAGE/$name" ] && file_changed "$STAGE/$name" "/tmp/$name"; then
-			if [ "$name" != config.txt ] ||
-				net_settings_changed "$STAGE/$name" "/tmp/$name"; then
-				NET_CHANGED=1
+			keys=""
+			if [ "$name" = config.txt ]; then
+				net_changed_keys "$STAGE/$name" "/tmp/$name" &&
+					keys=$CHANGED_KEYS
+			else
+				keys=" wpa_supplicant.conf"
 			fi
-			mv -f "$STAGE/$name" "/tmp/$name"
+			mv -f "$STAGE/$name" "/tmp/$name" || continue
+			NET_KEYS="$NET_KEYS$keys"
 		fi
 	done
 	if [ -f "$STAGE/credentials.txt" ] &&
 		file_changed "$STAGE/credentials.txt" /tmp/credentials.txt; then
-		apply_password "$STAGE/credentials.txt"
-		apply_root_password "$STAGE/credentials.txt"
-		mv -f "$STAGE/credentials.txt" /tmp/credentials.txt
+		cred_ok=1
+		apply_password "$STAGE/credentials.txt" || cred_ok=0
+		apply_root_password "$STAGE/credentials.txt" || cred_ok=0
+		# Publish only when both applies reported success: a failed one
+		# (e.g. an exec that ENOMEM'd) keeps the old file in /tmp, so the
+		# next save sees the diff and retries (#40).
+		if [ "$cred_ok" -eq 1 ]; then
+			mv -f "$STAGE/credentials.txt" /tmp/credentials.txt
+		else
+			log "ERROR: credentials apply failed; old credentials.txt kept for a retry on the next save"
+		fi
 	fi
 	if [ -f "$STAGE/authorized_keys" ]; then
 		install_keys "$STAGE/authorized_keys"
@@ -284,10 +341,12 @@ import_snapshot() {
 		reboot
 		while true; do tick 60; done
 	fi
-	if [ "$NET_CHANGED" -eq 1 ]; then
-		log "Configuration changed; reloading network"
+	if [ -n "$NET_KEYS" ]; then
+		log "Configuration changed:$NET_KEYS; applying"
 		# umask 022: udhcpc writes resolv.conf, which m5 must read.
-		( umask 022; exec /etc/init.d/S40network reload ) >/dev/null 2>&1 &
+		# apply serialises inside S40network: overlapping saves queue into
+		# /run/.netapply.pending instead of running two reloads (#39).
+		( umask 022; exec /etc/init.d/S40network apply $NET_KEYS ) >/dev/null 2>&1 &
 	fi
 	# Restarts the program only when it or its autorun= settings changed.
 	autorun_apply
