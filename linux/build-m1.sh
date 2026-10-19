@@ -62,6 +62,9 @@ DTS bootargs and CONFIG_CMDLINE are rewritten from maxcpus=1 to maxcpus=2
 Every build adds 0079, which drops the CLIC interrupt level with an mret at
 IRQ entry (the fix for the interrupt latch); set EASYSTICK_C68_IRQ_LEVEL0=0
 to leave it out.
+Every build adds 0081, which clears MEXSTATUS.EXPT_VLD at trap entry (the
+fix for the core lockup on a user fault after a context switch); set
+EASYSTICK_C68_EXPT_CLEAR=0 to leave it out.
 Diagnostics (C68 profile only, default OFF):
 Set EASYSTICK_C68_MRET_TRACE=1 to add 0077: per-CPU trap/mret rings that
 record the mcause each mret restores and a CPU0 watch (ES5_WATCH).
@@ -278,8 +281,8 @@ if [[ "${EASYSTICK_TSENS_LINUX:-0}" == "1" && "$c68_profile" != true ]]; then
 	exit 2
 fi
 # #5: the C68 profile boots both CPUs unless EASYSTICK_C68_MAXCPUS=1; 0079
-# is on for every build unless EASYSTICK_C68_IRQ_LEVEL0=0; the diagnostics
-# stay opt-in.
+# and 0081 are on for every build unless EASYSTICK_C68_IRQ_LEVEL0=0 or
+# EASYSTICK_C68_EXPT_CLEAR=0; the diagnostics stay opt-in.
 if $c68_profile; then
 	: "${EASYSTICK_C68_MAXCPUS:=2}"
 fi
@@ -298,6 +301,10 @@ esac
 case "${EASYSTICK_C68_IRQ_LEVEL0:-1}" in
 	0|1) ;;
 	*) echo "EASYSTICK_C68_IRQ_LEVEL0 must be 0 or 1" >&2; exit 2 ;;
+esac
+case "${EASYSTICK_C68_EXPT_CLEAR:-1}" in
+	0|1) ;;
+	*) echo "EASYSTICK_C68_EXPT_CLEAR must be 0 or 1" >&2; exit 2 ;;
 esac
 if [[ "${EASYSTICK_C68_MAXCPUS:-1}" == "2" && "$c68_profile" != true ]]; then
 	echo "EASYSTICK_C68_MAXCPUS=2 requires the C68 profile" >&2
@@ -831,6 +838,12 @@ fi
 if [[ "${EASYSTICK_C68_IRQ_LEVEL0:-1}" == "1" ]]; then
 	patches+=(0079-easystick-esp32p4-irq-level-drop.patch)
 fi
+# #5: clear MEXSTATUS.EXPT_VLD at trap entry.  A system call that ends in
+# schedule() can resume a task through an interrupt return, which leaves the
+# bit set, and that task's next fault locks the core up.
+if [[ "${EASYSTICK_C68_EXPT_CLEAR:-1}" == "1" ]]; then
+	patches+=(0081-easystick-esp32p4-expt-clear.patch)
+fi
 if $network_profile; then
 	patches+=(0002-gpio-esp32p4.patch)
 	patches+=(0007-mmc-dw_mmc-esp32p4-fixes.patch)
@@ -967,6 +980,7 @@ for patch_name in "${patches[@]}"; do
 	      "$patch_name" == 0077-easystick-esp32p4-mret-trace.patch ||
 	      "$patch_name" == 0078-easystick-esp32p4-deaf-reset.patch ||
 	      "$patch_name" == 0079-easystick-esp32p4-irq-level-drop.patch ||
+	      "$patch_name" == 0081-easystick-esp32p4-expt-clear.patch ||
 	      "$patch_name" == 0056-easystick-wdt-stacktrace.patch ||
 	      "$patch_name" == 0055-easystick-sdio-clock-attest.patch ||
 	      "$patch_name" == 0060-easystick-dw-mmc-tx-software-dto.patch ||
@@ -1031,6 +1045,7 @@ printf '%s\n' "c68-maxcpus: ${EASYSTICK_C68_MAXCPUS:-1}" >>"${patch_stage}/SOURC
 printf '%s\n' "c68-mret-trace: ${EASYSTICK_C68_MRET_TRACE:-0}" >>"${patch_stage}/SOURCE.txt"
 printf '%s\n' "c68-deaf-reset: ${EASYSTICK_C68_DEAF_RESET:-0}" >>"${patch_stage}/SOURCE.txt"
 printf '%s\n' "c68-irq-level0: ${EASYSTICK_C68_IRQ_LEVEL0:-1}" >>"${patch_stage}/SOURCE.txt"
+printf '%s\n' "c68-expt-clear: ${EASYSTICK_C68_EXPT_CLEAR:-1}" >>"${patch_stage}/SOURCE.txt"
 
 # Linux 6.12+ expects out-of-tree DTS overlays to retain their vendor
 # directory and Makefile.  Keep the board DTS single-sourced in Git, then
