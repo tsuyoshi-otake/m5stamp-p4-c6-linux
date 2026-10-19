@@ -601,7 +601,12 @@ net_apply() {
 		*" full "*) echo full > "$NET_PENDING" ;;
 		*) echo "$*" >> "$NET_PENDING" ;;
 	esac
-	net_acquire || return 0
+	# The holder may already be past its last pending check; retry once so a
+	# just-released lock is picked up instead of stranding our queued keys.
+	if ! net_acquire; then
+		net_tick 1
+		net_acquire || return 0
+	fi
 	rounds=0
 	while :; do
 		passes=0
