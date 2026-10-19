@@ -38,6 +38,8 @@ FORBIDDEN = {
     "wlan0 missing": re.compile(r"M3-lab: wlan0 did not (appear|associate)"),
     "DHCP failure": re.compile(r"M3-lab: DHCP failed"),
     "wpa_supplicant failure": re.compile(r"M3-lab: wpa_supplicant (fallback )?failed"),
+    # #5: CPU1 must read back CPU0's PMA/PMP (SMP boot-shim only).
+    "CPU1 protection mismatch": re.compile(r"C68 CPU1 PMA/PMP diff=(?!0{8}\b)"),
 }
 
 # Reported but not failing: they depend on the config.txt under test.

@@ -66,6 +66,13 @@ rc, out = run(capsule, "--after-reboot")
 expect(rc == 1 and "FAIL: no crash capsule after reboot" in out,
        f"capsule after reboot is caught\n{out}")
 
+prot = b"easystick-boot: C68 CPU1 PMA/PMP diff=%s\r\n"
+rc, out = run(prot % b"00000000" + GOOD)
+expect(rc == 0, f"CPU1 with CPU0's PMA/PMP passes\n{out}")
+rc, out = run(prot % b"20000000" + GOOD)
+expect(rc == 1 and "FAIL: no CPU1 protection mismatch" in out,
+       f"a CPU1 PMA/PMP mismatch is caught\n{out}")
+
 rc, out = run(GOOD + b"M3-lab: CONFIG ERROR: country=xx1 is not a two-letter code; ignored\r\n")
 expect(rc == 0 and "WARN: config error" in out, f"config errors only warn\n{out}")
 
