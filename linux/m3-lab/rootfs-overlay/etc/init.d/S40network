@@ -590,6 +590,8 @@ net_dispatch() {
 				# so the new name serves mDNS with no restart or HUP.
 				;;
 			country)
+				# apply_country reads $CFG, which only start() sets.
+				CFG=/tmp/config.txt
 				apply_country || true ;;
 			ntp_server)
 				# Read on the next lease's sync_time; nothing to do now.

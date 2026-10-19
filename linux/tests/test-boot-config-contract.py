@@ -204,6 +204,11 @@ def main() -> None:
     assert 'mkdir "$NET_LOCK"' in network
     assert 'kill -0 "$p"' in network
     assert "net_reload_seq" in network
+    # apply_country reads $CFG, which only start() sets: the live apply must
+    # point it at /tmp/config.txt or a country= change does nothing.
+    assert "CFG=/tmp/config.txt\n\t\t\t\tapply_country" in network
+    # A deleted hostname= falls back to the boot name.
+    assert "read -r h < /etc/hostname" in network
     # #40: wait loops use the FIFO read -t, not an external sleep; the
     # udhcpc hook chain is sourced; the kernel modprobe helper is emptied.
     assert "sleep 1" not in network
