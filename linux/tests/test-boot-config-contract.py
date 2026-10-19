@@ -144,8 +144,8 @@ def main() -> None:
     assert "root_authorized_keys" in bootsync
     assert "apply_root_password \"$STAGE/credentials.txt\"" in bootsync
     # A key file deleted from the drive revokes only the keys it installed.
-    assert ": > /run/.es-keys-m5" in credentials
-    assert ": > /run/.es-keys-root" in credentials
+    assert ': > "/run/.es-keys-$2"' in credentials
+    assert "es_install_keys \"$1\" m5 /home/m5 1000:1000" in credentials
     assert '[ -e "/run/.es-keys-$1" ] || return 0' in credentials
     assert "revoke_keys m5 /home/m5 authorized_keys" in bootsync
     assert "revoke_keys root /root root_authorized_keys" in bootsync
