@@ -1,7 +1,8 @@
 Subject: [PATCH] easystick: esp32p4 drop the CLIC interrupt level at IRQ entry (#5)
 
-Candidate fix for the #5 latch, applied only for C68 SMP builds
-(EASYSTICK_C68_IRQ_LEVEL0=1, requires the C68 SMP series).
+Fix for the #5 latch, applied to every build (EASYSTICK_C68_IRQ_LEVEL0=0
+leaves it out).  The latch is not SMP-only: with one CPU, killing a busy
+task can leave CPU0 deaf until the MWDT resets the chip.
 
 The E1 captures (0068 + 0077, maxcpus=2) show, on every deaf boot, the
 same transition: CPU1's last accepted interrupt was taken in a user

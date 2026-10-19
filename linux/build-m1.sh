@@ -55,16 +55,18 @@ When the marker is enabled, the module also exposes the root-only
 cmd52_marker_shot parameter; writing 1 to it clears the four stage words and
 re-arms MAGIC/ARMED after normal Wi-Fi startup for one clean shot.
 
-#5 SMP options (all require the C68 profile, EASYSTICK_C68_CLEAN_RELEASE=1):
-Set EASYSTICK_C68_MAXCPUS=2 to rewrite the staged DTS bootargs and
-CONFIG_CMDLINE to maxcpus=2, letting CPU1 come up (same-length rewrite).
+#5 SMP options:
+The C68 profile (EASYSTICK_C68_CLEAN_RELEASE=1) boots both CPUs: the staged
+DTS bootargs and CONFIG_CMDLINE are rewritten from maxcpus=1 to maxcpus=2
+(same-length rewrite).  Set EASYSTICK_C68_MAXCPUS=1 to keep CPU1 parked.
+Every build adds 0079, which drops the CLIC interrupt level with an mret at
+IRQ entry (the fix for the interrupt latch); set EASYSTICK_C68_IRQ_LEVEL0=0
+to leave it out.
+Diagnostics (C68 profile only, default OFF):
 Set EASYSTICK_C68_MRET_TRACE=1 to add 0077: per-CPU trap/mret rings that
 record the mcause each mret restores and a CPU0 watch (ES5_WATCH).
 Set EASYSTICK_C68_DEAF_RESET=1 to add 0078: MWDT-restart the chip when
 CPU1 stops taking interrupts (ES5_RESET).
-Set EASYSTICK_C68_IRQ_LEVEL0=1 to add 0079: drop the CLIC interrupt level
-with an mret at IRQ entry (candidate fix for the CPU1 latch).
-All three default OFF.
 EOF
 }
 
@@ -275,7 +277,12 @@ if [[ "${EASYSTICK_TSENS_LINUX:-0}" == "1" && "$c68_profile" != true ]]; then
 	echo "EASYSTICK_TSENS_LINUX requires the C68 profile" >&2
 	exit 2
 fi
-# #5 diagnostics/mitigations: opt-in patches and the maxcpus=2 experiment.
+# #5: the C68 profile boots both CPUs unless EASYSTICK_C68_MAXCPUS=1; 0079
+# is on for every build unless EASYSTICK_C68_IRQ_LEVEL0=0; the diagnostics
+# stay opt-in.
+if $c68_profile; then
+	: "${EASYSTICK_C68_MAXCPUS:=2}"
+fi
 case "${EASYSTICK_C68_MAXCPUS:-1}" in
 	1|2) ;;
 	*) echo "EASYSTICK_C68_MAXCPUS must be 1 or 2" >&2; exit 2 ;;
@@ -288,7 +295,7 @@ case "${EASYSTICK_C68_DEAF_RESET:-0}" in
 	0|1) ;;
 	*) echo "EASYSTICK_C68_DEAF_RESET must be 0 or 1" >&2; exit 2 ;;
 esac
-case "${EASYSTICK_C68_IRQ_LEVEL0:-0}" in
+case "${EASYSTICK_C68_IRQ_LEVEL0:-1}" in
 	0|1) ;;
 	*) echo "EASYSTICK_C68_IRQ_LEVEL0 must be 0 or 1" >&2; exit 2 ;;
 esac
@@ -302,10 +309,6 @@ if [[ "${EASYSTICK_C68_MRET_TRACE:-0}" == "1" && "$c68_profile" != true ]]; then
 fi
 if [[ "${EASYSTICK_C68_DEAF_RESET:-0}" == "1" && "$c68_profile" != true ]]; then
 	echo "EASYSTICK_C68_DEAF_RESET requires the C68 profile" >&2
-	exit 2
-fi
-if [[ "${EASYSTICK_C68_IRQ_LEVEL0:-0}" == "1" && "$c68_profile" != true ]]; then
-	echo "EASYSTICK_C68_IRQ_LEVEL0 requires the C68 profile" >&2
 	exit 2
 fi
 c68_stress_profile=false
@@ -802,11 +805,6 @@ if [[ "${EASYSTICK_C68_CLEAN_RELEASE:-0}" == "1" ]]; then
 	if [[ "${EASYSTICK_C68_DEAF_RESET:-0}" == "1" ]]; then
 		patches+=(0078-easystick-esp32p4-deaf-reset.patch)
 	fi
-	# #5 candidate fix: drop the CLIC interrupt level at IRQ entry so an
-	# interrupt that ends in schedule() cannot leave the hart deaf.
-	if [[ "${EASYSTICK_C68_IRQ_LEVEL0:-0}" == "1" ]]; then
-		patches+=(0079-easystick-esp32p4-irq-level-drop.patch)
-	fi
 	if [[ "${EASYSTICK_C68_TIMER_OBSERVE:-0}" == "1" ]]; then
 		patches+=(0044-easystick-esp32p4-systimer-observe-cpu1.patch)
 	fi
@@ -826,6 +824,12 @@ if [[ "${EASYSTICK_C68_CLEAN_RELEASE:-0}" == "1" ]]; then
 	if [[ "${EASYSTICK_TSENS_LINUX:-0}" == "1" ]]; then
 		patches+=(0050-thermal-esp32p4-add-lp-tsens-driver.patch)
 	fi
+fi
+# #5: drop the CLIC interrupt level at IRQ entry so an interrupt that ends
+# in schedule() cannot leave the hart deaf.  The latch hits one CPU as well
+# as two (a killed busy task left CPU0 deaf until the MWDT reset).
+if [[ "${EASYSTICK_C68_IRQ_LEVEL0:-1}" == "1" ]]; then
+	patches+=(0079-easystick-esp32p4-irq-level-drop.patch)
 fi
 if $network_profile; then
 	patches+=(0002-gpio-esp32p4.patch)
@@ -1026,7 +1030,7 @@ printf '%s\n' "esp-hosted-cmd52-shot-gate: ${cmd52_marker}" >>"${patch_stage}/SO
 printf '%s\n' "c68-maxcpus: ${EASYSTICK_C68_MAXCPUS:-1}" >>"${patch_stage}/SOURCE.txt"
 printf '%s\n' "c68-mret-trace: ${EASYSTICK_C68_MRET_TRACE:-0}" >>"${patch_stage}/SOURCE.txt"
 printf '%s\n' "c68-deaf-reset: ${EASYSTICK_C68_DEAF_RESET:-0}" >>"${patch_stage}/SOURCE.txt"
-printf '%s\n' "c68-irq-level0: ${EASYSTICK_C68_IRQ_LEVEL0:-0}" >>"${patch_stage}/SOURCE.txt"
+printf '%s\n' "c68-irq-level0: ${EASYSTICK_C68_IRQ_LEVEL0:-1}" >>"${patch_stage}/SOURCE.txt"
 
 # Linux 6.12+ expects out-of-tree DTS overlays to retain their vendor
 # directory and Makefile.  Keep the board DTS single-sourced in Git, then
@@ -1157,7 +1161,7 @@ EOF
 		"${firmware_root}/linux/c68/cpu1.dts.inc" \
 		"${firmware_root}/linux/c68/ipi.dts.inc"
 	if [[ "${EASYSTICK_C68_MAXCPUS:-1}" == "2" ]]; then
-		# #5 experiment: let CPU1 actually come up.  "maxcpus=1" ->
+		# #5: let CPU1 come up (the C68 default).  "maxcpus=1" ->
 		# "maxcpus=2" is a same-length rewrite, so the DTB layout is
 		# unchanged.  Update both sources: the DT bootargs win on this
 		# kernel (CONFIG_CMDLINE_FORCE is unset); the CONFIG_CMDLINE

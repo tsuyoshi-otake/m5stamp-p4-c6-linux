@@ -304,7 +304,7 @@ hostname=easystick
 #ssh_password_auth=no
 # root SSH login is key-only: put a root_authorized_keys file on this drive
 # (#37).  su uses root_password= in credentials.txt.
-# maxcpus is fixed in the DTB (maxcpus=1); this file does not change the CPU count.
+# maxcpus is fixed in the DTB; this file does not change the CPU count.
 EOF
 		fi
 		CRED_NEW=0

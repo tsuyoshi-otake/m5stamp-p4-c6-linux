@@ -198,7 +198,7 @@ hostname=easystick
 #sdio_mhz=5
 # Reset the board if userland stops responding or SSH (inetd) stays down.
 #watchdog=1
-# maxcpus is fixed in the DTB (maxcpus=1); this file does not change the CPU count.
+# maxcpus is fixed in the DTB; this file does not change the CPU count.
 # Put an empty file named factory-reset on this drive and reboot to restore
 # these defaults and generate new credentials.
 EOF
