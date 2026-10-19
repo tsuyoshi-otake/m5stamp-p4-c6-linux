@@ -1,6 +1,10 @@
 #!/bin/sh
 # EasyStick udhcpc hook to update status.txt on IP assignment or renewal
 # NOMMU-safe: zero subshells, zero pipes to prevent vfork issues in ash
+#
+# default.script sources this file (#40): $1 is its ACTION argument, and
+# easystick-update-status is in turn sourced via "set -- ..." rather than
+# exec'ed, so the whole chain stays in one shell.  Do not "exit" here.
 
 ACTION="$1"
 
@@ -25,11 +29,15 @@ case "$ACTION" in
 				esac
 			done < "$_conf"
 		fi
-		[ -x /usr/sbin/easystick-update-status ] && /usr/sbin/easystick-update-status "CONNECTED" "$ip" "$subnet" "$router" "$_ssid" "sta"
+		if [ -x /usr/sbin/easystick-update-status ]; then
+			set -- "CONNECTED" "$ip" "$subnet" "$router" "$_ssid" "sta"
+			. /usr/sbin/easystick-update-status
+		fi
 		;;
 	deconfig|leasefail)
-		[ -x /usr/sbin/easystick-update-status ] && /usr/sbin/easystick-update-status "DISCONNECTED" "none" "none" "none" "none" "sta"
+		if [ -x /usr/sbin/easystick-update-status ]; then
+			set -- "DISCONNECTED" "none" "none" "none" "none" "sta"
+			. /usr/sbin/easystick-update-status
+		fi
 		;;
 esac
-
-exit 0

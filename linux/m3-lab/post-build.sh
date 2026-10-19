@@ -49,6 +49,9 @@ chmod 0755 "${TARGET_DIR}/usr/sbin/easystick-watchdog"
 chmod 0755 "${TARGET_DIR}/usr/sbin/easystick-update-status"
 chmod 0755 "${TARGET_DIR}/usr/sbin/easystick-info"
 chmod 0755 "${TARGET_DIR}/usr/sbin/easystick-autorun"
+# Overrides Buildroot's udhcpc script: the m3-lab copy sources its *.d
+# hooks instead of exec'ing them (#40).
+chmod 0755 "${TARGET_DIR}/usr/share/udhcpc/default.script"
 chmod 0644 "${TARGET_DIR}/etc/inetd.conf"
 
 # BusyBox applet reduction (busybox.fragment) removed start-stop-daemon and
