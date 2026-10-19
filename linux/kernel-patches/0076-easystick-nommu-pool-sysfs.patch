@@ -36,7 +36,7 @@ diff --git a/mm/nommu_userspace_pool.c b/mm/nommu_userspace_pool.c
  #define pr_fmt(fmt) "nommu_userspace_pool: " fmt
  
 +#include <linux/atomic.h>
-+#include <linux/find.h>
++#include <linux/bitmap.h>
  #include <linux/genalloc.h>
  #include <linux/init.h>
  #include <linux/io.h>
