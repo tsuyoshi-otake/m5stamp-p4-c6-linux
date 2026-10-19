@@ -48,6 +48,15 @@ sig_if_running() {
 	done
 }
 
+proc_running() {
+	for f in /proc/[0-9]*/comm; do
+		c=""
+		read -r c < "$f" 2>/dev/null || continue
+		[ "$c" = "$1" ] && return 0
+	done
+	return 1
+}
+
 conf_ssid() {
 	conf_get ssid "$1" "$UNQUOTE"
 }
@@ -526,10 +535,22 @@ apply_wpa_hup() {
 		net_tick 1
 	done
 	sta_authorized || return 1
-	# Release the old lease, then ask for a new one on the new network.
-	sig_if_running udhcpc USR2
-	net_tick 1
-	sig_if_running udhcpc USR1
+	if proc_running udhcpc; then
+		# Release the old lease, then ask for a new one on the new network.
+		sig_if_running udhcpc USR2
+		net_tick 1
+		sig_if_running udhcpc USR1
+	else
+		# The last start() never authorized (wrong PSK, AP missing), so it
+		# stopped before DHCP and there is no client to renew: correcting
+		# the PSK would leave the link up with no address.
+		if run_dhcp; then
+			sync_time
+		else
+			dhcp_failed
+		fi
+		[ -x /etc/init.d/S85easystick-ssh ] && /etc/init.d/S85easystick-ssh restart &
+	fi
 	net_note "M3-lab: Wi-Fi settings applied without a restart (wpa_supplicant reloaded)"
 	return 0
 }

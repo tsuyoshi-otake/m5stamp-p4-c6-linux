@@ -199,6 +199,9 @@ def main() -> None:
     assert "kill -HUP \"$p\"" in network
     assert "sig_if_running udhcpc USR2" in network
     assert "sig_if_running udhcpc USR1" in network
+    # A boot on a wrong PSK never started udhcpc: the HUP path that fixes the
+    # PSK must start DHCP itself, not just signal a client that is not there.
+    assert "if proc_running udhcpc; then" in network
     assert "/run/.netapply.lock" in network
     assert "/run/.netapply.pending" in network
     assert 'mkdir "$NET_LOCK"' in network
