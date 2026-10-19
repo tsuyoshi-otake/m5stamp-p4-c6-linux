@@ -125,8 +125,9 @@ case "$ACTION" in
 esac
 
 # Sourced, not exec'ed: the hook runs in this shell, so it must not exit.
-# Its $1 is already ACTION via the shared positional parameters; the hook
-# itself uses "set -- ..." before sourcing easystick-update-status.
+# Its $1 comes from these positional parameters -- the staticroutes branch
+# above consumed them, so restore $1=ACTION first (a builtin, unlike ". f x").
+set -- "$ACTION"
 HOOK_DIR="$0.d"
 for hook in "${HOOK_DIR}/"*; do
     [ -f "${hook}" -a -x "${hook}" ] || continue
