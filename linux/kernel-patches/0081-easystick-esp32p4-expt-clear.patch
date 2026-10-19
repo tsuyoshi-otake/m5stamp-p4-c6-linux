@@ -2,9 +2,10 @@ Subject: [PATCH] easystick: esp32p4 clear MEXSTATUS.EXPT_VLD at exception entry 
 
 Fix for a core lockup on a user fault, applied to every build
 (EASYSTICK_C68_EXPT_CLEAR=0 leaves it out).  Like the 0079 latch it is
-not SMP-only, but with two CPUs a locked-up CPU1 does not stop the MWDT
-feed, so the board stays half alive (RCU stalls, no SSH banner) instead
-of resetting.
+not SMP-only: on one CPU the MWDT resets the chip a minute or two after
+the lockup.  With two CPUs a lockup of CPU1 did not always reset it:
+twice CPU0 reported an RCU stall on CPU1 and the chip reset about 80 s
+in, once CPU0 ran on for 200 s with CPU1's PC on a store in memset().
 
 The core sets MEXSTATUS.EXPT_VLD (custom CSR 0x7e1, bit 5, named in
 ESP-IDF's riscv/encoding.h) when it takes an exception.  An exception
@@ -40,7 +41,9 @@ there itself, such as the ebreak of a WARN, is no longer a double
 exception (not tested).  Before this, a kernel fault in a system call was
 one too, which fits the freeze 0071 describes for open(NULL).  A kernel
 access fault still panics: NOMMU has no exception table, and 0071 keeps
-bad user pointers away from the copy.
+bad user pointers away from the copy.  An exception in the entry code
+before this mret, while the frame is saved, still finds the bit set and
+locks the core up; no software can close that window.
 
 ---
 --- a/arch/riscv/kernel/entry.S

@@ -62,8 +62,8 @@ DTS bootargs and CONFIG_CMDLINE are rewritten from maxcpus=1 to maxcpus=2
 Every build adds 0079, which drops the CLIC interrupt level with an mret at
 IRQ entry (the fix for the interrupt latch); set EASYSTICK_C68_IRQ_LEVEL0=0
 to leave it out.
-Every build adds 0081, which clears MEXSTATUS.EXPT_VLD at trap entry (the
-fix for the core lockup on a user fault after a context switch); set
+Every build adds 0081, which clears MEXSTATUS.EXPT_VLD at exception entry
+(the fix for the core lockup on a user fault after a context switch); set
 EASYSTICK_C68_EXPT_CLEAR=0 to leave it out.
 Diagnostics (C68 profile only, default OFF):
 Set EASYSTICK_C68_MRET_TRACE=1 to add 0077: per-CPU trap/mret rings that
@@ -838,9 +838,9 @@ fi
 if [[ "${EASYSTICK_C68_IRQ_LEVEL0:-1}" == "1" ]]; then
 	patches+=(0079-easystick-esp32p4-irq-level-drop.patch)
 fi
-# #5: clear MEXSTATUS.EXPT_VLD at trap entry.  A system call that ends in
-# schedule() can resume a task through an interrupt return, which leaves the
-# bit set, and that task's next fault locks the core up.
+# #5: clear MEXSTATUS.EXPT_VLD at exception entry.  A system call that ends
+# in schedule() can resume a task through an interrupt return, which leaves
+# the bit set, and that task's next fault locks the core up.
 if [[ "${EASYSTICK_C68_EXPT_CLEAR:-1}" == "1" ]]; then
 	patches+=(0081-easystick-esp32p4-expt-clear.patch)
 fi
