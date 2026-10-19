@@ -12,6 +12,16 @@ cat /proc/uptime /proc/loadavg 2>/dev/null
 echo "== memory (kB) =="
 grep -E '^(MemTotal|MemFree|MemAvailable):' /proc/meminfo 2>/dev/null
 
+echo "== nommu pool (bytes) =="
+# Read with builtins; the file is absent on kernels without patch 0076.
+if [ -r /sys/kernel/easystick/nommu_pool ]; then
+	while IFS= read -r line; do
+		echo "$line"
+	done < /sys/kernel/easystick/nommu_pool
+else
+	echo "nommu_pool: not available"
+fi
+
 echo "== wi-fi =="
 ifconfig wlan0 2>/dev/null | grep -E 'HWaddr|inet addr' || echo "wlan0: not present"
 iw dev wlan0 link 2>/dev/null | head -n 3

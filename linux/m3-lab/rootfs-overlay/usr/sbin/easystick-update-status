@@ -45,9 +45,24 @@ if [ "$SSID" = "none" ] || [ -z "$SSID" ]; then
 	[ -z "$SSID" ] && SSID="none"
 fi
 
+# NOMMU pool headroom (#40): pool_used/pool_largest_free/pool_alloc_fail in
+# the status file.  Read with builtins; absent on kernels without patch 0076.
+POOL_USED=unknown
+POOL_LARGEST_FREE=unknown
+POOL_FAIL=unknown
+if [ -r /sys/kernel/easystick/nommu_pool ]; then
+	while IFS=" " read -r k v; do
+		case "$k" in
+			used) POOL_USED=$v ;;
+			largest_free) POOL_LARGEST_FREE=$v ;;
+			alloc_fail) POOL_FAIL=$v ;;
+		esac
+	done < /sys/kernel/easystick/nommu_pool
+fi
+
 # Check if status has actually changed compared to the runtime checkpoint.
 # (Avoids redundant writes, ensures zero extra I/O and zero unnecessary CPU load)
-STATUS_STR="${STATUS}|${IP}|${NETMASK}|${GATEWAY}|${SSID}|${MODE}"
+STATUS_STR="${STATUS}|${IP}|${NETMASK}|${GATEWAY}|${SSID}|${MODE}|${POOL_USED}"
 LAST_STATUS=""
 if [ -f "$LAST_STATUS_FILE" ]; then
 	read LAST_STATUS < "$LAST_STATUS_FILE"
@@ -59,18 +74,21 @@ fi
 SSH_CMD="ssh m5@${IP}"
 [ "$IP" = "none" ] && SSH_CMD="none"
 
-if cat << EOF > "$STATUS_TMP"
-# EasyStick Stamp-P4 Network Status
-status=${STATUS}
-wifi_mode=${MODE}
-ssid=${SSID}
-ip_address=${IP}
-netmask=${NETMASK}
-gateway=${GATEWAY}
-mac_address=${MAC}
-ssh_command=${SSH_CMD}
-updated_at=uptime ${UPTIME}s
-EOF
+# printf is a shell builtin; "cat <<EOF" was one more 480 KB exec here (#40).
+if printf '%s\n' \
+	"# EasyStick Stamp-P4 Network Status" \
+	"status=${STATUS}" \
+	"wifi_mode=${MODE}" \
+	"ssid=${SSID}" \
+	"ip_address=${IP}" \
+	"netmask=${NETMASK}" \
+	"gateway=${GATEWAY}" \
+	"mac_address=${MAC}" \
+	"ssh_command=${SSH_CMD}" \
+	"pool_used=${POOL_USED}" \
+	"pool_largest_free=${POOL_LARGEST_FREE}" \
+	"pool_alloc_fail=${POOL_FAIL}" \
+	"updated_at=uptime ${UPTIME}s" > "$STATUS_TMP"
 then
 	if mv -f "$STATUS_TMP" "$STATUS_FILE"; then
 		echo "$STATUS_STR" > "$LAST_STATUS_FILE"

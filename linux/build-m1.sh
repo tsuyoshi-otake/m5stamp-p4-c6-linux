@@ -726,6 +726,10 @@ patches+=(0074-easystick-72-no-preempt.patch)
 # mmap (devmem tool, boot-shim staging area).  Skip the action on NOMMU;
 # NOMMU_MAP_DIRECT already places the VMA at the physical address.
 patches+=(0075-easystick-nommu-devmem-mmap.patch)
+# /sys/kernel/easystick/nommu_pool reports pool total/used/largest_free and
+# the alloc_fail/fallback counters, so NOMMU pool exhaustion is observable
+# without aggregating /proc/*/maps (#40).
+patches+=(0076-easystick-nommu-pool-sysfs.patch)
 # C67-L2-STAGE: observe-only SMP breadcrumbs in smpboot.c (no behaviour change).
 if [[ "${EASYSTICK_C67_SMP_STAGE:-0}" == "1" || "${EASYSTICK_C68_CLEAN_RELEASE:-0}" == "1" ]]; then
 	patches+=(0037-easystick-c67-l2-stage-smpboot.patch)
