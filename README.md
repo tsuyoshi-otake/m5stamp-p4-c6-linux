@@ -100,10 +100,25 @@ Every board gets its own credentials on first boot; no SSID or password is share
 
 ### 1. Download Release Package
 
-> **v0.3.1** is built and published the same way as v0.2.2 to v0.3.0: the assets
+> **v0.3.2** is built and published the same way as v0.2.2 to v0.3.1: the assets
 > are the CI build that was flashed and checked on hardware, and the tag run refuses
-> any asset whose hash is not in `linux/tests/v0.3.1-hardware-validation-2026-10-18.md`.
-> Changes since v0.3.0:
+> any asset whose hash is not in `linux/tests/v0.3.2-hardware-validation-2026-10-19.md`.
+> Changes since v0.3.1 (#37):
+> - `su` works: `root_password=` in `credentials.txt` (generated on the first boot,
+>   or appended to an older `credentials.txt`) is the root password for `su`.
+>   Every attempt is logged to `/run/messages`; a missing or invalid
+>   `root_password=` keeps root locked, and `su` then fails cleanly.
+> - Root over SSH by key only: a `root_authorized_keys` file on the USB drive is
+>   installed for root; password login for root stays off.
+> - Deleting `authorized_keys` or `root_authorized_keys` from the drive revokes the
+>   keys it installed a few seconds later (keys added by hand are kept).
+> - SSH logins are recorded in `/var/run/utmp` and `/var/log/wtmp`: `who`, `w`,
+>   `users` and `last` are new, and `uptime` counts the users.  `wtmp` rotates to
+>   `wtmp.1` at 32 KiB, and both start empty at every boot.
+> - The image now has two setuid files, the main BusyBox and `/bin/busybox-su`;
+>   the build checks both in the squashfs.
+>
+> v0.3.1 changes since v0.3.0:
 > - A `main.sh` saved with CRLF line ends runs again (#34). On v0.2.5 and v0.3.0
 >   it failed with `syntax error`, because the step that strips CR never ran.
 >   The kernel is built from the same source and the DTB is unchanged.
@@ -133,8 +148,8 @@ Every board gets its own credentials on first boot; no SSID or password is share
 > the GPL corresponding source (`*-legal-info.tar.gz`, #31).
 
 Download either the monolithic 16MB raw flash image or the partition zip package from the [Releases](https://github.com/tsuyoshi-otake/m5stamp-p4-c6-linux/releases) page:
-- **`m5stamp-p4-c6-linux-smp-v0.3.1-16mb.bin.gz`**: Single 16MB raw flash image (simplest, flash to `0x0`).
-- **`m5stamp-p4-c6-linux-smp-v0.3.1.zip`**: Individual partition binaries with automated PowerShell flash script.
+- **`m5stamp-p4-c6-linux-smp-v0.3.2-16mb.bin.gz`**: Single 16MB raw flash image (simplest, flash to `0x0`).
+- **`m5stamp-p4-c6-linux-smp-v0.3.2.zip`**: Individual partition binaries with automated PowerShell flash script.
 
 ### 2. Flash using `esptool.py`
 
@@ -142,8 +157,8 @@ Connect the M5Stamp-P4 via its USB-C port to your computer. Identify your serial
 
 #### Option A: Monolithic 16MB Raw Image Flash (Recommended)
 ```bash
-gzip -d m5stamp-p4-c6-linux-smp-v0.3.1-16mb.bin.gz
-esptool.py --chip esp32p4 --port COM10 --baud 460800 write_flash 0x0 m5stamp-p4-c6-linux-smp-v0.3.1-16mb.bin
+gzip -d m5stamp-p4-c6-linux-smp-v0.3.2-16mb.bin.gz
+esptool.py --chip esp32p4 --port COM10 --baud 460800 write_flash 0x0 m5stamp-p4-c6-linux-smp-v0.3.2-16mb.bin
 ```
 
 #### Option B: Release PowerShell Script
@@ -638,24 +653,24 @@ This compiles:
 
 ---
 
-## SHA-256 Checksums (v0.3.1)
+## SHA-256 Checksums (v0.3.2)
 
 ```text
 Raw 16MB Monolithic Image:
-70693e52392bd91028d0e71f51c6e70c0e16dc05ce90e8a9361bad2a1d298ac8  m5stamp-p4-c6-linux-smp-v0.3.1-16mb.bin.gz
-1e015111bd09fa11e800c1d21eb0fafbec59d55a5c9bc188930f24363e690645  m5stamp-p4-c6-linux-smp-v0.3.1-16mb.bin (uncompressed)
+713709a42398eb61ae579ac807be46c25021bfcad22bd7800fe2f93c52bcde20  m5stamp-p4-c6-linux-smp-v0.3.2-16mb.bin.gz
+07e2f41edf4bbc27e71fb6e6e4276d97df21becabfb5a0bc744eef3c302f1f70  m5stamp-p4-c6-linux-smp-v0.3.2-16mb.bin (uncompressed)
 
 Partition Archive:
-8224516b6a518143444fd6ff1e8c281bbe838f5aac26db1add0bee8550f2fa09  m5stamp-p4-c6-linux-smp-v0.3.1.zip
+75f0a837f2a272825fac097e5b9d1d41aa2e87f8b465e86db3d9b7d6463ae266  m5stamp-p4-c6-linux-smp-v0.3.2.zip
 
 Individual Partitions:
-28697715cb57c89ddbf4acfe2b002a1281b04e69e387345e676bee13cf2f876d  bootloader.bin
+f9239d8465ec888f582935e1236d7096fa6bb0e69542d9cf82a3e394f17b38cd  bootloader.bin
 7937656f29960d53b63010b51836e233d092e067e320cde5778ec43e04218870  partition-table.bin
-af25c1bebfc2fb8ce19fe9418d256238edee16219800864ff512aeb2fe352c6d  boot-shim.bin
-36f48933fee0ee7cc6b24011aa877fd014a61652c2fce1b2d9be18bf22a294f6  Image
-568a9479e9a9cb600c8d1e79f82a1ebf09c66a69d31fd1cf676fd360bdec1299  rootfs.squashfs
+3236fe8b95fe13b60eda69a13f43bdb0c671d5eda921906dace8ae42ebdf832a  boot-shim.bin
+e9ac572ab3887ece447947fa10a1528b07e46a97bc29b6d7659e04ba4c2ccbba  Image
+241654ac02cbb87d1cded6dba59e97c403da1fd10f57662dcc8c074a98362fb2  rootfs.squashfs
 a12b18e1347ade36c499c79338ff7125bd4140bf56c64ecfedce8f93b4d3a852  easystick-stamp-p4.dtb
-1135767ff6a448a55064d6f8779111485b2e88907076ab42eba1cc1558e7b078  boot.img
+e7a0689cf1c66f41a717abe978e9447e4f9ea92ef34957124f1f8d08242e198b  boot.img
 ```
 
 ---
