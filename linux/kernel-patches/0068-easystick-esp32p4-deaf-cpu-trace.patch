@@ -6,11 +6,12 @@ jiffies from each CPU's SYSTIMER interrupt.
 
 - An idle CPU whose own stamp is more than a second old records its
   CSRs, CLIC slots 20/23, the matrix route of source 54 and the SYSTIMER
-  state, twice 2 ms apart; CPU0 prints it as ES_DEAF lines.  The CLIC
-  CSRs mintthresh (0x347) and mintstatus (0xfb1) come last, after the
-  record is published: on a deaf CPU1 reading either one stops the core
-  for good.  A step marker and an arch_cpu_idle entry counter show how
-  far CPU1 got.
+  state, twice 2 ms apart; CPU0 prints it as ES_DEAF lines.  It does
+  not read the CLIC CSRs mintthresh (0x347) or mintstatus (0xfb1).  On
+  a deaf CPU1, csrr 0x347 faults: CPU1 either stays on that instruction
+  or reaches an illegal-instruction oops and a kernel panic.  csrr 0xfb1
+  at trap entry is illegal too (0077).  A step marker and an
+  arch_cpu_idle entry counter show how far CPU1 got.
 - CPU1 is not always idle when it goes deaf, so CPU0 also watches
   CPU1's stamp.  When it is a second old CPU0 prints
   what it can see from outside (SYSTIMER target 1, both matrix routes of
@@ -26,7 +27,7 @@ extra IPI.
 ---
 --- a/arch/riscv/kernel/process.c
 +++ b/arch/riscv/kernel/process.c
-@@ -41,8 +41,203 @@
+@@ -41,8 +41,193 @@
  extern asmlinkage void ret_from_fork_kernel_asm(void);
  extern asmlinkage void ret_from_fork_user_asm(void);
  
@@ -69,7 +70,6 @@ extra IPI.
 +static unsigned long es_deaf0_jif;
 +static unsigned long es_deaf_idle[NR_CPUS];	/* arch_cpu_idle entries */
 +static unsigned int es_deaf_step;	/* CPU1 progress through its check */
-+static u32 es_deaf_mintthresh = 0xdeadbeef, es_deaf_mintstatus = 0xdeadbeef;
 +
 +/*
 + * The assist_debug block samples each core's PC and SP while
@@ -135,10 +135,8 @@ extra IPI.
 +			 es_deaf_rd(ES_DEAF_SYSTIMER + 0x68),
 +			 es_deaf_rd(ES_DEAF_IPI_TO_CPU1));
 +		es_deaf_pc1("after IPI");
-+		pr_emerg("ES_DEAF0 cpu1 idle1=%lu step=%u mintthresh=%08x mintstatus=%08x\n",
-+			 READ_ONCE(es_deaf_idle[1]), READ_ONCE(es_deaf_step),
-+			 READ_ONCE(es_deaf_mintthresh),
-+			 READ_ONCE(es_deaf_mintstatus));
++		pr_emerg("ES_DEAF0 cpu1 idle1=%lu step=%u\n",
++			 READ_ONCE(es_deaf_idle[1]), READ_ONCE(es_deaf_step));
 +		es_deaf0_state = 2;
 +	}
 +}
@@ -184,7 +182,7 @@ extra IPI.
 +	if (!last || time_before(now, last + HZ))
 +		return;
 +
-+	/* Plain CSRs and MMIO first; Z3 saw CPU1 stop dead on csrr 0xfb1. */
++	/* Standard CSRs and MMIO only: csrr 0x347/0xfb1 fault on this core. */
 +	WRITE_ONCE(es_deaf_step, 1);
 +	r[DF_CPU] = cpu;
 +	r[DF_JIF] = now;
@@ -212,13 +210,6 @@ extra IPI.
 +	r[DF_STRAW2] = es_deaf_rd(ES_DEAF_SYSTIMER + 0x68);
 +	WRITE_ONCE(es_deaf_step, 4);
 +	smp_store_release(&es_deaf_state, 1);
-+
-+	/* CLIC CSRs last; CPU0 prints them with the post-IPI report. */
-+	WRITE_ONCE(es_deaf_step, 5);
-+	WRITE_ONCE(es_deaf_mintthresh, csr_read(0x347));
-+	WRITE_ONCE(es_deaf_step, 6);
-+	WRITE_ONCE(es_deaf_mintstatus, csr_read(0xfb1));
-+	WRITE_ONCE(es_deaf_step, 7);
 +}
 +#else
 +static inline void es_deaf_check(void) { }
