@@ -1,0 +1,61 @@
+Subject: [PATCH] easystick: esp32p4 drop the CLIC interrupt level at IRQ entry (#5)
+
+Candidate fix for the #5 latch, applied only for C68 SMP builds
+(EASYSTICK_C68_IRQ_LEVEL0=1, requires the C68 SMP series).
+
+The E1 captures (0068 + 0077, maxcpus=2) show, on every deaf boot, the
+same transition: CPU1's last accepted interrupt was taken in a user
+task, and the next mret on CPU1 returned to a different task (a syscall
+or fork return, written mcause INT=0).  No mret ever wrote a nonzero
+MPIL (es_mret_bad_mpil=0), and after the transition CPU1 keeps taking
+ecalls and returning with mret while interrupts stay pending, enabled
+and unaccepted (clic23=ffc00101, st_raw=1).
+
+Hypothesis: this CLIC restores mintstatus.mil from mcause.MPIL only on
+an mret with mcause.INT=1.  Taking an interrupt raises mil to the
+interrupt's level (0xff here).  When Linux returns from it through the
+same frame, the exit shim keeps INT=1 and mil drops back to 0.  When the
+interrupt instead ends in schedule() on the return to user, the next
+mret on that hart belongs to another task (INT=0) or there is none at
+all (a switch to a kernel thread or the idle task), so mil stays at 0xff
+and every later interrupt is below the level.  The interrupted task's
+own INT=1 return would clear it, but under SMP that task can resume on
+the other CPU, and then the hart stays deaf for good.
+
+Linux never nests interrupt levels: it handles every interrupt with
+MIE=0.  So drop mil back to 0 as soon as the frame is saved, with an
+mret to the next instruction that writes mcause INT=1, MPP=M, MPIE=0,
+MPIL=0.  MIE stays 0 (from MPIE=0), mepc and mcause are rewritten from
+pt_regs by the exit shim as before, and from here on nothing depends on
+which mret ends the interrupt.
+
+---
+--- a/arch/riscv/kernel/entry.S
++++ b/arch/riscv/kernel/entry.S
+@@ -256,6 +256,26 @@
+ 	bge s4, zero, 1f
+ 
+ 	/* Handle interrupts */
++#ifdef CONFIG_SOC_ESP32P4
++	/*
++	 * #5 (0079): the CLIC raised mintstatus.mil to this interrupt's
++	 * level on entry and only an mret with mcause.INT=1 brings it
++	 * back.  If this interrupt ends in schedule(), the next mret on
++	 * this hart belongs to another task (INT=0) or never comes (a
++	 * switch to a kernel thread or idle), and the hart stops taking
++	 * interrupts.  Drop the level now with an mret to the next
++	 * instruction: INT=1, MPP=M, MPIE=0 (MIE stays 0), MPIL=0.
++	 * Linux handles interrupts with MIE=0 and never nests levels;
++	 * mepc and mcause are rewritten from pt_regs on the way out.
++	 * t0 is free (saved in pt_regs).
++	 */
++	la   t0, .Lesp32p4_irq_level0
++	csrw CSR_EPC, t0
++	li   t0, (1 << 31) | (3 << 28)
++	csrw CSR_CAUSE, t0
++	mret
++.Lesp32p4_irq_level0:
++#endif
+ 	call do_irq
+ 	j ret_from_exception
+ 1:

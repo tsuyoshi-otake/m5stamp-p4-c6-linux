@@ -61,7 +61,10 @@ CONFIG_CMDLINE to maxcpus=2, letting CPU1 come up (same-length rewrite).
 Set EASYSTICK_C68_MRET_TRACE=1 to add 0077: per-CPU trap/mret rings that
 record the mcause each mret restores and a CPU0 watch (ES5_WATCH).
 Set EASYSTICK_C68_DEAF_RESET=1 to add 0078: MWDT-restart the chip when
-CPU1 stops taking interrupts (ES5_RESET).  Both default OFF.
+CPU1 stops taking interrupts (ES5_RESET).
+Set EASYSTICK_C68_IRQ_LEVEL0=1 to add 0079: drop the CLIC interrupt level
+with an mret at IRQ entry (candidate fix for the CPU1 latch).
+All three default OFF.
 EOF
 }
 
@@ -285,6 +288,10 @@ case "${EASYSTICK_C68_DEAF_RESET:-0}" in
 	0|1) ;;
 	*) echo "EASYSTICK_C68_DEAF_RESET must be 0 or 1" >&2; exit 2 ;;
 esac
+case "${EASYSTICK_C68_IRQ_LEVEL0:-0}" in
+	0|1) ;;
+	*) echo "EASYSTICK_C68_IRQ_LEVEL0 must be 0 or 1" >&2; exit 2 ;;
+esac
 if [[ "${EASYSTICK_C68_MAXCPUS:-1}" == "2" && "$c68_profile" != true ]]; then
 	echo "EASYSTICK_C68_MAXCPUS=2 requires the C68 profile" >&2
 	exit 2
@@ -295,6 +302,10 @@ if [[ "${EASYSTICK_C68_MRET_TRACE:-0}" == "1" && "$c68_profile" != true ]]; then
 fi
 if [[ "${EASYSTICK_C68_DEAF_RESET:-0}" == "1" && "$c68_profile" != true ]]; then
 	echo "EASYSTICK_C68_DEAF_RESET requires the C68 profile" >&2
+	exit 2
+fi
+if [[ "${EASYSTICK_C68_IRQ_LEVEL0:-0}" == "1" && "$c68_profile" != true ]]; then
+	echo "EASYSTICK_C68_IRQ_LEVEL0 requires the C68 profile" >&2
 	exit 2
 fi
 c68_stress_profile=false
@@ -790,6 +801,11 @@ if [[ "${EASYSTICK_C68_CLEAN_RELEASE:-0}" == "1" ]]; then
 	if [[ "${EASYSTICK_C68_DEAF_RESET:-0}" == "1" ]]; then
 		patches+=(0078-easystick-esp32p4-deaf-reset.patch)
 	fi
+	# #5 candidate fix: drop the CLIC interrupt level at IRQ entry so an
+	# interrupt that ends in schedule() cannot leave the hart deaf.
+	if [[ "${EASYSTICK_C68_IRQ_LEVEL0:-0}" == "1" ]]; then
+		patches+=(0079-easystick-esp32p4-irq-level-drop.patch)
+	fi
 	if [[ "${EASYSTICK_C68_TIMER_OBSERVE:-0}" == "1" ]]; then
 		patches+=(0044-easystick-esp32p4-systimer-observe-cpu1.patch)
 	fi
@@ -944,6 +960,7 @@ for patch_name in "${patches[@]}"; do
 	      "$patch_name" == 0072-easystick-esp32p4-bootflash.patch ||
 	      "$patch_name" == 0077-easystick-esp32p4-mret-trace.patch ||
 	      "$patch_name" == 0078-easystick-esp32p4-deaf-reset.patch ||
+	      "$patch_name" == 0079-easystick-esp32p4-irq-level-drop.patch ||
 	      "$patch_name" == 0056-easystick-wdt-stacktrace.patch ||
 	      "$patch_name" == 0055-easystick-sdio-clock-attest.patch ||
 	      "$patch_name" == 0060-easystick-dw-mmc-tx-software-dto.patch ||
@@ -1007,6 +1024,7 @@ printf '%s\n' "esp-hosted-cmd52-shot-gate: ${cmd52_marker}" >>"${patch_stage}/SO
 printf '%s\n' "c68-maxcpus: ${EASYSTICK_C68_MAXCPUS:-1}" >>"${patch_stage}/SOURCE.txt"
 printf '%s\n' "c68-mret-trace: ${EASYSTICK_C68_MRET_TRACE:-0}" >>"${patch_stage}/SOURCE.txt"
 printf '%s\n' "c68-deaf-reset: ${EASYSTICK_C68_DEAF_RESET:-0}" >>"${patch_stage}/SOURCE.txt"
+printf '%s\n' "c68-irq-level0: ${EASYSTICK_C68_IRQ_LEVEL0:-0}" >>"${patch_stage}/SOURCE.txt"
 
 # Linux 6.12+ expects out-of-tree DTS overlays to retain their vendor
 # directory and Makefile.  Keep the board DTS single-sourced in Git, then
