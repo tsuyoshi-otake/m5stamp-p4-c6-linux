@@ -680,7 +680,12 @@ net_apply() {
 [ -p "$NET_TICK_FIFO" ] || mkfifo -m 600 "$NET_TICK_FIFO" 2>/dev/null || true
 
 case "${1:-start}" in
-	start) start ;;
+	start)
+		# This script replaces Buildroot's S40network, whose "ifup -a" was
+		# the only thing bringing up lo: without it 127.0.0.1 is missing
+		# and a bind or connect to localhost fails with EADDRNOTAVAIL.
+		ifconfig lo 127.0.0.1 netmask 255.0.0.0 up 2>/dev/null || true
+		start ;;
 	stop)
 		stop_udhcpd
 		stop_wpa

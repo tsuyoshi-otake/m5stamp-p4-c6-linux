@@ -202,6 +202,9 @@ def main() -> None:
     # A boot on a wrong PSK never started udhcpc: the HUP path that fixes the
     # PSK must start DHCP itself, not just signal a client that is not there.
     assert "if proc_running udhcpc; then" in network
+    # Replacing Buildroot's S40network dropped its "ifup -a": lo is brought
+    # up here or 127.0.0.1 does not exist.
+    assert "ifconfig lo 127.0.0.1 netmask 255.0.0.0 up" in network
     assert "/run/.netapply.lock" in network
     assert "/run/.netapply.pending" in network
     assert 'mkdir "$NET_LOCK"' in network
