@@ -137,6 +137,40 @@ capabilities) and switches its effective group to `utmp` only while it
 writes the records, so it cannot rename in the sticky `/tmp`.  The patch
 now copies `wtmp` over `wtmp.1` and empties it, under `flock()`.
 
+### Leaks
+
+Resource use was read from the serial console between batches of logins
+(pool = distinct `/proc/*/maps` regions in the NOMMU process pool, which
+`MemAvailable` does not count):
+
+| Point | pool | utmp | wtmp + wtmp.1 | processes | open fds |
+|---|---|---|---|---|---|
+| Idle, before | 6472K | 3072 | 4224 + 32640 | 48 | 64 |
+| After 18 / 36 / 54 paced logins | 6472K each | 3072 | grows, rotates at 54 | 48 | 62-64 |
+| After 8 more at once | 6472K | 3072 | 19200 + 32640 | 48 | 64 |
+| After 10 sessions killed with `kill -9` on their Dropbear and 6 more logins | 6488K | 3072 | 1152 + 32640 | 48 | 64 |
+
+The pool grew by 8K during each of the two `kill -9` rounds, which ran
+many more console commands than the login batches.  A per-process
+breakdown before and after the second round put the 8K in the serial
+console's own shell (pid 289, `-/bin/sh` on ttyGS1, which ran the test
+commands: 516K, then 524K); no other long-lived process changed and no
+Dropbear stayed behind.  The first 8K was not broken down.
+
+A session whose Dropbear is killed leaves its login record (no logout
+record), and `who` keeps showing it until the next login on the same pts,
+as on other systems.  uClibc's `pututxline()` reuses the slot with the same
+`ut_id`, so `utmp` stayed at 3072 bytes (8 slots) through all of it.
+
+An independent read of the code by a second agent found no leak: every fd
+in the patch is closed on all paths, the `flock()` goes with the fd, the
+heap use (`login_alloc_entry`, uClibc's one `static_utmp`) is in the
+per-connection process only, and both files are bounded.  Two minor
+points it noted, neither a leak: `wtmp.1` is truncated before `wtmp` is
+opened for reading, so if that second open failed the old records would
+be lost; and `utmp` writes are not locked, so two logins at the same moment
+could briefly show a duplicate in `who`.
+
 BusyBox inetd stops listening for 60 s after 20 connections within a
 minute (`inetd.conf`, #25), so the logins above were paced; an unpaced
 first try hit `22/tcp: too many connections, pausing` as designed.
