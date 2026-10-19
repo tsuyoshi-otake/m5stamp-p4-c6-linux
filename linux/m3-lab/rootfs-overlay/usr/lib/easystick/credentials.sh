@@ -36,14 +36,18 @@ es_apply_user_password() {
 		*) es_log "ES_CREDENTIALS FAIL: cryptpw unavailable; $4"; return 1 ;;
 	esac
 	# Rewrite the user's field 2 with builtins; a partial write lands in
-	# shadow.new only, never in the live file.
+	# shadow.new only, never in the live file.  /run/shadow holds the
+	# last-applied state and is the same inode the bind mount shows; read
+	# it so a retry after an unbound bind still merges the right file.
+	src=/etc/shadow
+	[ -f /run/shadow ] && src=/run/shadow
 	{
 		while IFS= read -r l || [ -n "$l" ]; do
 			case "$l" in
 				"$2:"*) printf '%s\n' "$2:$hash:${l#*:*:}" ;;
 				*) printf '%s\n' "$l" ;;
 			esac
-		done < /etc/shadow
+		done < "$src"
 	} > /run/shadow.new
 	if ! chmod 600 /run/shadow.new 2>/dev/null; then
 		rm -f /run/shadow.new
@@ -51,10 +55,27 @@ es_apply_user_password() {
 		return 1
 	fi
 	if grep -q ' /etc/shadow ' /proc/mounts; then
-		# shadow is already bind-mounted: install via a rename so a
-		# failed copy cannot truncate the live file.
-		if cat /run/shadow.new > /run/shadow.tmp 2>/dev/null &&
-			mv -f /run/shadow.tmp /run/shadow 2>/dev/null; then
+		# /etc/shadow is a bind mount: a rename cannot swap the mounted
+		# inode, so drop the bind, rename, and rebind.  In between, the
+		# squashfs shadow (root locked, m5 disabled) shows through --
+		# a safe state -- and there is never a truncated live file.
+		if umount /etc/shadow 2>/dev/null; then
+			if mv -f /run/shadow.new /run/shadow 2>/dev/null &&
+				mount --bind /run/shadow /etc/shadow 2>/dev/null; then
+				es_log "ES_CREDENTIALS: $2 password applied from credentials.txt"
+				return 0
+			fi
+			# Rebind whatever /run/shadow holds so the next retry sees
+			# a bind mount again.
+			mount --bind /run/shadow /etc/shadow 2>/dev/null || true
+		elif {
+			# The mount is busy (a login has shadow open): write the new
+			# content through the bind -- a few hundred bytes in a single
+			# builtin printf burst.
+			while IFS= read -r l || [ -n "$l" ]; do
+				printf '%s\n' "$l"
+			done < /run/shadow.new
+		} > /run/shadow 2>/dev/null; then
 			rm -f /run/shadow.new
 			es_log "ES_CREDENTIALS: $2 password applied from credentials.txt"
 			return 0
@@ -64,7 +85,7 @@ es_apply_user_password() {
 		es_log "ES_CREDENTIALS: $2 password applied from credentials.txt"
 		return 0
 	fi
-	rm -f /run/shadow.new /run/shadow.tmp
+	rm -f /run/shadow.new
 	es_log "ES_CREDENTIALS FAIL: could not apply the password; $4"
 	return 1
 }

@@ -249,7 +249,10 @@ def main() -> None:
     assert 'mv -f "$STAGE/credentials.txt" /tmp/credentials.txt' in bootsync
     assert "ES_CREDENTIALS FAIL" in credentials
     assert credentials.count("return 1") >= 4
-    assert "/run/shadow.tmp" in credentials
+    # The live shadow is swapped by umount+rename+rebind (or a builtin
+    # write-through when the mount is busy), never a truncating cat.
+    assert "umount /etc/shadow" in credentials
+    assert "mount --bind /run/shadow /etc/shadow" in credentials
     assert ".authorized_keys.new" in credentials
 
     assert "*/gadget/lun*/file" in lun
