@@ -1,5 +1,11 @@
 # Sourced by S05easystick-tmpfs at boot and by easystick-bootsync when the USB
 # drive changes.  The caller defines es_log.
+#
+# Fail-safe contract (#40): a function that cannot finish -- including an
+# exec failing with ENOMEM -- returns 1, leaves either the old or the new
+# state (never a half-written file), and logs ES_*_FAIL.  bootsync then
+# keeps the old file in /tmp so the next save retries.  The reads and the
+# shadow edit below use only shell builtins, so they cannot fail on exec.
 
 # Apply $3= from credentials.txt ($1) to user $2.  /etc is read-only squashfs,
 # so a patched copy of /etc/shadow on /run is bind-mounted over it.  Once it is
@@ -9,7 +15,14 @@
 es_apply_user_password() {
 	[ -f "$1" ] || return 0
 	cr=$(printf '\r')
-	pw=$(sed -e "s/$cr\$//" "$1" | sed -n "s/^$3=//p" | head -n1)
+	# First "key=" wins, same order the old sed -n ... | head -n1 read.
+	pw=""
+	while IFS= read -r l || [ -n "$l" ]; do
+		l=${l%"$cr"}
+		case "$l" in
+			"$3="*) pw=${l#*=}; break ;;
+		esac
+	done < "$1"
 	case "$pw" in
 		''|*:*) es_log "ES_CREDENTIALS: no usable $3= in credentials.txt"; return 0 ;;
 	esac
@@ -20,23 +33,40 @@ es_apply_user_password() {
 	hash=$(printf '%s\n' "$pw" | cryptpw -m sha512 2>/dev/null) || hash=""
 	case "$hash" in
 		'$6$'*) ;;
-		*) es_log "ES_CREDENTIALS FAIL: cryptpw unavailable; $4"; return 0 ;;
+		*) es_log "ES_CREDENTIALS FAIL: cryptpw unavailable; $4"; return 1 ;;
 	esac
-	if ! sed "s|^$2:[^:]*:|$2:${hash}:|" /etc/shadow > /run/shadow.new ||
-		! chmod 600 /run/shadow.new; then
+	# Rewrite the user's field 2 with builtins; a partial write lands in
+	# shadow.new only, never in the live file.
+	{
+		while IFS= read -r l || [ -n "$l" ]; do
+			case "$l" in
+				"$2:"*) printf '%s\n' "$2:$hash:${l#*:*:}" ;;
+				*) printf '%s\n' "$l" ;;
+			esac
+		done < /etc/shadow
+	} > /run/shadow.new
+	if ! chmod 600 /run/shadow.new 2>/dev/null; then
 		rm -f /run/shadow.new
 		es_log "ES_CREDENTIALS FAIL: could not apply the password; $4"
-		return 0
+		return 1
 	fi
 	if grep -q ' /etc/shadow ' /proc/mounts; then
-		cat /run/shadow.new > /run/shadow && rm -f /run/shadow.new &&
-			es_log "ES_CREDENTIALS: $2 password applied from credentials.txt" && return 0
-	elif mv -f /run/shadow.new /run/shadow && mount --bind /run/shadow /etc/shadow; then
+		# shadow is already bind-mounted: install via a rename so a
+		# failed copy cannot truncate the live file.
+		if cat /run/shadow.new > /run/shadow.tmp 2>/dev/null &&
+			mv -f /run/shadow.tmp /run/shadow 2>/dev/null; then
+			rm -f /run/shadow.new
+			es_log "ES_CREDENTIALS: $2 password applied from credentials.txt"
+			return 0
+		fi
+	elif mv -f /run/shadow.new /run/shadow &&
+		mount --bind /run/shadow /etc/shadow; then
 		es_log "ES_CREDENTIALS: $2 password applied from credentials.txt"
 		return 0
 	fi
-	rm -f /run/shadow.new
+	rm -f /run/shadow.new /run/shadow.tmp
 	es_log "ES_CREDENTIALS FAIL: could not apply the password; $4"
+	return 1
 }
 
 apply_password() {
@@ -51,28 +81,51 @@ apply_root_password() {
 
 # Install the keys of drive file $1 as $3/.ssh/authorized_keys for user $2
 # (owner $4); $5 is the drive file name for the log.  /home and /root are on
-# the /tmp ramdisk, which can be full: the copy is checked against the size
-# of the keys, and a short one is removed rather than left half-written, so
-# keys taken out of the drive file never stay valid.
+# the /tmp ramdisk, which can be full: the new file is built next to the old
+# one and renamed over it, and a failed build removes the keys rather than
+# leaving a partial file, so keys taken out of the drive file never stay
+# valid.
 es_install_keys() {
 	[ -f "$1" ] || return 0
 	d=$3/.ssh
-	new=/run/.es-keys-new.$$
+	tmp="$d/.authorized_keys.new"
 	cr=$(printf '\r')
-	sed -e "s/$cr\$//" "$1" | grep -v '^[[:space:]]*#' | grep -v '^[[:space:]]*$' > "$new" || true
-	n=$(grep -c '' "$new" || true)
-	if mkdir -p "$d" 2>/dev/null && cat "$new" > "$d/authorized_keys" 2>/dev/null &&
-	   [ "$(wc -c < "$d/authorized_keys")" -eq "$(wc -c < "$new")" ]; then
-		chown -R "$4" "$d" 2>/dev/null || true
-		chmod 700 "$d"
-		chmod 600 "$d/authorized_keys"
-		: > "/run/.es-keys-$2"
-		es_log "ES_SSH_KEYS: $n key(s) installed for $2 from $5"
-	else
-		rm -f "$d/authorized_keys"
+	n=0
+	# Strip CRs and skip comment/blank lines with builtins; leading blanks
+	# are trimmed for the test only and kept in the written line, as the
+	# old sed|grep|grep chain did.
+	if ! mkdir -p "$d" 2>/dev/null ||
+		! {
+			while IFS= read -r l || [ -n "$l" ]; do
+				l=${l%"$cr"}
+				t=$l
+				while :; do
+					case "$t" in
+						" "*) t=${t#?} ;;
+						"	"*) t=${t#?} ;;
+						*) break ;;
+					esac
+				done
+				case "$t" in ''|'#'*) continue ;; esac
+				printf '%s\n' "$l"
+				n=$((n + 1))
+			done < "$1"
+		} > "$tmp" 2>/dev/null; then
+		rm -f "$tmp" "$d/authorized_keys"
 		es_log "ES_SSH_KEYS FAIL: cannot write $d/authorized_keys (is /tmp full?); no keys for $2 until the next save or boot"
+		return 1
 	fi
-	rm -f "$new"
+	if ! mv -f "$tmp" "$d/authorized_keys" 2>/dev/null; then
+		rm -f "$tmp" "$d/authorized_keys"
+		es_log "ES_SSH_KEYS FAIL: cannot write $d/authorized_keys (is /tmp full?); no keys for $2 until the next save or boot"
+		return 1
+	fi
+	chown -R "$4" "$d" 2>/dev/null || true
+	chmod 700 "$d"
+	chmod 600 "$d/authorized_keys"
+	: > "/run/.es-keys-$2"
+	es_log "ES_SSH_KEYS: $n key(s) installed for $2 from $5"
+	return 0
 }
 
 # authorized_keys on the USB drive -> /home/m5/.ssh (#25).  /home is a tmpfs

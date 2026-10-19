@@ -74,9 +74,9 @@ lun_state() {
 # config.txt diffing (#39): normalise both files the way S40network's
 # conf_get reads them -- UTF-8 BOM on line 1, CRs, leading blanks, comments
 # and blank lines dropped, blanks around "=" collapsed -- into key=value
-# lines.  autorun* keys go to autorun_apply, not the network.  One sed per
-# file; the comparison is shell builtins only, because every external
-# command is a ~480 KB exec on this NOMMU board.
+# lines.  autorun* keys are left out of NET_KEYS; the program restart is
+# handled separately.  One sed per file; the comparison is shell builtins
+# only, because every external command is a ~480 KB exec on this NOMMU board.
 cfg_norm() {
 	bom=$(printf '\357\273\277')
 	cr=$(printf '\r')

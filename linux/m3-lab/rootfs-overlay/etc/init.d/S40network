@@ -18,7 +18,7 @@ conf_get() {
 UNQUOTE='s/^"//;s/"[ 	]*$//;'
 NOSPACE='s/ //g;'
 
-# sleep is not a NOFORK applet, so `sleep 1` in a wait loop is a vfork+exec
+# sleep is not a NOFORK applet, so waiting with it in a loop is a vfork+exec
 # (~480 KB on NOMMU) every second (#40).  Like bootsync's tick(): read -t on
 # a FIFO nobody writes waits inside the shell itself.
 NET_TICK_FIFO=/run/.es-net-tick
@@ -564,7 +564,7 @@ net_dispatch() {
 					dmesg -n 4 2>/dev/null || true
 				fi ;;
 			hostname)
-				h=$(conf_get hostname /tmp/config.txt "$NOSPACE")
+				h=$(conf_get hostname /tmp/config.txt "$NOSPACE") || h=""
 				[ -n "$h" ] && hostname "$h" 2>/dev/null || true
 				# easystick-mdns answers with gethostname() per query,
 				# so the new name serves mDNS with no restart or HUP.
