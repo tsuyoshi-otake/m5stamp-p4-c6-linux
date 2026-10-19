@@ -14,6 +14,12 @@
 #define MICROPY_PY_BTREE               (0)
 #define MICROPY_ENABLE_DOC_STRING      (0)
 
+// The stack is the bFLT one (elf2flt -s49152 in micropython-nommu.mk), not
+// a large Linux stack.  Python-level recursion is checked against this
+// limit, leaving 12 KB for C frames between checks, so a deep recursion
+// raises RuntimeError instead of overrunning the stack (SIGSEGV).
+#define MICROPY_NOMMU_STACK_LIMIT      (36 * 1024)
+
 #define MICROPY_CONFIG_ROM_LEVEL (MICROPY_CONFIG_ROM_LEVEL_EXTRA_FEATURES)
 
 #include "../mpconfigvariant_common.h"
