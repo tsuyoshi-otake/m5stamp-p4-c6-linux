@@ -34,8 +34,13 @@ vfork children (the MicroPython OOM crash), within seconds to minutes.
 Clear the bit at exception entry, once the frame is saved, with an mret
 to the next instruction that writes mcause INT=0, MPP=M, MPIE=0: MIE
 stays 0, the CLIC level is unchanged, and mepc and mcause are rewritten
-from pt_regs by the exit shim as before.  The kernel can then also take
-its own exceptions (BUG/WARN, uaccess faults) in system calls.
+from pt_regs by the exit shim as before.  The bit is then also clear
+while the kernel runs a system call, so an exception the kernel takes
+there itself, such as the ebreak of a WARN, is no longer a double
+exception (not tested).  Before this, a kernel fault in a system call was
+one too, which fits the freeze 0071 describes for open(NULL).  A kernel
+access fault still panics: NOMMU has no exception table, and 0071 keeps
+bad user pointers away from the copy.
 
 ---
 --- a/arch/riscv/kernel/entry.S
@@ -51,10 +56,10 @@ its own exceptions (BUG/WARN, uaccess faults) in system calls.
 +	 * ends in schedule() and resumes a task from its interrupt frame
 +	 * (INT=1) leaves the bit set in that task, and the task's next fault
 +	 * stops the hart.  Clear it now with an mret to the next
-+	 * instruction: INT=0, MPP=M, MPIE=0 (MIE stays 0).  This also lets
-+	 * the kernel take its own exceptions (BUG/WARN, uaccess faults)
-+	 * during a system call.  mepc and mcause are rewritten from pt_regs
-+	 * on the way out; t0 is free (saved in pt_regs).
++	 * instruction: INT=0, MPP=M, MPIE=0 (MIE stays 0).  The bit is then
++	 * also clear while the kernel runs a system call, so an exception it
++	 * takes there itself (a WARN's ebreak) is not a double exception.
++	 * mepc and mcause are rewritten from pt_regs on exit; t0 is saved.
 +	 */
 +	la   t0, .Lesp32p4_expt_clear
 +	csrw CSR_EPC, t0
