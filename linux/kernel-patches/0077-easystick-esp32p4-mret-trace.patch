@@ -1,4 +1,4 @@
-Subject: [PATCH] easystick: esp32p4 mret/mcause ring trace for the CPU1 interrupt latch (#5)
+Subject: [PATCH] easystick: esp32p4 trap/mret/irq ring trace for the CPU1 interrupt latch (#5)
 
 The CPU1 CLIC acceptance latch leaves pending+enabled interrupts
 untaken while the hart keeps running.  The "stale mcause" hypothesis is
@@ -7,64 +7,83 @@ that some return path executes mret with a nonzero mcause.MPIL
 below threshold forever.
 
 Observe-only recorder, applied only for C68 diagnostic builds
-(EASYSTICK_C68_MRET_TRACE=1, requires the C68 SMP series):
+(EASYSTICK_C68_MRET_TRACE=1, requires the C68 SMP series).  Three
+per-CPU rings plus a bounded post-interrupt buffer, all written inline
+in entry.S:
 
-- entry.S saves two per-CPU 64-entry rings of 8-word records inline in
-  the trap entry and exit paths:
-  * ES_TRAP at trap entry -- the raw mcause (interrupt frames carry
-    the hardware MPIL of the interrupted context), mepc, mscratch,
-    mstatus, mintstatus, mtval.  mintstatus is safe to sample here and
-    nowhere else: the recorded trap was just delivered, so this hart is
-    not latched.  Reading it anywhere else on a possibly-deaf CPU1 is
-    what the 0068 captures showed can stop the core for good.
-  * ES_MRET at the single mret site, immediately after the exit shim
-    programs CSR_CAUSE -- the exact mcause word the mret will restore,
-    with the rewritten mepc, PT_TP vs tp (user/kernel target) and the
-    written mstatus.
-- es_mret_bad_mpil counts mret writes whose MPIL field is nonzero and
-  es_mret_bad_cause keeps the first offending word; the current shim
-  already forces MPIL=0, so a zero count on a deaf boot is the hardware
-  falsification of the stale-mcause hypothesis.
-- drivers/clocksource/timer-esp32p4-systimer.c calls
-  esp32p4_mret_trace_tick() from each CPU's own SYSTIMER interrupt.
-  CPU1's stamp stops when it goes deaf; CPU0's tick sees the stale
-  stamp within ~2 s and prints the rings once as ES5_WATCH/ES5_TRAP/
-  ES5_MRET lines, plus the 0067 cache-sync lock word.  No CLIC CSR is
-  read on CPU1 from this path.
-- esp32p4_mret_trace.c holds the rings and the dump.  CPU0 alone prints
-  (a second output source is noise); the ring data itself is stamped by
-  whichever CPU executes the exit shim.
+- ES_TRAP (64x8, every trap): {seq, raw mcause, mepc, mscratch, mstatus,
+  mintstatus, mtval, 0}.  mintstatus (0xfb1) is read ONLY when raw
+  mcause bit 31 is set: on a deaf CPU1 a csrr of 0xfb1 stops the core
+  for good and a latched hart still takes exceptions, so interrupt
+  delivery is the only safe precondition.  Exception records carry
+  0xffffffff.
+- ES_MRET (64x8, every mret): the exact mcause the shim restores, mepc,
+  PT_TP vs tp, and the written mstatus.  es_mret_bad_mpil counts writes
+  whose MPIL field is nonzero -- the shim already forces MPIL=0, so a
+  zero count on a deaf boot is the hardware falsification of the
+  stale-mcause hypothesis; es_mret_bad_cause keeps the first offender.
+- ES_IRQ (64x8, interrupts only): freezes when the hart goes deaf.
+  Each record snapshots the all-traps seq and the mret seq, so the dump
+  says exactly how many traps/mrets ran after the last accepted
+  interrupt -- the post-deaf ecall traffic that flushes the all-traps
+  ring no longer hides the transition.
+- ES_POST (8x8): the first 8 mrets after the newest interrupt (the index
+  is reset on each ES_IRQ record), i.e. the returns that bracket the
+  latch.
 
-All state is plain RAM written with a fence after each record, so the
-latest records survive an MWDT reset into the pstore preserved area if
-backing is enabled later; the console dump does not depend on it.
+drivers/clocksource/timer-esp32p4-systimer.c calls
+esp32p4_mret_trace_tick() from each CPU's own SYSTIMER interrupt.
+CPU1's stamp freezes when it goes deaf; CPU0's tick sees it stale at 2 s
+and dumps once as ES5_WATCH/ES5_TRAP/ES5_IRQ/ES5_MRET/ES5_POST lines.
+Detection ordering is deliberate: 0068 ES_DEAF at 1 s + 200 ms, then
+this dump at 2 s, then 0078's ES5_RESET restart at 3 s.  The dump prints
+CPU1's rings in full, CPU0's newest 8 records, and never reads a CLIC
+CSR on CPU1.
+
+esp32p4_mret_trace.c holds the rings and the dump.  All state is plain
+RAM written with a fence after each record, so records survive an MWDT
+reset into the pstore preserved area if backing is enabled later; the
+console dump does not depend on it.
 
 ---
 --- a/arch/riscv/kernel/entry.S	2026-10-19 15:51:54.152471400 +0900
-+++ b/arch/riscv/kernel/entry.S	2026-10-19 15:55:28.480422600 +0900
-@@ -197,6 +197,39 @@
++++ b/arch/riscv/kernel/entry.S	2026-10-19 16:27:57.526385100 +0900
+@@ -197,6 +197,85 @@
  	csrr s5, CSR_SCRATCH
  #ifdef CONFIG_SOC_ESP32P4
  	/*
-+	 * #5 ES_TRAP record (0077): stash the raw trap state before the
-+	 * shim rewrites anything.  s4 is the raw mcause -- for interrupt
++	 * #5 ES_TRAP/ES_IRQ records (0077): stash the raw trap state before
++	 * the shim rewrites anything.  s4 is the raw mcause -- for interrupt
 +	 * frames this is the only place its MPIL field survives (PT_CAUSE
 +	 * strips it for exceptions and the exit shim always writes 0).
-+	 * Record layout: {seq, mcause, mepc, mscratch, mstatus,
-+	 * mintstatus, mtval, 0}.  t0-t6 are free (already saved).
-+	 * mintstatus (0xfb1) is safe to sample exactly here: the trap we
-+	 * are recording was just delivered, so this hart is not latched.
++	 * t0-t6 are free (already saved).
++	 *
++	 * mintstatus (0xfb1) is read ONLY for interrupt frames (raw mcause
++	 * bit 31 set): on a deaf CPU1 a csrr of 0xfb1 stops the core for
++	 * good, and a latched hart still takes exceptions -- only interrupt
++	 * delivery proves the front-end is alive.  Non-interrupt records
++	 * carry 0xffffffff so 0 stays a meaningful mintstatus value.
++	 *
++	 * Interrupt frames also go to the ES_IRQ ring, which freezes when
++	 * the hart stops accepting interrupts; each record snapshots the
++	 * all-traps and mret sequence counters so the dump can count the
++	 * traps and mrets that ran after the last accepted interrupt, and
++	 * resets es_post_idx so the ES_POST buffer collects the first 8
++	 * mrets of this new interrupt window.
++	 *
++	 * ES_TRAP {seq, mcause, mepc, mscratch, mstatus, mintstatus, mtval, 0}
++	 * ES_IRQ  {seq, mcause, mepc, mstatus, mintstatus, trap_seq, mret_seq, 0}
 +	 */
 +	lw   t0, TASK_TI_CPU(tp)
-+	slli t1, t0, 2
++	slli t1, t0, 2			/* t1 = cpu*4 (kept live below) */
 +	la   t2, es_trap_idx
 +	add  t2, t2, t1
-+	lw   t3, 0(t2)
++	lw   t3, 0(t2)			/* t3 = all-traps seq */
 +	addi t4, t3, 1
 +	sw   t4, 0(t2)
 +	andi t4, t3, 63
 +	slli t4, t4, 5
-+	slli t5, t0, 11
++	slli t5, t0, 11			/* cpu * (64*32) */
 +	la   t6, es_trap_buf
 +	add  t6, t6, t5
 +	add  t6, t6, t4
@@ -73,16 +92,49 @@ backing is enabled later; the console dump does not depend on it.
 +	sw   s2, 8(t6)
 +	sw   s5, 12(t6)
 +	sw   s1, 16(t6)
-+	csrr t4, 0xfb1
-+	sw   t4, 20(t6)
 +	sw   s3, 24(t6)
 +	sw   zero, 28(t6)
++	bgez s4, .Les_trap_not_irq
++	csrr t4, 0xfb1			/* mintstatus: interrupt frames only */
++	sw   t4, 20(t6)
++	/* ES_IRQ record + ES_POST reset */
++	la   t2, es_irq_idx
++	add  t2, t2, t1
++	lw   t4, 0(t2)			/* t4 = irq seq */
++	addi t5, t4, 1
++	sw   t5, 0(t2)
++	andi t5, t4, 63
++	slli t5, t5, 5
++	slli t6, t0, 11
++	la   t2, es_irq_buf
++	add  t2, t2, t6
++	add  t2, t2, t5
++	sw   t4, 0(t2)
++	sw   s4, 4(t2)
++	sw   s2, 8(t2)
++	sw   s1, 12(t2)
++	csrr t5, 0xfb1
++	sw   t5, 16(t2)
++	sw   t3, 20(t2)			/* all-traps seq at this interrupt */
++	la   t5, es_mret_idx
++	add  t5, t5, t1
++	lw   t5, 0(t5)
++	sw   t5, 24(t2)			/* mret seq at this interrupt */
++	sw   zero, 28(t2)
++	la   t5, es_post_idx
++	add  t5, t5, t1
++	sw   zero, 0(t5)		/* arm ES_POST for this window */
++	j    .Les_trap_logged
++.Les_trap_not_irq:
++	li   t4, -1			/* mintstatus deliberately not read */
++	sw   t4, 20(t6)
++.Les_trap_logged:
 +	fence rw, rw
 +	/*
  	 * CLIC v0.9 bidirectional shim (entry side):
  	 * mstatus.MPP[12:11] and mstatus.MPIE[7] are hardwired to 0 on this
  	 * core; the real saved IE lives in mcause[27] (MPIE).
-@@ -488,6 +521,50 @@
+@@ -488,6 +567,78 @@
  	or    a3, a3, a4
  .Lesp32p4_keep_mpie:
  	csrw  CSR_CAUSE, a3
@@ -129,6 +181,34 @@ backing is enabled later; the console dump does not depend on it.
 +	la   t4, es_mret_bad_cause
 +	sw   a3, 0(t4)
 +.Les_mret_mpil_ok:
++	/*
++	 * ES_POST: mirror this record while es_post_idx < 8.  The index is
++	 * reset by the next interrupt's ES_IRQ write, so on a deaf hart the
++	 * buffer holds the first mrets after the last accepted interrupt --
++	 * the frame(s) that bracket the latch.
++	 */
++	la   t4, es_post_idx
++	add  t4, t4, t1
++	lw   t5, 0(t4)
++	li   t6, 8
++	bgeu t5, t6, .Les_mret_done
++	slli t6, t5, 5
++	addi t5, t5, 1
++	sw   t5, 0(t4)
++	slli t5, t0, 8			/* cpu * (8*32) */
++	la   t4, es_post_buf
++	add  t4, t4, t5
++	add  t4, t4, t6
++	REG_L t5, PT_TP(sp)
++	sw   t3, 0(t4)			/* same seq as the ES_MRET record */
++	sw   a3, 4(t4)
++	sw   a2, 8(t4)
++	sw   t5, 12(t4)
++	sw   tp, 16(t4)
++	sw   a0, 20(t4)
++	sw   zero, 24(t4)
++	sw   zero, 28(t4)
++.Les_mret_done:
 +	fence rw, rw
  #endif
  
@@ -165,24 +245,34 @@ diff --git a/arch/riscv/kernel/esp32p4_mret_trace.c b/arch/riscv/kernel/esp32p4_
 new file mode 100644
 --- /dev/null
 +++ b/arch/riscv/kernel/esp32p4_mret_trace.c
-@@ -0,0 +1,115 @@
+@@ -0,0 +1,148 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
-+ * #5 diagnostic (C68 diagnostic builds): per-CPU trap/mret rings for the
-+ * CPU1 CLIC interrupt-acceptance latch.  entry.S writes two records per
-+ * trap, one at entry (raw mcause with its hardware MPIL) and one at the
-+ * single mret site (the mcause the exit shim is about to restore); the
-+ * record layouts are fixed by the entry.S asm and documented there:
++ * #5 diagnostic (C68 diagnostic builds): per-CPU trap/mret/irq rings for
++ * the CPU1 CLIC interrupt-acceptance latch.  entry.S writes:
 + *
-+ *   ES_TRAP {seq, mcause, mepc, mscratch, mstatus, mintstatus, mtval, 0}
-+ *   ES_MRET {seq, mcause_w, mepc_w, pttp, tp, status_w, 0, 0}
++ *   ES_TRAP (every trap)  {seq, mcause, mepc, mscratch, mstatus,
++ *                          mintstatus, mtval, 0}
++ *   ES_MRET (every mret)  {seq, mcause_w, mepc_w, pttp, tp, status_w, 0, 0}
++ *   ES_IRQ  (interrupts)  {seq, mcause, mepc, mstatus, mintstatus,
++ *                          trap_seq, mret_seq, 0}
++ *   ES_POST (<=8/window)  same layout as ES_MRET
++ *
++ * mintstatus is sampled only on interrupt frames (raw mcause bit 31): a
++ * csrr of 0xfb1 on a deaf CPU1 stops the core, and a latched hart still
++ * takes exceptions, so exception entries carry the 0xffffffff sentinel.
++ *
++ * ES_IRQ freezes when a hart goes deaf -- comparing its newest trap_seq /
++ * mret_seq against the live es_trap_idx/es_mret_idx counts exactly how
++ * many traps and mrets CPU1 ran after its last accepted interrupt.
++ * ES_POST holds the first 8 mrets of the current interrupt window, i.e.
++ * on a deaf CPU1 the returns that bracket the latch.
 + *
 + * esp32p4_mret_trace_tick() is called from each CPU's own SYSTIMER
 + * interrupt handler.  CPU1's stamp stops when it stops taking
 + * interrupts; CPU0's tick then prints the rings once as ES5_WATCH
-+ * lines.  No CLIC CSR is read on
-+ * CPU1 from this path: mintstatus is only sampled by a hart on itself,
-+ * inside ES_TRAP, where the recorded trap proves it is not latched.
++ * lines.  Detection order on this kernel is 0068 ES_DEAF (1 s +
++ * 200 ms), then this watch (2 s), then 0078's ES5_RESET (3 s).
 + *
 + * es_mret_bad_mpil counts the mret writes whose MPIL field was nonzero
 + * (the exit shim forces MPIL=0, so any nonzero count IS the stale-mcause
@@ -201,11 +291,16 @@ new file mode 100644
 +
 +#define ES_REC_WORDS	8
 +#define ES_RING		64
++#define ES_POST_RING	8
 +
 +u32 es_trap_buf[NR_CPUS][ES_RING][ES_REC_WORDS];
 +u32 es_mret_buf[NR_CPUS][ES_RING][ES_REC_WORDS];
++u32 es_irq_buf[NR_CPUS][ES_RING][ES_REC_WORDS];
++u32 es_post_buf[NR_CPUS][ES_POST_RING][ES_REC_WORDS];
 +u32 es_trap_idx[NR_CPUS];
 +u32 es_mret_idx[NR_CPUS];
++u32 es_irq_idx[NR_CPUS];
++u32 es_post_idx[NR_CPUS];
 +u32 es_mret_bad_mpil;
 +u32 es_mret_bad_cause;
 +
@@ -222,42 +317,60 @@ new file mode 100644
 +
 +#define ES_WATCH_STALENESS	(2 * HZ)
 +
++static void es_dump_ring(const char *tag,
++			 const u32 (*buf)[ES_REC_WORDS],
++			 const u32 *idx, unsigned int cpu)
++{
++	unsigned int i, n = READ_ONCE(idx[cpu]);
++	unsigned int count = n;
++
++	if (count > ES_RING)
++		count = ES_RING;
++	/* CPU1 rings print in full; CPU0 is capped at the newest 8 so the
++	 * emerg dump stays bounded. */
++	if (cpu == 0 && count > 8)
++		count = 8;
++
++	for (i = 0; i < count; i++) {
++		const u32 *r = buf[(n - 1 - i) & (ES_RING - 1)];
++
++		pr_emerg("%s cpu%u [%3u] %08x %08x %08x %08x %08x %08x %08x %08x\n",
++			 tag, cpu, i, r[0], r[1], r[2], r[3], r[4], r[5],
++			 r[6], r[7]);
++	}
++}
++
 +static void esp32p4_mret_trace_dump(unsigned int cpu)
 +{
-+	unsigned int c, i, n;
++	unsigned int c;
 +
 +	pr_emerg("ES5_WATCH cpu%u silent: cpu0 stamp jif=%lu cpu1 stamp jif=%lu bad_mpil=%u bad_cause=%08x cachelock=%08x\n",
 +		 cpu, es_tick_jif[0], es_tick_jif[1],
 +		 READ_ONCE(es_mret_bad_mpil), READ_ONCE(es_mret_bad_cause),
 +		 *(volatile u32 *)&esp32p4_cache_sync_lock);
-+	pr_emerg("ES5_WATCH seq cpu0 trap=%u mret=%u cpu1 trap=%u mret=%u\n",
++	pr_emerg("ES5_WATCH seq cpu0 trap=%u mret=%u irq=%u post=%u cpu1 trap=%u mret=%u irq=%u post=%u\n",
 +		 READ_ONCE(es_trap_idx[0]), READ_ONCE(es_mret_idx[0]),
-+		 READ_ONCE(es_trap_idx[1]), READ_ONCE(es_mret_idx[1]));
++		 READ_ONCE(es_irq_idx[0]), READ_ONCE(es_post_idx[0]),
++		 READ_ONCE(es_trap_idx[1]), READ_ONCE(es_mret_idx[1]),
++		 READ_ONCE(es_irq_idx[1]), READ_ONCE(es_post_idx[1]));
 +
++	for (c = 0; c < NR_CPUS; c++)
++		es_dump_ring("ES5_MRET", es_mret_buf[c], es_mret_idx, c);
++	for (c = 0; c < NR_CPUS; c++)
++		es_dump_ring("ES5_TRAP", es_trap_buf[c], es_trap_idx, c);
++	for (c = 0; c < NR_CPUS; c++)
++		es_dump_ring("ES5_IRQ", es_irq_buf[c], es_irq_idx, c);
 +	for (c = 0; c < NR_CPUS; c++) {
-+		n = READ_ONCE(es_mret_idx[c]);
-+		if (n > ES_RING)
-+			n = ES_RING;
-+		for (i = 0; i < n; i++) {
-+			const u32 *r =
-+			    es_mret_buf[c][(n - 1 - i) & (ES_RING - 1)];
++		unsigned int i, n = READ_ONCE(es_post_idx[c]);
 +
-+			pr_emerg("ES5_MRET cpu%u [%3u] %08x %08x %08x %08x %08x %08x %08x %08x\n",
-+				 c, i, r[0], r[1], r[2], r[3], r[4], r[5],
-+				 r[6], r[7]);
-+		}
-+	}
-+	for (c = 0; c < NR_CPUS; c++) {
-+		n = READ_ONCE(es_trap_idx[c]);
-+		if (n > ES_RING)
-+			n = ES_RING;
++		if (n > ES_POST_RING)
++			n = ES_POST_RING;
 +		for (i = 0; i < n; i++) {
-+			const u32 *r =
-+			    es_trap_buf[c][(n - 1 - i) & (ES_RING - 1)];
++			const u32 *r = es_post_buf[c][i];
 +
-+			pr_emerg("ES5_TRAP cpu%u [%3u] %08x %08x %08x %08x %08x %08x %08x %08x\n",
-+				 c, i, r[0], r[1], r[2], r[3], r[4], r[5],
-+				 r[6], r[7]);
++			pr_emerg("ES5_POST cpu%u [%3u] %08x %08x %08x %08x %08x %08x %08x %08x\n",
++				 c, i, r[0], r[1], r[2], r[3], r[4],
++				 r[5], r[6], r[7]);
 +		}
 +	}
 +}

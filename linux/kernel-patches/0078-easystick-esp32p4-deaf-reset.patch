@@ -7,13 +7,16 @@ boot becomes one bounded retry instead of an indefinite hang.
 esp32p4_deaf_reset_tick() is called from each CPU's own SYSTIMER
 interrupt and keeps a per-CPU jiffies stamp.  CPU1's stamp freezes the
 moment it stops taking interrupts; CPU0's tick notices a stamp older
-than 2 s, prints ES5_RESET once, and calls emergency_restart() (MWDT),
-falling back to panic() if no restart handler is registered.
+than 3 s, prints ES5_RESET once, and calls emergency_restart().
+drivers/watchdog/esp32p4_wdt.c registers esp32p4_wdt_restart at
+priority 128, so the call reaches the MWDT reset path; panic() is only a
+belt-and-braces backstop.
 
+The 3 s threshold is deliberately the last of the #5 detectors so the
+evidence always gets out first: 0068's ES_DEAF/ES_DEAF0 fires at 1 s +
+200 ms, 0077's ES5_WATCH ring dump at 2 s, then this restart at 3 s.
 With pstore (0065, default on m3-lab) the console tail survives the
-reset into /sys/fs/pstore, so the ES_DEAF / ES5_WATCH evidence from the
-failing boot is still recoverable afterward.  The 2 s threshold is far
-above the longest legitimate CPU1 tick gap on this PREEMPT_NONE kernel.
+reset into /sys/fs/pstore.
 
 ---
 --- a/drivers/clocksource/timer-esp32p4-systimer.c	2026-10-19 15:51:54.764879200 +0900
@@ -51,31 +54,33 @@ diff --git a/arch/riscv/kernel/esp32p4_deaf_reset.c b/arch/riscv/kernel/esp32p4_
 new file mode 100644
 --- /dev/null
 +++ b/arch/riscv/kernel/esp32p4_deaf_reset.c
-@@ -0,0 +1,61 @@
+@@ -0,0 +1,63 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * #5 mitigation (diagnostic builds): CPU0 watchdog for a deaf CPU1.
 + *
 + * The CPU1 CLIC acceptance latch (issue #5, see the ES_DEAF captures of
-+ * patch 0068 and the ES_TRAP/ES_MRET rings of patch 0077) has no known
-+ * software recovery: pending+enabled+above-threshold interrupts are
-+ * simply never taken again while CPU1 keeps running.  Left alone the
-+ * board either sits silent for minutes or eventually trips the MWDT.
++ * patch 0068 and the ES_TRAP/ES_IRQ/ES_MRET rings of patch 0077) has no
++ * known software recovery: pending+enabled+above-threshold interrupts
++ * are simply never taken again while CPU1 keeps running.  Left alone
++ * the board either sits silent for minutes or eventually trips the MWDT.
 + *
 + * This hook is called from each CPU's own SYSTIMER interrupt.  CPU1's
-+ * stamp stops the moment it goes deaf; CPU0's tick sees the stale stamp
-+ * within ~1 s, reports it once, and takes the chip down through
-+ * emergency_restart() (MWDT), so a latched boot becomes one bounded
-+ * retry instead of a hang.  panic() is the backstop if no restart
-+ * handler is registered.  With pstore (0065) the console record of the
-+ * stall -- and the ES5_WATCH/ES_DEAF dumps if those diagnostics are
-+ * enabled -- survives the reset and is readable under /sys/fs/pstore on
-+ * the next boot.
++ * stamp stops the moment it goes deaf; CPU0's tick sees the stale stamp,
++ * reports it once, and takes the chip down through emergency_restart().
++ * drivers/watchdog/esp32p4_wdt.c registers esp32p4_wdt_restart at
++ * priority 128, so this reaches the MWDT reset path; panic() is only a
++ * belt-and-braces backstop.  With pstore (0065) the console record of
++ * the stall -- and the ES_DEAF / ES5_WATCH dumps if those diagnostics
++ * are enabled -- survives the reset and is readable under
++ * /sys/fs/pstore on the next boot.
 + *
-+ * The 2 s threshold is deliberately generous: CPU1's tick is its only
-+ * guaranteed periodic interrupt and legitimately masked windows on this
-+ * PREEMPT_NONE kernel (cache-sync lock, st_lock, IRQ-off exit paths)
-+ * are orders of magnitude shorter.
++ * The 3 s threshold is deliberately the last of the #5 detectors so the
++ * evidence dump always wins the race: 0068's ES_DEAF/ES_DEAF0 fires at
++ * 1 s + 200 ms, 0077's ES5_WATCH at 2 s, then this restart at 3 s.  All
++ * are far above the longest legitimate CPU1 tick gap on this
++ * PREEMPT_NONE kernel (cache-sync lock, st_lock, IRQ-off exit paths are
++ * orders of magnitude shorter).
 + */
 +
 +#include <linux/cpumask.h>
@@ -86,7 +91,7 @@ new file mode 100644
 +#include <linux/smp.h>
 +#include <linux/types.h>
 +
-+#define ES_DEAF_RESET_STALENESS	(2 * HZ)
++#define ES_DEAF_RESET_STALENESS	(3 * HZ)
 +
 +static unsigned long es_reset_jif[NR_CPUS];
 +static int es_reset_fired;
@@ -110,6 +115,6 @@ new file mode 100644
 +	es_reset_fired = 1;
 +	pr_emerg("ES5_RESET cpu1 silent: last_tick_jif=%lu now=%lu -- restarting via MWDT\n",
 +		 last, now);
-+	emergency_restart(NULL);
++	emergency_restart();
 +	panic("esp32p4: CPU1 stopped taking interrupts (#5)");
 +}
