@@ -19,6 +19,10 @@ Known limitations of the current images (see the issue tracker for details):
   with a key installed from the drive's `root_authorized_keys` (password
   login for root stays disabled). Anyone who can read or write the drive —
   or the flash — holds these.
+- SSH key installs fail closed (#40): if writing `authorized_keys` from the
+  drive cannot finish (e.g. a full `/tmp`), the previous keys are removed
+  rather than left half-written, so a broken save can lock out SSH until
+  the next successful save or boot.
 - Two files are setuid root: `/bin/busybox-su` (`su` only) and the main
   `/bin/busybox`, as Buildroot installs it (`ping` and `passwd` keep root;
   BusyBox drops root for applets that do not).
