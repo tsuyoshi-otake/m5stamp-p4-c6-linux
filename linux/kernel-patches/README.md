@@ -188,6 +188,53 @@ latched boot becomes one bounded retry.  Both default OFF.
 Detection order for #5 is deliberate: 0068 ES_DEAF at 1 s + 200 ms, then
 0077 ES5_WATCH at 2 s, then 0078 ES5_RESET at 3 s.
 
+`0079-easystick-esp32p4-irq-level-drop.patch` is the #5 fix and is applied
+to every build (`EASYSTICK_C68_IRQ_LEVEL0=0` leaves it out for A/B tests).
+As far as the #5 captures show (it is not confirmed against Espressif
+documentation), this CLIC raises `mintstatus.mil` to the level of an
+accepted interrupt and lowers it only on an mret with `mcause.INT=1`.  An interrupt taken from
+user mode that ends in `schedule()` can leave the hart at level 0xff, deaf
+to every interrupt, until the preempted task returns through its own frame
+on that hart; if the task migrates, is stopped or dies first, the hart stays
+deaf.  0079 runs one
+mret to the next instruction right after the frame is saved (INT=1, MPP=M,
+MPIE=0, MPIL=0), so `mil` is 0 before `do_irq` and an abandoned frame holds
+no level.  The 1-CPU image needs it as well: without it, killing a busy
+task wedged CPU0 until the MWDT reset the chip.
+
+`0080-easystick-esp32-acm-tx-irq-lock.patch` takes `port->lock` around the
+transmit in the USB Serial/JTAG ACM interrupt handler.  Without it the
+handler and `start_tx` on the other CPU drained the `xmit` kfifo at the
+same time, `out` passed `in`, and ttyGS1 re-sent its 4 KiB buffer in a loop.
+
+`0081-easystick-esp32p4-expt-clear.patch` is applied to every build as well
+(`EASYSTICK_C68_EXPT_CLEAR=0` leaves it out).  The core sets
+MEXSTATUS.EXPT_VLD (CSR 0x7e1, bit 5) when it takes an exception, and only
+an mret with `mcause.INT=0` clears it.  An exception other than ecall taken
+while the bit is set is a double exception: the core locks up at the
+faulting instruction until the MWDT resets the chip.  A system call that
+ends in `schedule()` and resumes a task from its interrupt frame (INT=1)
+left the bit set in that task, so the task's next fault (a SIGSEGV, handled
+or not) stopped the core, on one CPU as on two.  0081 is the exception-side
+counterpart of 0079: one mret to the next instruction once the frame is
+saved (INT=0, MPP=M, MPIE=0), so the bit is clear before the handler runs.
+
+`0072-easystick-esp32p4-bootflash.patch` (`/sys/kernel/easystick/boot_commit`,
+every build) writes the `/boot` drive to flash with the ROM's SPI1 routines.
+Each ROM read, erase and program runs under `stop_machine()`: CPU0 makes the
+call with interrupts off while the other CPU spins with interrupts off, so
+nothing reads the rootfs from flash meanwhile.  Before #5 it returned
+`-EBUSY` with two CPUs online, and every USB drive save rebooted the board so
+that the boot-shim would write the slot.
+
+With 0079 and 0080, the C68 profile (`build-c68.sh`, used by the release
+workflow) boots both CPUs by default; `EASYSTICK_C68_MAXCPUS=1` builds the
+1-CPU image.  A 2-CPU build with `EASYSTICK_C68_IRQ_LEVEL0=0` brings the CPU1
+latch back.  The boot-shim gives CPU1 CPU0's PMA/PMP setup before CPU1
+waits for Linux; without it a user fault on CPU1 arrived late, inside the
+trap handler, and panicked the kernel.  See
+[`../tests/issue5-smp-2026-10-19.md`](../tests/issue5-smp-2026-10-19.md).
+
 This directory documents a real dependency boundary while the series is
 still under review. A clean build must fail early if the baseline symbols are
 absent rather than silently dropping UART, watchdog, or NOMMU support during

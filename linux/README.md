@@ -167,9 +167,13 @@ The corrected seedrng-free, bounded-top `m1-topcapfix` image then passed three
 consecutive same-input stress captures. The versioned pass/fail contract,
 hashed artifacts, and the rebuild-gate gap are in
 [`tests/c68-l2-hw-contract-2026-08-18.md`](tests/c68-l2-hw-contract-2026-08-18.md).
-C6/SDIO/SSH work stays on the `CONFIG_SMP=n` UP profile until that C68
-profile is fail-closed and, for a merged default image, until broader L3
-coverage and the remaining release gates are closed.
+The C68 profile has since become the release build (`build-c68.sh`, see
+below), and since #5 it boots both CPUs: 0079 keeps a CPU from going deaf
+to interrupts, 0080 fixes the console race that two CPUs exposed, 0081
+keeps a user fault from locking a core up, the boot-shim gives CPU1 CPU0's
+memory protection, and 0072 writes the USB drive to flash with the other
+CPU held, so a save needs no reboot
+([`tests/issue5-smp-2026-10-19.md`](tests/issue5-smp-2026-10-19.md)).
 
 The corrected isolated C68 stress image built with
 `EASYSTICK_C68_L3_SMOKE=1 EASYSTICK_C68_STRESS=1` passed three consecutive
@@ -205,7 +209,9 @@ not change the default `CONFIG_SMP=n` profile.
 
 Build C68 with `linux/build-c68.sh` (not `build-m1.sh` alone). The UP DTS
 and `linux.config` stay single-hart; C68 injects `c68/cpu1.dts.inc`,
-`c68/ipi.dts.inc`, and `c68/linux.config.fragment` at build time. The A'
+`c68/ipi.dts.inc`, and `c68/linux.config.fragment` at build time and
+rewrites `maxcpus=1` to `maxcpus=2` in both the DTB bootargs and
+`CONFIG_CMDLINE`; `EASYSTICK_C68_MAXCPUS=1` keeps one CPU. The A'
 provider is staged by patches 0040/0041; its first gate is publication of the
 generic IPI virq range before the CPU1 `riscv_ipi_enable()` call. Patch 0042
 adds a target1/source54 SYSTIMER clockevent for CPU1; the timer gate is

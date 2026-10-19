@@ -1,9 +1,28 @@
-# C68 fail-closed SMP experimental profile
+# C68 fail-closed SMP profile
 
-This directory is the C68-CLEAN-RELEASE profile, not the C6/SSH UP default.
+This directory is the C68-CLEAN-RELEASE profile.  `build-c68.sh` and the
+release workflow build with it, and since #5 it boots both CPUs
+(`maxcpus=2`); `EASYSTICK_C68_MAXCPUS=1` keeps CPU1 parked.
 
-- Default `linux.config` stays `CONFIG_SMP=n`.
-- Default `dts/easystick-stamp-p4.dts` stays `cpu@0` only.
+- Default `linux.config` stays `CONFIG_SMP=n`; this profile appends
+  `linux.config.fragment`.
+- Default `dts/easystick-stamp-p4.dts` stays `cpu@0` only; this profile
+  inserts `cpu1.dts.inc` and `ipi.dts.inc`.
+- Two CPUs rely on 0079 (`EASYSTICK_C68_IRQ_LEVEL0`, default 1), which
+  stops a CPU from going deaf to interrupts, and on 0080, which locks the
+  ttyGS1 transmit path.  Both apply to every build, as does 0081
+  (`EASYSTICK_C68_EXPT_CLEAR`, default 1), which keeps a user fault from
+  locking a core up.  `IRQ_LEVEL0=0` with two CPUs brings the CPU1 latch
+  back; see `../tests/issue5-smp-2026-10-19.md`.
+- The boot-shim copies CPU0's PMA and PMP CSRs to CPU1 at the start of
+  `c68_secondary_entry`, reads them back and prints
+  `C68 CPU1 PMA/PMP diff=00000000`; `check-boot-log.py` fails any other
+  value, and a boot that parks CPU1 without the line.  Without the copy CPU1
+  kept the ROM's open setup, and a user fault on CPU1 panicked the kernel.
+- 0072 makes each flash read, erase and program under `stop_machine()`, so
+  CPU1 cannot read the rootfs from flash while SPI1 writes it.  Before, it
+  refused to write with CPU1 online, and every USB drive save rebooted the
+  board.
 - Enter with `linux/build-c68.sh` (boot-shim nm → render 0038/0039 →
   stage 0040/0041/0042 → `build-m1.sh`).
 - Do not set `EASYSTICK_KERNEL_PATCH_OVERRIDE_DIR` to the kernel patch stage.

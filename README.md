@@ -1,17 +1,17 @@
-# M5Stamp ESP32-P4 + C6 SDIO Linux (SMP kernel, experimental dual-core)
+# M5Stamp ESP32-P4 + C6 SDIO Linux (dual-core SMP)
 
 [![License](https://img.shields.io/badge/license-GPL--2.0--only-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-ESP32--P4%20%2B%20ESP32--C6-orange.svg)](https://m5stack.com)
-[![CPU](https://img.shields.io/badge/SMP-Experimental%20Dual--Core%20RV32IMAC-yellow.svg)](https://github.com/tsuyoshi-otake/m5stamp-p4-c6-linux/releases)
+[![CPU](https://img.shields.io/badge/SMP-Dual--Core%20RV32IMAC-green.svg)](https://github.com/tsuyoshi-otake/m5stamp-p4-c6-linux/releases)
 
-A reproducible RISC-V NOMMU Linux 7.2 distribution (SMP kernel; the shipped image runs on one core, dual-core is experimental, see below) for the **M5Stack Stamp-P4** carrier board paired with **Stamp-AddOn C6** (via 4-bit SDIO interface).
+A reproducible RISC-V NOMMU Linux 7.2 distribution (SMP on both cores of the ESP32-P4; releases up to v0.3.2 run on one core, see below) for the **M5Stack Stamp-P4** carrier board paired with **Stamp-AddOn C6** (via 4-bit SDIO interface).
 
 Boots out-of-the-box into **Wi-Fi SoftAP mode** with automatic DHCP, Dropbear SSH server, BusyBox `vi`, MicroPython (`python3`), and a writable OverlayFS on `/home`, `/root`, and `/var/lib`.
 
 <p align="center">
   <img src="docs/images/ssh-session-dual-core-smp.png" alt="M5Stamp ESP32-P4 + C6 Dual-Core SMP SSH Session" width="650">
   <br>
-  <em>Live SSH session on M5Stamp ESP32-P4 + C6 from an experimental dual-core run (CPU0 and CPU1) via SDIO Wi-Fi; the shipped image boots with <code>maxcpus=1</code>.</em>
+  <em>Live SSH session on M5Stamp ESP32-P4 + C6 with both cores online (CPU0 and CPU1) via SDIO Wi-Fi.</em>
 </p>
 
 ---
@@ -19,7 +19,7 @@ Boots out-of-the-box into **Wi-Fi SoftAP mode** with automatic DHCP, Dropbear SS
 ## Key Features & Verified Hardware Capabilities
 
 - **SoC Target**: ESP32-P4 (Dual-Core RV32IMAC / ilp32, CPU clock 360 MHz as reported by the boot-shim, 32 MiB PSRAM, 16 MiB SPI Flash).
-- **SMP (experimental)**: The kernel is built with SMP (`Linux 7.2.11 #1 SMP riscv32 GNU/Linux`), but the shipped DTB boots with `maxcpus=1`, so only CPU0 is online (`/sys/devices/system/cpu/online` = `0`). With `maxcpus=2`, about one boot in five stalled during userland start on 6.18, and on 7.2.11 only 3 of 10 boots were usable (issue #5, `linux/tests/v0.3.0-feature-checks-2026-10-18.md`): CPU1 stops accepting any interrupt (timer and IPI stay pending and enabled) and the rest of the system waits on it. Adding `isolcpus=1` to the kernel command line avoided the stall in 17 of 17 boots and a 568 s soak, but leaves CPU1 almost unused; see `linux/tests/m3-lab-hardware-validation-2026-10-14.md`. A stalled board may need a re-flash over USB. `maxcpus` in `/boot/config.txt` is informational and is not read by anything.
+- **SMP**: Both cores are online (`Linux 7.2.11 #1 SMP riscv32 GNU/Linux`, `/sys/devices/system/cpu/online` = `0-1`). Releases up to v0.3.2 boot with `maxcpus=1`, because with two CPUs CPU1 stopped taking interrupts a few seconds into boot (#5): an interrupt frame that is never returned through leaves the CLIC interrupt level raised. Fix `0079` drops the level at interrupt entry (the 1-CPU image needs it too, see the known issue below), and `0080` fixes a console race that two CPUs exposed. With both, CPU1 kept taking interrupts on all 46 test boots, and a 60-minute load soak (699 kills of a busy task, plus SSH and HTTP transfers) ran without a hang. Tests with crashing programs found two more faults: a program's fault could lock its core up (`0081`, one CPU too, see the known issue below), and CPU1 ran without the memory protection ESP-IDF gives CPU0, so a fault there panicked the kernel (fixed in the boot-shim). With those fixes, 200,000 faults in a row completed on either CPU next to the loads that had triggered both, and 10 of 10 resets passed the boot checks; see `linux/tests/issue5-smp-2026-10-19.md`. Saving the USB drive also rebooted a 2-CPU board, because the kernel's flash write (`0072`) refused to run with CPU1 online; it now holds CPU1 with interrupts off for each flash operation (`stop_machine()`), so saves go to flash without a reboot. Two CPU-bound programs at once take 8.1–8.3 s where one CPU takes 16.0 s; fork+exec gains little, and a signal delivered to a handler costs 1.7 to 1.8 times as much (each one flushes the other CPU's instruction cache through an IPI). A 1-CPU image needs `EASYSTICK_C68_MAXCPUS=1` at build time; `maxcpus` in `/boot/config.txt` is informational and is not read by anything.
 - **Wi-Fi Companion**: ESP32-C6 (M5Stack Stamp-AddOn C6) connected via 4-bit SDIO (5 MHz by default, up to 40 MHz with `sdio_mhz=`, see [SDIO clock](#c6-firmware-security-features--regulatory-notes)).
 - **Out-of-the-Box SoftAP**:
   - Broadcasts a per-device SSID **`m5-XXXX`** with a WPA2-PSK passphrase generated on first boot (see [Per-device credentials](#per-device-credentials)).
@@ -38,6 +38,8 @@ Boots out-of-the-box into **Wi-Fi SoftAP mode** with automatic DHCP, Dropbear SS
   - L2 unified cache & DMA reentrancy hardening (`0015`).
   - Systimer 52-bit atomic multi-word read and missed-alarm mitigation (`0016`).
   - Dual-core systimer lock and CPU1 context switch tracking (`0042`, `0044`, `0045`, `0046`).
+  - CLIC interrupt level dropped at interrupt entry (`0079`, #5), so a task switch at the end of an interrupt can no longer leave a core deaf to every interrupt; and a locked USB console transmit path (`0080`) for two CPUs.
+  - MEXSTATUS.EXPT_VLD cleared at exception entry (`0081`, #5), so a program's fault can no longer lock the core up; and CPU1 gets CPU0's PMA/PMP memory protection from the boot-shim, so a user fault on CPU1 is caught at the faulting instruction instead of panicking the kernel.
   - USB CDC-ACM 64-byte TX FIFO bounded polling (`0062`), eliminating full-screen editor (`vi`) and TUI terminal lockups.
   - Early CRNG entropy initialization via `seedrng` on OverlayFS, preventing `getrandom()` system call stalls.
   - SDIO DW-MMC host controller driver enhancements with software DTO and buffer pacing (`0032`, `0033`, `0060`, `0061`).
@@ -53,7 +55,7 @@ Linux / macOS serial examples, how to open the console without resetting the boa
 ## C6 Firmware, Security Features & Regulatory Notes
 
 - **C6 firmware**: Linux expects the ESP32-C6 to run ESP-Hosted NG 1.0.6 (the driver logs `ESP-Hosted Version: NG-1.0.6.0.1`). The release images flash the P4 only; a C6 running another version may fail to attach over SDIO. Check the version in the boot log: a mismatch is logged as `Incompatible ESP Host-firmware release detected` with both versions, and no log line at all means the C6 is not running ESP-Hosted NG. See [Updating the C6](#updating-the-c6).
-- **SDIO clock**: the driver requests 5 MHz unless `sdio_mhz=` in `config.txt` picks 1, 2, 10, 20 or 40 (applied at the next boot, logged as `ES_SDIO_CLOCK_APPLY requested_mhz=...` in dmesg). The DTS caps the bus at 40 MHz, and the MMC core enumerates the C6 at 20 MHz before the driver sets its rate. Measured in station mode over the home Wi-Fi (`linux/tests/sdio-clock-2026-10-16.md`): PC to board over raw TCP 300–330 KB/s at 5 MHz, 410–440 KB/s at 40 MHz; SSH 210–220 KB/s at 5 MHz, about 250 KB/s at 40 MHz, where Dropbear's crypto on the single 360 MHz core is the limit. 40 MHz passed the boot checks on 10 resets; it has not been soaked for hours, so 5 MHz stays the default (#21).
+- **SDIO clock**: the driver requests 5 MHz unless `sdio_mhz=` in `config.txt` picks 1, 2, 10, 20 or 40 (applied at the next boot, logged as `ES_SDIO_CLOCK_APPLY requested_mhz=...` in dmesg). The DTS caps the bus at 40 MHz, and the MMC core enumerates the C6 at 20 MHz before the driver sets its rate. Measured in station mode over the home Wi-Fi (`linux/tests/sdio-clock-2026-10-16.md`): PC to board over raw TCP 300–330 KB/s at 5 MHz, 410–440 KB/s at 40 MHz; SSH 210–220 KB/s at 5 MHz, about 250 KB/s at 40 MHz, where Dropbear's crypto on one 360 MHz core is the limit. 40 MHz passed the boot checks on 10 resets; it has not been soaked for hours, so 5 MHz stays the default (#21).
 - **Secure Boot and flash encryption are disabled.** Physical access allows reading the flash (including Wi-Fi credentials in the boot FAT) and writing arbitrary firmware. See [SECURITY.md](SECURITY.md).
 - **Wi-Fi regulatory domain**: no `country=` is set by default, so the world regulatory domain applies. Set `country=` in `config.txt` for your region.
 - **Wi-Fi security**: WPA2-PSK only. Protected management frames are opt-in (`wifi_pmf=1`); in station mode the v0.2.2 image joined an access point with it, while a SoftAP client negotiating PMF has not been tested. WPA3-SAE is not built.
@@ -123,6 +125,13 @@ Every board gets its own credentials on first boot; no SSID or password is share
 > installed, although the serial log says it is.  Free the space and save the file
 > again, or reboot.  Fixed on `main` (2% reserved for root, `ES_SSH_KEYS FAIL`;
 > `linux/tests/v0.3.2-followup-checks-2026-10-19.md`).
+>
+> **Known issue in v0.3.2 and earlier (#5):** killing a program while it is busy on
+> the CPU (for example `kill` of a running `yes`) can stop the board until the
+> watchdog resets it one to two minutes later.  A program that crashes (SIGSEGV)
+> can stop it the same way, depending on what else runs on the CPU.  Fixed by
+> `0079` and `0081` (not in a release yet;
+> `linux/tests/issue5-smp-2026-10-19.md`).
 >
 > v0.3.1 changes since v0.3.0:
 > - A `main.sh` saved with CRLF line ends runs again (#34). On v0.2.5 and v0.3.0
