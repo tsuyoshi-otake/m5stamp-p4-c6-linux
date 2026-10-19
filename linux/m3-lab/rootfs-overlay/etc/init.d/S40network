@@ -367,7 +367,8 @@ start() {
 	# a ~480 KB BusyBox exec observed inside every reload (#40).  If a
 	# driver ever does need a lazy module it must be added to the explicit
 	# insmod list above instead.
-	: > /proc/sys/kernel/modprobe 2>/dev/null || true
+	# echo, not ": >": a bare truncate never reaches the sysctl handler.
+	echo > /proc/sys/kernel/modprobe 2>/dev/null || true
 
 	# S05 cached the initial configuration before exporting boot.img.  Runtime
 	# updates are staged by easystick-bootsync only after a host SCSI eject;

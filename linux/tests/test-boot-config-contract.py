@@ -210,7 +210,7 @@ def main() -> None:
     assert 'sleep "$t"' not in network
     assert 'read -r -t "$1" _' in network
     assert "net_tick 1" in network
-    assert "/proc/sys/kernel/modprobe" in network
+    assert "echo > /proc/sys/kernel/modprobe" in network
     udhcpc_script = read(
         "linux/m3-lab/rootfs-overlay/usr/share/udhcpc/default.script"
     )
