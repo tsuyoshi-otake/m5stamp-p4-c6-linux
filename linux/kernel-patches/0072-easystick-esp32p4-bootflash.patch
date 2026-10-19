@@ -15,9 +15,11 @@ retries it at the next reboot.
 
 Flash is written through the ESP32-P4 ROM esp_rom_spiflash routines on
 SPI1.  Linux and its programs run from PSRAM, which has its own MSPI
-controller, and the rootfs is the only thing read from flash.  Each erase
-or program runs with interrupts off, so nothing reads flash meanwhile.
-A 4 KiB erase takes about 18 ms, and a 256 KiB slot about 1.3 s.
+controller, and the rootfs is the only thing read from flash.  Each ROM
+call runs under stop_machine(): CPU0 makes it with interrupts off while
+any other CPU spins with interrupts off, so nothing reads flash meanwhile
+and a 2-CPU build commits without a reboot as well.  A 4 KiB erase takes
+about 18 ms, and a 256 KiB slot about 1.3 s.
 
 ---
 --- a/drivers/misc/Kconfig
@@ -49,7 +51,7 @@ A 4 KiB erase takes about 18 ms, and a 256 KiB slot about 1.3 s.
 +obj-$(CONFIG_ESP32P4_BOOTFLASH)	+= esp32p4-bootflash.o
 --- /dev/null
 +++ b/drivers/misc/esp32p4-bootflash.c
-@@ -0,0 +1,353 @@
+@@ -0,0 +1,366 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Commit the /boot image that Linux staged in PSRAM to flash at once.
@@ -73,21 +75,19 @@ A 4 KiB erase takes about 18 ms, and a 256 KiB slot about 1.3 s.
 + * Flash is written with the ROM's esp_rom_spiflash routines through SPI1.
 + * The kernel and user programs run from PSRAM, which has its own MSPI
 + * controller; the only flash reads at run time are the rootfs through the
-+ * mtd-rom cache window.  Each erase or program runs with interrupts off, so
-+ * nothing on this CPU reads flash meanwhile (a 4 KiB erase takes about
-+ * 18 ms).  With a second CPU online that would not hold, so the commit is
-+ * refused and left to the shim.
++ * mtd-rom cache window.  Each ROM call runs under stop_machine(): CPU0 makes
++ * it with interrupts off while any other CPU spins with interrupts off, so
++ * no CPU reads flash meanwhile (a 4 KiB erase takes about 18 ms).
 + */
 +#include <linux/crc32.h>
-+#include <linux/cpumask.h>
 +#include <linux/init.h>
-+#include <linux/irqflags.h>
 +#include <linux/kernel.h>
 +#include <linux/kobject.h>
 +#include <linux/mutex.h>
 +#include <linux/of.h>
 +#include <linux/sched.h>
 +#include <linux/slab.h>
++#include <linux/stop_machine.h>
 +#include <linux/sysfs.h>
 +
 +#define BOOT_IMAGE_BYTES	0x40000u
@@ -157,43 +157,60 @@ A 4 KiB erase takes about 18 ms, and a 256 KiB slot about 1.3 s.
 +	return addr >= WRITABLE_START && addr + len <= WRITABLE_END;
 +}
 +
++enum flash_op_kind { FLASH_OP_READ, FLASH_OP_ERASE, FLASH_OP_PROGRAM };
++
++struct flash_op {
++	enum flash_op_kind kind;
++	u32 addr;
++	void *buf;
++	u32 len;
++};
++
++/* Runs on CPU0 under stop_machine(), with interrupts off on every CPU. */
++static int flash_op_fn(void *data)
++{
++	const struct flash_op *op = data;
++
++	switch (op->kind) {
++	case FLASH_OP_READ:
++		return rom_read(op->addr, op->buf, op->len);
++	case FLASH_OP_ERASE:
++		return rom_erase_sector(op->addr / FLASH_SECTOR);
++	default:
++		return rom_write(op->addr, op->buf, op->len);
++	}
++}
++
++/*
++ * Another CPU could read the rootfs from flash while SPI1 erases or programs
++ * it, so every other CPU spins with interrupts off while CPU0 makes the call.
++ */
++static int flash_op_run(enum flash_op_kind kind, u32 addr, void *buf, u32 len)
++{
++	struct flash_op op = { .kind = kind, .addr = addr, .buf = buf, .len = len };
++
++	return stop_machine(flash_op_fn, &op, NULL) ? -EIO : 0;
++}
++
 +static int flash_read(u32 addr, void *dst, u32 len)
 +{
-+	unsigned long flags;
-+	int r;
-+
-+	local_irq_save(flags);
-+	r = rom_read(addr, dst, len);
-+	local_irq_restore(flags);
-+	return r ? -EIO : 0;
++	return flash_op_run(FLASH_OP_READ, addr, dst, len);
 +}
 +
 +static int flash_erase_sector(u32 addr)
 +{
-+	unsigned long flags;
-+	int r;
-+
 +	if (!writable(addr, FLASH_SECTOR) || addr % FLASH_SECTOR)
 +		return -EINVAL;
-+	local_irq_save(flags);
-+	r = rom_erase_sector(addr / FLASH_SECTOR);
-+	local_irq_restore(flags);
-+	return r ? -EIO : 0;
++	return flash_op_run(FLASH_OP_ERASE, addr, NULL, 0);
 +}
 +
 +/* Programs at most one page; @len is a multiple of 4. */
 +static int flash_program(u32 addr, const void *src, u32 len)
 +{
-+	unsigned long flags;
-+	int r;
-+
 +	if (!writable(addr, len) || len % 4 ||
 +	    addr / FLASH_PAGE != (addr + len - 1) / FLASH_PAGE)
 +		return -EINVAL;
-+	local_irq_save(flags);
-+	r = rom_write(addr, src, len);
-+	local_irq_restore(flags);
-+	return r ? -EIO : 0;
++	return flash_op_run(FLASH_OP_PROGRAM, addr, (void *)src, len);
 +}
 +
 +static int slot_crc32(u32 base, u32 *crc_out)
@@ -283,8 +300,6 @@ A 4 KiB erase takes about 18 ms, and a 256 KiB slot about 1.3 s.
 +	u32 want, crc, active, inactive;
 +	int sel, other, r;
 +
-+	if (num_online_cpus() > 1)
-+		return -EBUSY;
 +	if (req->magic != BOOT_REQUEST_MAGIC ||
 +	    req->version != BOOT_REQUEST_VERSION ||
 +	    req->image_bytes != BOOT_IMAGE_BYTES ||
