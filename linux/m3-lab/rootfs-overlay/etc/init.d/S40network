@@ -380,6 +380,8 @@ start() {
 	if [ -f "$CFG" ]; then
 		cfg_mode=$(conf_get wifi_mode "$CFG" "$NOSPACE")
 		cfg_host=$(conf_get hostname "$CFG" "$NOSPACE")
+		# On a full restart after hostname= was deleted, go back to the boot name.
+		[ -n "$cfg_host" ] || read -r cfg_host < /etc/hostname 2>/dev/null || true
 		if [ -n "$cfg_host" ]; then
 			hostname "$cfg_host" 2>/dev/null || true
 		fi
@@ -581,6 +583,8 @@ net_dispatch() {
 				fi ;;
 			hostname)
 				h=$(conf_get hostname /tmp/config.txt "$NOSPACE") || h=""
+				# A deleted hostname= goes back to the boot name.
+				[ -n "$h" ] || read -r h < /etc/hostname 2>/dev/null || true
 				[ -n "$h" ] && hostname "$h" 2>/dev/null || true
 				# easystick-mdns answers with gethostname() per query,
 				# so the new name serves mDNS with no restart or HUP.
