@@ -1,7 +1,10 @@
 #!/bin/sh
 
-# BusyBox ash in the RV32 NOMMU image does not implement `set -u`.
-set -e
+# No "set -e" (#41): every step handles its own failure ("|| true", explicit
+# exit codes), and a command that fails for want of memory (a BusyBox exec or
+# $(...) takes about 0.5 MB on NOMMU) must not stop a reload half-way, after
+# wpa_supplicant was stopped.  The hush bug fixed in #41 had kept "set -e" off
+# on every run but the first anyway.
 
 # Parsing helpers: tolerate a UTF-8 BOM, CRLF, spaces around "=" and comments.
 # $3 is optional sed commands applied to the value.  Keep this one process:

@@ -224,6 +224,19 @@ def main() -> None:
     assert 'read -r -t "$1" _' in network
     assert "net_tick 1" in network
     assert "echo > /proc/sys/kernel/modprobe" in network
+    # #41: hush keeps "set -e" off after a skipped "a && b" / "a || b" and
+    # applies it to while/until conditions and "! pipe" unless patched; the
+    # patch is staged for every network image, and S40network does without
+    # "set -e" so that a failed exec cannot stop a reload half-way.
+    hush_patch = read(
+        "linux/m2/busybox-patches/0001-hush-set-e-fixes.patch"
+    )
+    assert "+\t\tG.errexit_depth = sv_errexit_depth;\n" in hush_patch
+    assert "+\t\t    rword == RES_WHILE || rword == RES_UNTIL ||\n" in hush_patch
+    assert "+\t\t    IF_HAS_KEYWORDS(pi->pi_inverted ||)\n" in hush_patch
+    assert '"${script_dir}/m2/busybox-patches/"*.patch' in build
+    assert '"${global_patch_stage}/busybox/"' in build
+    assert not re.search(r"^\s*set -[a-z]*e", network, re.M)
     udhcpc_script = read(
         "linux/m3-lab/rootfs-overlay/usr/share/udhcpc/default.script"
     )

@@ -500,6 +500,10 @@ if $network_profile; then
 	mkdir -p -- "${global_patch_stage}/wpa_supplicant"
 	cp -- "${script_dir}/m2/buildroot-patches/wpa-os-unix-vfork.patch" \
 		"${global_patch_stage}/wpa_supplicant/0001-os-unix-vfork-for-nommu.patch"
+	# hush "set -e" fixes (#41): /bin/sh of every network image.
+	mkdir -p -- "${global_patch_stage}/busybox"
+	cp -- "${script_dir}/m2/busybox-patches/"*.patch \
+		"${global_patch_stage}/busybox/"
 	# Dropbear fixes for every SSH image (m3, m3-lab).  Numbered after the
 	# m3-lab ledger series so both stack in one directory.
 	if $ssh_profile; then
@@ -520,8 +524,8 @@ if $network_profile; then
 			fi
 		fi
 		# BusyBox post-exec markers are surgical injects (see
-		# m3-lab/busybox-patches/README.md); no BR2 patch series yet because
-		# the tree is hush-based and the inject is source-local.
+		# m3-lab/busybox-patches/README.md), not part of the busybox/ patch
+		# series staged above.
 	fi
 fi
 
