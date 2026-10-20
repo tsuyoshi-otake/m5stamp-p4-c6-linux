@@ -799,6 +799,9 @@ patches+=(0084-easystick-mmc-sdio-irq-highpri.patch)
 # #35 debug: dw_mmc.fiford_mode picks how PIO reads take words from the
 # FIFO; 0 (the default) is upstream.
 patches+=(0085-easystick-dw-mmc-fiford-mode.patch)
+# #35: dw_mmc.es_dma_threshold lets short transfers use IDMAC, since the
+# P4 FIFO does not pop on CPU reads; -1 (the default) is upstream.
+patches+=(0086-easystick-dw-mmc-dma-threshold.patch)
 # C67-L2-STAGE: observe-only SMP breadcrumbs in smpboot.c (no behaviour change).
 if [[ "${EASYSTICK_C67_SMP_STAGE:-0}" == "1" || "${EASYSTICK_C68_CLEAN_RELEASE:-0}" == "1" ]]; then
 	patches+=(0037-easystick-c67-l2-stage-smpboot.patch)
@@ -999,6 +1002,7 @@ for patch_name in "${patches[@]}"; do
 	      "$patch_name" == 0083-easystick-esp32p4-sigreturn-in-kernel.patch ||
 	      "$patch_name" == 0084-easystick-mmc-sdio-irq-highpri.patch ||
 	      "$patch_name" == 0085-easystick-dw-mmc-fiford-mode.patch ||
+	      "$patch_name" == 0086-easystick-dw-mmc-dma-threshold.patch ||
 	      "$patch_name" == 0056-easystick-wdt-stacktrace.patch ||
 	      "$patch_name" == 0055-easystick-sdio-clock-attest.patch ||
 	      "$patch_name" == 0060-easystick-dw-mmc-tx-software-dto.patch ||
