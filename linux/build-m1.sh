@@ -793,6 +793,9 @@ patches+=(0076-easystick-nommu-pool-sysfs.patch)
 # A signal handler returns through the kernel's own rt_sigreturn code, not a
 # copy on the user stack that needs an icache flush on every CPU (#44).
 patches+=(0083-easystick-esp32p4-sigreturn-in-kernel.patch)
+# The C6's SDIO interrupt work is the first hop of every RX packet; run it
+# on system_highpri_wq so it is not queued behind CPU-bound work (#43).
+patches+=(0084-easystick-mmc-sdio-irq-highpri.patch)
 # C67-L2-STAGE: observe-only SMP breadcrumbs in smpboot.c (no behaviour change).
 if [[ "${EASYSTICK_C67_SMP_STAGE:-0}" == "1" || "${EASYSTICK_C68_CLEAN_RELEASE:-0}" == "1" ]]; then
 	patches+=(0037-easystick-c67-l2-stage-smpboot.patch)
@@ -991,6 +994,7 @@ for patch_name in "${patches[@]}"; do
 	      "$patch_name" == 0079-easystick-esp32p4-irq-level-drop.patch ||
 	      "$patch_name" == 0081-easystick-esp32p4-expt-clear.patch ||
 	      "$patch_name" == 0083-easystick-esp32p4-sigreturn-in-kernel.patch ||
+	      "$patch_name" == 0084-easystick-mmc-sdio-irq-highpri.patch ||
 	      "$patch_name" == 0056-easystick-wdt-stacktrace.patch ||
 	      "$patch_name" == 0055-easystick-sdio-clock-attest.patch ||
 	      "$patch_name" == 0060-easystick-dw-mmc-tx-software-dto.patch ||

@@ -245,6 +245,17 @@ same bytes.  20,000 returns from a SIGSEGV handler (40,000 faults) take 0.7 s
 on either CPU, against 2.5 to 2.7 s before and 1.49 s on one CPU without
 0083.
 
+`0084-easystick-mmc-sdio-irq-highpri.patch` (#43, every build) queues
+`host->sdio_irq_work` on `system_highpri_wq` instead of the normal workqueue
+when `sdio_signal_irq()` runs.  The work is the first hop of every packet
+from the C6, and under CPU load it sat a tick or more behind normal-priority
+work while everything after it was mostly under a millisecond once it ran:
+the debug build measured the whole signal -> handler -> read path under 1 ms
+in more than 99 % of cases, so the queue was the delay, not the work.  The
+esp-hosted package patches `0039` and `0040` cover the rest of the same
+path: waking `esp_TX` when a packet is queued, and running the RX workqueue
+and the TX thread ahead of nice 0.
+
 `0072-easystick-esp32p4-bootflash.patch` (`/sys/kernel/easystick/boot_commit`,
 every build) writes the `/boot` drive to flash with the ROM's SPI1 routines.
 Each ROM read, erase and program runs under `stop_machine()`: CPU0 makes the

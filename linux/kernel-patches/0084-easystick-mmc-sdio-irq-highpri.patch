@@ -1,0 +1,23 @@
+Subject: [PATCH] mmc: queue SDIO interrupt work on system_highpri_wq (#43)
+
+On this board the C6's SDIO interrupt is serviced from
+host->sdio_irq_work, which sdio_signal_irq() puts on the normal system
+workqueue.  Under CPU load that work waits a tick or more behind
+CPU-bound tasks while it is the first hop of every RX packet; the #43
+debug build measured the full signal -> read_packet() path at mostly
+under 1 ms once the work ran, so the queue is the delay, not the work.
+system_highpri_wq runs it ahead of normal-priority work, same as the
+elevated RX workqueue and TX thread on the driver side.
+
+---
+--- a/drivers/mmc/core/sdio_irq.c
++++ b/drivers/mmc/core/sdio_irq.c
+@@ -132,7 +132,7 @@
+ void sdio_signal_irq(struct mmc_host *host)
+ {
+ 	host->sdio_irq_pending = true;
+-	schedule_work(&host->sdio_irq_work);
++	queue_work(system_highpri_wq, &host->sdio_irq_work);
+ }
+ EXPORT_SYMBOL_GPL(sdio_signal_irq);
+ 

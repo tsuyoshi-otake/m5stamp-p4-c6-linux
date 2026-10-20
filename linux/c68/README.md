@@ -29,6 +29,10 @@ release workflow build with it, and since #5 it boots both CPUs
   `__user_rt_sigreturn`.  The NOMMU code copied it to the stack and flushed
   every CPU's instruction cache, an IPI to CPU1 and a wait for it on each
   handled signal, which made signals on two CPUs slower than on one.
+- 0084 (every build, #43) runs the C6's SDIO interrupt work on
+  `system_highpri_wq`, so a packet does not wait a tick behind CPU-bound
+  work at the first hop.  The esp-hosted package patches `0039`/`0040`
+  raise the rest of the path the same way.
 - Enter with `linux/build-c68.sh` (boot-shim nm → render 0038/0039 →
   stage 0040/0041/0042 → `build-m1.sh`).
 - Do not set `EASYSTICK_KERNEL_PATCH_OVERRIDE_DIR` to the kernel patch stage.
