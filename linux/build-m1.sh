@@ -744,6 +744,7 @@ patches=(
 		0028-esp32p4-usb-serial-jtag-acm.patch
 		0062-easystick-esp32p4-usb-acm-tx-bounded-poll.patch
 		0080-easystick-esp32-acm-tx-irq-lock.patch
+		0082-easystick-esp32-acm-tx-irq-console.patch
 		0063-easystick-dwc2-force-pio.patch
 	0031-riscv-esp32p4-m-mode-userspace.patch
 )
@@ -957,6 +958,7 @@ for patch_name in "${patches[@]}"; do
 	      "$patch_name" == 0028-esp32p4-usb-serial-jtag-acm.patch ||
 	      "$patch_name" == 0062-easystick-esp32p4-usb-acm-tx-bounded-poll.patch ||
 	      "$patch_name" == 0080-easystick-esp32-acm-tx-irq-lock.patch ||
+	      "$patch_name" == 0082-easystick-esp32-acm-tx-irq-console.patch ||
 	      "$patch_name" == 0063-easystick-dwc2-force-pio.patch ||
 	      "$patch_name" == 0008-easystick-dw-mmc-force-pio.patch ||
 	      "$patch_name" == 0009-easystick-dw-mmc-divider0.patch ||

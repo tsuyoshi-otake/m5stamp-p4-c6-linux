@@ -207,6 +207,18 @@ transmit in the USB Serial/JTAG ACM interrupt handler.  Without it the
 handler and `start_tx` on the other CPU drained the `xmit` kfifo at the
 same time, `out` passed `in`, and ttyGS1 re-sent its 4 KiB buffer in a loop.
 
+`0082-easystick-esp32-acm-tx-irq-console.patch` (#42) fixes two faults of
+the same port under load.  When the host had not read the previous packet
+yet, `transmit_buffer()` returned without arming the IN-empty interrupt, so
+the end of the output (the last line's `\r\n`) waited 0.5 s for the serial
+core's runtime PM to call `start_tx()` again; it now arms the interrupt
+whenever it leaves data behind.  Console output committed each character as
+a packet of its own and dropped a character after waiting 2 ms for the host
+(0062); it now commits once per write and waits up to 50 ms counted from the
+last byte the FIFO took, so a host that stops reading costs one wait, not one
+per character.  Characters dropped after that are counted in
+`/sys/class/tty/ttyGS1/console_dropped`.
+
 `0081-easystick-esp32p4-expt-clear.patch` is applied to every build as well
 (`EASYSTICK_C68_EXPT_CLEAR=0` leaves it out).  The core sets
 MEXSTATUS.EXPT_VLD (CSR 0x7e1, bit 5) when it takes an exception, and only
