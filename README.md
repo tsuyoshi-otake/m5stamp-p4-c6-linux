@@ -103,10 +103,28 @@ Every board gets its own credentials on first boot; no SSID or password is share
 
 ### 1. Download Release Package
 
-> **v0.4.0** is built and published the same way as v0.2.2 to v0.3.2: the assets
+> **v0.4.1** is built and published the same way as v0.2.2 to v0.4.0: the assets
 > are the CI build that was flashed and checked on hardware, and the tag run refuses
-> any asset whose hash is not in `linux/tests/v0.4.0-hardware-validation-2026-10-20.md`.
-> Changes since v0.3.2:
+> any asset whose hash is not in `linux/tests/v0.4.1-hardware-validation-2026-10-21.md`.
+> Changes since v0.4.0:
+> - Short SDIO reads are no longer corrupted (#35).  The P4's SDMMC FIFO does
+>   not advance when the CPU reads it, so a programmed-I/O read of more than
+>   one 32-bit word returned its first word repeated.  Wi-Fi packets whose
+>   length leaves a 5–15 byte tail took that path (17–29 times in one
+>   5 × 10 MB download run).  `0087` and `easystick,fifo-no-pop` in the DTS
+>   send those reads through the DMA engine with a bounce buffer
+>   (`dw_mmc.es_fifo_bounce=0` turns it off).  Throughput and latency did not
+>   change measurably.  Register reads stay on CMD52 (`0012`): 4-byte CMD53
+>   register reads misread the packet length under load.
+> - A network restart runs fewer programs (#40): `S40network`,
+>   `easystick-update-status` and the udhcpc script use shell builtins and
+>   skip the SSH restart when inetd runs.  The sampled process peak during a
+>   restart did not drop measurably; #40 stays open.
+>
+> Records: `linux/tests/v0.4.1-hardware-validation-2026-10-21.md`; the #35
+> analysis is in issue #35.
+>
+> v0.4.0 changes since v0.3.2:
 > - Both CPUs are online by default (#5). Releases up to v0.3.2 booted with
 >   `maxcpus=1` because CPU1 stopped taking interrupts a few seconds into boot;
 >   `0079`, `0080`, `0081` and a boot-shim fix that gives CPU1 the same PMA/PMP
@@ -211,8 +229,8 @@ Every board gets its own credentials on first boot; no SSID or password is share
 > the GPL corresponding source (`*-legal-info.tar.gz`, #31).
 
 Download either the monolithic 16MB raw flash image or the partition zip package from the [Releases](https://github.com/tsuyoshi-otake/m5stamp-p4-c6-linux/releases) page:
-- **`m5stamp-p4-c6-linux-smp-v0.4.0-16mb.bin.gz`**: Single 16MB raw flash image (simplest, flash to `0x0`).
-- **`m5stamp-p4-c6-linux-smp-v0.4.0.zip`**: Individual partition binaries with automated PowerShell flash script.
+- **`m5stamp-p4-c6-linux-smp-v0.4.1-16mb.bin.gz`**: Single 16MB raw flash image (simplest, flash to `0x0`).
+- **`m5stamp-p4-c6-linux-smp-v0.4.1.zip`**: Individual partition binaries with automated PowerShell flash script.
 
 ### 2. Flash using `esptool.py`
 
@@ -220,8 +238,8 @@ Connect the M5Stamp-P4 via its USB-C port to your computer. Identify your serial
 
 #### Option A: Monolithic 16MB Raw Image Flash (Recommended)
 ```bash
-gzip -d m5stamp-p4-c6-linux-smp-v0.4.0-16mb.bin.gz
-esptool.py --chip esp32p4 --port COM10 --baud 460800 write_flash 0x0 m5stamp-p4-c6-linux-smp-v0.4.0-16mb.bin
+gzip -d m5stamp-p4-c6-linux-smp-v0.4.1-16mb.bin.gz
+esptool.py --chip esp32p4 --port COM10 --baud 460800 write_flash 0x0 m5stamp-p4-c6-linux-smp-v0.4.1-16mb.bin
 ```
 
 #### Option B: Release PowerShell Script
@@ -716,24 +734,24 @@ This compiles:
 
 ---
 
-## SHA-256 Checksums (v0.4.0)
+## SHA-256 Checksums (v0.4.1)
 
 ```text
 Raw 16MB Monolithic Image:
-13c03da23c5a58b699a1cacfa06594aaf1f04f38857b25a6909f57dccf0e5fe3  m5stamp-p4-c6-linux-smp-v0.4.0-16mb.bin.gz
-f104915c7d575b5a3cf80317383446450ed2b901e828c9f7af3be74c199589ea  m5stamp-p4-c6-linux-smp-v0.4.0-16mb.bin (uncompressed)
+342ba8af7e916d323d5fa381ee8d4d9c3cbf74c171554ec09852e52839ecfe35  m5stamp-p4-c6-linux-smp-v0.4.1-16mb.bin.gz
+80b943976cb9cb8a29cc017d89cd24c93dc64d01a60fa907c7409bded8320881  m5stamp-p4-c6-linux-smp-v0.4.1-16mb.bin (uncompressed)
 
 Partition Archive:
-4370c8905b5e46eba3dbbe934928cec650d578afff21e31eb6f0211168137994  m5stamp-p4-c6-linux-smp-v0.4.0.zip
+a72a9b4ba6fdb7497d10b4cdd95eb263869ef886473bf1201491852ec56314d3  m5stamp-p4-c6-linux-smp-v0.4.1.zip
 
 Individual Partitions:
-3f481fccd75af31adf5da135ba33397712ee62a87561f075dcecaf3105c6b506  bootloader.bin
+03e243ac5e846e754d786a1340a4a9c50467ca12e8e3fff53974325238f97069  bootloader.bin
 7937656f29960d53b63010b51836e233d092e067e320cde5778ec43e04218870  partition-table.bin
-2303df83ec50e60f08f02ba1e2fdcdc32f832c3b435b144f48d8bef4c6eb2442  boot-shim.bin
-942a9c527e8d688b035a27233fcc1f9dd55e4c8c51203d9446ee1b165e9334d7  Image
-018fd8a528e42261377798aaaeecfe76be6b8949fe02e4f894bd4a5636c25e8a  rootfs.squashfs
-72844720cc68fddeafa676b12d504715db860183418cbee1acfe6e67ae490e3d  easystick-stamp-p4.dtb
-e345d5cf547fdbdaca42483c2db92c5739fa73e44870e5923071943fb4d5b9ce  boot.img
+187d2eabca2221e1d4a08e114bae00955be4630e2d7d9693ce894171ab0ae7d8  boot-shim.bin
+7c8b668ea06e2cc95f4f195420f570f3f7d3627812536f6ce408989a14970b36  Image
+ff9d0fb6c8ca931f57dd28ff7e34dfb22639cd364f4c1f1e9a6a9a8e68da5775  rootfs.squashfs
+ac4209eef5644f93ab59f27a29b8ee6f2f57600e488b4cbc3b79a7239030d34d  easystick-stamp-p4.dtb
+1d43ec97cccfe17ce5fe369cfa6eceeda66322817f39c20c0955b0bf6392c44a  boot.img
 ```
 
 ---
