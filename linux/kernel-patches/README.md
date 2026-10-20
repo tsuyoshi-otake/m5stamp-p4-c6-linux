@@ -231,6 +231,16 @@ or not) stopped the core, on one CPU as on two.  0081 is the exception-side
 counterpart of 0079: one mret to the next instruction once the frame is
 saved (INT=0, MPP=M, MPIE=0), so the bit is clear before the handler runs.
 
+`0083-easystick-esp32p4-sigreturn-in-kernel.patch` (#44, every build) makes
+a signal handler return through the kernel's own `__user_rt_sigreturn`
+(`li a7, __NR_rt_sigreturn; ecall` in `.rodata`).  Without a vDSO the NOMMU
+code copies those two instructions to the signal frame and calls
+`flush_icache_range()`, which is `flush_icache_all()`: with two CPUs online
+an IPI to the other one and a wait for it, which made a handled signal on two
+CPUs almost twice as slow as on one.  User code runs in M-mode here (0031)
+from the same PSRAM window as the kernel image, so it can run the kernel's
+copy, and neither the copy nor the flush is needed.
+
 `0072-easystick-esp32p4-bootflash.patch` (`/sys/kernel/easystick/boot_commit`,
 every build) writes the `/boot` drive to flash with the ROM's SPI1 routines.
 Each ROM read, erase and program runs under `stop_machine()`: CPU0 makes the
