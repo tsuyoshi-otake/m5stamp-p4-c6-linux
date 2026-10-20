@@ -22,7 +22,13 @@ release workflow build with it, and since #5 it boots both CPUs
 - 0072 makes each flash read, erase and program under `stop_machine()`, so
   CPU1 cannot read the rootfs from flash while SPI1 writes it.  Before, it
   refused to write with CPU1 online, and every USB drive save rebooted the
-  board.
+  board.  Since #43 a commit skips the sectors that already hold the image
+  and rests as long as it has held the CPUs after every 8 ms, so Wi-Fi keeps
+  up while it runs.
+- 0083 (every build, #44) returns from signal handlers through the kernel's
+  `__user_rt_sigreturn`.  The NOMMU code copied it to the stack and flushed
+  every CPU's instruction cache, an IPI to CPU1 and a wait for it on each
+  handled signal, which made signals on two CPUs slower than on one.
 - Enter with `linux/build-c68.sh` (boot-shim nm → render 0038/0039 →
   stage 0040/0041/0042 → `build-m1.sh`).
 - Do not set `EASYSTICK_KERNEL_PATCH_OVERRIDE_DIR` to the kernel patch stage.

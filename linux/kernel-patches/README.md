@@ -239,7 +239,11 @@ code copies those two instructions to the signal frame and calls
 an IPI to the other one and a wait for it, which made a handled signal on two
 CPUs almost twice as slow as on one.  User code runs in M-mode here (0031)
 from the same PSRAM window as the kernel image, so it can run the kernel's
-copy, and neither the copy nor the flush is needed.
+copy, and neither the copy nor the flush is needed.  An unwinder that finds
+a signal frame by those two instructions at `ra`, as libgcc's does, sees the
+same bytes.  20,000 returns from a SIGSEGV handler (40,000 faults) take 0.7 s
+on either CPU, against 2.5 to 2.7 s before and 1.49 s on one CPU without
+0083.
 
 `0072-easystick-esp32p4-bootflash.patch` (`/sys/kernel/easystick/boot_commit`,
 every build) writes the `/boot` drive to flash with the ROM's SPI1 routines.
@@ -248,6 +252,23 @@ call with interrupts off while the other CPU spins with interrupts off, so
 nothing reads the rootfs from flash meanwhile.  Before #5 it returned
 `-EBUSY` with two CPUs online, and every USB drive save rebooted the board so
 that the boot-shim would write the slot.
+
+Nothing else runs during a ROM call, not even the SDIO interrupts that carry
+Wi-Fi.  A commit used to make about 1,350 calls back to back (both slots
+read to find the active one, the active slot read again, all 64 sectors of
+the inactive slot erased, programmed and read back), which held the CPUs for
+nearly all of its 1.9 s; pings waited up to 0.9 s and some were lost (#43).
+It now skips the inactive-slot sectors that already hold the image (the slot
+usually holds the generation before the active one, and an edit changes a
+few sectors), reads the older record's slot only when the newer record is
+not valid, and after every 8 ms of ROM calls (`FLASH_BURST_US`) sleeps for as
+long as they took.  The kernel log line `boot update committed: … sectors=N/64
+rom=…ms total=…ms` gives the sectors written and the time in ROM calls.  A
+commit that writes 0 to 2 sectors takes 0.6 to 0.75 s (about 0.2 s of it in
+ROM calls, most of them reads); one that rewrites 63 sectors 3.5 to 4 s
+(1.5 to 1.7 s in ROM calls).  With six commits in a row of either kind, 65
+of 65 pings came back, the slowest in 280 ms; see
+[`../tests/issue41-44-2026-10-20.md`](../tests/issue41-44-2026-10-20.md).
 
 With 0079 and 0080, the C68 profile (`build-c68.sh`, used by the release
 workflow) boots both CPUs by default; `EASYSTICK_C68_MAXCPUS=1` builds the
