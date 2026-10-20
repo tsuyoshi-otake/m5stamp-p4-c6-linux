@@ -190,10 +190,12 @@ def main() -> None:
 
     # #39: S40network apply KEY... exists; boot-only keys only log, unknown
     # keys take the full restart, and applies serialise through a mkdir lock
-    # plus the pending file.
+    # plus the pending file.  maxcpus= is read by nothing (#5), so it must
+    # not claim to apply at the next boot.
     assert "apply)" in network and 'net_apply "$@"' in network
-    assert "ssh_password_auth|sdio_mhz|watchdog|maxcpus)" in network
+    assert "ssh_password_auth|sdio_mhz|watchdog)" in network
     assert "ES_CONFIG: $k= changed; applies at the next boot" in network
+    assert "ES_CONFIG: maxcpus= has no effect" in network
     assert "wifi_ssid|wifi_psk|wifi_pmf|ssid|wpa_supplicant.conf)" in network
     assert "has no targeted apply; restarting the network" in network
     assert "kill -HUP \"$p\"" in network
@@ -222,6 +224,19 @@ def main() -> None:
     assert 'read -r -t "$1" _' in network
     assert "net_tick 1" in network
     assert "echo > /proc/sys/kernel/modprobe" in network
+    # #41: hush keeps "set -e" off after a skipped "a && b" / "a || b" and
+    # applies it to while/until conditions and "! pipe" unless patched; the
+    # patch is staged for every network image, and S40network does without
+    # "set -e" so that a failed exec cannot stop a reload half-way.
+    hush_patch = read(
+        "linux/m2/busybox-patches/0001-hush-set-e-fixes.patch"
+    )
+    assert "+\t\tG.errexit_depth = sv_errexit_depth;\n" in hush_patch
+    assert "+\t\t    rword == RES_WHILE || rword == RES_UNTIL ||\n" in hush_patch
+    assert "+\t\t    IF_HAS_KEYWORDS(pi->pi_inverted ||)\n" in hush_patch
+    assert '"${script_dir}/m2/busybox-patches/"*.patch' in build
+    assert '"${global_patch_stage}/busybox/"' in build
+    assert not re.search(r"^\s*set -[a-z]*e", network, re.M)
     udhcpc_script = read(
         "linux/m3-lab/rootfs-overlay/usr/share/udhcpc/default.script"
     )

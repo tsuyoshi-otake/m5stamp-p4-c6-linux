@@ -1,0 +1,98 @@
+hush: pass "set -e", "set -x" and pipefail on to NOMMU subshells
+
+BusyBox 1.37.0 hush is /bin/sh on these NOMMU images (ash needs an MMU).
+Without fork(), hush runs ( ... ), $(...), { ... } & and the builtins,
+functions and compound commands of a pipeline by executing itself again
+(re_execute_shell()).  The "-$" argument hands the new process the PIDs,
+$?, the ignored signals and the loop depth, but not the "set -o" options
+or G.errexit_depth, so these subshells ran without "set -e" (#41):
+
+	set -e; (false; echo SUB); echo PARENT	# printed SUB and PARENT
+	set -e; x=$(false; echo SUB)		# x=SUB, the script went on
+
+A forked subshell (MMU) inherits both.  Add the options as a bit mask and
+the depth to the "-$" argument and set them in the new process before it
+runs the subshell, opening the xtrace fd as "set -x" does.  The depth
+keeps "set -e" off in a subshell that runs where it does not apply, as
+in "if (a; b); then" or "x=$(a; b) || ...".
+
+For 38 subshell scripts an x86 NOMMU build of the board's BusyBox
+configuration now prints the same as the MMU build but in one: xtrace
+lines from inside $(...) start with "+", not "++" (dash prints "+" too).
+Without the patch 19 differed.  BusyBox's own hush testsuite has the
+same results with and without it, and the MMU build compiles to the
+same hush.o.
+
+--- a/shell/hush.c
++++ b/shell/hush.c
+@@ -7431,9 +7431,9 @@
+ 		char *g_argv0, char **g_argv,
+ 		char **builtin_argv)
+ {
+-# define NOMMU_HACK_FMT ("-$%x:%x:%x:%x:%x:%llx" IF_HUSH_LOOPS(":%x"))
++# define NOMMU_HACK_FMT ("-$%x:%x:%x:%x:%x:%llx" IF_HUSH_LOOPS(":%x") ":%x:%x")
+ 	/* delims + 2 * (number of bytes in printed hex numbers) */
+-	char param_buf[sizeof(NOMMU_HACK_FMT) + 2 * (sizeof(int)*6 + sizeof(long long)*1)];
++	char param_buf[sizeof(NOMMU_HACK_FMT) + 2 * (sizeof(int)*8 + sizeof(long long)*1)];
+ 	char *heredoc_argv[4];
+ 	struct variable *cur;
+ # if ENABLE_HUSH_FUNCTIONS
+@@ -7442,6 +7442,8 @@
+ 	char **argv, **pp;
+ 	unsigned cnt;
+ 	unsigned long long empty_trap_mask;
++	unsigned o_opt_mask;
++	int i;
+ 
+ 	if (!g_argv0) { /* heredoc */
+ 		argv = heredoc_argv;
+@@ -7467,6 +7469,16 @@
+ 		}
+ 	}
+ 
++	/* A forked (MMU) subshell inherits "set -e/-x/-o pipefail"
++	 * and whether -e is ignored here (if/while condition, && list...).
++	 * Pass them on, or a subshell would run without them.
++	 */
++	o_opt_mask = 0;
++	for (i = 0; i < NUM_OPT_O; i++) {
++		if (G.o_opt[i])
++			o_opt_mask |= 1 << i;
++	}
++
+ 	sprintf(param_buf, NOMMU_HACK_FMT
+ 			, (unsigned) G.root_pid
+ 			, (unsigned) G.root_ppid
+@@ -7475,6 +7487,8 @@
+ 			, cnt
+ 			, empty_trap_mask
+ 			IF_HUSH_LOOPS(, G.depth_of_loop)
++			, o_opt_mask
++			, (unsigned) G.errexit_depth
+ 			);
+ # undef NOMMU_HACK_FMT
+ 	/* 1:hush 2:-$<pid>:<pid>:<exitcode>:<etc...> <vars...> <funcs...>
+@@ -10545,6 +10559,8 @@
+ #if !BB_MMU
+ 		case '$': {
+ 			unsigned long long empty_trap_mask;
++			unsigned o_opt_mask;
++			int i;
+ 
+ 			G.root_pid = bb_strtou(optarg, &optarg, 16);
+ 			optarg++;
+@@ -10574,6 +10590,14 @@
+ 			optarg++;
+ 			G.depth_of_loop = bb_strtou(optarg, &optarg, 16);
+ # endif
++			optarg++;
++			o_opt_mask = bb_strtou(optarg, &optarg, 16);
++			for (i = 0; i < NUM_OPT_O; i++)
++				G.o_opt[i] = (o_opt_mask >> i) & 1;
++			/* "set -x" dup()s stderr: do it here, too */
++			IF_HUSH_MODE_X(if (G_x_mode) set_mode(1, 'x', NULL);)
++			optarg++;
++			G.errexit_depth = bb_strtou(optarg, &optarg, 16);
+ 			/* Suppress "killed by signal" message, -$ hack is used
+ 			 * for subshells: echo `sh -c 'kill -9 $$'`
+ 			 * should be silent.

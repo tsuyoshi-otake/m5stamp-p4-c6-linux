@@ -1,0 +1,187 @@
+Subject: [PATCH] easystick: esp32 ACM: send the rest of xmit from the IRQ, commit console output per write (#42)
+
+The USB Serial/JTAG ACM port (ttyGS1) showed two faults while #5 wrote
+80-line blocks to it and flooded /dev/kmsg at the same time:
+
+1. The end of every block, its last "\r\n", came 0.5-0.6 s late, with no
+   ACM interrupt in between.  transmit_buffer() returned without arming
+   the IN-empty interrupt when the host had not read the previous packet
+   yet, so the rest of xmit waited until the serial core's runtime PM
+   (500 ms autosuspend) called start_tx() again.  It now arms the
+   interrupt whenever it leaves data behind, and commits (WR_DONE) only a
+   packet that has data in it.
+
+2. A kernel log line lost a character.  Console output committed every
+   character as a USB packet of its own, waited up to 2 ms for the host to
+   read it before the next one, and dropped the character after that
+   (0062; the 1 s wait before it froze vi).  It now fills the FIFO and
+   commits once per write, and the wait is 50 ms counted from the last
+   byte the FIFO took: a host that has stopped reading costs one such
+   wait, and after it characters are dropped at once until the host reads
+   again.  Dropped characters are counted in
+   /sys/class/tty/ttyGS<n>/console_dropped.
+
+earlycon and poll_put_char() keep put_char_sync().
+
+---
+--- a/drivers/tty/serial/esp32_acm.c
++++ b/drivers/tty/serial/esp32_acm.c
+@@ -20,6 +20,14 @@
+ 
+ #define ESP32S3_ACM_TX_FIFO_SIZE	64
+ 
++/*
++ * How long console output waits for room in the IN FIFO.  The wait counts
++ * from the last byte the FIFO took, not per character, so a host that has
++ * stopped reading costs it once; after that, characters are dropped (and
++ * counted in console_dropped) until the host reads again.
++ */
++#define ESP32S3_ACM_CONSOLE_WAIT_US	50000
++
+ #define USB_SERIAL_JTAG_EP1_REG		0x00
+ #define USB_SERIAL_JTAG_EP1_CONF_REG	0x04
+ #define USB_SERIAL_JTAG_WR_DONE				BIT(0)
+@@ -46,6 +54,9 @@
+ MODULE_DEVICE_TABLE(of, esp32s3_acm_dt_ids);
+ 
+ static struct uart_port *esp32s3_acm_ports[UART_NR];
++/* Console output per port: time waited for room, characters dropped. */
++static unsigned int esp32s3_acm_con_waited[UART_NR];
++static unsigned long esp32s3_acm_con_dropped[UART_NR];
+ 
+ static void esp32s3_acm_write(struct uart_port *port, unsigned long reg, u32 v)
+ {
+@@ -102,6 +113,15 @@
+ 	esp32s3_acm_write(port, USB_SERIAL_JTAG_INT_ENA_REG, int_ena);
+ }
+ 
++static void esp32s3_acm_start_tx_irq(struct uart_port *port)
++{
++	u32 int_ena;
++
++	int_ena = esp32s3_acm_read(port, USB_SERIAL_JTAG_INT_ENA_REG);
++	int_ena |= USB_SERIAL_JTAG_SERIAL_IN_EMPTY_INT_ENA;
++	esp32s3_acm_write(port, USB_SERIAL_JTAG_INT_ENA_REG, int_ena);
++}
++
+ static void esp32s3_acm_rxint(struct uart_port *port)
+ {
+ 	struct tty_port *tty_port = &port->state->port;
+@@ -155,24 +175,37 @@
+ {
+ 	u32 tx_fifo_used;
+ 	unsigned int pending;
++	u32 sent = port->icount.tx;
+ 	u8 ch;
+ 
+-	if (!esp32s3_acm_tx_fifo_free(port))
++	if (!esp32s3_acm_tx_fifo_free(port)) {
++		/*
++		 * The host has not read the last packet yet.  Have the IN-empty
++		 * interrupt send the rest when it does.  Without it, the end of
++		 * xmit (the "\r\n" of a line) waited for the serial core's
++		 * runtime PM to call start_tx() again, 0.5 s later.
++		 */
++		if (port->x_char ||
++		    (!uart_tx_stopped(port) &&
++		     !kfifo_is_empty(&port->state->port.xmit_fifo)))
++			esp32s3_acm_start_tx_irq(port);
+ 		return;
++	}
+ 
+ 	tx_fifo_used = esp32s3_acm_tx_fifo_cnt(port);
+ 	pending = uart_port_tx_limited(port, ch,
+ 				       ESP32S3_ACM_TX_FIFO_SIZE - tx_fifo_used,
+ 				       true, esp32s3_acm_put_char(port, ch),
+ 				       ({}));
+-	if (pending) {
+-		u32 int_ena;
+-
+-		int_ena = esp32s3_acm_read(port, USB_SERIAL_JTAG_INT_ENA_REG);
+-		int_ena |= USB_SERIAL_JTAG_SERIAL_IN_EMPTY_INT_ENA;
+-		esp32s3_acm_write(port, USB_SERIAL_JTAG_INT_ENA_REG, int_ena);
+-	}
+-	esp32s3_acm_push(port);
++	if (pending && !uart_tx_stopped(port))
++		esp32s3_acm_start_tx_irq(port);
++	/*
++	 * Commit only a packet with data in it.  An empty commit leaves the
++	 * endpoint busy with nothing to send, and what IN-empty does in that
++	 * state once armed above is not known.
++	 */
++	if (port->icount.tx != sent)
++		esp32s3_acm_push(port);
+ }
+ 
+ static void esp32s3_acm_txint(struct uart_port *port)
+@@ -289,11 +322,61 @@
+ #endif
+ };
+ 
++/*
++ * Console output fills the FIFO and commits it once per write rather than
++ * once per character, and waits for room as ESP32S3_ACM_CONSOLE_WAIT_US
++ * describes.  Returns whether @c went into the FIFO.
++ */
++static bool esp32s3_acm_console_putchar(struct uart_port *port, u8 c)
++{
++	unsigned int *waited = &esp32s3_acm_con_waited[port->line];
++
++	while (!esp32s3_acm_tx_fifo_free(port)) {
++		if (*waited >= ESP32S3_ACM_CONSOLE_WAIT_US) {
++			esp32s3_acm_con_dropped[port->line]++;
++			return false;
++		}
++		udelay(1);
++		++*waited;
++	}
++	*waited = 0;
++	esp32s3_acm_put_char(port, c);
++	return true;
++}
++
+ static void esp32s3_acm_string_write(struct uart_port *port, const char *s,
+ 				     unsigned int count)
+ {
+-	uart_console_write(port, s, count, esp32s3_acm_put_char_sync);
++	bool sent = false;
++
++	for (; count; count--, s++) {
++		if (*s == '\n')
++			sent |= esp32s3_acm_console_putchar(port, '\r');
++		sent |= esp32s3_acm_console_putchar(port, *s);
++	}
++	if (sent)
++		esp32s3_acm_push(port);
++}
++
++static ssize_t console_dropped_show(struct device *dev,
++				    struct device_attribute *attr, char *buf)
++{
++	struct tty_port *tport = dev_get_drvdata(dev);
++	struct uart_state *state = container_of(tport, struct uart_state, port);
++
++	return sysfs_emit(buf, "%lu\n",
++			  esp32s3_acm_con_dropped[state->uart_port->line]);
+ }
++static DEVICE_ATTR_RO(console_dropped);
++
++static struct attribute *esp32s3_acm_attrs[] = {
++	&dev_attr_console_dropped.attr,
++	NULL
++};
++
++static struct attribute_group esp32s3_acm_attr_group = {
++	.attrs = esp32s3_acm_attrs,
++};
+ 
+ static void
+ esp32s3_acm_console_write(struct console *co, const char *s, unsigned int count)
+@@ -415,6 +498,7 @@
+ 	port->flags = UPF_BOOT_AUTOCONF;
+ 	port->has_sysrq = 1;
+ 	port->fifosize = ESP32S3_ACM_TX_FIFO_SIZE;
++	port->attr_group = &esp32s3_acm_attr_group;
+ 
+ 	esp32s3_acm_ports[port->line] = port;
+ 

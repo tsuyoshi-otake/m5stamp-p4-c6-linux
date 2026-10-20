@@ -454,15 +454,22 @@ static void IRAM_ATTR jump_to_linux(uint32_t entry, uint32_t dtb_pa)
 
 volatile uint32_t c68_release IRAM_DATA_ATTR;
 volatile uint32_t c68_stage IRAM_DATA_ATTR;
+/* #5: CPU0's PMA/PMP CSRs for CPU1 (c68_secondary_entry.S has the layout). */
+uint32_t c68_prot[52] IRAM_DATA_ATTR;
+volatile uint32_t c68_prot_diff IRAM_DATA_ATTR;
 
 extern void c68_secondary_entry(void);
+extern void c68_capture_prot(void);
 
 static void prepare_cpu1_c68_clean_release(void)
 {
 	uint32_t start_cycles;
+	uint32_t prot_diff;
 
 	c68_release = 0;
 	c68_stage = 0;
+	c68_prot_diff = 0xffffffffu;
+	c68_capture_prot();
 	__asm__ volatile("fence rw, rw" ::: "memory");
 
 	ets_set_appcpu_boot_addr(0);
@@ -476,6 +483,8 @@ static void prepare_cpu1_c68_clean_release(void)
 		if ((esp_cpu_get_cycle_count() - start_cycles) > C68_CPU1_WAIT_CYCLES)
 			fatal_restart("C68 CPU1 never reached WAITING");
 	}
+	__asm__ volatile("fence rw, rw" ::: "memory");
+	prot_diff = c68_prot_diff;
 	/*
 	 * #5: CPU1 is parked now.  Clear the ROM's APP CPU boot address so a
 	 * later reset of CPU1 (an MWDT system reset keeps this register) leaves
@@ -485,6 +494,8 @@ static void prepare_cpu1_c68_clean_release(void)
 	 */
 	ets_set_appcpu_boot_addr(0);
 	ets_printf("easystick-boot: C68 WAIT stage=1\n");
+	/* 0: CPU1 read back every PMA/PMP CSR as CPU0 has it. */
+	ets_printf("easystick-boot: C68 CPU1 PMA/PMP diff=%08x\n", (unsigned)prot_diff);
 	ESP_LOGI(TAG, "C68 CPU1 WAITING; CPU0 -> Linux");
 }
 

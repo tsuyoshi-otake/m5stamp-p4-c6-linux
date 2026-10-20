@@ -38,6 +38,8 @@ FORBIDDEN = {
     "wlan0 missing": re.compile(r"M3-lab: wlan0 did not (appear|associate)"),
     "DHCP failure": re.compile(r"M3-lab: DHCP failed"),
     "wpa_supplicant failure": re.compile(r"M3-lab: wpa_supplicant (fallback )?failed"),
+    # #5: CPU1 must read back CPU0's PMA/PMP (SMP boot-shim only).
+    "CPU1 protection mismatch": re.compile(r"C68 CPU1 PMA/PMP diff=(?!0{8}\b)"),
 }
 
 # Reported but not failing: they depend on the config.txt under test.
@@ -47,6 +49,9 @@ WARN = {
 
 CRASH_CAPSULE = re.compile(r"CRASH_CAPSULE VALID")
 KERNEL_TIME = re.compile(r"^\[\s*(\d+\.\d+)\]")
+# #5: a boot-shim that parks CPU1 must also report CPU1's PMA/PMP copy.
+CPU1_WAITING = re.compile(r"C68 CPU1 WAITING")
+CPU1_PROT = re.compile(r"C68 CPU1 PMA/PMP diff=")
 
 
 def read_lines(path: Path) -> list[str]:
@@ -64,6 +69,11 @@ def check(lines: list[str], after_reboot: bool) -> list[tuple[bool, str]]:
     for name, pattern in FORBIDDEN.items():
         hits = [line.strip() for line in lines if pattern.search(line)]
         results.append((not hits, f"no {name}" + (f": {hits[0]}" if hits else "")))
+
+    if any(CPU1_WAITING.search(line) for line in lines):
+        hit = next((line for line in lines if CPU1_PROT.search(line)), None)
+        results.append((hit is not None,
+                        "CPU1 protection reported" + (f": {hit.strip()}" if hit else "")))
 
     if after_reboot:
         hits = [line.strip() for line in lines if CRASH_CAPSULE.search(line)]

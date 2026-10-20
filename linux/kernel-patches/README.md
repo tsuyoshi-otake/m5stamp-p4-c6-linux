@@ -164,6 +164,131 @@ Committed `linux.config` remains `CONFIG_SMP=n` and the board DTS remains
 `cpu@0` only. The C68 profile appends `linux/c68/linux.config.fragment` and
 inserts `linux/c68/cpu1.dts.inc` at build time.
 
+`0077-easystick-esp32p4-mret-trace.patch` (`EASYSTICK_C68_MRET_TRACE=1`,
+C68 profile only) is an observe-only #5 diagnostic: entry.S records a
+per-CPU ring of trap entries (raw mcause incl. hardware MPIL, mepc,
+mstatus; the mintstatus slot is always `0xffffffff`, since `csrr` of
+`0xfb1` at trap entry was an illegal instruction at boot), a ring of
+mret writes (the mcause the exit shim restores, mepc, PT_TP vs tp,
+status), an interrupt-only ring that freezes when the hart goes deaf
+(snapshots the all-traps and mret seqs), and an 8-entry post-interrupt
+mret buffer re-armed by each accepted interrupt.  Nonzero-MPIL mret
+writes are counted in `es_mret_bad_mpil`, and a CPU0 timer-tick watch
+dumps the rings (CPU1 in full, CPU0's newest 8) as
+ES5_WATCH/ES5_TRAP/ES5_IRQ/ES5_MRET/ES5_POST lines when CPU1's stamp is
+2 s stale.
+
+`0078-easystick-esp32p4-deaf-reset.patch` (`EASYSTICK_C68_DEAF_RESET=1`,
+C68 profile only) is the matching #5 mitigation: a per-CPU jiffies stamp
+written by each CPU's own SYSTIMER interrupt lets CPU0 notice a deaf
+CPU1 after 3 s and take the chip down through `emergency_restart()`
+(`esp32p4_wdt_restart`, priority 128) with a panic() backstop, so a
+latched boot becomes one bounded retry.  Both default OFF.
+
+Detection order for #5 is deliberate: 0068 ES_DEAF at 1 s + 200 ms, then
+0077 ES5_WATCH at 2 s, then 0078 ES5_RESET at 3 s.
+
+`0079-easystick-esp32p4-irq-level-drop.patch` is the #5 fix and is applied
+to every build (`EASYSTICK_C68_IRQ_LEVEL0=0` leaves it out for A/B tests).
+As far as the #5 captures show (it is not confirmed against Espressif
+documentation), this CLIC raises `mintstatus.mil` to the level of an
+accepted interrupt and lowers it only on an mret with `mcause.INT=1`.  An interrupt taken from
+user mode that ends in `schedule()` can leave the hart at level 0xff, deaf
+to every interrupt, until the preempted task returns through its own frame
+on that hart; if the task migrates, is stopped or dies first, the hart stays
+deaf.  0079 runs one
+mret to the next instruction right after the frame is saved (INT=1, MPP=M,
+MPIE=0, MPIL=0), so `mil` is 0 before `do_irq` and an abandoned frame holds
+no level.  The 1-CPU image needs it as well: without it, killing a busy
+task wedged CPU0 until the MWDT reset the chip.
+
+`0080-easystick-esp32-acm-tx-irq-lock.patch` takes `port->lock` around the
+transmit in the USB Serial/JTAG ACM interrupt handler.  Without it the
+handler and `start_tx` on the other CPU drained the `xmit` kfifo at the
+same time, `out` passed `in`, and ttyGS1 re-sent its 4 KiB buffer in a loop.
+
+`0082-easystick-esp32-acm-tx-irq-console.patch` (#42) fixes two faults of
+the same port under load.  When the host had not read the previous packet
+yet, `transmit_buffer()` returned without arming the IN-empty interrupt, so
+the end of the output (the last line's `\r\n`) waited 0.5 s for the serial
+core's runtime PM to call `start_tx()` again; it now arms the interrupt
+whenever it leaves data behind.  Console output committed each character as
+a packet of its own and dropped a character after waiting 2 ms for the host
+(0062); it now commits once per write and waits up to 50 ms counted from the
+last byte the FIFO took, so a host that stops reading costs one wait, not one
+per character.  Characters dropped after that are counted in
+`/sys/class/tty/ttyGS1/console_dropped`.
+
+`0081-easystick-esp32p4-expt-clear.patch` is applied to every build as well
+(`EASYSTICK_C68_EXPT_CLEAR=0` leaves it out).  The core sets
+MEXSTATUS.EXPT_VLD (CSR 0x7e1, bit 5) when it takes an exception, and only
+an mret with `mcause.INT=0` clears it.  An exception other than ecall taken
+while the bit is set is a double exception: the core locks up at the
+faulting instruction until the MWDT resets the chip.  A system call that
+ends in `schedule()` and resumes a task from its interrupt frame (INT=1)
+left the bit set in that task, so the task's next fault (a SIGSEGV, handled
+or not) stopped the core, on one CPU as on two.  0081 is the exception-side
+counterpart of 0079: one mret to the next instruction once the frame is
+saved (INT=0, MPP=M, MPIE=0), so the bit is clear before the handler runs.
+
+`0083-easystick-esp32p4-sigreturn-in-kernel.patch` (#44, every build) makes
+a signal handler return through the kernel's own `__user_rt_sigreturn`
+(`li a7, __NR_rt_sigreturn; ecall` in `.rodata`).  Without a vDSO the NOMMU
+code copies those two instructions to the signal frame and calls
+`flush_icache_range()`, which is `flush_icache_all()`: with two CPUs online
+an IPI to the other one and a wait for it, which made a handled signal on two
+CPUs almost twice as slow as on one.  User code runs in M-mode here (0031)
+from the same PSRAM window as the kernel image, so it can run the kernel's
+copy, and neither the copy nor the flush is needed.  An unwinder that finds
+a signal frame by those two instructions at `ra`, as libgcc's does, sees the
+same bytes.  20,000 returns from a SIGSEGV handler (40,000 faults) take 0.7 s
+on either CPU, against 2.5 to 2.7 s before and 1.49 s on one CPU without
+0083.
+
+`0084-easystick-mmc-sdio-irq-highpri.patch` (#43, every build) queues
+`host->sdio_irq_work` on `system_highpri_wq` instead of the normal workqueue
+when `sdio_signal_irq()` runs.  The work is the first hop of every packet
+from the C6, and under CPU load it sat a tick or more behind normal-priority
+work while everything after it was mostly under a millisecond once it ran:
+the debug build measured the whole signal -> handler -> read path under 1 ms
+in more than 99 % of cases, so the queue was the delay, not the work.  The
+esp-hosted package patches `0039` and `0040` cover the rest of the same
+path: waking `esp_TX` when a packet is queued, and running the RX workqueue
+and the TX thread ahead of nice 0.
+
+`0072-easystick-esp32p4-bootflash.patch` (`/sys/kernel/easystick/boot_commit`,
+every build) writes the `/boot` drive to flash with the ROM's SPI1 routines.
+Each ROM read, erase and program runs under `stop_machine()`: CPU0 makes the
+call with interrupts off while the other CPU spins with interrupts off, so
+nothing reads the rootfs from flash meanwhile.  Before #5 it returned
+`-EBUSY` with two CPUs online, and every USB drive save rebooted the board so
+that the boot-shim would write the slot.
+
+Nothing else runs during a ROM call, not even the SDIO interrupts that carry
+Wi-Fi.  A commit used to make about 1,350 calls back to back (both slots
+read to find the active one, the active slot read again, all 64 sectors of
+the inactive slot erased, programmed and read back), which held the CPUs for
+nearly all of its 1.9 s; pings waited up to 0.9 s and some were lost (#43).
+It now skips the inactive-slot sectors that already hold the image (the slot
+usually holds the generation before the active one, and an edit changes a
+few sectors), reads the older record's slot only when the newer record is
+not valid, and after every 8 ms of ROM calls (`FLASH_BURST_US`) sleeps for as
+long as they took.  The kernel log line `boot update committed: … sectors=N/64
+rom=…ms total=…ms` gives the sectors written and the time in ROM calls.  A
+commit that writes 0 to 2 sectors takes 0.6 to 0.75 s (about 0.2 s of it in
+ROM calls, most of them reads); one that rewrites 63 sectors 3.5 to 4 s
+(1.5 to 1.7 s in ROM calls).  With six commits in a row of either kind, 65
+of 65 pings came back, the slowest in 280 ms; see
+[`../tests/issue41-44-2026-10-20.md`](../tests/issue41-44-2026-10-20.md).
+
+With 0079 and 0080, the C68 profile (`build-c68.sh`, used by the release
+workflow) boots both CPUs by default; `EASYSTICK_C68_MAXCPUS=1` builds the
+1-CPU image.  A 2-CPU build with `EASYSTICK_C68_IRQ_LEVEL0=0` brings the CPU1
+latch back.  The boot-shim gives CPU1 CPU0's PMA/PMP setup before CPU1
+waits for Linux; without it a user fault on CPU1 arrived late, inside the
+trap handler, and panicked the kernel.  See
+[`../tests/issue5-smp-2026-10-19.md`](../tests/issue5-smp-2026-10-19.md).
+
 This directory documents a real dependency boundary while the series is
 still under review. A clean build must fail early if the baseline symbols are
 absent rather than silently dropping UART, watchdog, or NOMMU support during

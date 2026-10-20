@@ -180,7 +180,10 @@ Flashed with `flash-candidate.ps1 -AllowCandidateWrite` (write + verify passed).
       or `mintthresh` (0x347, Z4) stops the core for good.  The
       assist_debug PC recorder then holds that one `csrr` (Z3
       `arch_cpu_idle+0x60`, Z4 `+0x146`) with SP unchanged.  The record
-      reads them last for that reason.
+      reads them last for that reason.  (Corrected 2026-10-19: the read
+      faults as an illegal instruction.  On one later boot pstore held the
+      panic that followed; none of it reached the serial log.  See
+      `issue5-smp-2026-10-19.md`.)
     - It does not depend on `wfi`.  With `nohlt` (polling idle) one of
       8 boots stalled the same way, with CPU1 in `rwsem_spin_on_owner`.
       Its PC still moved, but it took no tick and no IPI.
@@ -213,6 +216,9 @@ Flashed with `flash-candidate.ps1 -AllowCandidateWrite` (write + verify passed).
     It remains a documented option for SMP experiments.  Recovering is
     not an option: the deaf core cannot even read its own CLIC state,
     and why2025 found no recovery.
+  - (2026-10-19: the trigger was found and fixed by 0079, which also
+    fixes a 1-CPU hang; both CPUs are now on by default.  See
+    `issue5-smp-2026-10-19.md`.)
   - `Core1 Saved PC` in the ROM banner is the assist_debug PC recorder,
     frozen at reset.  Without 0068, nothing enables it for core 1, so it
     shows the stale `0x4fc058e0` (the eco2 ROM getter for the APP CPU

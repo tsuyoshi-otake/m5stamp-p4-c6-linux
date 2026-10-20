@@ -1,0 +1,37 @@
+From: EasyStick maintainers <noreply@example.invalid>
+Subject: [PATCH] esp32_sdio: raise RX workqueue and TX thread priority (#43)
+
+Everything a Wi-Fi packet waits behind on the host runs at nice 0:
+the RX workqueue and the esp_TX kthread each sit out a tick behind a
+CPU-bound task.  On the board, running both at elevated priority
+(rxprio=1 in the #43 debug build) roughly halved the worst P4-side TX
+latency under flash-commit load (TX queue wait max 249 -> 126 ms,
+sdio_claim_host() wait max 157 -> 66 ms).  SCHED_FIFO (rxprio=2) was
+measurably worse - the FIFO threads starve each other around
+sdio_claim_host() - so this stays inside CFS: WQ_HIGHPRI for
+ESP_IF_RX_WORK_QUEUE and MIN_NICE for esp_TX, set once at start.
+
+---
+--- a/main.c
++++ b/main.c
+@@ -1049,7 +1049,8 @@
+ 	memset(&adapter, 0, sizeof(adapter));
+ 
+ 	/* Prepare interface RX work */
+-	adapter.if_rx_workqueue = alloc_workqueue("ESP_IF_RX_WORK_QUEUE", WQ_PERCPU, 0);
++	adapter.if_rx_workqueue = alloc_workqueue("ESP_IF_RX_WORK_QUEUE",
++						WQ_HIGHPRI | WQ_PERCPU, 0);
+ 
+ 	if (!adapter.if_rx_workqueue) {
+ 		deinit_adapter();
+--- a/sdio/esp_sdio.c
++++ b/sdio/esp_sdio.c
+@@ -1062,6 +1062,8 @@
+ 
+ 	context = adapter->if_context;
+ 
++	sched_set_normal(current, MIN_NICE);
++
+ 	while (!kthread_should_stop()) {
+ 
+ 		if (atomic_read(&context->adapter->state) < ESP_CONTEXT_READY) {

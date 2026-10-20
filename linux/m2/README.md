@@ -45,6 +45,9 @@ profile forces the generic DW-MMC driver to PIO where supported.
   USB/serial port in the current setup, so first try the factory-preflashed
   slave.  Update it only through a verified host-OTA or a separately wired
   UART/boot-strap fixture; COM10 programs the P4, not the C6.
+* BusyBox 1.37.0 with the hush `set -e` fixes of
+  [`busybox-patches/`](busybox-patches/README.md), staged for every network
+  image (#41).
 
 `build-m1.sh --profile m2` is the P4 build-only command.  It accepts either the
 external source cache or `--vendor`; the module source is intentionally taken
