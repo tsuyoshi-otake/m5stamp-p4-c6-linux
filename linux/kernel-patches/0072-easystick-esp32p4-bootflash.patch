@@ -19,7 +19,15 @@ controller, and the rootfs is the only thing read from flash.  Each ROM
 call runs under stop_machine(): CPU0 makes it with interrupts off while
 any other CPU spins with interrupts off, so nothing reads flash meanwhile
 and a 2-CPU build commits without a reboot as well.  A 4 KiB erase takes
-about 18 ms, and a 256 KiB slot about 1.3 s.
+about 18 ms.
+
+Nothing else runs during a ROM call, not even the SDIO interrupts that
+carry Wi-Fi.  Made back to back, the ~1,350 calls of a commit delayed
+ping replies by up to 0.9 s and lost some (#43).  So the commit skips
+the slot sectors that already hold the image (an edit changes a few
+sectors, and the inactive slot holds the generation before the active
+one), reads the older record's slot only when the newer one is not
+valid, and after every 8 ms of calls sleeps for as long as they took.
 
 ---
 --- a/drivers/misc/Kconfig
@@ -51,7 +59,7 @@ about 18 ms, and a 256 KiB slot about 1.3 s.
 +obj-$(CONFIG_ESP32P4_BOOTFLASH)	+= esp32p4-bootflash.o
 --- /dev/null
 +++ b/drivers/misc/esp32p4-bootflash.c
-@@ -0,0 +1,366 @@
+@@ -0,0 +1,428 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Commit the /boot image that Linux staged in PSRAM to flash at once.
@@ -62,7 +70,8 @@ about 18 ms, and a 256 KiB slot about 1.3 s.
 + * /sys/kernel/easystick/boot_commit does the same A/B update now, so an
 + * edit is durable without a reboot:
 + *
-+ *   1. erase and program the inactive slot, read it back and check the CRC;
++ *   1. erase and program the sectors of the inactive slot that differ from
++ *      the image, read the slot back and check the CRC;
 + *   2. erase the other bootmeta sector, program the record with commit_word
 + *      last, and read it back;
 + *   3. clear the request.
@@ -78,14 +87,20 @@ about 18 ms, and a 256 KiB slot about 1.3 s.
 + * mtd-rom cache window.  Each ROM call runs under stop_machine(): CPU0 makes
 + * it with interrupts off while any other CPU spins with interrupts off, so
 + * no CPU reads flash meanwhile (a 4 KiB erase takes about 18 ms).
++ *
++ * Nothing else runs during a ROM call, not even the SDIO interrupts that
++ * carry the network, so a commit keeps the calls few and spaced out.  Slot
++ * sectors that already hold the image are left alone, and once the calls
++ * have held the CPUs for FLASH_BURST_US the commit sleeps for as long.
 + */
 +#include <linux/crc32.h>
++#include <linux/delay.h>
 +#include <linux/init.h>
 +#include <linux/kernel.h>
 +#include <linux/kobject.h>
++#include <linux/ktime.h>
 +#include <linux/mutex.h>
 +#include <linux/of.h>
-+#include <linux/sched.h>
 +#include <linux/slab.h>
 +#include <linux/stop_machine.h>
 +#include <linux/sysfs.h>
@@ -107,6 +122,14 @@ about 18 ms, and a 256 KiB slot about 1.3 s.
 +#define WRITABLE_END		0xfc2000u
 +#define FLASH_SECTOR		0x1000u
 +#define FLASH_PAGE		0x100u
++
++/*
++ * ROM call time after which the commit sleeps for as long, so the rest of
++ * the board runs at least half of the time.  Back to back, the ~1,350 calls
++ * of a commit held the CPUs for nearly all of its 1.9 s, and ping replies
++ * took up to 0.9 s (#43).
++ */
++#define FLASH_BURST_US		8000
 +
 +struct boot_update_request {
 +	u32 magic;
@@ -146,6 +169,8 @@ about 18 ms, and a 256 KiB slot about 1.3 s.
 +
 +static DEFINE_MUTEX(bootflash_lock);
 +static u8 *sector_buf;
++static u64 flash_busy_ns;	/* ROM call time since the last sleep */
++static u64 flash_total_ns;	/* ROM call time of this commit */
 +
 +static u32 ieee_crc32(const void *p, size_t n)
 +{
@@ -184,12 +209,24 @@ about 18 ms, and a 256 KiB slot about 1.3 s.
 +/*
 + * Another CPU could read the rootfs from flash while SPI1 erases or programs
 + * it, so every other CPU spins with interrupts off while CPU0 makes the call.
++ * Once the calls have taken FLASH_BURST_US, sleep for as long as they took.
++ * Callers hold bootflash_lock.
 + */
 +static int flash_op_run(enum flash_op_kind kind, u32 addr, void *buf, u32 len)
 +{
 +	struct flash_op op = { .kind = kind, .addr = addr, .buf = buf, .len = len };
++	u64 start = ktime_get_ns(), took;
++	int r;
 +
-+	return stop_machine(flash_op_fn, &op, NULL) ? -EIO : 0;
++	r = stop_machine(flash_op_fn, &op, NULL) ? -EIO : 0;
++	took = ktime_get_ns() - start;
++	flash_total_ns += took;
++	flash_busy_ns += took;
++	if (flash_busy_ns >= FLASH_BURST_US * NSEC_PER_USEC) {
++		fsleep(div_u64(flash_busy_ns, NSEC_PER_USEC));
++		flash_busy_ns = 0;
++	}
++	return r;
 +}
 +
 +static int flash_read(u32 addr, void *dst, u32 len)
@@ -223,52 +260,75 @@ about 18 ms, and a 256 KiB slot about 1.3 s.
 +		if (r)
 +			return r;
 +		crc = crc32_le(crc, sector_buf, FLASH_SECTOR);
-+		cond_resched();
 +	}
 +	*crc_out = ~crc;
 +	return 0;
 +}
 +
-+static bool meta_valid(int i, struct boot_metadata *m)
++/* Reads bootmeta sector @i; true when the record itself is well formed. */
++static bool meta_read(int i, struct boot_metadata *m)
++{
++	if (flash_read(meta_base[i], m, sizeof(*m)))
++		return false;
++	return m->magic == BOOT_META_MAGIC && m->version == BOOT_META_VERSION &&
++	       m->commit_word == BOOT_META_COMMIT && m->slot <= 1 &&
++	       m->image_bytes == BOOT_IMAGE_BYTES &&
++	       m->record_crc32 == ieee_crc32(m, offsetof(struct boot_metadata,
++							 record_crc32));
++}
++
++/* A well-formed record is valid while its slot still has its image CRC. */
++static bool slot_matches(const struct boot_metadata *m)
 +{
 +	u32 crc;
 +
-+	if (flash_read(meta_base[i], m, sizeof(*m)))
-+		return false;
-+	if (m->magic != BOOT_META_MAGIC || m->version != BOOT_META_VERSION ||
-+	    m->commit_word != BOOT_META_COMMIT || m->slot > 1 ||
-+	    m->image_bytes != BOOT_IMAGE_BYTES ||
-+	    m->record_crc32 != ieee_crc32(m, offsetof(struct boot_metadata,
-+						      record_crc32)))
-+		return false;
 +	return !slot_crc32(slot_base[m->slot], &crc) && crc == m->image_crc32;
 +}
 +
-+/* The shim's choice: the valid record with the newer generation, else slot 0. */
++/*
++ * The shim's choice: the valid record with the newer generation, else slot 0.
++ * The newer record is checked first, so the other slot is read only when the
++ * newer one is not valid.
++ */
 +static int select_meta(struct boot_metadata rec[2])
 +{
-+	bool v0 = meta_valid(0, &rec[0]);
-+	bool v1 = meta_valid(1, &rec[1]);
++	bool ok[2] = { meta_read(0, &rec[0]), meta_read(1, &rec[1]) };
++	int i = (ok[0] && (!ok[1] ||
++			   (s32)(rec[0].generation - rec[1].generation) > 0)) ? 0 : 1;
 +
-+	if (v0 && (!v1 || (s32)(rec[0].generation - rec[1].generation) > 0))
-+		return 0;
-+	return v1 ? 1 : -1;
++	if (ok[i] && slot_matches(&rec[i]))
++		return i;
++	i = 1 - i;
++	if (ok[i] && slot_matches(&rec[i]))
++		return i;
++	return -1;
 +}
 +
++/*
++ * Erase and program the sectors that differ from @src.  The inactive slot
++ * usually holds the generation before the active one, and an edit changes
++ * a few sectors of the FAT image.  Returns the number of sectors written,
++ * or a negative errno.
++ */
 +static int write_slot(u32 base, const u8 *src)
 +{
 +	u32 off, p;
-+	int r;
++	int r, n = 0;
 +
 +	for (off = 0; off < BOOT_IMAGE_BYTES; off += FLASH_SECTOR) {
++		r = flash_read(base + off, sector_buf, FLASH_SECTOR);
++		if (r)
++			return r;
++		if (!memcmp(sector_buf, src + off, FLASH_SECTOR))
++			continue;
 +		r = flash_erase_sector(base + off);
 +		for (p = 0; !r && p < FLASH_SECTOR; p += FLASH_PAGE)
 +			r = flash_program(base + off + p, src + off + p, FLASH_PAGE);
 +		if (r)
 +			return r;
-+		cond_resched();
++		n++;
 +	}
-+	return 0;
++	return n;
 +}
 +
 +static int write_meta(int i, const struct boot_metadata *m)
@@ -298,7 +358,8 @@ about 18 ms, and a 256 KiB slot about 1.3 s.
 +	const u8 *image = (const u8 *)BOOT_IMAGE_PA;
 +	struct boot_metadata rec[2], next;
 +	u32 want, crc, active, inactive;
-+	int sel, other, r;
++	int sel, other, written, r;
++	u64 start;
 +
 +	if (req->magic != BOOT_REQUEST_MAGIC ||
 +	    req->version != BOOT_REQUEST_VERSION ||
@@ -309,16 +370,22 @@ about 18 ms, and a 256 KiB slot about 1.3 s.
 +	if (ieee_crc32(image, BOOT_IMAGE_BYTES) != want)
 +		return -EBADMSG;
 +
++	start = ktime_get_ns();
++	flash_total_ns = 0;
 +	sel = select_meta(rec);
 +	active = sel >= 0 ? rec[sel].slot : 0;
-+	r = slot_crc32(slot_base[active], &crc);
-+	if (r)
-+		return r;
++	/* select_meta() has just checked the selected slot against its CRC. */
++	if (sel >= 0) {
++		crc = rec[sel].image_crc32;
++	} else {
++		r = slot_crc32(slot_base[active], &crc);
++		if (r)
++			return r;
++	}
 +	if (crc != want) {
 +		inactive = 1 - active;
-+		r = write_slot(slot_base[inactive], image);
-+		if (!r)
-+			r = slot_crc32(slot_base[inactive], &crc);
++		written = write_slot(slot_base[inactive], image);
++		r = written < 0 ? written : slot_crc32(slot_base[inactive], &crc);
 +		if (!r && crc != want)
 +			r = -EIO;
 +		if (r) {
@@ -344,8 +411,11 @@ about 18 ms, and a 256 KiB slot about 1.3 s.
 +			       other, r);
 +			return r;
 +		}
-+		pr_info("easystick-bootflash: boot update committed: generation=%u slot=%u crc=%08x\n",
-+			next.generation, next.slot, want);
++		pr_info("easystick-bootflash: boot update committed: generation=%u slot=%u crc=%08x sectors=%d/%u rom=%llums total=%llums\n",
++			next.generation, next.slot, want, written,
++			BOOT_IMAGE_BYTES / FLASH_SECTOR,
++			div_u64(flash_total_ns, NSEC_PER_MSEC),
++			div_u64(ktime_get_ns() - start, NSEC_PER_MSEC));
 +	} else {
 +		pr_info("easystick-bootflash: boot image already active (crc=%08x)\n", want);
 +	}
