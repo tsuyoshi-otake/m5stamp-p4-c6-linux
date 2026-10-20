@@ -10,6 +10,7 @@ this series.
 | Patch | Fixes |
 | --- | --- |
 | `0001-hush-set-e-fixes.patch` | Under `set -e` a script went on after a failure once part of an `a && b \|\| c` list had been skipped, and stopped when a `while` or `until` loop ended or after `! cmd` (#41). |
+| `0002-hush-nommu-subshell-options.patch` | A `( … )` or `$(…)` subshell, `{ … } &` and the functions and compound commands of a pipeline ran without `set -e`, `set -x` and `set -o pipefail` (#41). |
 
 ## 0001: "set -e" in hush
 
@@ -63,11 +64,58 @@ counting `while` loop, and exited after `! true`.
   is off either way, and where a leak could happen it came at the end of a
   block or before commands that are exempt anyway.
 
-### Not changed: subshells on NOMMU
+## 0002: options in NOMMU subshells
 
-Without `fork()`, hush runs `( … )`, `$(...)`, `{ … } &` and the builtins,
+Without `fork()`, hush runs `( … )`, `$(…)`, `{ … } &` and the builtins,
 functions and compound commands of a pipeline by executing itself again
-(`re_execute_shell()`), which passes variables and functions but no `set -o`
-options. There `set -e` is off, while POSIX has a subshell inherit it.
-Scripts on these images must not rely on `set -e` inside `( … )` or
-`$(...)`.
+(`re_execute_shell()`). The `-$` argument hands the new process the PIDs,
+`$?`, the ignored signals and the loop depth, and further arguments pass
+the variables and functions, but neither the `set -o` options nor
+`G.errexit_depth` were passed. So these subshells ran without `set -e`,
+while POSIX has a subshell inherit it and hush on an MMU (which forks)
+does:
+
+```sh
+set -e; (false; echo SUB); echo PARENT      # printed SUB and PARENT
+set -e; x=$(false; echo SUB); echo "x=$x"   # printed x=SUB
+```
+
+`set -x` and `set -o pipefail` were lost the same way. The patch adds the
+options, as a bit mask, and the depth to the `-$` argument; the new process
+sets them before it runs the subshell and, under `set -x`, opens the trace
+descriptor as `set -x` does. With the depth, `set -e` stays off in a
+subshell that runs where it does not apply, as in `if (a; b); then` or
+`x=$(a; b) || …`, as it does in a forked one.
+
+Checked on x86 builds of the board's BusyBox configuration with
+`CONFIG_NOMMU=y` (hush re-executes itself as on the board) and without it
+(hush forks), both with 0001:
+
+* For 38 subshell scripts (`set -e` in `( … )`, `$(…)`, pipelines,
+  functions, nested subshells, `if`, `while`, `&&`, `||` and `!` contexts,
+  `trap ''`, a here-document, `set -x`, `pipefail`, `$-`), the patched
+  NOMMU hush prints the same as the MMU one but in one: trace lines from
+  inside `$(…)` start with `+`, where the MMU hush and bash print `++` (dash
+  prints `+`). The unpatched NOMMU hush differed in 19.
+* For the 60 scripts of 0001 it prints the same as the MMU hush and dash.
+* BusyBox's `shell/hush_test` gives 361 ok and 18 failed with and without
+  the patch, the same 18 as the MMU build.
+* The MMU build compiles to the same `hush.o` with and without the patch:
+  the code is NOMMU only.
+
+### Effect on the image's scripts
+
+`S05easystick-tmpfs` (with the `credentials.sh` and `autorun.sh` it
+sources), `S85easystick-ssh`, `S10easystick-config`, `easystick-firstboot`
+and `easystick-sdio-diag` keep `set -e`, and the patch does not change what
+they do. Their `$(…)` and `( … )` run one command, or a pipe whose status
+is its last command's either way, or `cmd || …`, or run where `set -e` is
+off (an `if` condition or `cmd || true`). None uses `set -x` or `pipefail`.
+
+### Not changed
+
+* A background `( … ) &` or `{ … } &` runs without `set -e` in hush with or
+  without an MMU: `run_list()` treats a pipe followed by `&` like one
+  followed by `&&` or `||`, and the subshell inherits that. dash and bash
+  apply `set -e` there. No script on these images runs such a command
+  under `set -e`.
