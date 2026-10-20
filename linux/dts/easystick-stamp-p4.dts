@@ -222,6 +222,10 @@
 			cap-sdio-irq;
 			dma-noncoherent;
 			easystick,force-pio;
+			/* The P4 FIFO does not pop on CPU reads (#35); patch 0087
+			 * sends multi-word PIO reads through IDMAC instead.
+			 */
+			easystick,fifo-no-pop;
 			snps,slot-id = <1>;
 			status = "okay";
 		};

@@ -1,0 +1,200 @@
+From: EasyStick maintainers <noreply@example.invalid>
+Subject: [PATCH] esp32_sdio: opt-in CMD53 register-window probe (#35)
+
+Root-cause aid for the C6 slave register-window CMD53 reads that
+return all zeros (worked around byte-wise over CMD52 by patch 0012).
+
+es_reg_probe is a module-parameter test bitmask, default 0 = fully
+off.  Setting it on the insmod line runs the battery once at the end
+of esp_probe; writing it under /sys/module/esp32_sdio/parameters
+re-runs it under one sdio_claim_host().  Every read pre-fills the
+destination with 0x5A so "the slave clocked out zeros" (data=00...)
+and "the host moved no data at all" (data=5a5a...) are distinct on
+the log.
+
+Bits: 0x01 CMD52 control; 0x02 memcpy_fromio 4B OP=1 (the failing
+path); 0x04 readsb 4B OP=0; 0x08 memcpy_toio + CMD52 read-back;
+0x10 memcpy_fromio 16B (>=16 B takes IDMAC, not PIO); 0x20 block
+mode blksz=4 x2 (restored after); 0x40 the 17-bit unmasked window
+address; 0x80 32B into an unaligned buffer (forces PIO).
+
+es_reg_addr picks the register (default 0x6c = SCRATCH_REG_0;
+0x44 TOKEN_RDATA, 0x58 INT_ST, 0x60 PACKET_LEN are read-only
+choices).  es_reg_pattern, when nonzero, is CMD52-written to the
+register first so the window provably holds a nonzero value.
+
+---
+--- a/sdio/esp_sdio.c
++++ b/sdio/esp_sdio.c
+@@ -43,6 +43,13 @@
+ } while (0);
+ 
+ struct esp_sdio_context sdio_context;
++
++/* #35 debug probe (opt-in, default off; see battery at end of file). */
++static u32 es_reg_probe;
++static u32 es_reg_addr = 0x6c;	/* SCRATCH_REG_0 & ESP_ADDRESS_MASK */
++static u32 es_reg_pattern;
++static struct sdio_func *es_probe_func;
++static void es_run_reg_probe(void);
+ static atomic_t tx_pending;
+ static atomic_t queue_items[MAX_PRIORITY_QUEUES];
+ struct task_struct *tx_thread;
+@@ -1272,6 +1279,7 @@
+ 	context = &sdio_context;
+ 
+ 	context->func = func;
++	es_probe_func = func;
+ 
+ 	sdio_claim_host(func);
+ 
+@@ -1380,6 +1388,8 @@
+ 		esp_process_new_packet_intr(context->adapter);
+ 	}
+ 
++	if (es_reg_probe)
++		es_run_reg_probe();
+ 
+ 	esp_info("ESP SDIO probe completed\n");
+ 
+@@ -1539,3 +1545,140 @@
+ 	esp_h2c_obs_proc_remove();
+ 	sdio_unregister_driver(&esp_sdio_driver);
+ }
++
++/* ===== #35 debug: opt-in CMD53 register-window probe battery =====
++ *
++ * Root-cause aid for "CMD53 multi-byte reads of the C6 register window
++ * return zeros" (worked around byte-wise over CMD52 by package patch
++ * 0012).  es_reg_probe is a test bitmask; writing it at runtime re-runs
++ * the battery under one sdio_claim_host, and setting it on the insmod
++ * line runs it once at the end of esp_probe.  Default 0 = fully off.
++ *
++ * Every read pre-fills the destination with 0x5A so the two failure
++ * shapes are distinguishable on the log: "the slave clocked out zeros"
++ * (data=0000...) vs "the host moved no data at all" (data=5a5a...).
++ *
++ * Bits:
++ *   0x01  cmd52       4x CMD52 readb (control; should be correct)
++ *   0x02  c53op1_4    sdio_memcpy_fromio 4B, byte mode, OP=1 (the failing path)
++ *   0x04  c53op0_4    sdio_readsb 4B, byte mode, OP=0 fixed address
++ *   0x08  c53write    sdio_memcpy_toio 4B, then a CMD52 read-back
++ *   0x10  c53op1_16   memcpy_fromio 16B at addr&~0xf (>=16B -> IDMAC, not PIO)
++ *   0x20  c53blk      block mode: blksize 4, memcpy_fromio 8B (restored after)
++ *   0x40  c53addr17   memcpy_fromio at the 17-bit unmasked window address
++ *   0x80  c53pio_32   memcpy_fromio 32B into an unaligned buffer (forces PIO)
++ *
++ * es_reg_addr selects the window register (default 0x6c = SCRATCH_REG_0;
++ * 0x44 TOKEN_RDATA, 0x58 INT_ST, 0x60 PACKET_LEN are read-only choices).
++ * es_reg_pattern, when nonzero, is first written to the register over
++ * CMD52 so the window is known to hold a nonzero value.
++ */
++static void es_probe_rd(const char *tag, u32 addr, u8 *buf, int len, int mode)
++{
++	struct sdio_func *func = es_probe_func;
++	int ret = 0, i;
++
++	/* callers may pass buf+N to force an unaligned sg: keep slack
++	 * detection bytes but never memset past the 40-byte array. */
++	memset(buf, 0x5a, len + 4);
++	switch (mode) {
++	case 0:
++		for (i = 0; i < len; i++) {
++			buf[i] = sdio_readb(func, addr + i, &ret);
++			if (ret)
++				break;
++		}
++		break;
++	case 1:
++		ret = sdio_memcpy_fromio(func, buf, addr, len);
++		break;
++	default:
++		ret = sdio_readsb(func, buf, addr, len);
++		break;
++	}
++	pr_info("esp32_sdio: ES_REGPROBE: %-10s addr=0x%05x len=%d ret=%d data=%*phN\n",
++		 tag, addr, len, ret, len > 16 ? 16 : len, buf);
++}
++
++static void es_run_reg_probe(void)
++{
++	struct sdio_func *func = es_probe_func;
++	u32 reg = es_reg_addr & ESP_ADDRESS_MASK;
++	u8 buf[40];
++	u8 wpat[4];
++	u32 old_blksz;
++	int ret = 0, i;
++
++	if (!func) {
++		pr_info("esp32_sdio: ES_REGPROBE: no SDIO function bound yet\n");
++		return;
++	}
++
++	sdio_claim_host(func);
++
++	if (es_reg_pattern) {
++		for (i = 0; i < 4; i++) {
++			wpat[i] = (u8)(es_reg_pattern >> (8 * i));
++			sdio_writeb(func, wpat[i], reg + i, &ret);
++		}
++		pr_info("esp32_sdio: ES_REGPROBE: wrote 0x%08x via CMD52 ret=%d\n",
++			 es_reg_pattern, ret);
++	}
++
++	if (es_reg_probe & 0x01)
++		es_probe_rd("cmd52", reg, buf, 4, 0);
++	if (es_reg_probe & 0x02)
++		es_probe_rd("c53op1_4", reg, buf, 4, 1);
++	if (es_reg_probe & 0x04)
++		es_probe_rd("c53op0_4", reg, buf, 4, 2);
++	if (es_reg_probe & 0x08) {
++		u8 wrb[4] = { 0xaa, 0xbb, 0xcc, 0xdd };
++
++		ret = sdio_memcpy_toio(func, reg, wrb, 4);
++		pr_info("esp32_sdio: ES_REGPROBE: c53write   addr=0x%05x ret=%d\n",
++			 reg, ret);
++		es_probe_rd("c52_rdback", reg, buf, 4, 0);
++	}
++	if (es_reg_probe & 0x10)
++		es_probe_rd("c53op1_16", reg & ~0xf, buf, 16, 1);
++	if (es_reg_probe & 0x20) {
++		old_blksz = func->cur_blksize;
++		ret = sdio_set_block_size(func, 4);
++		if (!ret) {
++			es_probe_rd("c53blk", reg, buf, 8, 1);
++			sdio_set_block_size(func, old_blksz);
++		} else {
++			pr_info("esp32_sdio: ES_REGPROBE: c53blk set_blksz ret=%d\n", ret);
++		}
++	}
++	if (es_reg_probe & 0x40)
++		es_probe_rd("c53addr17", (reg | 0x15000) & 0x1ffff, buf, 4, 1);
++	if (es_reg_probe & 0x80)
++		es_probe_rd("c53pio_32", reg & ~0xf, buf + 1, 32, 1);
++
++	sdio_release_host(func);
++}
++
++static int es_reg_probe_set(const char *val, const struct kernel_param *kp)
++{
++	int ret = param_set_uint(val, kp);
++
++	if (!ret && es_reg_probe)
++		es_run_reg_probe();
++	return ret;
++}
++
++static const struct kernel_param_ops es_reg_probe_ops = {
++	.set = es_reg_probe_set,
++	.get = param_get_uint,
++};
++
++module_param_cb(es_reg_probe, &es_reg_probe_ops, &es_reg_probe, 0644);
++MODULE_PARM_DESC(es_reg_probe,
++		 "#35 debug: CMD53 register-window probe bitmask (0=off)");
++module_param_named(es_reg_addr, es_reg_addr, uint, 0644);
++MODULE_PARM_DESC(es_reg_addr,
++		 "#35 debug: window register offset for es_reg_probe");
++module_param_named(es_reg_pattern, es_reg_pattern, uint, 0644);
++MODULE_PARM_DESC(es_reg_pattern,
++		 "#35 debug: nonzero value CMD52-written before the battery");

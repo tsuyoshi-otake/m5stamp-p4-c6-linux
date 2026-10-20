@@ -3,7 +3,7 @@
 # udhcpc script edited by Tim Riker <Tim@Rikers.org>
 # m3-lab copy of Buildroot's package/busybox/udhcpc.script with two NOMMU
 # changes (#40): resolv.conf is rewritten with shell builtins instead of
-# cat, and the *.d hooks are sourced in this same shell instead of exec'ed
+# mktemp, grep, cat and rm, and the *.d hooks are sourced in this same shell instead of exec'ed
 # (each exec is a ~480 KB BusyBox copy on NOMMU).
 
 [ -z "$1" ] && echo "Error: should be called from udhcpc" && exit 1
@@ -34,11 +34,19 @@ wait_for_ipv6_default_route() {
 	printf " timeout!\n"
 }
 
-# cat is an exec; rewrite $RESOLV_CONF from $TMPFILE with builtins only.
-copy_file() {
+# Drop this interface's lines from $RESOLV_CONF with builtins only: the
+# mktemp, grep, cat and rm this used to take were one exec each.
+# resolv.conf may be a symlink to /tmp/; ">" writes through it.
+drop_iface_lines() {
+	_keep=""
 	while IFS= read -r l || [ -n "$l" ]; do
-		printf '%s\n' "$l"
-	done < "$1" > "$2"
+		case "$l" in
+			*"# $interface") ;;
+			*) _keep="$_keep$l
+" ;;
+		esac
+	done < "$RESOLV_CONF"
+	printf '%s' "$_keep" > "$RESOLV_CONF"
 }
 
 case "$ACTION" in
@@ -47,11 +55,7 @@ case "$ACTION" in
 		/sbin/ifconfig $interface 0.0.0.0
 
 		# drop info from this interface
-		# resolv.conf may be a symlink to /tmp/, so take care
-		TMPFILE=$(mktemp)
-		grep -vE "# $interface\$" $RESOLV_CONF > $TMPFILE
-		copy_file $TMPFILE $RESOLV_CONF
-		rm -f $TMPFILE
+		drop_iface_lines
 
 		if [ -x /usr/sbin/avahi-autoipd ]; then
 			/usr/sbin/avahi-autoipd -c $interface && /usr/sbin/avahi-autoipd -k $interface
@@ -101,11 +105,7 @@ case "$ACTION" in
 		fi
 
 		# drop info from this interface
-		# resolv.conf may be a symlink to /tmp/, so take care
-		TMPFILE=$(mktemp)
-		grep -vE "# $interface\$" $RESOLV_CONF > $TMPFILE
-		copy_file $TMPFILE $RESOLV_CONF
-		rm -f $TMPFILE
+		drop_iface_lines
 
 		# prefer rfc3397 domain search list (option 119) if available
 		if [ -n "$search" ]; then
