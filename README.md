@@ -4,7 +4,7 @@
 [![Platform](https://img.shields.io/badge/platform-ESP32--P4%20%2B%20ESP32--C6-orange.svg)](https://m5stack.com)
 [![CPU](https://img.shields.io/badge/SMP-Dual--Core%20RV32IMAC-green.svg)](https://github.com/tsuyoshi-otake/m5stamp-p4-c6-linux/releases)
 
-A reproducible RISC-V NOMMU Linux 7.2 distribution (SMP on both cores of the ESP32-P4; releases up to v0.3.2 run on one core, see below) for the **M5Stack Stamp-P4** carrier board paired with **Stamp-AddOn C6** (via 4-bit SDIO interface).
+A reproducible RISC-V NOMMU Linux 7.2 distribution (SMP on both cores of the ESP32-P4 since v0.4.0; releases up to v0.3.2 run on one core, see below) for the **M5Stack Stamp-P4** carrier board paired with **Stamp-AddOn C6** (via 4-bit SDIO interface).
 
 Boots out-of-the-box into **Wi-Fi SoftAP mode** with automatic DHCP, Dropbear SSH server, BusyBox `vi`, MicroPython (`python3`), and a writable OverlayFS on `/home`, `/root`, and `/var/lib`.
 
@@ -19,7 +19,7 @@ Boots out-of-the-box into **Wi-Fi SoftAP mode** with automatic DHCP, Dropbear SS
 ## Key Features & Verified Hardware Capabilities
 
 - **SoC Target**: ESP32-P4 (Dual-Core RV32IMAC / ilp32, CPU clock 360 MHz as reported by the boot-shim, 32 MiB PSRAM, 16 MiB SPI Flash).
-- **SMP**: Both cores are online (`Linux 7.2.11 #1 SMP riscv32 GNU/Linux`, `/sys/devices/system/cpu/online` = `0-1`). Releases up to v0.3.2 boot with `maxcpus=1`, because with two CPUs CPU1 stopped taking interrupts a few seconds into boot (#5): an interrupt frame that is never returned through leaves the CLIC interrupt level raised. Fix `0079` drops the level at interrupt entry (the 1-CPU image needs it too, see the known issue below), and `0080` fixes a console race that two CPUs exposed. With both, CPU1 kept taking interrupts on all 46 test boots, and a 60-minute load soak (699 kills of a busy task, plus SSH and HTTP transfers) ran without a hang. Tests with crashing programs found two more faults: a program's fault could lock its core up (`0081`, one CPU too, see the known issue below), and CPU1 ran without the memory protection ESP-IDF gives CPU0, so a fault there panicked the kernel (fixed in the boot-shim). With those fixes, 200,000 faults in a row completed on either CPU next to the loads that had triggered both, and 10 of 10 resets passed the boot checks; see `linux/tests/issue5-smp-2026-10-19.md`. Saving the USB drive also rebooted a 2-CPU board, because the kernel's flash write (`0072`) refused to run with CPU1 online; it now holds CPU1 with interrupts off for each flash operation (`stop_machine()`), so saves go to flash without a reboot, and it spaces those operations out so that Wi-Fi keeps up (#43). Two CPU-bound programs at once take 8.1–8.3 s where one CPU takes 16.0 s, and fork+exec gains little. A signal delivered to a handler cost 1.7 to 1.8 times as much as on one CPU, because the kernel flushed the other CPU's instruction cache through an IPI for each one; `0083` returns through the kernel's own sigreturn code instead, and 40,000 handled faults take 0.7 s on either CPU (1.49 s on one CPU without it; #44). A 1-CPU image needs `EASYSTICK_C68_MAXCPUS=1` at build time; `maxcpus` in `/boot/config.txt` is informational and is not read by anything.
+- **SMP**: Both cores are online (`Linux 7.2.11 #1 SMP riscv32 GNU/Linux`, `/sys/devices/system/cpu/online` = `0-1`). v0.4.0 boots both by default; releases up to v0.3.2 booted with `maxcpus=1`, because with two CPUs CPU1 stopped taking interrupts a few seconds into boot (#5): an interrupt frame that is never returned through leaves the CLIC interrupt level raised. Fix `0079` drops the level at interrupt entry (the 1-CPU image needs it too, see the known issue below), and `0080` fixes a console race that two CPUs exposed. With both, CPU1 kept taking interrupts on all 46 test boots, and a 60-minute load soak (699 kills of a busy task, plus SSH and HTTP transfers) ran without a hang. Tests with crashing programs found two more faults: a program's fault could lock its core up (`0081`, one CPU too, see the known issue below), and CPU1 ran without the memory protection ESP-IDF gives CPU0, so a fault there panicked the kernel (fixed in the boot-shim). With those fixes, 200,000 faults in a row completed on either CPU next to the loads that had triggered both, and 10 of 10 resets passed the boot checks; see `linux/tests/issue5-smp-2026-10-19.md`. Saving the USB drive also rebooted a 2-CPU board, because the kernel's flash write (`0072`) refused to run with CPU1 online; it now holds CPU1 with interrupts off for each flash operation (`stop_machine()`), so saves go to flash without a reboot, and it spaces those operations out so that Wi-Fi keeps up (#43). Two CPU-bound programs at once take 8.1–8.3 s where one CPU takes 16.0 s, and fork+exec gains little. A signal delivered to a handler cost 1.7 to 1.8 times as much as on one CPU, because the kernel flushed the other CPU's instruction cache through an IPI for each one; `0083` returns through the kernel's own sigreturn code instead, and 40,000 handled faults take 0.7 s on either CPU (1.49 s on one CPU without it; #44). A 1-CPU image needs `EASYSTICK_C68_MAXCPUS=1` at build time; `maxcpus` in `/boot/config.txt` is informational and is not read by anything.
 - **Wi-Fi Companion**: ESP32-C6 (M5Stack Stamp-AddOn C6) connected via 4-bit SDIO (5 MHz by default, up to 40 MHz with `sdio_mhz=`, see [SDIO clock](#c6-firmware-security-features--regulatory-notes)).
 - **Out-of-the-Box SoftAP**:
   - Broadcasts a per-device SSID **`m5-XXXX`** with a WPA2-PSK passphrase generated on first boot (see [Per-device credentials](#per-device-credentials)).
@@ -103,10 +103,57 @@ Every board gets its own credentials on first boot; no SSID or password is share
 
 ### 1. Download Release Package
 
-> **v0.3.2** is built and published the same way as v0.2.2 to v0.3.1: the assets
+> **v0.4.0** is built and published the same way as v0.2.2 to v0.3.2: the assets
 > are the CI build that was flashed and checked on hardware, and the tag run refuses
-> any asset whose hash is not in `linux/tests/v0.3.2-hardware-validation-2026-10-19.md`.
-> Changes since v0.3.1 (#37):
+> any asset whose hash is not in `linux/tests/v0.4.0-hardware-validation-2026-10-20.md`.
+> Changes since v0.3.2:
+> - Both CPUs are online by default (#5). Releases up to v0.3.2 booted with
+>   `maxcpus=1` because CPU1 stopped taking interrupts a few seconds into boot;
+>   `0079`, `0080`, `0081` and a boot-shim fix that gives CPU1 the same PMA/PMP
+>   memory protection as CPU0 make it reliable.  A 1-CPU image still builds
+>   with `EASYSTICK_C68_MAXCPUS=1`.  (`linux/tests/issue5-smp-2026-10-19.md`)
+> - BusyBox hush follows POSIX `set -e` (#41): a skipped `&&`/`||` list no
+>   longer switches it off for the rest of the script, a `while`/`until`
+>   condition or a `! pipe` that is false no longer ends the script, and on
+>   NOMMU `( … )`, `$(…)` and pipelines inherit `set -e`, `set -x` and
+>   `pipefail`.  `S40network` no longer uses `set -e`.
+> - The ttyGS1 console no longer stalls half a second at the end of a write
+>   (#42): it finishes from the interrupt, and a host that stops reading
+>   costs one 50 ms wait instead of one per character; dropped characters
+>   are counted in `/sys/class/tty/ttyGS1/console_dropped`.
+> - Saving the USB drive no longer stalls Wi-Fi (#43).  A flash commit
+>   writes only the sectors that changed and sleeps between the ROM calls,
+>   so the CPUs stay free at least half the time, and the SDIO path wakes
+>   the Wi-Fi transmit thread when a frame is queued and runs it, the
+>   receive workqueue and the interrupt work at raised priority.  UDP probes
+>   sent during commits got their reply after a median of 1.44 s, and 86 of
+>   5,500 were lost; on the fix build and the release image the median is
+>   21–45 ms.  Bursts of 2–6 lost probes and replies held for up to about
+>   1 s remain in some runs, most likely on the C6, and one run held replies
+>   for 5.4 s without a known cause; #43 stays open.
+> - Handled signals are no longer slower on two CPUs (#44): the handler
+>   returns through the kernel's own sigreturn code instead of flushing the
+>   other CPU's instruction cache for every signal.  40,000 handled faults
+>   take about 0.7 s on either CPU, against 2.5–2.7 s before.
+> - Filling the 2 MB `/tmp` ramdisk can no longer make a saved
+>   `root_authorized_keys` look installed when it is not (2% is reserved
+>   for root; the serial log says `ES_SSH_KEYS FAIL`).
+> - MicroPython raises `RuntimeError` on deep recursion instead of crashing
+>   (48 KB stack), and exits with `MemoryError` when its heap cannot be
+>   allocated.
+> - A `config.txt` save applies only the keys that changed instead of
+>   restarting the network (#39), `country=` included; a deleted
+>   `hostname=` goes back to the boot name, and a PSK fixed by a reload gets
+>   a DHCP lease.  The NOMMU process pool is shown in
+>   `/sys/kernel/easystick/nommu_pool` (#40), a failed SSH key install
+>   fails closed, and the loopback interface comes up at boot.
+>
+> Records: `linux/tests/issue5-smp-2026-10-19.md`,
+> `linux/tests/issue39-40-hardware-checks-2026-10-19.md`,
+> `linux/tests/issue41-44-2026-10-20.md` (the #41–#44 fixes and the #43
+> latency work).
+>
+> v0.3.2 changes since v0.3.1 (#37):
 > - `su` works: `root_password=` in `credentials.txt` (generated on the first boot,
 >   or appended to an older `credentials.txt`) is the root password for `su`.
 >   Every attempt is logged to `/run/messages`; a missing or invalid
@@ -124,15 +171,15 @@ Every board gets its own credentials on first boot; no SSID or password is share
 > **Known issue in v0.3.2:** a user can fill the 2 MB `/tmp` ramdisk (shared with
 > `/home` and `/root`); a `root_authorized_keys` saved while it is full is not
 > installed, although the serial log says it is.  Free the space and save the file
-> again, or reboot.  Fixed on `main` (2% reserved for root, `ES_SSH_KEYS FAIL`;
+> again, or reboot.  Fixed in v0.4.0 (2% reserved for root, `ES_SSH_KEYS FAIL`;
 > `linux/tests/v0.3.2-followup-checks-2026-10-19.md`).
 >
 > **Known issue in v0.3.2 and earlier (#5):** killing a program while it is busy on
 > the CPU (for example `kill` of a running `yes`) can stop the board until the
 > watchdog resets it one to two minutes later.  A program that crashes (SIGSEGV)
 > can stop it the same way, depending on what else runs on the CPU.  Fixed by
-> `0079` and `0081` (not in a release yet;
-> `linux/tests/issue5-smp-2026-10-19.md`).
+> `0079` and `0081` in v0.4.0
+> (`linux/tests/issue5-smp-2026-10-19.md`).
 >
 > v0.3.1 changes since v0.3.0:
 > - A `main.sh` saved with CRLF line ends runs again (#34). On v0.2.5 and v0.3.0
@@ -164,8 +211,8 @@ Every board gets its own credentials on first boot; no SSID or password is share
 > the GPL corresponding source (`*-legal-info.tar.gz`, #31).
 
 Download either the monolithic 16MB raw flash image or the partition zip package from the [Releases](https://github.com/tsuyoshi-otake/m5stamp-p4-c6-linux/releases) page:
-- **`m5stamp-p4-c6-linux-smp-v0.3.2-16mb.bin.gz`**: Single 16MB raw flash image (simplest, flash to `0x0`).
-- **`m5stamp-p4-c6-linux-smp-v0.3.2.zip`**: Individual partition binaries with automated PowerShell flash script.
+- **`m5stamp-p4-c6-linux-smp-v0.4.0-16mb.bin.gz`**: Single 16MB raw flash image (simplest, flash to `0x0`).
+- **`m5stamp-p4-c6-linux-smp-v0.4.0.zip`**: Individual partition binaries with automated PowerShell flash script.
 
 ### 2. Flash using `esptool.py`
 
@@ -173,8 +220,8 @@ Connect the M5Stamp-P4 via its USB-C port to your computer. Identify your serial
 
 #### Option A: Monolithic 16MB Raw Image Flash (Recommended)
 ```bash
-gzip -d m5stamp-p4-c6-linux-smp-v0.3.2-16mb.bin.gz
-esptool.py --chip esp32p4 --port COM10 --baud 460800 write_flash 0x0 m5stamp-p4-c6-linux-smp-v0.3.2-16mb.bin
+gzip -d m5stamp-p4-c6-linux-smp-v0.4.0-16mb.bin.gz
+esptool.py --chip esp32p4 --port COM10 --baud 460800 write_flash 0x0 m5stamp-p4-c6-linux-smp-v0.4.0-16mb.bin
 ```
 
 #### Option B: Release PowerShell Script
@@ -669,24 +716,24 @@ This compiles:
 
 ---
 
-## SHA-256 Checksums (v0.3.2)
+## SHA-256 Checksums (v0.4.0)
 
 ```text
 Raw 16MB Monolithic Image:
-713709a42398eb61ae579ac807be46c25021bfcad22bd7800fe2f93c52bcde20  m5stamp-p4-c6-linux-smp-v0.3.2-16mb.bin.gz
-07e2f41edf4bbc27e71fb6e6e4276d97df21becabfb5a0bc744eef3c302f1f70  m5stamp-p4-c6-linux-smp-v0.3.2-16mb.bin (uncompressed)
+13c03da23c5a58b699a1cacfa06594aaf1f04f38857b25a6909f57dccf0e5fe3  m5stamp-p4-c6-linux-smp-v0.4.0-16mb.bin.gz
+f104915c7d575b5a3cf80317383446450ed2b901e828c9f7af3be74c199589ea  m5stamp-p4-c6-linux-smp-v0.4.0-16mb.bin (uncompressed)
 
 Partition Archive:
-75f0a837f2a272825fac097e5b9d1d41aa2e87f8b465e86db3d9b7d6463ae266  m5stamp-p4-c6-linux-smp-v0.3.2.zip
+4370c8905b5e46eba3dbbe934928cec650d578afff21e31eb6f0211168137994  m5stamp-p4-c6-linux-smp-v0.4.0.zip
 
 Individual Partitions:
-f9239d8465ec888f582935e1236d7096fa6bb0e69542d9cf82a3e394f17b38cd  bootloader.bin
+3f481fccd75af31adf5da135ba33397712ee62a87561f075dcecaf3105c6b506  bootloader.bin
 7937656f29960d53b63010b51836e233d092e067e320cde5778ec43e04218870  partition-table.bin
-3236fe8b95fe13b60eda69a13f43bdb0c671d5eda921906dace8ae42ebdf832a  boot-shim.bin
-e9ac572ab3887ece447947fa10a1528b07e46a97bc29b6d7659e04ba4c2ccbba  Image
-241654ac02cbb87d1cded6dba59e97c403da1fd10f57662dcc8c074a98362fb2  rootfs.squashfs
-a12b18e1347ade36c499c79338ff7125bd4140bf56c64ecfedce8f93b4d3a852  easystick-stamp-p4.dtb
-e7a0689cf1c66f41a717abe978e9447e4f9ea92ef34957124f1f8d08242e198b  boot.img
+2303df83ec50e60f08f02ba1e2fdcdc32f832c3b435b144f48d8bef4c6eb2442  boot-shim.bin
+942a9c527e8d688b035a27233fcc1f9dd55e4c8c51203d9446ee1b165e9334d7  Image
+018fd8a528e42261377798aaaeecfe76be6b8949fe02e4f894bd4a5636c25e8a  rootfs.squashfs
+72844720cc68fddeafa676b12d504715db860183418cbee1acfe6e67ae490e3d  easystick-stamp-p4.dtb
+e345d5cf547fdbdaca42483c2db92c5739fa73e44870e5923071943fb4d5b9ce  boot.img
 ```
 
 ---
