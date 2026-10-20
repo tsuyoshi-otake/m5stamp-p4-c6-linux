@@ -1,6 +1,10 @@
 #!/bin/sh
 # EasyStick Network Status Updater
 # Usage: easystick-update-status <STATUS> [IP] [NETMASK] [GATEWAY] [SSID] [MODE]
+#
+# Run standalone or sourced ("set -- ...; . easystick-update-status", like the
+# udhcpc hook and S40network do).  Each "exit" is paired with "return", so a
+# sourcing caller is not killed; standalone runs exit the same way as before.
 
 STATUS="${1:-UNKNOWN}"
 IP="${2:-none}"
@@ -17,10 +21,17 @@ LAST_STATUS_FILE="$RUNTIME_DIR/.last_status"
 # If IP is not provided or is none, try to read from wlan0 if status is not explicitly DISCONNECTED
 if [ "$IP" = "none" ] || [ -z "$IP" ]; then
 	if [ "$STATUS" = "CONNECTED" ] || [ "$STATUS" = "AP_ACTIVE" ]; then
-		ifconfig wlan0 > "$RUNTIME_DIR/.ifc.$$" 2>/dev/null
-		IP=$(grep 'inet addr:' "$RUNTIME_DIR/.ifc.$$" 2>/dev/null | cut -d: -f2 | cut -d' ' -f1)
-		rm -f "$RUNTIME_DIR/.ifc.$$"
-		[ -z "$IP" ] && IP="none"
+		# One exec, no pipeline: every pipeline stage is a ~480 KB
+		# BusyBox vfork+exec on NOMMU (#40).
+		_ifc=$(ifconfig wlan0 2>/dev/null)
+		case "$_ifc" in
+		*"inet addr:0.0.0.0"*) IP="none" ;;
+		*"inet addr:"*)
+			IP="${_ifc#*inet addr:}"
+			IP="${IP%% *}"
+			;;
+		*) IP="none" ;;
+		esac
 	fi
 fi
 
@@ -40,7 +51,16 @@ fi
 # If SSID not provided, try to detect from wpa_supplicant.conf or iw
 if [ "$SSID" = "none" ] || [ -z "$SSID" ]; then
 	if [ -f /tmp/wpa_supplicant.conf ]; then
-		SSID=$(grep 'ssid=' /tmp/wpa_supplicant.conf 2>/dev/null | head -n1 | cut -d'"' -f2)
+		# Builtins only; "ssid=" at a word start, not scan_ssid=/bssid=.
+		while IFS= read -r line; do
+			case "$line" in
+				ssid=*|*[[:blank:]]ssid=*)
+					SSID="${line#*\"}"
+					SSID="${SSID%\"*}"
+					break
+					;;
+			esac
+		done < /tmp/wpa_supplicant.conf
 	fi
 	[ -z "$SSID" ] && SSID="none"
 fi
@@ -68,7 +88,7 @@ if [ -f "$LAST_STATUS_FILE" ]; then
 	read LAST_STATUS < "$LAST_STATUS_FILE"
 fi
 if [ "$STATUS_STR" = "$LAST_STATUS" ] && [ -s "$STATUS_FILE" ]; then
-	exit 0
+	return 0 2>/dev/null || exit 0
 fi
 
 SSH_CMD="ssh m5@${IP}"
@@ -93,9 +113,9 @@ then
 	if mv -f "$STATUS_TMP" "$STATUS_FILE"; then
 		echo "$STATUS_STR" > "$LAST_STATUS_FILE"
 		echo "[status] Runtime status updated: status=${STATUS} ip=${IP} ssid=${SSID}"
-		exit 0
+		return 0 2>/dev/null || exit 0
 	fi
 fi
 rm -f "$STATUS_TMP"
 echo "[status] Failed to update runtime status" >&2
-exit 1
+return 1 2>/dev/null || exit 1

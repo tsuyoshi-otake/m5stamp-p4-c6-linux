@@ -60,6 +60,22 @@ proc_running() {
 	return 1
 }
 
+# S85's "restart" is a no-op while inetd runs (its restart() only starts a
+# missing inetd), so skip the ~480 KB script exec in the common case; when
+# inetd did die (e.g. OOM) it is still restarted (#40).
+ssh_restart() {
+	proc_running inetd && return 0
+	[ -x /etc/init.d/S85easystick-ssh ] && /etc/init.d/S85easystick-ssh restart &
+}
+
+# easystick-update-status is written so its "exit" returns to a sourcing
+# caller; sourcing keeps the update inside this shell instead of spending
+# another ~480 KB hush copy on it (#40).  Same shape as the udhcpc hook.
+net_status() {
+	[ -x /usr/sbin/easystick-update-status ] || return 0
+	. /usr/sbin/easystick-update-status
+}
+
 conf_ssid() {
 	conf_get ssid "$1" "$UNQUOTE"
 }
@@ -69,7 +85,7 @@ dhcp_failed() {
 	local ssid=$(conf_ssid "$CONF")
 	echo "M3-lab: DHCP failed"
 	ifconfig wlan0 2>/dev/null || true
-	[ -x /usr/sbin/easystick-update-status ] && /usr/sbin/easystick-update-status "DHCP_FAILED" "none" "none" "none" "${ssid:-none}" "sta" &
+	net_status "DHCP_FAILED" "none" "none" "none" "${ssid:-none}" "sta"
 	return 0
 }
 
@@ -81,9 +97,13 @@ run_dhcp() {
 	udhcpc -f -i wlan0 -t 5 -T 3 >/dev/null 2>&1 &
 	n=0
 	while [ "$n" -lt 30 ]; do
-		if ifconfig wlan0 2>/dev/null | grep 'inet addr:' | grep -vq 'inet addr:0\.0\.0\.0'; then
-			return 0
-		fi
+		# One exec, not three: the old ifconfig|grep|grep pipeline ran
+		# three ~480 KB BusyBox copies per second of wait (#40).
+		o=$(ifconfig wlan0 2>/dev/null)
+		case "$o" in
+		*"inet addr:0.0.0.0"*) ;;
+		*"inet addr:"*) return 0 ;;
+		esac
 		n=$((n + 1))
 		net_tick 1
 	done
@@ -109,10 +129,10 @@ stop_wpa() {
 		kill "$p" 2>/dev/null || true
 	fi
 	rm -f "$WPA_PID"
-	killall wpa_supplicant 2>/dev/null || true
+	sig_if_running wpa_supplicant TERM
 	# Its 1.8 MB block must be free before the next one can be loaded.
 	n=0
-	while killall -0 wpa_supplicant 2>/dev/null && [ "$n" -lt 10 ]; do
+	while proc_running wpa_supplicant && [ "$n" -lt 10 ]; do
 		net_tick 1
 		n=$((n + 1))
 	done
@@ -292,8 +312,10 @@ sync_time() {
 	command -v ntpd >/dev/null 2>&1 || return 0
 	srv=$(conf_get ntp_server "$CFG" "$NOSPACE")
 	[ "$srv" = "none" ] && return 0
-	( ntpd -n -q -p "${srv:-pool.ntp.org}" >/dev/null 2>&1 &&
-		echo "M3-lab: clock set from NTP: $(date)" ) &
+	# Backgrounded as one process: "( ntpd ... && echo $(date) ) &" kept a
+	# ~480 KB subshell resident for the sync's whole duration (#40).  The
+	# "clock set" note is gone; ntpd's own stderr is suppressed as before.
+	ntpd -n -q -p "${srv:-pool.ntp.org}" >/dev/null 2>&1 &
 }
 
 # udhcpd runs in the foreground under easystick-respawn (#29): it comes back
@@ -301,7 +323,7 @@ sync_time() {
 UDHCPD_SUP=/run/.es-udhcpd-sup
 stop_udhcpd() {
 	stop_sup "$UDHCPD_SUP"
-	killall udhcpd 2>/dev/null || true
+	sig_if_running udhcpd TERM
 }
 
 start() {
@@ -335,14 +357,16 @@ start() {
 		esac
 	fi
 	if [ -z "$WANT_MHZ" ] && [ -r /etc/easystick/sdio-clock-mhz ]; then
-		WANT_MHZ=$(cat /etc/easystick/sdio-clock-mhz)
+		read -r WANT_MHZ < /etc/easystick/sdio-clock-mhz
 	fi
 	WANT_MHZ="${WANT_MHZ:-5}"
 	case "$WANT_MHZ" in
 		1|2|5|10|20|40) ;;
 		*) echo "ES_SDIO_CLOCK_FAIL invalid requested_mhz=$WANT_MHZ" >&2; exit 70 ;;
 	esac
-	MODULE_DIR="/lib/modules/$(uname -r)"
+	krel=""
+	read -r krel < /proc/sys/kernel/osrelease
+	MODULE_DIR="/lib/modules/$krel"
 	KO="$MODULE_DIR/updates/esp32_sdio.ko"
 	[ -f "$KO" ] || KO="$MODULE_DIR/extra/esp32_sdio.ko"
 	if grep -q '^esp32_sdio ' /proc/modules; then
@@ -439,8 +463,8 @@ start() {
 				fi
 				AP_SSID=$(conf_ssid "$CONF")
 				echo "M3-lab: SoftAP started (SSID: ${AP_SSID:-m5}, IP: 192.168.4.1)"
-				[ -x /etc/init.d/S85easystick-ssh ] && /etc/init.d/S85easystick-ssh restart &
-				[ -x /usr/sbin/easystick-update-status ] && /usr/sbin/easystick-update-status "AP_ACTIVE" "192.168.4.1" "255.255.255.0" "192.168.4.1" "${AP_SSID:-m5}" "ap" &
+				ssh_restart
+				net_status "AP_ACTIVE" "192.168.4.1" "255.255.255.0" "192.168.4.1" "${AP_SSID:-m5}" "ap"
 				return 0
 			fi
 
@@ -463,7 +487,7 @@ start() {
 					else
 						dhcp_failed
 					fi
-					[ -x /etc/init.d/S85easystick-ssh ] && /etc/init.d/S85easystick-ssh restart &
+					ssh_restart
 					return 0
 				fi
 				j=$((j + 1))
@@ -481,7 +505,7 @@ start() {
 				sta_state=AUTH_FAILED
 			fi
 			echo "M3-lab: wlan0 did not associate ($sta_state)"
-			[ -x /usr/sbin/easystick-update-status ] && /usr/sbin/easystick-update-status "$sta_state" "none" "none" "none" "${sta_ssid:-none}" "sta" &
+			net_status "$sta_state" "none" "none" "none" "${sta_ssid:-none}" "sta"
 			return 0
 		fi
 		i=$((i + 1))
@@ -495,7 +519,7 @@ start() {
 net_reload_seq() {
 	stop_udhcpd
 	stop_wpa
-	killall udhcpc 2>/dev/null || true
+	sig_if_running udhcpc TERM
 	ifconfig wlan0 down 2>/dev/null || true
 	rm -rf /var/run/wpa_supplicant* 2>/dev/null || true
 	net_tick 1
@@ -552,7 +576,7 @@ apply_wpa_hup() {
 		else
 			dhcp_failed
 		fi
-		[ -x /etc/init.d/S85easystick-ssh ] && /etc/init.d/S85easystick-ssh restart &
+		ssh_restart
 	fi
 	net_note "M3-lab: Wi-Fi settings applied without a restart (wpa_supplicant reloaded)"
 	return 0
@@ -695,10 +719,10 @@ case "${1:-start}" in
 	stop)
 		stop_udhcpd
 		stop_wpa
-		killall udhcpc 2>/dev/null || true
+		sig_if_running udhcpc TERM
 		ifconfig wlan0 down 2>/dev/null || true
 		rm -rf /var/run/wpa_supplicant* 2>/dev/null || true
-		[ -x /usr/sbin/easystick-update-status ] && /usr/sbin/easystick-update-status "STOPPED" "none" "none" "none" "none" "none" &
+		net_status "STOPPED" "none" "none" "none" "none" "none"
 		;;
 	reload|restart)
 		net_apply full
