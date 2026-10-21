@@ -268,7 +268,7 @@ def ssh_cmd(host, remote, key=None):
     # dropbear regenerates its host key every boot (/run is volatile), so
     # never consult a known_hosts file — 'no' accepts whatever is present.
     c = ['ssh', '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=no',
-         '-o', 'ConnectTimeout=10']
+         '-o', 'UserKnownHostsFile=/dev/null', '-o', 'ConnectTimeout=10']
     if key:
         c += ['-i', key]
     return c + ['root@' + host, remote]
@@ -529,7 +529,8 @@ def main():
     ap.add_argument('--scenario', default='all',
                     choices=['all', 'idle', 'wget', 'ssh', 'scenarioA', 'tables'])
     ap.add_argument('--n', type=int, default=6)
-    ap.add_argument('--key', default=None, help='ssh private key (pub inferred)')
+    ap.add_argument('--key', default='~/.ssh/id_ed25519',
+                    help='ssh private key (pub inferred)')
     ap.add_argument('--label', default='unnamed')
     ap.add_argument('--wget-url', default='http://speedtest.tele2.net/10MB.zip')
     ap.add_argument('--transport', default='auto',

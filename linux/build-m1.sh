@@ -813,6 +813,10 @@ patches+=(0088-easystick-dw-mmc-fifo-bounce-write.patch)
 if [[ "${EASYSTICK_POOL_BESTFIT:-0}" == "1" ]]; then
 	patches+=(0089-easystick-nommu-pool-best-fit.patch)
 fi
+# #51 experiment: user-alloc reserve/watermark on the NOMMU user pool.
+if [[ "${EASYSTICK_USER_RESERVE:-0}" == "1" ]]; then
+	patches+=(0090-easystick-nommu-user-reserve.patch)
+fi
 # C67-L2-STAGE: observe-only SMP breadcrumbs in smpboot.c (no behaviour change).
 if [[ "${EASYSTICK_C67_SMP_STAGE:-0}" == "1" || "${EASYSTICK_C68_CLEAN_RELEASE:-0}" == "1" ]]; then
 	patches+=(0037-easystick-c67-l2-stage-smpboot.patch)
