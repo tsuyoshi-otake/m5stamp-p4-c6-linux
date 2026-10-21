@@ -1,7 +1,7 @@
 # Autorun and MicroPython hardware validation (2026-10-17)
 
 Issue #34.  Board: M5Stamp ESP32-P4 + C6 (SDIO), P4 USB Serial/JTAG on
-COM10.  Only the P4 flash was written (`flash-candidate.ps1 -PreserveBoot`,
+COM10.  Only the P4 flash was written (`flash-candidate.ps1 -PreserveBoot` (-PreserveBoot was the opt-in then; since 2026-10-21 R2 preserving the boot slots is the default and the switch is a no-op; -WriteBoot writes the boot FS),
 so the USB drive kept its contents); the C6 was not touched.
 
 ## Candidate

@@ -3,7 +3,7 @@
 Board: M5Stamp ESP32-P4 + C6 (SDIO), P4 USB Serial/JTAG on COM10.  Only the
 P4 flash was written; the C6 was not touched.  Local builds from branch
 `issue39-40` with `build-c68.sh --profile m3-lab`, flashed with
-`flash-candidate.ps1 -PreserveBoot` (the drive and credentials stayed).  No
+`flash-candidate.ps1 -PreserveBoot` (-PreserveBoot was the opt-in then; since 2026-10-21 R2 preserving the boot slots is the default and the switch is a no-op; -WriteBoot writes the boot FS) (the drive and credentials stayed).  No
 SSID, PSK, password or client address is quoted here.
 
 #39: a config.txt save applies only the keys that changed (`S40network apply

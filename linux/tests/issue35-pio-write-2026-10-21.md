@@ -7,7 +7,7 @@ I/O.  No corruption was seen, but no test isolates it."  This record
 answers that question on the v0.4.1 tree.
 
 Board: M5Stamp ESP32-P4 + C6 (SDIO), P4 USB Serial/JTAG on COM10.  Only
-the P4 flash was written, with `flash-candidate.ps1 -PreserveBoot`; the
+the P4 flash was written, with `flash-candidate.ps1 -PreserveBoot` (-PreserveBoot was the opt-in then; since 2026-10-21 R2 preserving the boot slots is the default and the switch is a no-op; -WriteBoot writes the boot FS); the
 C6 firmware was never modified or flashed and nothing was sent through
 it beyond the probes below.  No SSID, PSK, password or address is
 quoted here.

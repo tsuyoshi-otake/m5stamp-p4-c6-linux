@@ -13,7 +13,7 @@ Two ways to root, as on a normal Linux system:
 ## Image
 
 A local build of branch `issue37-root-access` (da9b1bb) with `build72.sh`,
-flashed over v0.3.1 with `flash-candidate.ps1 -PreserveBoot`, so the drive
+flashed over v0.3.1 with `flash-candidate.ps1 -PreserveBoot` (-PreserveBoot was the opt-in then; since 2026-10-21 R2 preserving the boot slots is the default and the switch is a no-op; -WriteBoot writes the boot FS), so the drive
 kept its v0.3.1 `credentials.txt` (no `root_password=`):
 
 ```
