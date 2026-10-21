@@ -1,0 +1,136 @@
+Subject: [PATCH] mmc: dw_mmc: bounce PIO-bound writes through IDMAC (#35)
+
+Preventive mirror of patch 0087 for the write direction.  On this
+host the BUFFIFO register does not pop on multi-word CPU reads (a
+read returns its first word repeated).  Raw PIO *writes* measured
+byte-correct on the bench - 8..32 byte CMD53 spans, verified by an
+IDMAC read-back and a bytewise CMD52 oracle - but with the FIFO's
+pop behaviour already broken in one direction there is no reason to
+keep pushing production data through it in the other, so PIO-bound
+writes go through IDMAC as well.
+
+With `easystick,fifo-no-pop` in the DT (or dw_mmc.es_fifo_bounce=1),
+a write of 5..1024 bytes that dw_mci_pre_dma_transfer() would send to
+PIO is instead staged into the aligned bounce buffer and submitted
+through IDMAC, exactly like the read workaround in patch 0087.  The
+CMD53 byte count on the wire is unchanged.  Single-word writes stay
+on PIO (they cannot straddle a FIFO-word boundary) and a multi-word
+PIO write that still happens - no buffer, >1 KiB, DMA submit failed -
+logs the same rate-limited "#35:" warning as before.
+
+Production impact: esp-hosted rounds every TX packet to a word count,
+so CMD53 writes below the 16-byte DMA threshold (short TX frames and
+command tails) were the last remaining users of the CPU FIFO.
+
+es_fifo_bounce: -1 follows the DT (default), 0 off, 1 on.
+es_fifo_bounce_wr: -1 follows es_fifo_bounce (default), 0 off, 1 on -
+a write-side-only override for A/B measurement; it exists to answer
+"are raw PIO writes correct" without also disabling the read bounce
+that the IDMAC read-back relies on.
+
+---
+--- a/drivers/mmc/host/dw_mmc.h
++++ b/drivers/mmc/host/dw_mmc.h
+@@ -300,6 +300,7 @@
+ 	struct scatterlist	*pio_orig_sg;
+ 	unsigned int		pio_orig_sg_len;
+ 	u32			pio_bounced;
++	u32			pio_wr_bounced;
+ 	u32			pio_rd_corrupt;
+ 	union {
+ 		u16		part_buf16;
+--- a/drivers/mmc/host/dw_mmc.c
++++ b/drivers/mmc/host/dw_mmc.c
+@@ -1261,6 +1261,12 @@
+ MODULE_PARM_DESC(es_fifo_bounce,
+ 		 "#35: IDMAC bounce for multi-word PIO reads (-1=DT, 0=off, 1=on)");
+ 
++/* EasyStick #35: write-side-only override; -1 follows es_fifo_bounce. */
++static int dw_mmc_es_fifo_bounce_wr = -1;
++module_param_named(es_fifo_bounce_wr, dw_mmc_es_fifo_bounce_wr, int, 0644);
++MODULE_PARM_DESC(es_fifo_bounce_wr,
++		 "#35: IDMAC bounce for PIO writes (-1=es_fifo_bounce, 0=off, 1=on)");
++
+ static int dw_mci_pre_dma_transfer(struct dw_mci *host,
+ 				   struct mmc_data *data,
+ 				   int cookie)
+@@ -1597,6 +1603,62 @@
+ 	return 0;
+ }
+ 
++/*
++ * EasyStick #35: submit a PIO-bound write through the IDMAC using the
++ * same aligned bounce buffer as the read side.  Preventive: raw PIO
++ * writes measured byte-correct on the bench, but the P4 BUFFIFO is
++ * already proven not to pop on reads, so writes stay off the CPU FIFO
++ * too rather than trust it in one direction only.  The sg payload is
++ * staged into the bounce before the DMA submission; unlike a read
++ * there is nothing to copy back when the transfer completes.
++ */
++static int dw_mci_es_pio_bounce_write(struct dw_mci *host,
++				      struct mmc_data *data)
++{
++	struct scatterlist *orig_sg = data->sg;
++	unsigned int len = data->blksz * data->blocks;
++	int orig_sg_len = data->sg_len;
++	int bounce = dw_mmc_es_fifo_bounce_wr >= 0
++		? dw_mmc_es_fifo_bounce_wr : dw_mmc_es_fifo_bounce;
++	int ret;
++
++	if (data->flags & MMC_DATA_READ)
++		return -EINVAL;
++	if (bounce <= 0) {
++		if (bounce == 0 || !host->fifo_nopop)
++			return -EINVAL;
++	}
++	if (!host->pio_bounce || len <= 4 || len > DW_MCI_PIO_BOUNCE_BYTES)
++		return -EINVAL;
++
++	if (sg_copy_to_buffer(orig_sg, orig_sg_len,
++			      host->pio_bounce, len) != len)
++		return -EINVAL;
++
++	sg_init_one(&host->pio_bounce_sgl, host->pio_bounce,
++		    ALIGN(len, 4));
++	data->sg = &host->pio_bounce_sgl;
++	data->sg_len = 1;
++
++	ret = dw_mci_submit_data_dma(host, data);
++	if (ret) {
++		if (data->host_cookie != COOKIE_UNMAPPED) {
++			dma_unmap_sg(host->dev, data->sg, data->sg_len,
++				     mmc_get_dma_dir(data));
++			data->host_cookie = COOKIE_UNMAPPED;
++		}
++		data->sg = orig_sg;
++		data->sg_len = orig_sg_len;
++		return ret;
++	}
++
++	if (!host->pio_wr_bounced++)
++		dev_info(host->dev,
++			 "#35: first multi-word PIO write bounced to IDMAC (%u bytes)\n",
++			 len);
++	return 0;
++}
++
+ static void dw_mci_submit_data(struct dw_mci *host, struct mmc_data *data)
+ {
+ 	unsigned long irqflags;
+@@ -1618,11 +1680,14 @@
+ 	dw_mci_ctrl_thld(host, data);
+ 
+ 	if (dw_mci_submit_data_dma(host, data)) {
+-		/* EasyStick #35: on the P4 a multi-word CPU FIFO read returns
+-		 * the first word repeated; bounce reads through IDMAC instead.
++		/* EasyStick #35: the P4 CPU FIFO does not pop on multi-word
++		 * reads; keep PIO-bound transfers off it in both directions
++		 * (the write side is preventive - see 0088).
+ 		 */
+ 		if (!dw_mci_es_pio_bounce_read(host, data))
+ 			return;
++		if (!dw_mci_es_pio_bounce_write(host, data))
++			return;
+ 		if (host->fifo_nopop &&
+ 		    data->blksz * data->blocks > 4)
+ 			dev_warn_ratelimited(host->dev,
