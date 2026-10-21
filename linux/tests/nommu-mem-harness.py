@@ -136,6 +136,94 @@ def meminfo(b):
     return _kv_ints(b.send(BUILTIN_MEMINFO, 8))
 
 
+# --- alloc_fail attribution (#50 R2 item 1) ------------------------------
+# The kernel logs 'nommu: Allocation of length N from process PID (comm)
+# failed' on every pool failure; the following binfmt_flat line carries no
+# comm, so attribution is by the nommu line.  Sides per the #50 review:
+# user = dropbear/dbclient sessions, their children, the console shell and
+# the harness's own probes; everything else is system.
+FAIL_RE = re.compile(
+    r'Allocation of length (\d+) from process (\d+) \(([^)]+)\) failed')
+SYSTEM_COMMS = frozenset((
+    'wpa_supplicant', 'udhcpc', 'udhcpd', 'hostapd', 'inetd', 'init',
+    'syslogd', 'klogd', 'easystick-boots', 'easystick-mdns',
+    'easystick-respa', 'easystick-watch', 'S40network', 'S05easyst',
+    'bootsync', 'swclock', 'ntpd', 'easystick-bootsync',
+    'easystick-boot-commit', 'mdev', 'crond', 'getty'))
+USER_COMMS = frozenset((
+    'dropbear', 'dbclient', 'sleep', 'sort', 'head', 'wc', 'cat', 'grep',
+    'cut', 'tail', 'nc', 'dd', 'wget', 'ssh', 'sh', 'printf', 'tr', 'awk',
+    'sed', 'ls', 'basename', 'date', 'ip', 'ps', 'kill', 'ash'))
+
+
+def dmesg_len(b):
+    t = b.send('dmesg | wc -l', 8)
+    for ln in t.splitlines():
+        if ln.strip().isdigit():
+            return int(ln.strip())
+    return 0
+
+
+def fail_tally(b, start_line):
+    """Tally pool alloc failures per comm in dmesg lines > start_line."""
+    txt = b.send('dmesg | tail -n +%d' % (start_line + 1), 15)
+    tally = {}
+    for ln in txt.splitlines():
+        m = FAIL_RE.search(ln)
+        if m:
+            e = tally.setdefault(m.group(3), [0, 0])
+            e[0] += 1
+            e[1] = max(e[1], int(m.group(1)))
+    return tally
+
+
+def side_of(comm):
+    if comm in SYSTEM_COMMS:
+        return 'system'
+    if comm in USER_COMMS:
+        return 'user*'
+    return '?'
+
+
+def print_attrib(tally, title):
+    print('### %s — alloc_fail attribution (dmesg)\n' % title)
+    if not tally:
+        print('(no pool allocation failures)\n')
+        return
+    rows = [[c, side_of(c), n, mx]
+            for c, (n, mx) in sorted(tally.items(), key=lambda kv: -kv[1][0])]
+    print(md_table(['comm', 'side', 'fails', 'max len (B)'], rows))
+    sys_n = sum(n for c, (n, _) in tally.items() if side_of(c) == 'system')
+    usr_n = sum(n for c, (n, _) in tally.items() if side_of(c) == 'user*')
+    print('\nsystem-side: %d   user-side: %d   unclassified: %d\n'
+          % (sys_n, usr_n, sum(n for c, (n, _) in tally.items())
+             - sys_n - usr_n))
+    print('*sh counts as user (console/session shells); S40network scripts '
+          'also exec as sh — see comm table\n')
+
+
+def pid_set(b):
+    txt = b.send('ls -d /proc/[0-9]*', 6)
+    return frozenset(re.findall(r'/proc/(\d+)', txt))
+
+
+def wait_settled(b, min_up=45, tries=10):
+    """Idle snapshot must follow a stable process set (#50 R2 item 2):
+    same pid set twice 10 s apart and uptime >= min_up."""
+    for _ in range(tries):
+        u = b.send('read u < /proc/uptime; echo U=$u', 5)
+        m = re.search(r'U=(\d+)', u)
+        up = int(m.group(1)) if m else 0
+        s1 = pid_set(b)
+        time.sleep(10)
+        if pid_set(b) == s1 and up >= min_up:
+            print('settled: uptime=%ds pids=%d\n' % (up, len(s1)))
+            return
+        time.sleep(3)
+    print('settled: TIMEOUT (uptime=%ds pids=%d) — snapshot may be unstable\n'
+          % (up, len(s1)))
+
+
 def pool_regions(b):
     """Parse 'NOMMU user mmap' dmesg lines -> [(base,size)] (hex ints)."""
     txt = b.send("dmesg | grep -i 'user mmap'", 15)
@@ -364,6 +452,7 @@ def scenario_wget(b, url, loopback=False):
 
 
 def scenario_ssh(b, host, n, key, loopback=False):
+    dl = dmesg_len(b)
     procs, opened = open_sessions(b, host, n, key, loopback)
     time.sleep(3)
     st, mi = pool_stats(b), meminfo(b)
@@ -380,6 +469,7 @@ def scenario_ssh(b, host, n, key, loopback=False):
                     ['MemFree', str(mi.get('MemFree', '-')) + ' kB'],
                     ['MemAvailable', str(mi.get('MemAvailable', '-')) + ' kB']]))
     print()
+    print_attrib(fail_tally(b, dl), 'ssh-open window')
     return procs, opened
 
 
@@ -391,6 +481,7 @@ def net_up(b):
 
 
 def scenario_a(b, host, n, key, loopback=False):
+    dl = dmesg_len(b)
     before = pool_stats(b)
     fail0 = int(before.get('alloc_fail', 0))
     lf_min = int(before.get('largest_free', 0))
@@ -428,6 +519,7 @@ def scenario_a(b, host, n, key, loopback=False):
                     ['ssh sessions still alive', live],
                     ['wlan up after', net_up(b)]]))
     print()
+    print_attrib(fail_tally(b, dl), 'scenario A window')
     close_sessions(b, procs)
 
 
@@ -484,6 +576,7 @@ def main():
                 sys.exit('ssh unavailable')
 
     if a.scenario in ('all', 'idle', 'tables'):
+        wait_settled(b)
         scenario_idle(b, regions)
     if a.scenario in ('all', 'wget'):
         scenario_wget(b, a.wget_url, loopback)
