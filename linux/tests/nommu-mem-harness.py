@@ -100,7 +100,7 @@ def kv(text):
 
 # Under pool exhaustion even `cat`/`grep` cannot exec (binfmt_flat needs a
 # contiguous pool block), so the hot-path readers below use only shell
-# builtins.  `while read ... done < file` does NOT work here — busybox read
+# builtins.  `while read ... done < file` does NOT work here -- busybox read
 # drains the whole seq_file on the first call and discards past the newline.
 # Holding the fd with `exec 3<` and issuing sequential `read <&3` advances
 # line by line (verified on the board).
@@ -186,7 +186,7 @@ def side_of(comm):
 
 
 def print_attrib(tally, title):
-    print('### %s — alloc_fail attribution (dmesg)\n' % title)
+    print('### %s -- alloc_fail attribution (dmesg)\n' % title)
     if not tally:
         print('(no pool allocation failures)\n')
         return
@@ -199,7 +199,7 @@ def print_attrib(tally, title):
           % (sys_n, usr_n, sum(n for c, (n, _) in tally.items())
              - sys_n - usr_n))
     print('*sh counts as user (console/session shells); S40network scripts '
-          'also exec as sh — see comm table\n')
+          'also exec as sh -- see comm table\n')
 
 
 def pid_set(b):
@@ -220,7 +220,7 @@ def wait_settled(b, min_up=45, tries=10):
             print('settled: uptime=%ds pids=%d\n' % (up, len(s1)))
             return
         time.sleep(3)
-    print('settled: TIMEOUT (uptime=%ds pids=%d) — snapshot may be unstable\n'
+    print('settled: TIMEOUT (uptime=%ds pids=%d) -- snapshot may be unstable\n'
           % (up, len(s1)))
 
 
@@ -266,7 +266,7 @@ def board_ip(b):
 
 def ssh_cmd(host, remote, key=None):
     # dropbear regenerates its host key every boot (/run is volatile), so
-    # never consult a known_hosts file — 'no' accepts whatever is present.
+    # never consult a known_hosts file -- 'no' accepts whatever is present.
     c = ['ssh', '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=no',
          '-o', 'UserKnownHostsFile=/dev/null', '-o', 'ConnectTimeout=10']
     if key:
@@ -336,11 +336,11 @@ def dropbear_count(b):
 def open_sessions(b, host, n, key=None, loopback=False):
     """Fire n `sleep 90` SSH sessions; return (procs, opened_count).
 
-    loopback: dbclient on the board to 127.0.0.1 — inetd forks the same
+    loopback: dbclient on the board to 127.0.0.1 -- inetd forks the same
     dropbear -i children with the same pool cost, no LAN needed.
     LAN: the client TCP flow is closed externally ~1 s in on this lab
     network, but the server-side dropbear keeps the session (and its
-    ~1 MB of pool) for the remote command's lifetime — the board-side
+    ~1 MB of pool) for the remote command's lifetime -- the board-side
     count is the source of truth either way."""
     base = dropbear_count(b)
     procs = []
@@ -414,8 +414,8 @@ def scenario_idle(b, regions):
 def scenario_wget(b, url, loopback=False):
     if loopback:
         # no LAN: serve 10MB of zeros over loopback HTTP.  loopback does
-        # not exercise the SDIO/esp-hosted path — kernel TCP + userspace
-        # only — noted in the record.
+        # not exercise the SDIO/esp-hosted path -- kernel TCP + userspace
+        # only -- noted in the record.
         b.spawn("nc -l -p 8080 -e sh -c 'printf \"HTTP/1.0 200 OK\\\\r\\\\n"
                 "Content-Length: 10485760\\\\r\\\\n\\\\r\\\\n\"; "
                 "dd if=/dev/zero bs=1048576 count=10 2>/dev/null' &")
