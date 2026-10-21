@@ -177,8 +177,10 @@ def board_ip(b):
 
 
 def ssh_cmd(host, remote, key=None):
-    c = ['ssh', '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=accept-new',
-         '-o', 'ConnectTimeout=10', '-o', 'UserKnownHostsFile=NUL' if sys.platform == 'win32' else '/dev/null']
+    # dropbear regenerates its host key every boot (/run is volatile), so
+    # never consult a known_hosts file — 'no' accepts whatever is present.
+    c = ['ssh', '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=no',
+         '-o', 'ConnectTimeout=10']
     if key:
         c += ['-i', key]
     return c + ['root@' + host, remote]
