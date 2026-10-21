@@ -133,27 +133,25 @@ def pool_stats(b):
 
 
 def meminfo(b):
-    return _kv_ints(b.send(BUILTIN_MEMINFO, 8))
+    # Regex, not kv(): a pending prompt or job notification can merge onto
+    # the first output line ('~ # MemFree: 6688 kB'), which would lose the
+    # key entirely under key-based parsing.
+    out = {}
+    for m in re.finditer(
+            r'(MemFree|MemAvailable|Buffers|Cached|Slab|SReclaimable)'
+            r':\s*(\d+)', b.send(BUILTIN_MEMINFO, 8)):
+        out[m.group(1)] = int(m.group(2))
+    return out
 
 
 # --- alloc_fail attribution (#50 R2 item 1) ------------------------------
 # The kernel logs 'nommu: Allocation of length N from process PID (comm)
-# failed' on every pool failure; the following binfmt_flat line carries no
-# comm, so attribution is by the nommu line.  Sides per the #50 review:
-# user = dropbear/dbclient sessions, their children, the console shell and
-# the harness's own probes; everything else is system.
+# failed' at the nommu.c enomem path, reached only when BOTH the userspace
+# pool and the buddy fallback failed -> every line is a real ENOMEM.
+# Sides are resolved by PID ancestry in classify_pids() (ttyGS1 ctty or
+# dropbear ancestor => user; init chain => system), never by name lists.
 FAIL_RE = re.compile(
     r'Allocation of length (\d+) from process (\d+) \(([^)]+)\) failed')
-SYSTEM_COMMS = frozenset((
-    'wpa_supplicant', 'udhcpc', 'udhcpd', 'hostapd', 'inetd', 'init',
-    'syslogd', 'klogd', 'easystick-boots', 'easystick-mdns',
-    'easystick-respa', 'easystick-watch', 'S40network', 'S05easyst',
-    'bootsync', 'swclock', 'ntpd', 'easystick-bootsync',
-    'easystick-boot-commit', 'mdev', 'crond', 'getty'))
-USER_COMMS = frozenset((
-    'dropbear', 'dbclient', 'sleep', 'sort', 'head', 'wc', 'cat', 'grep',
-    'cut', 'tail', 'nc', 'dd', 'wget', 'ssh', 'sh', 'printf', 'tr', 'awk',
-    'sed', 'ls', 'basename', 'date', 'ip', 'ps', 'kill', 'ash'))
 
 
 def dmesg_len(b):
@@ -481,7 +479,7 @@ def scenario_wget(b, url, loopback=False):
             break
     after = pool_stats(b)
     print('### wget 10MB -> /dev/null (meminfo sampled every 2 s)\n')
-    print(md_table(['metric', 'min kB' if 'Mem' in 'x' else 'value'],
+    print(md_table(['metric', 'value'],
                    [['MemFree min', lo['MemFree']],
                     ['MemAvailable min', lo['MemAvailable']],
                     ['Slab max', hi.get('Slab', '-')],
