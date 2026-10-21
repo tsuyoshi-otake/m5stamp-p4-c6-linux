@@ -165,41 +165,82 @@ def dmesg_len(b):
 
 
 def fail_tally(b, start_line):
-    """Tally pool alloc failures per comm in dmesg lines > start_line."""
+    """Tally alloc failures in dmesg lines > start_line.
+
+    'Allocation of length N from process P (comm) failed' is printed at
+    the nommu.c enomem path, which is reached only when BOTH the pool
+    and the buddy fallback failed -> every line is a real ENOMEM (the
+    mmap/exec actually failed).  Returns {pid: [comm, fails, max_len]}.
+    """
     txt = b.send('dmesg | tail -n +%d' % (start_line + 1), 15)
     tally = {}
     for ln in txt.splitlines():
         m = FAIL_RE.search(ln)
         if m:
-            e = tally.setdefault(m.group(3), [0, 0])
-            e[0] += 1
-            e[1] = max(e[1], int(m.group(1)))
+            e = tally.setdefault(int(m.group(2)), [m.group(3), 0, 0])
+            e[1] += 1
+            e[2] = max(e[2], int(m.group(1)))
     return tally
 
 
-def side_of(comm):
-    if comm in SYSTEM_COMMS:
-        return 'system'
-    if comm in USER_COMMS:
-        return 'user*'
-    return '?'
+def classify_pids(b, pids):
+    """Classify pids by ancestry via /proc/*/stat ppid chains: a task is
+    'user' when its controlling tty is ttyGS1 or any ancestor comm is
+    dropbear (same rule as the 0090 kernel mark); reaching init means
+    'system'; an unreadable /proc/<pid>/stat means the process (or an
+    ancestor) already exited -> 'exited'."""
+    out = {}
+    if not pids:
+        return out
+    cmd = ("read dv < /sys/class/tty/ttyGS1/dev; maj=${dv%%:*}; "
+           "min=${dv##*:}; "
+           "TGS=$(( (maj << 8) | (min & 255) | ((min & ~255) << 12) )); "
+           "for pid in %s; do p=$pid; cls=''; while [ $p -gt 1 ]; do "
+           "read -r s < /proc/$p/stat 2>/dev/null || { cls=exited; break; }; "
+           "r=${s##*) }; set -- $r; c=${s#*\\(}; c=${c%%\\)*}; "
+           "if [ \"$5\" = \"$TGS\" ] || [ \"$c\" = dropbear ]; then "
+           "cls=user; break; fi; p=$2; done; "
+           "[ -z \"$cls\" ] && cls=system; echo C$pid=$cls; done"
+           % ' '.join(map(str, sorted(pids))))
+    txt = b.send(cmd, 20)
+    for ln in txt.splitlines():
+        m = re.match(r'C(\d+)=(\w+)', ln.strip())
+        if m:
+            out[int(m.group(1))] = m.group(2)
+    return out
 
 
-def print_attrib(tally, title):
-    print('### %s -- alloc_fail attribution (dmesg)\n' % title)
+def print_attrib(tally, title, cls=None):
+    print('### %s -- real ENOMEM attribution (dmesg)\n' % title)
+    print('(each line = mmap/exec actually failed; the nommu print fires '
+          'only when pool AND buddy both fail)\n')
     if not tally:
-        print('(no pool allocation failures)\n')
+        print('(no allocation failures)\n')
         return
-    rows = [[c, side_of(c), n, mx]
-            for c, (n, mx) in sorted(tally.items(), key=lambda kv: -kv[1][0])]
+    if cls is None:
+        cls = {}
+    by = {}
+    for pid, (comm, n, mx) in tally.items():
+        by.setdefault((comm, cls.get(pid, '?')), [0, 0])
+        e = by[(comm, cls.get(pid, '?'))]
+        e[0] += n
+        e[1] = max(e[1], mx)
+    rows = [[c, s, n, mx]
+            for (c, s), (n, mx) in sorted(by.items(), key=lambda kv: -kv[1][0])]
     print(md_table(['comm', 'side', 'fails', 'max len (B)'], rows))
-    sys_n = sum(n for c, (n, _) in tally.items() if side_of(c) == 'system')
-    usr_n = sum(n for c, (n, _) in tally.items() if side_of(c) == 'user*')
-    print('\nsystem-side: %d   user-side: %d   unclassified: %d\n'
-          % (sys_n, usr_n, sum(n for c, (n, _) in tally.items())
-             - sys_n - usr_n))
-    print('*sh counts as user (console/session shells); S40network scripts '
-          'also exec as sh -- see comm table\n')
+    sys_n = usr_n = ext_n = 0
+    for pid, (comm, n, _) in tally.items():
+        s = cls.get(pid, '?')
+        if s == 'system':
+            sys_n += n
+        elif s == 'user':
+            usr_n += n
+        elif s == 'exited':
+            ext_n += n
+    print('\nsystem-side: %d   user-side: %d   exited-before-read: %d\n'
+          % (sys_n, usr_n, ext_n))
+    print('sides resolved by /proc ancestry (ttyGS1 ctty or dropbear '
+          'ancestor => user; init chain => system)\n')
 
 
 def pid_set(b):
@@ -469,7 +510,8 @@ def scenario_ssh(b, host, n, key, loopback=False):
                     ['MemFree', str(mi.get('MemFree', '-')) + ' kB'],
                     ['MemAvailable', str(mi.get('MemAvailable', '-')) + ' kB']]))
     print()
-    print_attrib(fail_tally(b, dl), 'ssh-open window')
+    tally = fail_tally(b, dl)
+    print_attrib(tally, 'ssh-open window', classify_pids(b, tally))
     return procs, opened
 
 
@@ -484,7 +526,10 @@ def scenario_a(b, host, n, key, loopback=False):
     dl = dmesg_len(b)
     before = pool_stats(b)
     fail0 = int(before.get('alloc_fail', 0))
+    denied0 = int(before.get('user_denied', 0))
+    sysfail0 = int(before.get('system_alloc_fail', 0))
     lf_min = int(before.get('largest_free', 0))
+    mem_lo = {'MemFree': 10**9, 'MemAvailable': 10**9}
     procs, opened = open_sessions(b, host, n, key, loopback)
     # pipelines run concurrently with the restarts: backgrounded on the
     # console shell (a small extra shell is part of the scenario load).
@@ -498,6 +543,10 @@ def scenario_a(b, host, n, key, loopback=False):
         while time.time() - t0 < 90:
             st = pool_stats(b)
             lf_min = min(lf_min, int(st.get('largest_free', lf_min)))
+            mi = meminfo(b)
+            for k in mem_lo:
+                if mi.get(k):
+                    mem_lo[k] = min(mem_lo[k], mi[k])
             if net_up(b):
                 ok = True
                 break
@@ -510,16 +559,27 @@ def scenario_a(b, host, n, key, loopback=False):
     if delta < 0:  # counter resets if the value read mid-restart was lost
         delta = 'reset mid-run (before=%d after=%s)' % (
             fail0, after.get('alloc_fail', '?'))
+    rows = [['recovery times (s)', ', '.join(map(str, recov))],
+            ['pool-miss counter delta (alloc_fail)', delta],
+            ['largest_free min', lf_min],
+            ['largest_free after', after.get('largest_free', '-')],
+            ['MemFree min', mem_lo['MemFree']
+             if mem_lo['MemFree'] < 10**9 else '-'],
+            ['MemAvailable min', mem_lo['MemAvailable']
+             if mem_lo['MemAvailable'] < 10**9 else '-'],
+            ['ssh sessions still alive', live],
+            ['wlan up after', net_up(b)]]
+    if 'user_denied' in after or 'system_alloc_fail' in after:
+        rows.insert(2, ['user_denied delta',
+                        int(after.get('user_denied', denied0)) - denied0])
+        rows.insert(3, ['system_alloc_fail delta',
+                        int(after.get('system_alloc_fail', sysfail0))
+                        - sysfail0])
     print('### scenario A: %d SSH + 10 pipelines + 5 restarts\n' % opened)
-    print(md_table(['metric', 'value'],
-                   [['recovery times (s)', ', '.join(map(str, recov))],
-                    ['alloc_fail delta', delta],
-                    ['largest_free min', lf_min],
-                    ['largest_free after', after.get('largest_free', '-')],
-                    ['ssh sessions still alive', live],
-                    ['wlan up after', net_up(b)]]))
+    print(md_table(['metric', 'value'], rows))
     print()
-    print_attrib(fail_tally(b, dl), 'scenario A window')
+    tally = fail_tally(b, dl)
+    print_attrib(tally, 'scenario A window', classify_pids(b, tally))
     close_sessions(b, procs)
 
 
