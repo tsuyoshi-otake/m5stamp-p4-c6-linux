@@ -130,15 +130,28 @@ fi
 
 # NOMMU has no stack guard pages: the elf2flt default of 4 KB silently corrupts
 # .data/.bss on overflow.  Raise the bFLT stack for the network-facing daemons.
-# 32 KB (same as micropython) keeps three Dropbear children within the RAM budget.
-# tcpdump and easystick-boot-commit were left at 4 KB.
+# dropbear/dbclient need 256 KB: the ML-KEM-768 hybrid KEX (default since
+# OpenSSH 9.x clients) uses >32 KB of stack and the overflow corrupted the
+# uClibc sighandler[] table -> SIGILL on signal delivery (#54).  32 KB
+# (same as micropython) keeps three wpa_supplicant/tcpdump children within
+# the RAM budget.  easystick-boot-commit was left at 4 KB.
 FLTHDR=""
 for c in "${HOST_DIR:-/nonexistent}"/bin/*-flthdr; do
 	[ -x "$c" ] && FLTHDR=$c && break
 done
 [ -n "${FLTHDR}" ] || { echo "M3-lab: flthdr not found under HOST_DIR" >&2; exit 1; }
 if [ -x "${FLTHDR}" ]; then
-	for bin in usr/sbin/dropbear usr/bin/dbclient usr/sbin/wpa_supplicant usr/sbin/iw \
+	for bin in usr/sbin/dropbear usr/bin/dbclient; do
+		if [ -f "${TARGET_DIR}/${bin}" ]; then
+			"${FLTHDR}" -s 262144 "${TARGET_DIR}/${bin}"
+			# Fail the build if the stack did not stick (#28, #54).
+			"${FLTHDR}" "${TARGET_DIR}/${bin}" | grep -q "Stack Size:[[:space:]]*0x40000" || {
+				echo "M3-lab: bFLT stack check failed for ${bin}" >&2
+				exit 1
+			}
+		fi
+	done
+	for bin in usr/sbin/wpa_supplicant usr/sbin/iw \
 		usr/bin/tcpdump usr/sbin/easystick-boot-commit; do
 		if [ -f "${TARGET_DIR}/${bin}" ]; then
 			"${FLTHDR}" -s 32768 "${TARGET_DIR}/${bin}"

@@ -530,10 +530,19 @@ def scenario_ssh(b, host, n, key, loopback=False):
 
 
 def net_up(b):
-    # builtin-only: `ip` cannot exec under pool pressure.  This board rests
-    # at operstate `dormant` (no STA link), so recovered = left `down`.
-    s = b.send('read s < /sys/class/net/wlan0/operstate; echo S=$s', 4)
-    return 'S=up' in s or 'S=dormant' in s
+    # builtin-only first: `ip` cannot exec under pool pressure.  This board
+    # rests at operstate `dormant` (no STA link), so recovered = left `down`.
+    # operstate alone is not enough: after a restart the link returns ~10 s
+    # before udhcpc re-acquires a lease, and probes launched in that window
+    # all fail at TCP connect.  When `ip` does exec, also require an IPv4
+    # address on wlan0; if `ip` itself fails to exec under pressure, treat
+    # that as not-up so the caller keeps waiting.
+    s = b.send('read s < /sys/class/net/wlan0/operstate; '
+               'case $s in up|dormant) '
+               'if ip -4 addr show wlan0 2>/dev/null | '
+               'grep -q " inet "; then echo S=ip; else echo S=noip; fi;; '
+               '*) echo S=$s;; esac', 6)
+    return 'S=ip' in s
 
 
 def scenario_a(b, host, n, key, loopback=False, trigger='user'):
@@ -850,6 +859,18 @@ def scenario_crash(b, host, n, key, loopback=False, probes=20):
             time.sleep(2)
         recov.append(round(time.time() - t0, 1))
     close_sessions(b, procs)
+    # Gate the probe loop on a real IPv4 lease: after restart churn udhcpc
+    # can still be mid-acquisition (or wedged) even though operstate is up.
+    # Nudge it once at 30 s, then keep waiting up to 120 s.
+    t0 = time.time()
+    kicked = False
+    while time.time() - t0 < 120:
+        if net_up(b):
+            break
+        if not kicked and time.time() - t0 > 30:
+            b.send('killall -USR1 udhcpc 2>/dev/null', 3)
+            kicked = True
+        time.sleep(2)
     churn_end = time.time()
     rows = []
     auth_seen = ok_ct = close_ct = 0

@@ -57,3 +57,34 @@ takes `flock()` on `wtmp`, so a record from another login cannot fall between
 the copy and the truncation.
 Commands run without a terminal (`ssh host cmd`) are not recorded, as in
 OpenSSH.
+
+## 0012: the vfork() child must not run libc teardown on exec failure
+
+With `DROPBEAR_VFORK=1` the session child shares the server's memory until
+`execve`.  If exec fails before the kernel's point of no return, `execv()`
+returns `-1` in the child and the old code kept running dropbear's error
+path — logging, stdio, `m_free`, `clearenv`, `putenv`, `signal()` — all in
+the *parent's* address space.  uClibc's `sigaction()` writes
+`sighandler[sig]` even for `SIG_DFL`, so the child scribbled the shared
+handler table and the parent's next signal delivery (SIGCHLD) could jump
+to a dead pointer.
+
+0012 moves every libc operation out of the vfork window: the parent builds
+the complete session `envp` (USER/LOGNAME/HOME/SHELL/PATH/LANG/TERM/
+SSH_TTY/SSH_CONNECTION/SSH_CLIENT/SSH_ORIGINAL_COMMAND/SSH_PUBKEYINFO/
+SSH_AUTH_SOCK) before `vfork()`, and the child performs only `chdir`,
+the SIGPIPE reset, and `execve()`.  SIGPIPE matters because upstream
+`commonsetup()` sets `SIG_IGN` in `svr-main.c` and the ignore survives
+exec, so the child restores `SIG_DFL` with a raw `SYS_rt_sigaction`
+syscall — that touches only the child's kernel sigaction (vfork has no
+`CLONE_SIGHAND`) and not uClibc's shared `sighandler[]`.  Any failure exits
+with `_exit(127)`; there is no `dropbear_exit()`, no logging, no heap work.
+
+Acceptance: `ssh host 'grep SigIgn /proc/self/status'` shows the SIGPIPE
+bit (0x1000) clear — same as stock.
+
+Note: #54's observed SIGILL/SIGSEGV/SIGBUS crashes turned out to be the
+ML-KEM-768 KEX overflowing Dropbear's 32 KB bFLT stack, which this patch
+does not fix — that is addressed by the post-build `flthdr -s 262144` step
+in `linux/m3*/post-build.sh`.  0012 remains valid hardening for the
+separate exec-failure path.
