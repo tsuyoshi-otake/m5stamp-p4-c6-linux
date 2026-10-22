@@ -325,13 +325,19 @@ def ssh_cmd(host, remote, key=None):
 
 def _ssh_probe(host, priv):
     """The lab network closes the TCP flow ~1 s in, so a successful exec
-    still exits 255.  Judge by the marker output instead."""
-    try:
-        r = subprocess.run(ssh_cmd(host, 'echo SSHPROBE_OK', priv),
-                           timeout=15, capture_output=True, text=True)
-        return 'SSHPROBE_OK' in (r.stdout or '')
-    except Exception:
-        return False
+    still exits 255.  Judge by the marker output instead.  Retry a few
+    times: session execs are flaky for a window after boot / network
+    churn, and a lone attempt is not a reliable readiness signal."""
+    for _ in range(4):
+        try:
+            r = subprocess.run(ssh_cmd(host, 'echo SSHPROBE_OK', priv),
+                               timeout=15, capture_output=True, text=True)
+            if 'SSHPROBE_OK' in (r.stdout or ''):
+                return True
+        except Exception:
+            pass
+        time.sleep(3)
+    return False
 
 
 def ensure_ssh(b, host, pubkey):
