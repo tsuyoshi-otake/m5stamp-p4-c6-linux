@@ -347,9 +347,9 @@ def ensure_ssh(b, host, pubkey):
         return True
     key_txt = open(pubkey).read().strip()
     b.send('mkdir -p /root/.ssh')
-    b.send("grep -q '%s' /root/.ssh/authorized_keys 2>/dev/null || "
+    b.send("grep -qF '%s' /root/.ssh/authorized_keys 2>/dev/null || "
            "echo '%s' >> /root/.ssh/authorized_keys"
-           % (key_txt[:32], key_txt))
+           % (key_txt, key_txt))
     return _ssh_probe(host, priv)
 
 
@@ -366,8 +366,8 @@ def setup_loopback_key(b):
         if not key.startswith('ssh-'):
             return False
         b.send('mkdir -p /root/.ssh')
-        b.send("grep -q '%s' /root/.ssh/authorized_keys 2>/dev/null || "
-               "echo '%s' >> /root/.ssh/authorized_keys" % (key[:40], key))
+        b.send("grep -qF '%s' /root/.ssh/authorized_keys 2>/dev/null || "
+               "echo '%s' >> /root/.ssh/authorized_keys" % (key, key))
     return True
 
 
@@ -801,12 +801,110 @@ def scenario_syspeak(b, regions):
                  classify_pids(b, tally))
 
 
+def crash_dmesg(b):
+    """Count + capture 'Unable to access instruction' crash blocks (#50 r6).
+    Returns (count, [block, ...]) where each block is the register dump
+    around one fault."""
+    out = b.send('dmesg', 25)
+    lines = out.splitlines()
+    blocks = []
+    for i, ln in enumerate(lines):
+        if 'Unable to access instruction' in ln:
+            blocks.append('\n'.join(
+                l.strip() for l in lines[max(0, i - 12):i + 2]
+                if l.strip()))
+    return len(blocks), blocks
+
+
+def scenario_crash(b, host, n, key, loopback=False, probes=20):
+    """#50 r6: post-auth session-child crash reproducer for the bisect.
+
+    Churn = n SSH sessions + 5 direct `S40network restart` (console shell;
+    works on stock which has no netreq/sysmark).  Then `probes` sequential
+    `ssh host true` attempts back to back.  Counts attempts, probe
+    successes (marker in stdout), board-side 'Pubkey auth succeeded'
+    delta (auth reached), post-auth closes (auth ok, probe failed) and
+    dmesg 'Unable to access instruction' blocks.  Wall time of the first
+    post-churn crash is reported as well."""
+    def _auth_count():
+        out = b.send('grep -c "Pubkey auth succeeded" /run/messages '
+                     '2>/dev/null', 6)
+        for tok in reversed(out.split()):
+            if tok.isdigit():
+                return int(tok)
+        return 0
+
+    def fire():
+        b.spawn('/etc/init.d/S40network restart &')
+    crash_base, blocks = crash_dmesg(b)
+    crash_prev = crash_base
+    procs, opened = open_sessions(b, host, n, key, loopback)
+    recov = []
+    for _ in range(5):
+        fire()
+        t0 = time.time()
+        time.sleep(4)
+        while time.time() - t0 < 90:
+            if net_up(b):
+                break
+            time.sleep(2)
+        recov.append(round(time.time() - t0, 1))
+    close_sessions(b, procs)
+    churn_end = time.time()
+    rows = []
+    auth_seen = ok_ct = close_ct = 0
+    first_crash_t = None
+    for i in range(probes):
+        a0 = _auth_count()
+        try:
+            r = subprocess.run(ssh_cmd(host, 'echo CRASHPROBE_OK', key),
+                               timeout=15, capture_output=True, text=True)
+            ok = 'CRASHPROBE_OK' in (r.stdout or '')
+        except Exception:
+            ok = False
+        a1 = _auth_count()
+        auth = a1 > a0
+        auth_seen += auth
+        ok_ct += ok
+        close_ct += auth and not ok
+        cnow, blocks = crash_dmesg(b)
+        if cnow > crash_prev and first_crash_t is None:
+            first_crash_t = round(time.time() - churn_end, 1)
+        rows.append([i + 1, 'yes' if auth else 'no',
+                     'ok' if ok else 'FAIL',
+                     'crash' if cnow > crash_prev else '-'])
+        crash_prev = cnow
+        time.sleep(0.4)
+    crashes = crash_prev - crash_base
+    print('### crash: %d churn sessions + 5 restarts, then %d probes\n'
+          % (opened, probes))
+    print(md_table(['metric', 'value'],
+                   [['recovery times (s)', ', '.join(map(str, recov))],
+                    ['probes attempted', probes],
+                    ['auth reached (board log)', auth_seen],
+                    ['probe ok (marker)', ok_ct],
+                    ['post-auth closes', close_ct],
+                    ['dmesg crashes (Unable to access instruction)',
+                     crashes],
+                    ['first crash after churn (s)', first_crash_t
+                     if first_crash_t is not None else '-']]))
+    print()
+    print(md_table(['probe', 'auth', 'result', 'crash@'], rows))
+    print()
+    new_blocks = blocks[crash_base:]
+    if new_blocks:
+        print('#### crash register blocks (last %d of %d)\n'
+              % (min(2, len(new_blocks)), len(new_blocks)))
+        for blk in new_blocks[-2:]:
+            print('```\n%s\n```\n' % blk)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--port', default='COM10')
     ap.add_argument('--scenario', default='all',
                     choices=['all', 'idle', 'wget', 'ssh', 'scenarioA',
-                             'syspeak', 'tables'])
+                             'syspeak', 'crash', 'tables'])
     ap.add_argument('--n', type=int, default=6)
     ap.add_argument('--key', default='~/.ssh/id_ed25519',
                     help='ssh private key (pub inferred)')
@@ -863,14 +961,14 @@ def main():
               % (m.group(1) if m else 'UNSUPPORTED'))
 
     host = board_ip(b)
-    need_ssh = a.scenario in ('all', 'ssh', 'scenarioA')
+    need_ssh = a.scenario in ('all', 'ssh', 'scenarioA', 'crash')
     loopback = False
     if need_ssh:
         if a.transport == 'loopback':
             loopback = True
         elif a.transport == 'lan':
             loopback = False
-        elif not host or not pub or not _ssh_probe(host, a.key):
+        elif not host or not pub or not ensure_ssh(b, host, pub):
             loopback = True
         if loopback:
             if not setup_loopback_key(b):
@@ -898,6 +996,8 @@ def main():
         scenario_a(b, host, a.n, a.key, loopback, trigger=a.a_trigger)
     if a.scenario == 'syspeak':
         scenario_syspeak(b, regions)
+    if a.scenario == 'crash':
+        scenario_crash(b, host, a.n, a.key, loopback)
     if a.scenario == 'tables':
         pass
     b.close()
