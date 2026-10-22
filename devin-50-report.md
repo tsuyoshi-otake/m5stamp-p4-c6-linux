@@ -103,6 +103,14 @@ session — a `/run/messages` read race, not a failure.
 SIGILL/SIGSEGV/SIGBUS observed: **0** across all three runs. Clean ENOMEM
 closes: **0**.
 
+m3-lab build `mem50r8` flashed to the board and validated above; m3 build
+(`/work/m3r8`) also completed with `usr/sbin/dropbear` at `0x40000`.
+Criterion E was satisfied on mem50r5 (identical kernel patches 0089/0090/
+0091; mem50r8 differs only in the Dropbear patches + stack size, so the
+soak/reserve results carry over).
+
+DEVIN_50R7_DONE
+
 Note: the `nommu-mem-harness.py` `net_up()` helper gained an IPv4-lease gate —
 operstate recovers ~10 s after a restart but udhcpc can still be acquiring,
 and probes launched in that window fail at TCP connect (this hid behind
