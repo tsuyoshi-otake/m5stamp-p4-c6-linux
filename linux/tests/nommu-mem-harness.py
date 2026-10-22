@@ -602,16 +602,71 @@ def scenario_a(b, host, n, key, loopback=False, trigger='user'):
     close_sessions(b, procs)
 
 
+# Board-side samplers for scenario_syspeak (#50 round 5): builtin-only ash
+# loops, so they cost ~0 pool and keep sampling while execs are pressured.
+# Each line is uploaded via `echo 'line' >> /tmp/...` (no single quotes or
+# backslashes inside, so serial echo is faithful).  The used sampler polls
+# nommu_pool at ~10 Hz; the pid sampler re-does the maps math on-board
+# (busybox ash does 0x arithmetic) at ~2-4 s per sweep.
+USED_SAMPLER = [
+    'n=0',
+    'while [ $n -lt 550 ]; do',
+    'exec 3< /sys/kernel/easystick/nommu_pool',
+    'read a <&3',
+    'read b <&3',
+    'read c <&3',
+    'exec 3<&-',
+    'echo "U $n ${b#used } ${c#largest_free }"',
+    'n=$((n+1))',
+    'done',
+]
+# lo bound of the first pool region (0x495af000) -- `49*-*` prefix-matches
+# both regions, the compare drops the 0x49000000-0x495af000 tail.
+PID_SAMPLER = [
+    'n=0',
+    'while [ $n -lt 18 ]; do',
+    'echo "S $n"',
+    'for p in /proc/[0-9]*; do',
+    'c=x',
+    'read -r c < $p/comm 2>/dev/null || continue',
+    'f=0',
+    'if read -r st < $p/stat 2>/dev/null; then',
+    'r=${st##*) }',
+    'set -- $r',
+    'f=$7',
+    'fi',
+    's=0',
+    'while read -r a b; do',
+    'case $a in',
+    '49*-*) lo=${a%%-*}',
+    '[ $((0x$lo)) -ge 1230688256 ] && s=$((s + 0x${a#*-} - 0x$lo)) ;;',
+    'esac',
+    'done < $p/maps',
+    '[ $s -gt 0 ] && echo "${p#/proc/} $f $c $s"',
+    'done',
+    'n=$((n+1))',
+    'done',
+]
+
+
+def _upload_sampler(b, name, lines):
+    b.send('rm -f /tmp/%s.sh' % name)
+    for ln in lines:
+        b.send("echo '%s' >> /tmp/%s.sh" % (ln, name), 6)
+
+
 def scenario_syspeak(b, regions):
     """System transient pool demand at the restart peak (#50 round 5).
 
     A-system trigger (netreq -> bootsync -> S40network, init ancestry) with
-    NO SSH load, so per-pid maps readers can exec throughout.  Phase A polls
-    pool_stats every ~1.5 s for the `used`/`largest_free` timeline; phase B
-    repeats the restart and pulls per-pid pool tables so the peak's
-    per-process breakdown is caught.  A pid present at a sample but absent
-    from the settled baseline (or grown since) counts as transient demand
-    the reserve must hold free for."""
+    NO SSH load.  Serial proc_pool_table takes ~60 s per snapshot -- far too
+    slow for the restart peak -- so two builtin-only samplers run on the
+    board instead: phase A polls `used`/`largest_free` at ~10 Hz through one
+    restart; phase B sweeps per-pid pool bytes through a second restart and
+    tags each pid's PF_EASYSTICK_SYSTEM flag.  A flagged pid absent from the
+    settled baseline (or grown since) is transient demand the reserve must
+    hold free for; unflagged transients (this sampler's own shell) are
+    reported separately."""
     def fire():
         b.spawn('echo restart > /run/.es-netreq')
     base_st = pool_stats(b)
@@ -624,56 +679,90 @@ def scenario_syspeak(b, regions):
     print(md_table(['pid', 'name', 'pool bytes'],
                    [[p, n, bts] for p, (n, bts) in base_tbl.items()]))
     print()
+    _upload_sampler(b, 'u', USED_SAMPLER)
+    _upload_sampler(b, 'p', PID_SAMPLER)
+    dl = dmesg_len(b)
+    b.spawn('sh /tmp/u.sh > /tmp/u.log 2>&1 &')
+    time.sleep(1)
     fire()
-    t0, series = time.time(), []
-    while time.time() - t0 < 55:
-        st = pool_stats(b)
-        series.append((round(time.time() - t0, 1),
-                       int(st.get('used', 0)),
-                       int(st.get('largest_free', 0))))
-        if time.time() - t0 > 20 and net_up(b):
+    # poll until the sampler finishes (last sweep) or output plateaus
+    ulog, last_n = '', -2
+    for _ in range(24):
+        time.sleep(10)
+        ulog = b.send('cat /tmp/u.log', 40)
+        n = ulog.count('\nU ')
+        if 'U 549' in ulog or (n == last_n and n > 50):
             break
-        time.sleep(1.5)
-    peak = max(series, key=lambda s: s[1])
-    print('### syspeak phase A: `used` timeline through one restart\n')
-    print(md_table(['t (s)', 'used (B)', 'largest_free (B)'], series))
-    print('\npeak used: %d B at t=%.1f s (largest_free %d B)\n'
-          % (peak[1], peak[0], peak[2]))
-    # wait for the restart to fully settle before re-firing
-    time.sleep(10)
-    end = time.time() + 60
+        last_n = n
+    series = []
+    for ln in ulog.splitlines():
+        m = re.match(r'U (\d+) (\d+) (\d+)', ln.strip())
+        if m:
+            series.append((int(m.group(1)), int(m.group(2)), int(m.group(3))))
+    peak = max(series, key=lambda s: s[1]) if series else (0, 0, 0)
+    print('### syspeak phase A: `used` timeline (~10 Hz, 1st restart)\n')
+    print(md_table(['sweep', 'used (B)', 'largest_free (B)'], series))
+    print('\npeak used: %d B at sweep %d (largest_free %d B); '
+          'baseline used %d B\n'
+          % (peak[1], peak[0], peak[2], int(base_st.get('used', 0))))
+    # settle before the second restart
+    end = time.time() + 90
     while time.time() < end and not net_up(b):
         time.sleep(3)
-    time.sleep(5)
-    dl = dmesg_len(b)
+    time.sleep(8)
+    b.spawn('sh /tmp/p.sh > /tmp/p.log 2>&1 &')
+    time.sleep(1)
     fire()
-    t0, snaps = time.time(), []
-    for _ in range(4):
-        tbl = proc_pool_table(b, regions)
-        snaps.append((round(time.time() - t0, 1), tbl))
+    plog, last_n = '', -2
+    for _ in range(24):
+        time.sleep(10)
+        plog = b.send('cat /tmp/p.log', 60)
+        n = len(re.findall(r'(?m)^S \d+', plog))
+        if 'S 17' in plog or (n == last_n and n > 4):
+            break
+        last_n = n
+    sweeps, cur = [], None
+    for ln in plog.splitlines():
+        m = re.match(r'S (\d+)', ln.strip())
+        if m:
+            cur = []
+            sweeps.append(cur)
+            continue
+        m = re.match(r'(\d+) (\d+) (\S+) (\d+)', ln.strip())
+        if m and cur is not None:
+            cur.append((m.group(1), int(m.group(2)), m.group(3),
+                        int(m.group(4))))
     rows = []
-    for t, tbl in snaps:
-        trans = 0
-        for pid, (name, bts) in tbl.items():
-            if pid in base_tbl and base_tbl[pid][0] == name:
-                trans += max(0, bts - base_tbl[pid][1])
+    for i, sw in enumerate(sweeps):
+        systr = usrtr = 0
+        for pid, fl, comm, bts in sw:
+            base = base_tbl.get(pid)
+            delta = bts if (base is None or base[0] != comm) \
+                else max(0, bts - base[1])
+            if fl & 0x40000000:
+                systr += delta
             else:
-                trans += bts  # new pid (or pid reuse): all of it is transient
-        rows.append((t, trans))
-    peak_i = max(range(len(rows)), key=lambda i: rows[i][1])
-    print('### syspeak phase B: per-pid tables at 4 offsets (2nd restart)\n')
-    print(md_table(['t (s)', 'transient pool bytes (new/grown pids)'], rows))
-    print('\npeak transient: %d B at t=%.1f s -- per-pid table at that sample:\n'
-          % (rows[peak_i][1], rows[peak_i][0]))
-    print(md_table(['pid', 'name', 'pool bytes', 'vs baseline'],
-                   [[p, n, bts,
-                     'new' if p not in base_tbl
-                     else ('%+d' % (bts - base_tbl[p][1])
-                           if base_tbl[p][0] == n else 'reused')]
-                    for p, (n, bts) in snaps[peak_i][1].items()]))
-    print()
+                usrtr += delta
+        rows.append((i, len(sw), systr, usrtr))
+    pk = max(range(len(rows)), key=lambda i: rows[i][2]) if rows else -1
+    print('### syspeak phase B: per-pid sweeps (2nd restart)\n')
+    print(md_table(['sweep', 'pids seen', 'flagged transient (B)',
+                    'unflagged transient (B)'], rows))
+    if pk >= 0:
+        print('\npeak flagged transient: %d B at sweep %d '
+              '-- table at that sweep:\n' % (rows[pk][2], pk))
+        out = []
+        for pid, fl, comm, bts in sweeps[pk]:
+            base = base_tbl.get(pid)
+            vs = 'new' if base is None or base[0] != comm \
+                else '%+d' % (bts - base[1])
+            out.append([pid, comm, '0x%x' % fl, bts, vs])
+        print(md_table(['pid', 'name', 'flags', 'pool bytes',
+                        'vs baseline'], out))
+        print()
     tally = fail_tally(b, dl)
-    print_attrib(tally, 'syspeak phase-B window', classify_pids(b, tally))
+    print_attrib(tally, 'syspeak window (both restarts)',
+                 classify_pids(b, tally))
 
 
 def main():
