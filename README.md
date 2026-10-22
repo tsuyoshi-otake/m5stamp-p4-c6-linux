@@ -45,7 +45,7 @@ Boots out-of-the-box into **Wi-Fi SoftAP mode** with automatic DHCP, Dropbear SS
   - Early CRNG entropy initialization via `seedrng` on OverlayFS, preventing `getrandom()` system call stalls.
   - SDIO DW-MMC host controller driver enhancements with software DTO and buffer pacing (`0032`, `0033`, `0060`, `0061`).
   - NOMMU system-call pointers (`0071`): a pointer that is not in PSRAM or the memory-mapped root filesystem now fails with `EFAULT`. Before, the kernel read it itself; `vi` with no file name passes a NULL path and froze the board until the watchdog reset it.
-  - NOMMU user memory: programs load into a 10 MB reserved pool in two regions (6 MB + 4 MB, `0070`) instead of the fragmented page allocator, so SSH logins, `S40network restart` and console commands no longer routinely fail with `nommu: Allocation of length … failed` under normal load (#23). The pool can still run out for a few seconds when several programs start at once: a long pipeline typed while the network restarts after a `config.txt` save can fail with that message, and running it again works (#40). `/sys/kernel/easystick/nommu_pool` (`0076`) reports the pool's `total`, `used`, `largest_free`, `alloc_fail` and `fallback` so exhaustion is visible without aggregating `/proc/*/maps`; the same fields appear in `easystick-info` and `easystick-status.txt`. To keep reload-time peaks low, `config.txt` saves now apply only the keys that changed (boot-only keys no longer restart Wi-Fi), applies are serialised, the udhcpc hook chain runs in one shell, and wait loops use a FIFO `read -t` instead of forking `sleep` (#39/#40). Each BusyBox process still takes about 500 KB, because bFLT programs do not share their text. The m3-lab image therefore runs init, inetd, syslogd and udhcpd from `busybox-daemons`, a second BusyBox built with only those four applets (192 KB each). At idle that leaves about 1 MB more of the pool free, which is one more concurrent SSH session (5–6 instead of 4–5; `linux/tests/busybox-daemons-2026-10-16.md`). `MemAvailable` does not change, because it does not count the pool.
+  - NOMMU user memory: programs load into a 10 MB reserved pool in two regions (6 MB + 4 MB, `0070`) instead of the fragmented page allocator, so SSH logins, `S40network restart` and console commands no longer routinely fail with `nommu: Allocation of length … failed` under normal load (#23). Since v0.4.2 the pool keeps a reserve for the system (`0089`–`0091`, #51): the allocator takes the smallest block that fits (best-fit), and a program started from an SSH login or the console is refused when it would leave less than 1.2 MB contiguous or 2 MiB in total free in the pool (it then falls back to the page allocator and may fail alone, `user_denied` in `nommu_pool`). Network scripts, `bootsync` and the watchdog run through `easystick-sys`, which marks them as system work, so a `config.txt` save or `S40network restart` started by a user no longer starves `wpa_supplicant` (1.85 MB contiguous). In the 5-restart tests on STA the system side had no real out-of-memory failure (11 before the fix, 0 after), at the cost of fewer concurrent user sessions at the edge; an unlucky user program can still fail with that message, and running it again works (#40/#49). `nommu_pool` also reports `user_denied`, `system_alloc_fail`, `user_reserve_contig` and `user_reserve_total`. `/sys/kernel/easystick/nommu_pool` (`0076`) reports the pool's `total`, `used`, `largest_free`, `alloc_fail` and `fallback` so exhaustion is visible without aggregating `/proc/*/maps`; the same fields appear in `easystick-info` and `easystick-status.txt`. To keep reload-time peaks low, `config.txt` saves now apply only the keys that changed (boot-only keys no longer restart Wi-Fi), applies are serialised, the udhcpc hook chain runs in one shell, and wait loops use a FIFO `read -t` instead of forking `sleep` (#39/#40). Each BusyBox process still takes about 500 KB, because bFLT programs do not share their text. The m3-lab image therefore runs init, inetd, syslogd and udhcpd from `busybox-daemons`, a second BusyBox built with only those four applets (192 KB each). At idle that leaves about 1 MB more of the pool free, which is one more concurrent SSH session (5–6 instead of 4–5; `linux/tests/busybox-daemons-2026-10-16.md`). `MemAvailable` does not change, because it does not count the pool.
 
 ---
 
@@ -103,10 +103,31 @@ Every board gets its own credentials on first boot; no SSID or password is share
 
 ### 1. Download Release Package
 
-> **v0.4.1** is built and published the same way as v0.2.2 to v0.4.0: the assets
+> **v0.4.2** is built and published the same way as v0.2.2 to v0.4.1: the assets
 > are the CI build that was flashed and checked on hardware, and the tag run refuses
-> any asset whose hash is not in `linux/tests/v0.4.1-hardware-validation-2026-10-21.md`.
-> Changes since v0.4.0:
+> any asset whose hash is not in `linux/tests/v0.4.2-hardware-validation-2026-10-23.md`.
+> Changes since v0.4.1:
+> - SSH sessions no longer crash after a key exchange (#54).  OpenSSH 10
+>   negotiates the hybrid ML-KEM-768 key exchange, which needs more than
+>   Dropbear's 32 KB stack; a NOMMU program has no guard page, so the overflow
+>   corrupted the C library's signal table and the next signal ended in
+>   `unhandled signal 4`.  `dropbear` and `dbclient` now get a 256 KB stack
+>   (`flthdr -s`), which costs about 224 KB of pool per SSH session (#52 will
+>   shrink it).  `0012` also makes a vfork child that cannot exec leave with
+>   `_exit(127)` without touching the parent's memory.
+> - The memory pool keeps a reserve for the system (#51, #50): best-fit
+>   allocation, a 1.2 MB / 2 MiB watermark for programs started by a user,
+>   and `easystick-sys` for the network and watchdog scripts.  A network
+>   restart that overlapped several SSH sessions gave 11 real out-of-memory
+>   failures in the system's own programs before, and none after.
+> - `linux/flash-candidate.ps1` leaves the boot slots alone by default; `-WriteBoot`
+>   writes them (a flash used to overwrite the saved Wi-Fi settings).
+> - Memory measurements: `linux/tests/nommu-mem-harness.py` and
+>   `linux/tests/issue50-51-memory-2026-10-21.md` (#50).
+> - The 10 MB pool is still shared by about 4–6 SSH sessions; the plan to
+>   cut each program's size is #49.  #43 (a C6 firmware change) is not part of this release.
+>
+> Changes in v0.4.1 since v0.4.0:
 > - Short SDIO reads are no longer corrupted (#35).  The P4's SDMMC FIFO does
 >   not advance when the CPU reads it, so a programmed-I/O read of more than
 >   one 32-bit word returned its first word repeated.  Wi-Fi packets whose
@@ -229,8 +250,8 @@ Every board gets its own credentials on first boot; no SSID or password is share
 > the GPL corresponding source (`*-legal-info.tar.gz`, #31).
 
 Download either the monolithic 16MB raw flash image or the partition zip package from the [Releases](https://github.com/tsuyoshi-otake/m5stamp-p4-c6-linux/releases) page:
-- **`m5stamp-p4-c6-linux-smp-v0.4.1-16mb.bin.gz`**: Single 16MB raw flash image (simplest, flash to `0x0`).
-- **`m5stamp-p4-c6-linux-smp-v0.4.1.zip`**: Individual partition binaries with automated PowerShell flash script.
+- **`m5stamp-p4-c6-linux-smp-v0.4.2-16mb.bin.gz`**: Single 16MB raw flash image (simplest, flash to `0x0`).
+- **`m5stamp-p4-c6-linux-smp-v0.4.2.zip`**: Individual partition binaries with automated PowerShell flash script.
 
 ### 2. Flash using `esptool.py`
 
@@ -238,8 +259,8 @@ Connect the M5Stamp-P4 via its USB-C port to your computer. Identify your serial
 
 #### Option A: Monolithic 16MB Raw Image Flash (Recommended)
 ```bash
-gzip -d m5stamp-p4-c6-linux-smp-v0.4.1-16mb.bin.gz
-esptool.py --chip esp32p4 --port COM10 --baud 460800 write_flash 0x0 m5stamp-p4-c6-linux-smp-v0.4.1-16mb.bin
+gzip -d m5stamp-p4-c6-linux-smp-v0.4.2-16mb.bin.gz
+esptool.py --chip esp32p4 --port COM10 --baud 460800 write_flash 0x0 m5stamp-p4-c6-linux-smp-v0.4.2-16mb.bin
 ```
 
 #### Option B: Release PowerShell Script
@@ -741,11 +762,11 @@ This compiles:
 
 ```text
 Raw 16MB Monolithic Image:
-342ba8af7e916d323d5fa381ee8d4d9c3cbf74c171554ec09852e52839ecfe35  m5stamp-p4-c6-linux-smp-v0.4.1-16mb.bin.gz
-80b943976cb9cb8a29cc017d89cd24c93dc64d01a60fa907c7409bded8320881  m5stamp-p4-c6-linux-smp-v0.4.1-16mb.bin (uncompressed)
+342ba8af7e916d323d5fa381ee8d4d9c3cbf74c171554ec09852e52839ecfe35  m5stamp-p4-c6-linux-smp-v0.4.2-16mb.bin.gz
+80b943976cb9cb8a29cc017d89cd24c93dc64d01a60fa907c7409bded8320881  m5stamp-p4-c6-linux-smp-v0.4.2-16mb.bin (uncompressed)
 
 Partition Archive:
-a72a9b4ba6fdb7497d10b4cdd95eb263869ef886473bf1201491852ec56314d3  m5stamp-p4-c6-linux-smp-v0.4.1.zip
+a72a9b4ba6fdb7497d10b4cdd95eb263869ef886473bf1201491852ec56314d3  m5stamp-p4-c6-linux-smp-v0.4.2.zip
 
 Individual Partitions:
 03e243ac5e846e754d786a1340a4a9c50467ca12e8e3fff53974325238f97069  bootloader.bin
