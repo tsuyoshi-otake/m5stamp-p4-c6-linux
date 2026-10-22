@@ -15,13 +15,12 @@
 # NOMMU reserve gate (#50 round 4): a restart started from the console or an
 # SSH session is marked "user" by the pool's ctty/dropbear ancestry rule, and
 # every helper it execs (udhcpc, ifconfig, wpa_*) inherits the mark and can be
-# gated.  Re-run once through easystick-sys so the subtree is system work.
-# One-shot via ES_SYSMARK; if the helper is absent or cannot exec (111), the
-# script still runs unmarked rather than not at all.
+# gated.  Re-exec once through easystick-sys so the subtree is system work --
+# exec, not a child, so this ~0.7 MB shell does not stay resident through the
+# restart next to the marked copy.  One-shot via ES_SYSMARK; when the helper
+# is absent the script still runs unmarked.
 if [ -z "${ES_SYSMARK:-}" ] && [ -x /usr/sbin/easystick-sys ]; then
-	rc=0
-	ES_SYSMARK=1 /usr/sbin/easystick-sys "$0" "$@" || rc=$?
-	[ "$rc" -eq 111 ] || exit "$rc"
+	ES_SYSMARK=1 exec /usr/sbin/easystick-sys "$0" "$@"
 fi
 
 conf_get() {

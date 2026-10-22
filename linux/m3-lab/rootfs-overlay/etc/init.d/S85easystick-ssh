@@ -4,14 +4,12 @@
 set -e
 
 # NOMMU reserve gate (#50 round 4): a user-started restart must not leave
-# inetd/dropbear "user"-marked or their allocations can be gated.  Re-run once
-# through easystick-sys; ES_SYSMARK stops loops, exit 111 means the helper
-# could not exec -- run unmarked rather than not at all.  Per-connection
-# handlers still clear the mark via the inetd.conf wrapper.
+# inetd/dropbear "user"-marked or their allocations can be gated.  Re-exec
+# once through easystick-sys; ES_SYSMARK stops loops, and exec leaves no
+# second shell resident next to the marked copy.  Per-connection handlers
+# still clear the mark via the inetd.conf wrapper.
 if [ -z "${ES_SYSMARK:-}" ] && [ -x /usr/sbin/easystick-sys ]; then
-	rc=0
-	ES_SYSMARK=1 /usr/sbin/easystick-sys "$0" "$@" || rc=$?
-	[ "$rc" -eq 111 ] || exit "$rc"
+	ES_SYSMARK=1 exec /usr/sbin/easystick-sys "$0" "$@"
 fi
 
 # Observe-only hostkey markers (no key material / fingerprint / base64).

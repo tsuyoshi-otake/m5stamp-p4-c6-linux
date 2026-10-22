@@ -180,7 +180,7 @@ tick() {
 # Flash-free network request path (#50 round 4): a root-owned file asks for an
 # S40network run under this daemon's init ancestry -- the same classification
 # a real config-import apply gets -- without touching boot.img or flash.
-# /run is root-only; verbs are whitelisted.
+# /run is root-only; verbs are whitelisted, anything else is ignored + logged.
 NETREQ=/run/.es-netreq
 netreq_check() {
 	[ -f "$NETREQ" ] || return 0
@@ -191,7 +191,7 @@ netreq_check() {
 		apply*) ;;
 		reload*|restart*) req="restart" ;;
 		start*|stop*) ;;
-		*) req="apply" ;;
+		*) log "network request: ignoring unknown verb '$req'"; return 0 ;;
 	esac
 	log "network request: $req"
 	( umask 022; exec /etc/init.d/S40network $req ) >/dev/null 2>&1 &

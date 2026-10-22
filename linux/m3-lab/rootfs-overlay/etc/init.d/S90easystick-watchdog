@@ -3,11 +3,9 @@
 # Default off: the kernel keeps feeding the watchdog itself.
 
 # NOMMU reserve gate (#50 round 4): keep the feeder system-side when a user
-# restarts this script; same one-shot/fallback contract as S40network.
+# restarts this script; same exec-once contract as S40network.
 if [ -z "${ES_SYSMARK:-}" ] && [ -x /usr/sbin/easystick-sys ]; then
-	rc=0
-	ES_SYSMARK=1 /usr/sbin/easystick-sys "$0" "$@" || rc=$?
-	[ "$rc" -eq 111 ] || exit "$rc"
+	ES_SYSMARK=1 exec /usr/sbin/easystick-sys "$0" "$@"
 fi
 
 PIDFILE=/run/.es-watchdog.pid
