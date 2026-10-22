@@ -51,7 +51,7 @@ jobs:
         run: |
           export IDF_TOOLS_PATH=$RUNNER_TEMP/idf-tools IDF_PATH=$PWD/vendor/esp-idf
           . "$IDF_PATH/export.sh"
-          EASYSTICK_LEGAL_INFO=1 bash linux/build-c68.sh --vendor "$RUNNER_TEMP/out" --profile m3-lab
+          EASYSTICK_POOL_BESTFIT=1 EASYSTICK_USER_RESERVE=1 EASYSTICK_USER_SYSMARK=1 \n            EASYSTICK_LEGAL_INFO=1 bash linux/build-c68.sh --vendor "$RUNNER_TEMP/out" --profile m3-lab
       - name: Package
         run: |
           VERSION=${{ github.event.inputs.version }}
