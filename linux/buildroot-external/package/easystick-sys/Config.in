@@ -1,0 +1,9 @@
+config BR2_PACKAGE_EASYSTICK_SYS
+	bool "EasyStick system-side mark helper"
+	help
+	  easystick-sys marks the calling task (and everything it forks or
+	  execs) as system work for the #51 NOMMU user-pool reserve gate,
+	  then execs its argument command.  Init scripts use it so a
+	  user-started restart (console or SSH) does not keep the ctty/
+	  dropbear "user" classification and get gated.  On kernels without
+	  the mark the prctl fails and the command still runs.

@@ -190,10 +190,18 @@ def classify_pids(b, pids):
     out = {}
     if not pids:
         return out
+    # Field 7 after the comm ')' is task->flags; PF_EASYSTICK_SYSTEM
+    # (0x40000000, #50 R4) wins over ancestry.  Leaf-only: the flag is
+    # fork-inherited, and a per-connection dropbear deliberately clears it,
+    # so an ancestor's flag must not re-mark that child.
     cmd = ("read dv < /sys/class/tty/ttyGS1/dev; maj=${dv%%:*}; "
            "min=${dv##*:}; "
            "TGS=$(( (maj << 8) | (min & 255) | ((min & ~255) << 12) )); "
-           "for pid in %s; do p=$pid; cls=''; while [ $p -gt 1 ]; do "
+           "for pid in %s; do p=$pid; cls=''; "
+           "read -r s < /proc/$p/stat 2>/dev/null || cls=exited; "
+           "if [ -z \"$cls\" ]; then r=${s##*) }; set -- $r; "
+           "[ $(( $7 & 1073741824 )) -ne 0 ] && cls=sysflag; fi; "
+           "while [ -z \"$cls\" ] && [ $p -gt 1 ]; do "
            "read -r s < /proc/$p/stat 2>/dev/null || { cls=exited; break; }; "
            "r=${s##*) }; set -- $r; c=${s#*\\(}; c=${c%%\\)*}; "
            "if [ \"$5\" = \"$TGS\" ] || [ \"$c\" = dropbear ]; then "
@@ -204,7 +212,8 @@ def classify_pids(b, pids):
     for ln in txt.splitlines():
         m = re.match(r'C(\d+)=(\w+)', ln.strip())
         if m:
-            out[int(m.group(1))] = m.group(2)
+            cls = 'system(flag)' if m.group(2) == 'sysflag' else m.group(2)
+            out[int(m.group(1))] = cls
     return out
 
 
@@ -229,7 +238,7 @@ def print_attrib(tally, title, cls=None):
     sys_n = usr_n = ext_n = 0
     for pid, (comm, n, _) in tally.items():
         s = cls.get(pid, '?')
-        if s == 'system':
+        if s in ('system', 'system(flag)'):
             sys_n += n
         elif s == 'user':
             usr_n += n
@@ -237,8 +246,9 @@ def print_attrib(tally, title, cls=None):
             ext_n += n
     print('\nsystem-side: %d   user-side: %d   exited-before-read: %d\n'
           % (sys_n, usr_n, ext_n))
-    print('sides resolved by /proc ancestry (ttyGS1 ctty or dropbear '
-          'ancestor => user; init chain => system)\n')
+    print('sides resolved by /proc ancestry plus PF_EASYSTICK_SYSTEM '
+          '(flag => system; else ttyGS1 ctty or dropbear ancestor => user; '
+          'init chain => system)\n')
 
 
 def pid_set(b):
@@ -520,7 +530,17 @@ def net_up(b):
     return 'S=up' in s or 'S=dormant' in s
 
 
-def scenario_a(b, host, n, key, loopback=False):
+def scenario_a(b, host, n, key, loopback=False, trigger='user'):
+    # trigger='user' (console ancestry, the R3 scenario) vs 'system': the
+    # restart request goes through /run/.es-netreq, which init-ancestry
+    # easystick-bootsync picks up -- the same classification a real
+    # config-import apply gets, and no flash writes (#50 round 4).
+    if trigger == 'system':
+        def fire():
+            b.spawn('echo restart > /run/.es-netreq')
+    else:
+        def fire():
+            b.spawn('/etc/init.d/S40network restart &')
     dl = dmesg_len(b)
     before = pool_stats(b)
     fail0 = int(before.get('alloc_fail', 0))
@@ -534,7 +554,7 @@ def scenario_a(b, host, n, key, loopback=False):
     b.spawn('i=0; while [ $i -lt 10 ]; do %s; i=$((i+1)); done &' % PIPELINE)
     recov = []
     for rnd in range(5):
-        b.spawn('/etc/init.d/S40network restart &')
+        fire()
         t0 = time.time()
         time.sleep(4)  # skip the not-yet-down window (~2 s dip seen on board)
         ok = False
@@ -573,7 +593,8 @@ def scenario_a(b, host, n, key, loopback=False):
         rows.insert(3, ['system_alloc_fail delta',
                         int(after.get('system_alloc_fail', sysfail0))
                         - sysfail0])
-    print('### scenario A: %d SSH + 10 pipelines + 5 restarts\n' % opened)
+    print('### scenario A-%s: %d SSH + 10 pipelines + 5 restarts\n'
+          % (trigger, opened))
     print(md_table(['metric', 'value'], rows))
     print()
     tally = fail_tally(b, dl)
@@ -595,6 +616,10 @@ def main():
                     choices=['auto', 'lan', 'loopback'],
                     help='SSH session transport; auto falls back to loopback '
                          'dbclient when the board has no LAN route')
+    ap.add_argument('--a-trigger', default='user',
+                    choices=['user', 'system'],
+                    help='scenario A restart origin: console shell (user '
+                         'ancestry) or bootsync netreq file (init ancestry)')
     a = ap.parse_args()
 
     if a.key:
@@ -647,7 +672,7 @@ def main():
         print('post-ssh: used=%s largest_free=%s\n'
               % (st.get('used'), st.get('largest_free')))
     if a.scenario in ('all', 'scenarioA'):
-        scenario_a(b, host, a.n, a.key, loopback)
+        scenario_a(b, host, a.n, a.key, loopback, trigger=a.a_trigger)
     if a.scenario == 'tables':
         pass
     b.close()

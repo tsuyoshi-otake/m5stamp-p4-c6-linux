@@ -150,7 +150,7 @@ if [ -x "${FLTHDR}" ]; then
 		fi
 	done
 	# Small helpers only need BusyBox's floor.
-	for bin in usr/sbin/easystick-respawn usr/sbin/easystick-mdns; do
+	for bin in usr/sbin/easystick-respawn usr/sbin/easystick-mdns usr/sbin/easystick-sys; do
 		if [ -f "${TARGET_DIR}/${bin}" ]; then
 			"${FLTHDR}" -s 16384 "${TARGET_DIR}/${bin}"
 		fi

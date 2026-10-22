@@ -3,6 +3,17 @@
 # BusyBox ash in the RV32 NOMMU image does not implement `set -u`.
 set -e
 
+# NOMMU reserve gate (#50 round 4): a user-started restart must not leave
+# inetd/dropbear "user"-marked or their allocations can be gated.  Re-run once
+# through easystick-sys; ES_SYSMARK stops loops, exit 111 means the helper
+# could not exec -- run unmarked rather than not at all.  Per-connection
+# handlers still clear the mark via the inetd.conf wrapper.
+if [ -z "${ES_SYSMARK:-}" ] && [ -x /usr/sbin/easystick-sys ]; then
+	rc=0
+	ES_SYSMARK=1 /usr/sbin/easystick-sys "$0" "$@" || rc=$?
+	[ "$rc" -eq 111 ] || exit "$rc"
+fi
+
 # Observe-only hostkey markers (no key material / fingerprint / base64).
 es_hk() {
 	printf '%s\n' "$1"
@@ -90,7 +101,7 @@ start_locked() {
 		es_hk "ES_HOSTKEY INETD_START"
 		INETD_CONF=/etc/inetd.conf
 		if password_auth_off; then
-			sed 's|/usr/sbin/dropbear dropbear |&-s |' /etc/inetd.conf > /run/inetd.conf
+			sed 's| -u /usr/sbin/dropbear |&-s |' /etc/inetd.conf > /run/inetd.conf
 			INETD_CONF=/run/inetd.conf
 			printf '%s\n' "M3-lab: starting key-only Dropbear on TCP/22 (ssh_password_auth=no)"
 		else
