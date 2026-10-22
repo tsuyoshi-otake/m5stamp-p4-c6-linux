@@ -602,11 +602,86 @@ def scenario_a(b, host, n, key, loopback=False, trigger='user'):
     close_sessions(b, procs)
 
 
+def scenario_syspeak(b, regions):
+    """System transient pool demand at the restart peak (#50 round 5).
+
+    A-system trigger (netreq -> bootsync -> S40network, init ancestry) with
+    NO SSH load, so per-pid maps readers can exec throughout.  Phase A polls
+    pool_stats every ~1.5 s for the `used`/`largest_free` timeline; phase B
+    repeats the restart and pulls per-pid pool tables so the peak's
+    per-process breakdown is caught.  A pid present at a sample but absent
+    from the settled baseline (or grown since) counts as transient demand
+    the reserve must hold free for."""
+    def fire():
+        b.spawn('echo restart > /run/.es-netreq')
+    base_st = pool_stats(b)
+    base_tbl = proc_pool_table(b, regions)
+    print('### syspeak: baseline (settled, no SSH)\n')
+    print(md_table(['key', 'value'],
+                   [[k, base_st.get(k, '-')] for k in
+                    ('used', 'largest_free', 'alloc_fail')]))
+    print()
+    print(md_table(['pid', 'name', 'pool bytes'],
+                   [[p, n, bts] for p, (n, bts) in base_tbl.items()]))
+    print()
+    fire()
+    t0, series = time.time(), []
+    while time.time() - t0 < 55:
+        st = pool_stats(b)
+        series.append((round(time.time() - t0, 1),
+                       int(st.get('used', 0)),
+                       int(st.get('largest_free', 0))))
+        if time.time() - t0 > 20 and net_up(b):
+            break
+        time.sleep(1.5)
+    peak = max(series, key=lambda s: s[1])
+    print('### syspeak phase A: `used` timeline through one restart\n')
+    print(md_table(['t (s)', 'used (B)', 'largest_free (B)'], series))
+    print('\npeak used: %d B at t=%.1f s (largest_free %d B)\n'
+          % (peak[1], peak[0], peak[2]))
+    # wait for the restart to fully settle before re-firing
+    time.sleep(10)
+    end = time.time() + 60
+    while time.time() < end and not net_up(b):
+        time.sleep(3)
+    time.sleep(5)
+    dl = dmesg_len(b)
+    fire()
+    t0, snaps = time.time(), []
+    for _ in range(4):
+        tbl = proc_pool_table(b, regions)
+        snaps.append((round(time.time() - t0, 1), tbl))
+    rows = []
+    for t, tbl in snaps:
+        trans = 0
+        for pid, (name, bts) in tbl.items():
+            if pid in base_tbl and base_tbl[pid][0] == name:
+                trans += max(0, bts - base_tbl[pid][1])
+            else:
+                trans += bts  # new pid (or pid reuse): all of it is transient
+        rows.append((t, trans))
+    peak_i = max(range(len(rows)), key=lambda i: rows[i][1])
+    print('### syspeak phase B: per-pid tables at 4 offsets (2nd restart)\n')
+    print(md_table(['t (s)', 'transient pool bytes (new/grown pids)'], rows))
+    print('\npeak transient: %d B at t=%.1f s -- per-pid table at that sample:\n'
+          % (rows[peak_i][1], rows[peak_i][0]))
+    print(md_table(['pid', 'name', 'pool bytes', 'vs baseline'],
+                   [[p, n, bts,
+                     'new' if p not in base_tbl
+                     else ('%+d' % (bts - base_tbl[p][1])
+                           if base_tbl[p][0] == n else 'reused')]
+                    for p, (n, bts) in snaps[peak_i][1].items()]))
+    print()
+    tally = fail_tally(b, dl)
+    print_attrib(tally, 'syspeak phase-B window', classify_pids(b, tally))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--port', default='COM10')
     ap.add_argument('--scenario', default='all',
-                    choices=['all', 'idle', 'wget', 'ssh', 'scenarioA', 'tables'])
+                    choices=['all', 'idle', 'wget', 'ssh', 'scenarioA',
+                             'syspeak', 'tables'])
     ap.add_argument('--n', type=int, default=6)
     ap.add_argument('--key', default='~/.ssh/id_ed25519',
                     help='ssh private key (pub inferred)')
@@ -620,6 +695,12 @@ def main():
                     choices=['user', 'system'],
                     help='scenario A restart origin: console shell (user '
                          'ancestry) or bootsync netreq file (init ancestry)')
+    ap.add_argument('--rcontig', type=int, default=None,
+                    help='write /sys/kernel/easystick/user_reserve_contig '
+                         '(bytes) before the scenarios (0090 images only)')
+    ap.add_argument('--rtotal', type=int, default=None,
+                    help='write /sys/kernel/easystick/user_reserve_total '
+                         '(bytes) before the scenarios (0090 images only)')
     a = ap.parse_args()
 
     if a.key:
@@ -638,6 +719,23 @@ def main():
            'grep -qE "dropbear -i|dbclient" /proc/$p/cmdline 2>/dev/null && '
            'kill $p; done', 20)
     time.sleep(3)
+
+    if a.rcontig is not None:
+        r = b.send('echo %d > /sys/kernel/easystick/user_reserve_contig '
+                   '2>/dev/null; read v < '
+                   '/sys/kernel/easystick/user_reserve_contig; echo RC=$v'
+                   % a.rcontig, 6)
+        m = re.search(r'RC=(\d+)', r)
+        print('user_reserve_contig := %s\n'
+              % (m.group(1) if m else 'UNSUPPORTED'))
+    if a.rtotal is not None:
+        r = b.send('echo %d > /sys/kernel/easystick/user_reserve_total '
+                   '2>/dev/null; read v < '
+                   '/sys/kernel/easystick/user_reserve_total; echo RT=$v'
+                   % a.rtotal, 6)
+        m = re.search(r'RT=(\d+)', r)
+        print('user_reserve_total := %s\n'
+              % (m.group(1) if m else 'UNSUPPORTED'))
 
     host = board_ip(b)
     need_ssh = a.scenario in ('all', 'ssh', 'scenarioA')
@@ -673,6 +771,8 @@ def main():
               % (st.get('used'), st.get('largest_free')))
     if a.scenario in ('all', 'scenarioA'):
         scenario_a(b, host, a.n, a.key, loopback, trigger=a.a_trigger)
+    if a.scenario == 'syspeak':
+        scenario_syspeak(b, regions)
     if a.scenario == 'tables':
         pass
     b.close()
