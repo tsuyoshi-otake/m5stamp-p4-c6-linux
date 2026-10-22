@@ -2,6 +2,12 @@
 # watchdog=1 in config.txt hands /dev/watchdog to the userland feeder (#32-6).
 # Default off: the kernel keeps feeding the watchdog itself.
 
+# NOMMU reserve gate (#50 round 4): keep the feeder system-side when a user
+# restarts this script; same exec-once contract as S40network.
+if [ -z "${ES_SYSMARK:-}" ] && [ -x /usr/sbin/easystick-sys ]; then
+	ES_SYSMARK=1 exec /usr/sbin/easystick-sys "$0" "$@"
+fi
+
 PIDFILE=/run/.es-watchdog.pid
 
 enabled() {

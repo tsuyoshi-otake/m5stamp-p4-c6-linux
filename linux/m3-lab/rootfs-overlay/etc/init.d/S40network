@@ -11,6 +11,18 @@
 # BusyBox is not shared text on NOMMU, so every pipeline stage costs another
 # ~0.5 MB copy, and the old sed|sed|head (plus |tr) ran first-boot S40 out of
 # memory ("Allocation of length 507904 ... failed").
+
+# NOMMU reserve gate (#50 round 4): a restart started from the console or an
+# SSH session is marked "user" by the pool's ctty/dropbear ancestry rule, and
+# every helper it execs (udhcpc, ifconfig, wpa_*) inherits the mark and can be
+# gated.  Re-exec once through easystick-sys so the subtree is system work --
+# exec, not a child, so this ~0.7 MB shell does not stay resident through the
+# restart next to the marked copy.  One-shot via ES_SYSMARK; when the helper
+# is absent the script still runs unmarked.
+if [ -z "${ES_SYSMARK:-}" ] && [ -x /usr/sbin/easystick-sys ]; then
+	ES_SYSMARK=1 exec /usr/sbin/easystick-sys "$0" "$@"
+fi
+
 conf_get() {
 	bom=$(printf '\357\273\277')
 	cr=$(printf '\r')

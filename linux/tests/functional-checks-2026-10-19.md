@@ -5,7 +5,7 @@ P4 flash was written; the C6 was not touched.  No SSID, PSK, password or
 client address is quoted here.
 
 Two local m3-lab builds (`build-c68.sh --profile m3-lab`, flashed with
-`flash-candidate.ps1 -PreserveBoot`):
+`flash-candidate.ps1 -PreserveBoot` (-PreserveBoot was the opt-in then; since 2026-10-21 R2 preserving the boot slots is the default and the switch is a no-op; -WriteBoot writes the boot FS)):
 
 - **e**: `main` at a34060a (the #39/#40 changes).
 - **f**: e plus c07cc4f (loopback) and 90c4547 (MicroPython stack).  The DTB

@@ -177,6 +177,26 @@ tick() {
 	fi
 }
 
+# Flash-free network request path (#50 round 4): a root-owned file asks for an
+# S40network run under this daemon's init ancestry -- the same classification
+# a real config-import apply gets -- without touching boot.img or flash.
+# /run is root-only; verbs are whitelisted, anything else is ignored + logged.
+NETREQ=/run/.es-netreq
+netreq_check() {
+	[ -f "$NETREQ" ] || return 0
+	req=""
+	read -r req < "$NETREQ" 2>/dev/null || true
+	rm -f "$NETREQ"
+	case "$req" in
+		apply*) ;;
+		reload*|restart*) req="restart" ;;
+		start*|stop*) ;;
+		*) log "network request: ignoring unknown verb '$req'"; return 0 ;;
+	esac
+	log "network request: $req"
+	( umask 022; exec /etc/init.d/S40network $req ) >/dev/null 2>&1 &
+}
+
 # Validate a snapshot of the drive, save it to flash and apply what changed.
 # Returns 1 when the snapshot was not imported.
 import_snapshot() {
@@ -371,6 +391,7 @@ log "Daemon started; drive changes are saved ${SETTLE_SECONDS} s after the host 
 
 while true; do
 	tick 1
+	netreq_check
 	LOG_TICKS=$((LOG_TICKS + 1))
 	if [ "$LOG_TICKS" -ge 30 ]; then
 		LOG_TICKS=0

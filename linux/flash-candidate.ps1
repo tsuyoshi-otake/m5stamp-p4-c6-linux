@@ -12,6 +12,14 @@ param(
 
 	[switch] $AllowCandidateWrite,
 
+	# Default is to preserve the boot slots (0xf40000/0xf80000) and the
+	# bootmeta A/B selection — writing boot.img makes the next boot commit
+	# the staged template over the live boot FS (user Wi-Fi config lives
+	# there).  -WriteBoot is the only way to write them.
+	[switch] $WriteBoot,
+
+	# Accepted for compatibility; preserving the boot slots is now the
+	# default, so this switch is a no-op.
 	[switch] $PreserveBoot,
 
 	[string] $ExpectedStockSha256 = "229459f251eaf6222f0c07968702d72a3818e520da1788ce465027d969020c24"
@@ -60,7 +68,7 @@ $artifacts = @(
 	@{ Address = "0x810000"; Name = "rootfs.squashfs"; Max = 0x700000 },
 	@{ Address = "0xf10000"; Name = "easystick-stamp-p4.dtb"; Max = 0x10000 }
 )
-if (-not $PreserveBoot) {
+if ($WriteBoot) {
 	$artifacts += @{ Address = "0xf40000"; Name = "boot.img"; Max = 0x40000 }
 }
 $paths = @{}
@@ -82,6 +90,11 @@ if ($stockPath) {
 }
 Write-Host "  stock_sha256=$stockHash"
 Write-Host "  artifacts=$artifactRoot"
+if ($WriteBoot) {
+	Write-Host "  boot slots: WRITE boot.img + reset A/B metadata (-WriteBoot)"
+} else {
+	Write-Host "  boot slots: preserved (default; pass -WriteBoot to update the boot FS)"
+}
 Write-Host "  C6 write: none (COM10 is the P4 module USB-C path)"
 
 $chipArgs = @(
@@ -140,7 +153,7 @@ if ($LASTEXITCODE -ne 0) {
 # Reset A/B selection only after slot0 has been written and verified.  A power
 # loss before this point leaves the previously selected slot bootable; after
 # the erase, boot-shim deliberately falls back to the newly verified slot0.
-if (-not $PreserveBoot) {
+if ($WriteBoot) {
 	$metadataArgs = @(
 		"-m", "esptool", "--chip", "esp32p4", "--port", $Port,
 		"--baud", "460800", "--before", "default_reset", "--after", "hard_reset",
