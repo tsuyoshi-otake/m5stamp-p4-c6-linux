@@ -606,11 +606,25 @@ def scenario_a(b, host, n, key, loopback=False, trigger='user'):
 # loops, so they cost ~0 pool and keep sampling while execs are pressured.
 # Each line is uploaded via `echo 'line' >> /tmp/...` (no single quotes or
 # backslashes inside, so serial echo is faithful).  The used sampler polls
-# nommu_pool at ~10 Hz; the pid sampler re-does the maps math on-board
-# (busybox ash does 0x arithmetic) at ~2-4 s per sweep.
+# nommu_pool at ~12 Hz; pacing is a /proc/uptime centisecond busy-wait
+# (busybox `read -t` has no fractions and `usleep` would exec a ~0.5 MB
+# busybox per call, polluting `used` itself).  The pid sampler re-does the
+# maps math on-board (busybox ash does 0x arithmetic) at ~2-4 s per sweep.
 USED_SAMPLER = [
+    'tick() {',
+    'read u < /proc/uptime',
+    'u=${u%% *}',
+    'd=${u%.*}${u#*.}',
+    'e=$((d + $1))',
+    'while :; do',
+    'read u < /proc/uptime',
+    'u=${u%% *}',
+    'w=${u%.*}${u#*.}',
+    '[ $w -ge $e ] && break',
+    'done',
+    '}',
     'n=0',
-    'while [ $n -lt 550 ]; do',
+    'while [ $n -lt 650 ]; do',
     'exec 3< /sys/kernel/easystick/nommu_pool',
     'read a <&3',
     'read b <&3',
@@ -618,6 +632,7 @@ USED_SAMPLER = [
     'exec 3<&-',
     'echo "U $n ${b#used } ${c#largest_free }"',
     'n=$((n+1))',
+    'tick 8',
     'done',
 ]
 # lo bound of the first pool region (0x495af000) -- `49*-*` prefix-matches
@@ -691,7 +706,7 @@ def scenario_syspeak(b, regions):
         time.sleep(10)
         ulog = b.send('cat /tmp/u.log', 40)
         n = ulog.count('\nU ')
-        if 'U 549' in ulog or (n == last_n and n > 50):
+        if 'U 649' in ulog or (n == last_n and n > 50):
             break
         last_n = n
     series = []
@@ -700,11 +715,21 @@ def scenario_syspeak(b, regions):
         if m:
             series.append((int(m.group(1)), int(m.group(2)), int(m.group(3))))
     peak = max(series, key=lambda s: s[1]) if series else (0, 0, 0)
-    print('### syspeak phase A: `used` timeline (~10 Hz, 1st restart)\n')
-    print(md_table(['sweep', 'used (B)', 'largest_free (B)'], series))
-    print('\npeak used: %d B at sweep %d (largest_free %d B); '
+    floor = min(series, key=lambda s: s[1]) if series else (0, 0, 0)
+    # compress: one row per value run (sweep range) so the log stays small
+    runs = []
+    for i, u, lf in series:
+        if runs and runs[-1][2] == u and runs[-1][3] == lf:
+            runs[-1][1] = i
+        else:
+            runs.append([i, i, u, lf])
+    print('### syspeak phase A: `used` timeline (~12 Hz, 1st restart)\n')
+    print(md_table(['sweep first', 'sweep last', 'used (B)',
+                    'largest_free (B)'], runs))
+    print('\npeak used: %d B at sweep %d; min used: %d B at sweep %d; '
           'baseline used %d B\n'
-          % (peak[1], peak[0], peak[2], int(base_st.get('used', 0))))
+          % (peak[1], peak[0], floor[1], floor[0],
+             int(base_st.get('used', 0))))
     # settle before the second restart
     end = time.time() + 90
     while time.time() < end and not net_up(b):
@@ -735,19 +760,24 @@ def scenario_syspeak(b, regions):
     rows = []
     for i, sw in enumerate(sweeps):
         systr = usrtr = 0
+        det = []
         for pid, fl, comm, bts in sw:
             base = base_tbl.get(pid)
             delta = bts if (base is None or base[0] != comm) \
                 else max(0, bts - base[1])
+            if not delta:
+                continue
             if fl & 0x40000000:
                 systr += delta
+                det.append('%s(%d)' % (comm, delta))
             else:
                 usrtr += delta
-        rows.append((i, len(sw), systr, usrtr))
+        rows.append((i, len(sw), systr, usrtr, ' '.join(det)))
     pk = max(range(len(rows)), key=lambda i: rows[i][2]) if rows else -1
     print('### syspeak phase B: per-pid sweeps (2nd restart)\n')
     print(md_table(['sweep', 'pids seen', 'flagged transient (B)',
-                    'unflagged transient (B)'], rows))
+                    'unflagged (B)', 'flagged transients'],
+                   [[r[0], r[1], r[2], r[3], r[4]] for r in rows]))
     if pk >= 0:
         print('\npeak flagged transient: %d B at sweep %d '
               '-- table at that sweep:\n' % (rows[pk][2], pk))
