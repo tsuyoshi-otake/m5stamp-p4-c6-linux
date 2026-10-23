@@ -1,4 +1,4 @@
-# EasyStick Stamp-P4 Zephyr P1 control image
+# Stamp-P4 Stamp-P4 Zephyr P1 control image
 
 Status: **WIP — P1-NG negative-control image; not a manufacturing image**.
 
@@ -16,7 +16,7 @@ cannot establish Wi-Fi scan, association, DHCPv4, or ping.
 
 This application uses the pinned Zephyr Function-EV HP-core board support as
 its base and applies `boards/esp32p4_function_ev_board_esp32p4_hpcore.overlay`
-for the EasyStick carrier wiring. It does not copy or fork the Function-EV
+for the Stamp-P4 carrier wiring. It does not copy or fork the Function-EV
 board definition.
 
 The image enables only the P1 path:
@@ -48,8 +48,8 @@ The C6 image is built by:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File `
-  .\projects\easystick-stamp-p4\firmware\tools\build-p1-c6.ps1 `
-  -BuildDirectory D:\Users\Developer\easystick-tmp-20260820\build-p1-c6-rNN
+  .\projects\stamp-p4\firmware\tools\build-p1-c6.ps1 `
+  -BuildDirectory D:\Users\Developer\tmp-20260820\build-p1-c6-rNN
 ```
 
 The script checks the C6, ESP-IDF, and protobuf-c revisions before invoking
@@ -61,8 +61,8 @@ The Zephyr host image is built with:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File `
-  .\projects\easystick-stamp-p4\firmware\tools\build-p1-zephyr.ps1 `
-  -BuildDirectory D:\Users\Developer\easystick-tmp-20260820\build-p1-zephyr-rNN
+  .\projects\stamp-p4\firmware\tools\build-p1-zephyr.ps1 `
+  -BuildDirectory D:\Users\Developer\tmp-20260820\build-p1-zephyr-rNN
 ```
 
 The default host container is

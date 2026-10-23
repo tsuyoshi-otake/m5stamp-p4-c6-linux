@@ -8,8 +8,8 @@
 set -u
 
 root=$(cd "$(dirname "$0")/.." && pwd)
-# The m3-lab image also carries the board overlay (easystick-sdio-diag).
-board="$root/linux/buildroot-external/board/easystick-stamp-p4/rootfs-overlay"
+# The m3-lab image also carries the board overlay (sdio-diag).
+board="$root/linux/buildroot-external/board/stamp-p4/rootfs-overlay"
 scripts=$(find "$root/linux/m3-lab/rootfs-overlay" "$board" \
 	"$root/linux/m3-lab/post-build.sh" \
 	-type f \( -path '*/init.d/*' -o -path '*/usr/sbin/*' -o -path '*/default.script.d/*' \

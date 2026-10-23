@@ -27,7 +27,7 @@
       "commit": "bd790395c14968a27c00f962c9cd08d66f39de24",
       "submodule_path": "vendor/why2025-linux",
       "role": "reference_only",
-      "notes": "Native P4 NOMMU Linux proof; its board DTS and SPI C6 transport do not target EasyStick."
+      "notes": "Native P4 NOMMU Linux proof; its board DTS and SPI C6 transport do not target Stamp-P4."
     },
     "linux_base": {
       "repository": "https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git",
@@ -63,7 +63,7 @@
       "submodule_path": "vendor/esp-hosted",
       "role": "c6_wifi_transport",
       "transport_target": "SDIO",
-      "notes": "The locked upstream supports SDIO; EasyStick integration and slave image are not implemented yet."
+      "notes": "The locked upstream supports SDIO; Stamp-P4 integration and slave image are not implemented yet."
     }
   }
 }

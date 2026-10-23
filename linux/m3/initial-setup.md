@@ -35,7 +35,7 @@ development fallback while preserving USB-C for ROM recovery.
 3. Run:
 
    ```sh
-   /usr/sbin/easystick-firstboot
+   /usr/sbin/firstboot
    ```
 
 4. Set a new password when `passwd` prompts for the `p4` local account.  Do
@@ -50,7 +50,7 @@ development fallback while preserving USB-C for ROM recovery.
 
 To reprovision, run the command again from a local console.  To disable SSH,
 stop the service and remove the authorized key and per-device host key from
-`/config/easystick/`, then reboot.  Reprovisioning and erasure must be tested
+`/config/stamp-p4/`, then reboot.  Reprovisioning and erasure must be tested
 on hardware before M3 is marked complete.
 
 The reference for the credential policy is the

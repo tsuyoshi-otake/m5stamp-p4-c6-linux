@@ -1,19 +1,19 @@
 /*
- * EasyStick Stamp-P4 P1 overlay.
+ * Stamp-P4 Stamp-P4 P1 overlay.
  *
  * The Function-EV HP-core board support remains the base.  Only the
- * EasyStick carrier wiring is changed here; this is not a copied board DTS.
+ * Stamp-P4 carrier wiring is changed here; this is not a copied board DTS.
  */
 
 #include <zephyr/dt-bindings/gpio/gpio.h>
 
-/* The Function-EV SD-card connector is not populated on EasyStick. */
+/* The Function-EV SD-card connector is not populated on Stamp-P4. */
 &sdhc0 {
 	status = "disabled";
 };
 
 /*
- * Stamp-AddOn C6 SDIO wiring on the EasyStick carrier.
+ * Stamp-AddOn C6 SDIO wiring on the Stamp-P4 carrier.
  *
  * GPIO42 is physical P4 GPIO42, represented by GPIO controller gpio1 offset
  * 10.  It is the C6 regulator enable/power-gate and reset-control path:

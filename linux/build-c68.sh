@@ -11,14 +11,14 @@ Usage: build-c68.sh <external-source-root|--vendor> <build-output> [--profile m1
 
 Builds the C68 boot-shim, extracts c68_release / c68_stage / c68_secondary_entry,
 renders 0038/0039 into <build-output>/c68-rendered-patches, stages 0040/0041/0042,
-then invokes build-m1.sh with EASYSTICK_C68_CLEAN_RELEASE=1.
+then invokes build-m1.sh with C68_CLEAN_RELEASE=1.
 
-Set EASYSTICK_C68_L3_SMOKE=1 to include the m5stamp smoke helper and the
-C68-only BusyBox top fragment.  Add EASYSTICK_C68_STRESS=1 for the bounded
+Set C68_L3_SMOKE=1 to include the m5stamp smoke helper and the
+C68-only BusyBox top fragment.  Add C68_STRESS=1 for the bounded
 m5stamp process/SMP stress helper; stress requires the L3 endpoint and a full
-Buildroot build.  Set EASYSTICK_TSENS_ORACLE=1 for an explicit C68 boot-shim
+Buildroot build.  Set TSENS_ORACLE=1 for an explicit C68 boot-shim
 LP-TSENS reference capture; that build is diagnostic and must not be confused
-with the normal SMP baseline.  Set EASYSTICK_TSENS_LINUX=1 separately to
+with the normal SMP baseline.  Set TSENS_LINUX=1 separately to
 include the experimental Linux LP-TSENS driver; it programs and verifies the
 REGI2C DAC from Linux and exposes a tripless /sys/class/thermal zone.
 EOF
@@ -41,7 +41,7 @@ patch_src="${script_dir}/kernel-patches"
 c68_dir="${script_dir}/c68"
 rendered="${output}/c68-rendered-patches"
 shim_out="${output}/boot-shim-c68"
-elf="${shim_out}/build/easystick_stamp_p4_boot_shim.elf"
+elf="${shim_out}/build/stamp_p4_boot_shim.elf"
 
 command -v idf.py >/dev/null || {
 	echo "C68_GATE_FAIL: idf.py is not on PATH; source ESP-IDF export.sh first" >&2
@@ -52,13 +52,13 @@ command -v riscv32-esp-elf-nm >/dev/null || {
 	exit 1
 }
 
-export EASYSTICK_C68_CLEAN_RELEASE=1
+export C68_CLEAN_RELEASE=1
 "${shim_src}/build.sh" "$shim_out" --profile c68
 [[ -f "$elf" ]] || {
 	echo "C68_GATE_FAIL: missing $elf" >&2
 	exit 1
 }
-if [[ "${EASYSTICK_TSENS_ORACLE:-0}" == "1" ]]; then
+if [[ "${TSENS_ORACLE:-0}" == "1" ]]; then
 	grep -aFq 'P4_TSENS_REF PASS' "$elf" || {
 		echo "C68_GATE_FAIL: TSENS oracle was requested but not linked" >&2
 		exit 1
@@ -93,11 +93,11 @@ printf '%s\n' "$release_pa" >"${output}/c68-release.pa"
 printf '%s\n' "$stage_pa" >"${output}/c68-stage.pa"
 printf '%s\n' "$entry_pa" >"${output}/c68-entry.pa"
 
-export EASYSTICK_KERNEL_PATCH_OVERRIDE_DIR="$rendered"
-export EASYSTICK_C68_RELEASE_PA="$release_pa"
-export EASYSTICK_C68_STAGE_PA="$stage_pa"
-export EASYSTICK_C68_ENTRY_PA="$entry_pa"
-export EASYSTICK_C68_BOOT_SHIM_BIN="${shim_out}/build/easystick_stamp_p4_boot_shim.bin"
-export EASYSTICK_C68_BOOT_SHIM_ELF="$elf"
+export KERNEL_PATCH_OVERRIDE_DIR="$rendered"
+export C68_RELEASE_PA="$release_pa"
+export C68_STAGE_PA="$stage_pa"
+export C68_ENTRY_PA="$entry_pa"
+export C68_BOOT_SHIM_BIN="${shim_out}/build/stamp_p4_boot_shim.bin"
+export C68_BOOT_SHIM_ELF="$elf"
 
 exec "${script_dir}/build-m1.sh" "$source_arg" "$output" "${extra_args[@]}"

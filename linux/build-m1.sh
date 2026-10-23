@@ -11,43 +11,43 @@ Buildroot output and temporary patch staging remain outside the repository.
 This script builds artifacts only; it never invokes esptool or writes flash.
 C68-CLEAN-RELEASE is not this entry point: use build-c68.sh so boot-shim nm
 addresses are rendered before 0038/0039 are staged.
-Set EASYSTICK_TSENS_LINUX=1 to include the experimental ESP32-P4 LP-TSENS
+Set TSENS_LINUX=1 to include the experimental ESP32-P4 LP-TSENS
 driver, its REGI2C DAC readback gate, and the thermal sysfs endpoint.  This
-requires the C68 profile and is separate from EASYSTICK_TSENS_ORACLE=1.
-Set EASYSTICK_ESPHOSTED_DIAGNOSTICS=1 for full ESP-Hosted console breadcrumbs.
+requires the C68 profile and is separate from TSENS_ORACLE=1.
+Set ESPHOSTED_DIAGNOSTICS=1 for full ESP-Hosted console breadcrumbs.
 The default M3-lab image keeps those patches but applies 0024 so esp_info() in
 esp_sdio.c stays at debug level and does not starve ARP/SSH on NOMMU.
-Set EASYSTICK_SDIO_DEFAULT_MHZ to one of 1, 2, 5, or 10 to build a distinct
+Set SDIO_DEFAULT_MHZ to one of 1, 2, 5, or 10 to build a distinct
 SDIO clock arm.  The value is compiled into esp32_sdio.ko and attested at boot.
-The DTS caps the bus at 40 MHz; set EASYSTICK_SDIO_MAX_KHZ to 400, 1000, 2000,
+The DTS caps the bus at 40 MHz; set SDIO_MAX_KHZ to 400, 1000, 2000,
 5000, 10000 or 20000 to lower that cap in a test image (#21).
-Set EASYSTICK_WDT_TEST_TIMEOUT_S to 1..3600 for a bounded watchdog positive
+Set BOARD_WDT_TEST_TIMEOUT_S to 1..3600 for a bounded watchdog positive
 control; the value is appended to the staged Linux bootargs only.
-Set EASYSTICK_WDT_TEST_NO_FEED=1 together with the timeout to disable the
+Set BOARD_WDT_TEST_NO_FEED=1 together with the timeout to disable the
 watchdog feed in that test image; it is rejected for non-test builds.
-Set EASYSTICK_WDT_INJECT=0 to skip 0059. Default (BB builds) adds
+Set BOARD_WDT_INJECT=0 to skip 0059. Default (BB builds) adds
 `esp32p4_wdt.inject=1` (IRQ-on spin) and `=2` (local_irq_disable then spin).
-Set EASYSTICK_LAB_TOOLS=0 with --profile m3-lab to leave out the bring-up
+Set LAB_TOOLS=0 with --profile m3-lab to leave out the bring-up
 tools (tcpdump, MicroPython, dbclient, dropbearconvert, nc).  The default (1)
 keeps the image that the hardware validation records describe.
-Set EASYSTICK_LEGAL_INFO=1 to also run Buildroot's legal-info into
+Set LEGAL_INFO=1 to also run Buildroot's legal-info into
 <vendor>/buildroot/legal-info (sources, patches and license texts, #31).  It
 does not change any image.
 --profile m3-lab reserves 64 KB of PSRAM for ramoops (kernel oops/panic and
-console tail, #26); set EASYSTICK_PSTORE=0 to leave it out.  On hardware the console
+console tail, #26); set PSTORE=0 to leave it out.  On hardware the console
 record keeps the panic across both the panic=5 restart and a watchdog reset
 of a hung kernel, together with a dmesg-ramoops record.
-Set EASYSTICK_BUILDROOT_JLEVEL=1 to serialize nested Buildroot package makes.
+Set BUILDROOT_JLEVEL=1 to serialize nested Buildroot package makes.
 This is useful for BusyBox versions whose generated applet tables are not safe
 when install-noclobber is invoked in parallel.
-Set EASYSTICK_CMD53_BB_ALLOW_PIO=1 only for the explicit EASYSTICK_LINUX_ONLY=1
+Set CMD53_BB_ALLOW_PIO=1 only for the explicit LINUX_ONLY=1
 retention-BB PIO A/B; the normal retention-BB contract remains DMA-only.
-Set EASYSTICK_STACKTRACE_DIAGNOSTICS=1 for the P4-only diagnostic image.  This
+Set STACKTRACE_DIAGNOSTICS=1 for the P4-only diagnostic image.  This
 requires the retention-BB build and enables bounded WDT stack output,
 KALLSYMS/DWARF data, and the CMD52 token-read boundary trace.
-Set EASYSTICK_ESPHOSTED_CMD52_TRACE=0 with that diagnostic image to retain the
+Set ESPHOSTED_CMD52_TRACE=0 with that diagnostic image to retain the
 stacktrace/WDT build while omitting only the CMD52 UART observer.
-Set EASYSTICK_ESPHOSTED_CMD52_MARKER=1 with CMD52_TRACE=0 to retain the
+Set ESPHOSTED_CMD52_MARKER=1 with CMD52_TRACE=0 to retain the
 six-word CMD52 positive-control marker in the P4 retention area.  It writes
 MARKER_MAGIC/ARMED before SDIO registration, then records TOKEN_ENTER,
 AFTER_46, BEFORE_47, and AFTER_47 in separate words.
@@ -56,19 +56,19 @@ cmd52_marker_shot parameter; writing 1 to it clears the four stage words and
 re-arms MAGIC/ARMED after normal Wi-Fi startup for one clean shot.
 
 #5 SMP options:
-The C68 profile (EASYSTICK_C68_CLEAN_RELEASE=1) boots both CPUs: the staged
+The C68 profile (C68_CLEAN_RELEASE=1) boots both CPUs: the staged
 DTS bootargs and CONFIG_CMDLINE are rewritten from maxcpus=1 to maxcpus=2
-(same-length rewrite).  Set EASYSTICK_C68_MAXCPUS=1 to keep CPU1 parked.
+(same-length rewrite).  Set C68_MAXCPUS=1 to keep CPU1 parked.
 Every build adds 0079, which drops the CLIC interrupt level with an mret at
-IRQ entry (the fix for the interrupt latch); set EASYSTICK_C68_IRQ_LEVEL0=0
+IRQ entry (the fix for the interrupt latch); set C68_IRQ_LEVEL0=0
 to leave it out.
 Every build adds 0081, which clears MEXSTATUS.EXPT_VLD at exception entry
 (the fix for the core lockup on a user fault after a context switch); set
-EASYSTICK_C68_EXPT_CLEAR=0 to leave it out.
+C68_EXPT_CLEAR=0 to leave it out.
 Diagnostics (C68 profile only, default OFF):
-Set EASYSTICK_C68_MRET_TRACE=1 to add 0077: per-CPU trap/mret rings that
+Set C68_MRET_TRACE=1 to add 0077: per-CPU trap/mret rings that
 record the mcause each mret restores and a CPU0 watch (ES5_WATCH).
-Set EASYSTICK_C68_DEAF_RESET=1 to add 0078: MWDT-restart the chip when
+Set C68_DEAF_RESET=1 to add 0078: MWDT-restart the chip when
 CPU1 stops taking interrupts (ES5_RESET).
 EOF
 }
@@ -110,133 +110,133 @@ esac
 # ("read_packet: Drop invalid pkt") and wlan0 never appears.  An explicit
 # value in the environment still wins.
 if $lab_profile; then
-	: "${EASYSTICK_SDIO_FORCE_PIO:=0}"
-	: "${EASYSTICK_IDMAC_NONCOHERENT_RING:=1}"
+	: "${SDIO_FORCE_PIO:=0}"
+	: "${IDMAC_NONCOHERENT_RING:=1}"
 fi
 # Bring-up tools in m3-lab (#32).  Only lab-tools=0 enters the profile
 # identity, so default builds keep their stamp and are not cleaned.
 lab_tools=false
 lab_tools_identity=""
-case "${EASYSTICK_LAB_TOOLS:-1}" in
+case "${LAB_TOOLS:-1}" in
 	1) if $lab_profile; then lab_tools=true; fi ;;
 	0)
-		$lab_profile || { echo "EASYSTICK_LAB_TOOLS=0 requires --profile m3-lab" >&2; exit 2; }
+		$lab_profile || { echo "LAB_TOOLS=0 requires --profile m3-lab" >&2; exit 2; }
 		lab_tools_identity=" lab-tools=0"
 		;;
-	*) echo "EASYSTICK_LAB_TOOLS must be 0 or 1" >&2; exit 2 ;;
+	*) echo "LAB_TOOLS must be 0 or 1" >&2; exit 2 ;;
 esac
 # ramoops in PSRAM (#26), on by default for m3-lab: it costs 64 KB of RAM.
 pstore_identity=""
 pstore_default=0
 if $lab_profile; then pstore_default=1; fi
-case "${EASYSTICK_PSTORE:-$pstore_default}" in
+case "${PSTORE:-$pstore_default}" in
 	0) ;;
 	1)
-		$lab_profile || { echo "EASYSTICK_PSTORE=1 requires --profile m3-lab" >&2; exit 2; }
+		$lab_profile || { echo "PSTORE=1 requires --profile m3-lab" >&2; exit 2; }
 		pstore_identity=" pstore=1"
 		;;
-	*) echo "EASYSTICK_PSTORE must be 0 or 1" >&2; exit 2 ;;
+	*) echo "PSTORE must be 0 or 1" >&2; exit 2 ;;
 esac
-sdio_default_mhz="${EASYSTICK_SDIO_DEFAULT_MHZ:-5}"
+sdio_default_mhz="${SDIO_DEFAULT_MHZ:-5}"
 case "$sdio_default_mhz" in
 	1|2|5|10) ;;
-	*) echo "EASYSTICK_SDIO_DEFAULT_MHZ must be 1, 2, 5, or 10" >&2; exit 2 ;;
+	*) echo "SDIO_DEFAULT_MHZ must be 1, 2, 5, or 10" >&2; exit 2 ;;
 esac
 # The DTS caps the SDIO bus at 40 MHz (max-frequency, #21).  This lowers the
 # cap for a test image only; the default keeps the validated DTB.
 sdio_max_identity=""
-case "${EASYSTICK_SDIO_MAX_KHZ:-40000}" in
+case "${SDIO_MAX_KHZ:-40000}" in
 	40000) ;;
 	400|1000|2000|5000|10000|20000)
-		sdio_max_identity=" sdio-max-khz=${EASYSTICK_SDIO_MAX_KHZ}"
+		sdio_max_identity=" sdio-max-khz=${SDIO_MAX_KHZ}"
 		;;
-	*) echo "EASYSTICK_SDIO_MAX_KHZ must be 400, 1000, 2000, 5000, 10000, 20000 or 40000" >&2; exit 2 ;;
+	*) echo "SDIO_MAX_KHZ must be 400, 1000, 2000, 5000, 10000, 20000 or 40000" >&2; exit 2 ;;
 esac
-wdt_test_timeout_s="${EASYSTICK_WDT_TEST_TIMEOUT_S:-0}"
+wdt_test_timeout_s="${BOARD_WDT_TEST_TIMEOUT_S:-0}"
 case "$wdt_test_timeout_s" in
 	0) ;;
-	''|*[!0-9]*) echo "EASYSTICK_WDT_TEST_TIMEOUT_S must be 0 or an integer from 1 to 3600" >&2; exit 2 ;;
+	''|*[!0-9]*) echo "BOARD_WDT_TEST_TIMEOUT_S must be 0 or an integer from 1 to 3600" >&2; exit 2 ;;
 	*) (( wdt_test_timeout_s >= 1 && wdt_test_timeout_s <= 3600 )) || {
-		echo "EASYSTICK_WDT_TEST_TIMEOUT_S must be 0 or an integer from 1 to 3600" >&2
+		echo "BOARD_WDT_TEST_TIMEOUT_S must be 0 or an integer from 1 to 3600" >&2
 		exit 2
 	} ;;
 esac
-wdt_test_no_feed="${EASYSTICK_WDT_TEST_NO_FEED:-0}"
+wdt_test_no_feed="${BOARD_WDT_TEST_NO_FEED:-0}"
 case "$wdt_test_no_feed" in
 	0|1) ;;
-	*) echo "EASYSTICK_WDT_TEST_NO_FEED must be 0 or 1" >&2; exit 2 ;;
+	*) echo "BOARD_WDT_TEST_NO_FEED must be 0 or 1" >&2; exit 2 ;;
 esac
 if [[ "$wdt_test_no_feed" != "0" && "$wdt_test_timeout_s" == "0" ]]; then
-	echo "EASYSTICK_WDT_TEST_NO_FEED requires EASYSTICK_WDT_TEST_TIMEOUT_S" >&2
+	echo "BOARD_WDT_TEST_NO_FEED requires BOARD_WDT_TEST_TIMEOUT_S" >&2
 	exit 2
 fi
-wdt_inject="${EASYSTICK_WDT_INJECT:-1}"
+wdt_inject="${BOARD_WDT_INJECT:-1}"
 case "$wdt_inject" in
 	0|1) ;;
-	*) echo "EASYSTICK_WDT_INJECT must be 0 or 1" >&2; exit 2 ;;
+	*) echo "BOARD_WDT_INJECT must be 0 or 1" >&2; exit 2 ;;
 esac
-stacktrace_diagnostics="${EASYSTICK_STACKTRACE_DIAGNOSTICS:-0}"
+stacktrace_diagnostics="${STACKTRACE_DIAGNOSTICS:-0}"
 case "$stacktrace_diagnostics" in
 	0|1) ;;
-	*) echo "EASYSTICK_STACKTRACE_DIAGNOSTICS must be 0 or 1" >&2; exit 2 ;;
+	*) echo "STACKTRACE_DIAGNOSTICS must be 0 or 1" >&2; exit 2 ;;
 esac
-export EASYSTICK_STACKTRACE_DIAGNOSTICS="$stacktrace_diagnostics"
+export STACKTRACE_DIAGNOSTICS="$stacktrace_diagnostics"
 if [[ "$stacktrace_diagnostics" == "1" &&
-      "${EASYSTICK_CMD53_RETENTION_BB:-0}" != "1" ]]; then
-	echo "EASYSTICK_STACKTRACE_DIAGNOSTICS requires the retention-BB build" >&2
+      "${CMD53_RETENTION_BB:-0}" != "1" ]]; then
+	echo "STACKTRACE_DIAGNOSTICS requires the retention-BB build" >&2
 	exit 2
 fi
-cmd53_bb_allow_pio="${EASYSTICK_CMD53_BB_ALLOW_PIO:-0}"
+cmd53_bb_allow_pio="${CMD53_BB_ALLOW_PIO:-0}"
 case "$cmd53_bb_allow_pio" in
 	0|1) ;;
-	*) echo "EASYSTICK_CMD53_BB_ALLOW_PIO must be 0 or 1" >&2; exit 2 ;;
+	*) echo "CMD53_BB_ALLOW_PIO must be 0 or 1" >&2; exit 2 ;;
 esac
 if [[ "$cmd53_bb_allow_pio" == "1" &&
-      ( "${EASYSTICK_LINUX_ONLY:-0}" != "1" ||
-        "${EASYSTICK_CMD53_RETENTION_BB:-0}" != "1" ) ]]; then
-	echo "EASYSTICK_CMD53_BB_ALLOW_PIO requires EASYSTICK_LINUX_ONLY=1 and retention BB" >&2
+      ( "${LINUX_ONLY:-0}" != "1" ||
+        "${CMD53_RETENTION_BB:-0}" != "1" ) ]]; then
+	echo "CMD53_BB_ALLOW_PIO requires LINUX_ONLY=1 and retention BB" >&2
 	exit 2
 fi
 if [[ "$stacktrace_diagnostics" == "1" && "$network_profile" != true ]]; then
-	echo "EASYSTICK_STACKTRACE_DIAGNOSTICS requires a network profile" >&2
+	echo "STACKTRACE_DIAGNOSTICS requires a network profile" >&2
 	exit 2
 fi
-cmd52_trace="${EASYSTICK_ESPHOSTED_CMD52_TRACE:-$stacktrace_diagnostics}"
+cmd52_trace="${ESPHOSTED_CMD52_TRACE:-$stacktrace_diagnostics}"
 case "$cmd52_trace" in
 	0|1) ;;
-	*) echo "EASYSTICK_ESPHOSTED_CMD52_TRACE must be 0 or 1" >&2; exit 2 ;;
+	*) echo "ESPHOSTED_CMD52_TRACE must be 0 or 1" >&2; exit 2 ;;
 esac
 if [[ "$cmd52_trace" == "1" && "$stacktrace_diagnostics" != "1" ]]; then
-	echo "EASYSTICK_ESPHOSTED_CMD52_TRACE requires stacktrace diagnostics" >&2
+	echo "ESPHOSTED_CMD52_TRACE requires stacktrace diagnostics" >&2
 	exit 2
 fi
-export EASYSTICK_ESPHOSTED_CMD52_TRACE="$cmd52_trace"
-cmd52_marker="${EASYSTICK_ESPHOSTED_CMD52_MARKER:-0}"
+export ESPHOSTED_CMD52_TRACE="$cmd52_trace"
+cmd52_marker="${ESPHOSTED_CMD52_MARKER:-0}"
 case "$cmd52_marker" in
 	0|1) ;;
-	*) echo "EASYSTICK_ESPHOSTED_CMD52_MARKER must be 0 or 1" >&2; exit 2 ;;
+	*) echo "ESPHOSTED_CMD52_MARKER must be 0 or 1" >&2; exit 2 ;;
 esac
 if [[ "$cmd52_marker" == "1" &&
-      "${EASYSTICK_CMD53_RETENTION_BB:-0}" != "1" ]]; then
-	echo "EASYSTICK_ESPHOSTED_CMD52_MARKER requires the retention-BB build" >&2
+      "${CMD53_RETENTION_BB:-0}" != "1" ]]; then
+	echo "ESPHOSTED_CMD52_MARKER requires the retention-BB build" >&2
 	exit 2
 fi
 if [[ "$cmd52_marker" == "1" && "$stacktrace_diagnostics" != "1" ]]; then
-	echo "EASYSTICK_ESPHOSTED_CMD52_MARKER requires stacktrace diagnostics" >&2
+	echo "ESPHOSTED_CMD52_MARKER requires stacktrace diagnostics" >&2
 	exit 2
 fi
 if [[ "$cmd52_marker" == "1" && "$cmd52_trace" == "1" ]]; then
-	echo "EASYSTICK_ESPHOSTED_CMD52_MARKER and CMD52_TRACE are mutually exclusive" >&2
+	echo "ESPHOSTED_CMD52_MARKER and CMD52_TRACE are mutually exclusive" >&2
 	exit 2
 fi
-export EASYSTICK_ESPHOSTED_CMD52_MARKER="$cmd52_marker"
+export ESPHOSTED_CMD52_MARKER="$cmd52_marker"
 if [[ "$wdt_test_timeout_s" != "0" &&
-      "${EASYSTICK_CMD53_RETENTION_BB:-0}" != "1" ]]; then
-	echo "EASYSTICK_WDT_TEST_TIMEOUT_S requires the retention-BB build" >&2
+      "${CMD53_RETENTION_BB:-0}" != "1" ]]; then
+	echo "BOARD_WDT_TEST_TIMEOUT_S requires the retention-BB build" >&2
 	exit 2
 fi
 if ! $network_profile && [[ "$sdio_default_mhz" != "5" ]]; then
-	echo "EASYSTICK_SDIO_DEFAULT_MHZ is only valid for a network profile" >&2
+	echo "SDIO_DEFAULT_MHZ is only valid for a network profile" >&2
 	exit 2
 fi
 
@@ -263,7 +263,7 @@ else
 	hosted_root="${source_root}/esp_hosted_ng/esp_hosted_ng/host"
 fi
 br_output="${output}/buildroot"
-profile_stamp="${br_output}/.easystick-build-profile"
+profile_stamp="${br_output}/.build-profile"
 patch_stage="${output}/kernel-patches"
 dts_stage="${output}/dts"
 kernel_config_fragment="${output}/linux.config"
@@ -273,59 +273,59 @@ m3_stage="${output}/m3-profile"
 lab_stage="${output}/m3-lab-profile"
 lab_provision_stage="${output}/m3-lab-provision"
 c68_profile=false
-if [[ "${EASYSTICK_C68_CLEAN_RELEASE:-0}" == "1" ]]; then
+if [[ "${C68_CLEAN_RELEASE:-0}" == "1" ]]; then
 	c68_profile=true
 fi
-if [[ "${EASYSTICK_TSENS_LINUX:-0}" == "1" && "$c68_profile" != true ]]; then
-	echo "EASYSTICK_TSENS_LINUX requires the C68 profile" >&2
+if [[ "${TSENS_LINUX:-0}" == "1" && "$c68_profile" != true ]]; then
+	echo "TSENS_LINUX requires the C68 profile" >&2
 	exit 2
 fi
-# #5: the C68 profile boots both CPUs unless EASYSTICK_C68_MAXCPUS=1; 0079
-# and 0081 are on for every build unless EASYSTICK_C68_IRQ_LEVEL0=0 or
-# EASYSTICK_C68_EXPT_CLEAR=0; the diagnostics stay opt-in.
+# #5: the C68 profile boots both CPUs unless C68_MAXCPUS=1; 0079
+# and 0081 are on for every build unless C68_IRQ_LEVEL0=0 or
+# C68_EXPT_CLEAR=0; the diagnostics stay opt-in.
 if $c68_profile; then
-	: "${EASYSTICK_C68_MAXCPUS:=2}"
+	: "${C68_MAXCPUS:=2}"
 fi
-case "${EASYSTICK_C68_MAXCPUS:-1}" in
+case "${C68_MAXCPUS:-1}" in
 	1|2) ;;
-	*) echo "EASYSTICK_C68_MAXCPUS must be 1 or 2" >&2; exit 2 ;;
+	*) echo "C68_MAXCPUS must be 1 or 2" >&2; exit 2 ;;
 esac
-case "${EASYSTICK_C68_MRET_TRACE:-0}" in
+case "${C68_MRET_TRACE:-0}" in
 	0|1) ;;
-	*) echo "EASYSTICK_C68_MRET_TRACE must be 0 or 1" >&2; exit 2 ;;
+	*) echo "C68_MRET_TRACE must be 0 or 1" >&2; exit 2 ;;
 esac
-case "${EASYSTICK_C68_DEAF_RESET:-0}" in
+case "${C68_DEAF_RESET:-0}" in
 	0|1) ;;
-	*) echo "EASYSTICK_C68_DEAF_RESET must be 0 or 1" >&2; exit 2 ;;
+	*) echo "C68_DEAF_RESET must be 0 or 1" >&2; exit 2 ;;
 esac
-case "${EASYSTICK_C68_IRQ_LEVEL0:-1}" in
+case "${C68_IRQ_LEVEL0:-1}" in
 	0|1) ;;
-	*) echo "EASYSTICK_C68_IRQ_LEVEL0 must be 0 or 1" >&2; exit 2 ;;
+	*) echo "C68_IRQ_LEVEL0 must be 0 or 1" >&2; exit 2 ;;
 esac
-case "${EASYSTICK_C68_EXPT_CLEAR:-1}" in
+case "${C68_EXPT_CLEAR:-1}" in
 	0|1) ;;
-	*) echo "EASYSTICK_C68_EXPT_CLEAR must be 0 or 1" >&2; exit 2 ;;
+	*) echo "C68_EXPT_CLEAR must be 0 or 1" >&2; exit 2 ;;
 esac
-if [[ "${EASYSTICK_C68_MAXCPUS:-1}" == "2" && "$c68_profile" != true ]]; then
-	echo "EASYSTICK_C68_MAXCPUS=2 requires the C68 profile" >&2
+if [[ "${C68_MAXCPUS:-1}" == "2" && "$c68_profile" != true ]]; then
+	echo "C68_MAXCPUS=2 requires the C68 profile" >&2
 	exit 2
 fi
-if [[ "${EASYSTICK_C68_MRET_TRACE:-0}" == "1" && "$c68_profile" != true ]]; then
-	echo "EASYSTICK_C68_MRET_TRACE requires the C68 profile" >&2
+if [[ "${C68_MRET_TRACE:-0}" == "1" && "$c68_profile" != true ]]; then
+	echo "C68_MRET_TRACE requires the C68 profile" >&2
 	exit 2
 fi
-if [[ "${EASYSTICK_C68_DEAF_RESET:-0}" == "1" && "$c68_profile" != true ]]; then
-	echo "EASYSTICK_C68_DEAF_RESET requires the C68 profile" >&2
+if [[ "${C68_DEAF_RESET:-0}" == "1" && "$c68_profile" != true ]]; then
+	echo "C68_DEAF_RESET requires the C68 profile" >&2
 	exit 2
 fi
 c68_stress_profile=false
 c68_top_profile=false
-if [[ "${EASYSTICK_C68_TOP:-0}" == "1" ||
-      "${EASYSTICK_C68_L3_SMOKE:-0}" == "1" ||
-      "${EASYSTICK_C68_STRESS:-0}" == "1" ]]; then
+if [[ "${C68_TOP:-0}" == "1" ||
+      "${C68_L3_SMOKE:-0}" == "1" ||
+      "${C68_STRESS:-0}" == "1" ]]; then
 	c68_top_profile=true
 fi
-if [[ "${EASYSTICK_C68_STRESS:-0}" == "1" ]]; then
+if [[ "${C68_STRESS:-0}" == "1" ]]; then
 	c68_stress_profile=true
 fi
 if $c68_top_profile; then
@@ -344,10 +344,10 @@ rm -rf -- "$external_root"
 mkdir -p -- "$external_root"
 cp -a -- "${external_source_root}/." "$external_root/"
 if $network_profile; then
-	mkdir -p -- "${external_root}/board/easystick-stamp-p4/rootfs-overlay/etc/easystick"
+	mkdir -p -- "${external_root}/board/stamp-p4/rootfs-overlay/etc/board"
 	printf '%s\n' "$sdio_default_mhz" \
-		>"${external_root}/board/easystick-stamp-p4/rootfs-overlay/etc/easystick/sdio-clock-mhz"
-	python3 - "${external_root}/package/esp-hosted-ng/0002-easystick-stamp-p4-sdio-defaults.patch" "$sdio_default_mhz" <<'PY'
+		>"${external_root}/board/stamp-p4/rootfs-overlay/etc/board/sdio-clock-mhz"
+	python3 - "${external_root}/package/esp-hosted-ng/0002-stamp-p4-sdio-defaults.patch" "$sdio_default_mhz" <<'PY'
 from pathlib import Path
 import re
 import sys
@@ -376,10 +376,10 @@ if ! $network_profile; then
 	# Buildroot target directory can retain files after its overlay input is
 	# gone.
 	rm -f -- \
-		"${external_root}/board/easystick-stamp-p4/rootfs-overlay/etc/init.d/S40network" \
-		"${external_root}/board/easystick-stamp-p4/rootfs-overlay/etc/init.d/S41timesync" \
-		"${external_root}/board/easystick-stamp-p4/rootfs-overlay/usr/sbin/easystick-sdio-diag"
-	cat >>"${external_root}/board/easystick-stamp-p4/post-build.sh" <<'EOF'
+		"${external_root}/board/stamp-p4/rootfs-overlay/etc/init.d/S40network" \
+		"${external_root}/board/stamp-p4/rootfs-overlay/etc/init.d/S41timesync" \
+		"${external_root}/board/stamp-p4/rootfs-overlay/usr/sbin/sdio-diag"
+	cat >>"${external_root}/board/stamp-p4/post-build.sh" <<'EOF'
 
 # Non-network profile boundary: do not let a reused Buildroot target retain
 # network-only files from an earlier M2/M3 build.
@@ -387,7 +387,7 @@ rm -f -- \
 	"${TARGET_DIR}/etc/init.d/S40network" \
 	"${TARGET_DIR}/etc/init.d/S41timesync" \
 	"${TARGET_DIR}/etc/init.d/S01seedrng" \
-	"${TARGET_DIR}/usr/sbin/easystick-sdio-diag"
+	"${TARGET_DIR}/usr/sbin/sdio-diag"
 EOF
 fi
 
@@ -395,25 +395,25 @@ fi
 # from the disposable BR2_EXTERNAL copy.  The checked-in series stays intact,
 # so 0005's delayed manual esp_process_new_packet_intr() receive path and all
 # later patches continue to apply unchanged.
-if [[ "${EASYSTICK_ESPHOSTED_DISABLE_0010:-0}" == "1" ]]; then
-	rm -- "${external_root}/package/esp-hosted-ng/0010-easystick-sdio-boot-packet-len-poll.patch"
+if [[ "${ESPHOSTED_DISABLE_0010:-0}" == "1" ]]; then
+	rm -- "${external_root}/package/esp-hosted-ng/0010-sdio-boot-packet-len-poll.patch"
 fi
 # Quiet default: keep the functional diagnostic patches (later patches in the
 # series depend on their context) but demote console spam via 0024 (esp_info)
 # and 0025 (remove BOOT_CMD53/RXTRACE console dumps; loglevel=8 still prints
 # KERN_DEBUG) so formatting does not starve ARP/Dropbear on this NOMMU target.  Opt in to full console breadcrumbs with
-# EASYSTICK_ESPHOSTED_DIAGNOSTICS=1 (drops 0024+0025 only).
-if [[ "${EASYSTICK_ESPHOSTED_DIAGNOSTICS:-0}" == "1" ]]; then
+# ESPHOSTED_DIAGNOSTICS=1 (drops 0024+0025 only).
+if [[ "${ESPHOSTED_DIAGNOSTICS:-0}" == "1" ]]; then
 	rm -f -- \
-		"${external_root}/package/esp-hosted-ng/0024-easystick-quiet-sdio-diagnostics.patch" \
-		"${external_root}/package/esp-hosted-ng/0025-easystick-quiet-sdio-hexdumps.patch"
+		"${external_root}/package/esp-hosted-ng/0024-quiet-sdio-diagnostics.patch" \
+		"${external_root}/package/esp-hosted-ng/0025-quiet-sdio-hexdumps.patch"
 fi
 # Observe-only P4 host TX stage ledger (ES_TX … CMD53). Opt-in only: the
 # markers use KERN_EMERG and sit on the SSH TX hot path, so keep them out of
 # the default quiet acceptance image.
-if [[ "${EASYSTICK_ESPHOSTED_TX_LEDGER:-0}" != "1" ]]; then
+if [[ "${ESPHOSTED_TX_LEDGER:-0}" != "1" ]]; then
 	rm -f -- \
-		"${external_root}/package/esp-hosted-ng/0023-easystick-sdio-tx-stage-ledger.patch"
+		"${external_root}/package/esp-hosted-ng/0023-sdio-tx-stage-ledger.patch"
 fi
 # P4-only stacktrace/CMD52 boundary observer.  It is deliberately absent from
 # every other image because KERN_EMERG per-byte markers are instrumentation,
@@ -421,10 +421,10 @@ fi
 # stacktrace image for a no-console-instrumentation control.
 if [[ "$cmd52_trace" != "1" ]]; then
 	rm -f -- \
-		"${external_root}/package/esp-hosted-ng/0029-easystick-sdio-cmd52-boundaries.patch"
+		"${external_root}/package/esp-hosted-ng/0029-sdio-cmd52-boundaries.patch"
 fi
 if [[ "$cmd52_trace" != "1" &&
-      -e "${external_root}/package/esp-hosted-ng/0029-easystick-sdio-cmd52-boundaries.patch" ]]; then
+      -e "${external_root}/package/esp-hosted-ng/0029-sdio-cmd52-boundaries.patch" ]]; then
 	echo "CMD52_TRACE_GATE_FAIL: observer patch was not removed" >&2
 	exit 1
 fi
@@ -433,12 +433,12 @@ fi
 # shot-gate patch is staged only with the marker so a non-marker image cannot
 # expose a control that has no retention contract.
 rm -f -- \
-	"${external_root}/package/esp-hosted-ng/0030-easystick-sdio-cmd52-retention-marker.patch" \
-	"${external_root}/package/esp-hosted-ng/0031-easystick-sdio-cmd52-shot-gate.patch"
+	"${external_root}/package/esp-hosted-ng/0030-sdio-cmd52-retention-marker.patch" \
+	"${external_root}/package/esp-hosted-ng/0031-sdio-cmd52-shot-gate.patch"
 if [[ "$cmd52_marker" == "1" ]]; then
-	marker_patch="${EASYSTICK_CMD53_BB_ESPHOSTED_MARKER_PATCH:-}"
-	if [[ -z "$marker_patch" && -n "${EASYSTICK_KERNEL_PATCH_OVERRIDE_DIR:-}" ]]; then
-		marker_patch="${EASYSTICK_KERNEL_PATCH_OVERRIDE_DIR}/0030-easystick-sdio-cmd52-retention-marker.patch"
+	marker_patch="${CMD53_BB_ESPHOSTED_MARKER_PATCH:-}"
+	if [[ -z "$marker_patch" && -n "${KERNEL_PATCH_OVERRIDE_DIR:-}" ]]; then
+		marker_patch="${KERNEL_PATCH_OVERRIDE_DIR}/0030-sdio-cmd52-retention-marker.patch"
 	fi
 	[[ -n "$marker_patch" && -f "$marker_patch" ]] || {
 		echo "CMD52_MARKER_GATE_FAIL: missing rendered esp-hosted marker patch" >&2
@@ -449,24 +449,24 @@ if [[ "$cmd52_marker" == "1" ]]; then
 		exit 1
 	fi
 	cp -- "$marker_patch" \
-		"${external_root}/package/esp-hosted-ng/0030-easystick-sdio-cmd52-retention-marker.patch"
-	shot_gate_patch="${EASYSTICK_KERNEL_PATCH_OVERRIDE_DIR:-}/0031-easystick-sdio-cmd52-shot-gate.patch"
+		"${external_root}/package/esp-hosted-ng/0030-sdio-cmd52-retention-marker.patch"
+	shot_gate_patch="${KERNEL_PATCH_OVERRIDE_DIR:-}/0031-sdio-cmd52-shot-gate.patch"
 	if [[ ! -f "$shot_gate_patch" ]]; then
-		shot_gate_patch="${external_source_root}/package/esp-hosted-ng/0031-easystick-sdio-cmd52-shot-gate.patch"
+		shot_gate_patch="${external_source_root}/package/esp-hosted-ng/0031-sdio-cmd52-shot-gate.patch"
 	fi
 	[[ -f "$shot_gate_patch" ]] || {
 		echo "CMD52_MARKER_GATE_FAIL: missing rendered shot-gate patch" >&2
 		exit 1
 	}
 	cp -- "$shot_gate_patch" \
-		"${external_root}/package/esp-hosted-ng/0031-easystick-sdio-cmd52-shot-gate.patch"
+		"${external_root}/package/esp-hosted-ng/0031-sdio-cmd52-shot-gate.patch"
 fi
 # Experiment 0053 BB6: install nm-rendered esp-hosted crumb only for retention BB.
-rm -f -- "${external_root}/package/esp-hosted-ng/0026-easystick-cmd53-retention-bb6.patch"
-if [[ "${EASYSTICK_CMD53_RETENTION_BB:-0}" == "1" ]]; then
-	esp_bb6="${EASYSTICK_CMD53_BB_ESPHOSTED_PATCH:-}"
-	if [[ -z "$esp_bb6" && -n "${EASYSTICK_KERNEL_PATCH_OVERRIDE_DIR:-}" ]]; then
-		esp_bb6="${EASYSTICK_KERNEL_PATCH_OVERRIDE_DIR}/0026-easystick-cmd53-retention-bb6.patch"
+rm -f -- "${external_root}/package/esp-hosted-ng/0026-cmd53-retention-bb6.patch"
+if [[ "${CMD53_RETENTION_BB:-0}" == "1" ]]; then
+	esp_bb6="${CMD53_BB_ESPHOSTED_PATCH:-}"
+	if [[ -z "$esp_bb6" && -n "${KERNEL_PATCH_OVERRIDE_DIR:-}" ]]; then
+		esp_bb6="${KERNEL_PATCH_OVERRIDE_DIR}/0026-cmd53-retention-bb6.patch"
 	fi
 	[[ -n "$esp_bb6" && -f "$esp_bb6" ]] || {
 		echo "CMD53_BB_GATE_FAIL: missing rendered esp-hosted BB6 patch" >&2
@@ -476,7 +476,7 @@ if [[ "${EASYSTICK_CMD53_RETENTION_BB:-0}" == "1" ]]; then
 		echo "CMD53_BB_GATE_FAIL: placeholder remains in esp-hosted BB6 patch" >&2
 		exit 1
 	fi
-	cp -- "$esp_bb6" "${external_root}/package/esp-hosted-ng/0026-easystick-cmd53-retention-bb6.patch"
+	cp -- "$esp_bb6" "${external_root}/package/esp-hosted-ng/0026-cmd53-retention-bb6.patch"
 fi
 
 buildroot_for_make="$buildroot_root"
@@ -492,7 +492,7 @@ if $network_profile; then
 		<"${script_dir}/m2/buildroot-patches/package-wpa-nommu.patch"
 	# Linux 6.18's LICENSES/preferred/GPL-2.0 differs from the copy Buildroot
 	# 2025.02 hashes (COPYING and the syscall note match); without the new
-	# hash, legal-info (EASYSTICK_LEGAL_INFO=1) stops at linux-headers, whose
+	# hash, legal-info (LEGAL_INFO=1) stops at linux-headers, whose
 	# hash file is a symlink to linux/linux.hash.
 	patch -p1 -d "$buildroot_for_make" \
 		<"${script_dir}/m2/buildroot-patches/linux-6.18-license-hash.patch"
@@ -514,12 +514,12 @@ if $network_profile; then
 	# M3-lab only: Dropbear SSH stage ledger (kmsg/ttyGS1 markers) and pacing patch.
 	if $lab_profile; then
 		mkdir -p -- "${global_patch_stage}/dropbear"
-		if [[ "${EASYSTICK_SSH_LEDGER:-0}" == "1" ]]; then
+		if [[ "${SSH_LEDGER:-0}" == "1" ]]; then
 			cp -- "${script_dir}/m3-lab/dropbear-patches/"*.patch \
 				"${global_patch_stage}/dropbear/"
 		else
-			if [[ -f "${script_dir}/m3-lab/dropbear-patches/0005-easystick-ssh-close-pacing.patch" ]]; then
-				cp -- "${script_dir}/m3-lab/dropbear-patches/0005-easystick-ssh-close-pacing.patch" \
+			if [[ -f "${script_dir}/m3-lab/dropbear-patches/0005-ssh-close-pacing.patch" ]]; then
+				cp -- "${script_dir}/m3-lab/dropbear-patches/0005-ssh-close-pacing.patch" \
 					"${global_patch_stage}/dropbear/"
 			fi
 		fi
@@ -538,17 +538,17 @@ if $ssh_profile; then
 	cp -a -- "${script_dir}/m3/." "$m3_stage/"
 	if $lab_profile; then
 		cp -a -- "${script_dir}/m3-lab/." "$lab_stage/"
-		mkdir -p -- "${lab_provision_stage}/etc/easystick"
-		python3 - "${lab_provision_stage}/etc/easystick/wpa_supplicant.conf" <<'PY'
+		mkdir -p -- "${lab_provision_stage}/etc/board"
+		python3 - "${lab_provision_stage}/etc/board/wpa_supplicant.conf" <<'PY'
 import json
 import os
 import sys
 from pathlib import Path
 
 path = Path(sys.argv[1])
-mode = os.environ.get("EASYSTICK_WIFI_MODE", "ap")
-ssid = os.environ.get("EASYSTICK_WIFI_SSID", "m5")
-psk = os.environ.get("EASYSTICK_WIFI_PSK", "m5stamp-p4-c6")
+mode = os.environ.get("WIFI_MODE", "ap")
+ssid = os.environ.get("WIFI_SSID", "m5")
+psk = os.environ.get("WIFI_PSK", "m5stamp-p4-c6")
 
 if mode == "ap":
     conf = (
@@ -625,23 +625,23 @@ linux_tarball="${output}/linux-${linux_commit}.tar.gz"
 
 # The stage is generated output. Recreate it so a retry cannot retain a
 # reference patch from an earlier board-port attempt (notably the WHY2025 DTS
-# hunk that EasyStick must never apply).
+# hunk that Stamp-P4 must never apply).
 rm -rf -- "$patch_stage"
 mkdir -p -- "$patch_stage"
 if $c68_profile; then
-	[[ -n "${EASYSTICK_KERNEL_PATCH_OVERRIDE_DIR:-}" ]] || {
+	[[ -n "${KERNEL_PATCH_OVERRIDE_DIR:-}" ]] || {
 		echo "C68_GATE_FAIL: use linux/build-c68.sh (nm-rendered 0038/0039 required)" >&2
 		exit 1
 	}
-	override_dir=$(cd -- "${EASYSTICK_KERNEL_PATCH_OVERRIDE_DIR}" && pwd)
+	override_dir=$(cd -- "${KERNEL_PATCH_OVERRIDE_DIR}" && pwd)
 	patch_stage_abs=$(cd -- "$patch_stage" && pwd)
 	[[ "$override_dir" != "$patch_stage_abs" ]] || {
 		echo "C68_GATE_FAIL: rendered patches must not live in kernel-patches stage" >&2
 		exit 1
 	}
 	for c68_patch in \
-		0038-easystick-c68-clean-release-spinwait.patch \
-		0039-easystick-c68-clean-release-smpboot.patch; do
+		0038-c68-clean-release-spinwait.patch \
+		0039-c68-clean-release-smpboot.patch; do
 		[[ -f "${override_dir}/${c68_patch}" ]] || {
 			echo "C68_GATE_FAIL: missing rendered ${c68_patch}" >&2
 			exit 1
@@ -652,84 +652,84 @@ if $c68_profile; then
 		fi
 	done
 fi
-if [[ "${EASYSTICK_CMD53_RETENTION_BB:-0}" == "1" ]]; then
+if [[ "${CMD53_RETENTION_BB:-0}" == "1" ]]; then
 	# The canonical 0054 context is generated from the real 0019 + 0035
 	# source. Do not silently try to apply it to a profile that omits 0035.
 	[[ "$profile" == "m3-lab" ]] || {
 		echo "CMD53_BB_GATE_FAIL: retention BB 0054 requires --profile m3-lab (0019 + 0035)" >&2
 		exit 1
 	}
-	[[ -n "${EASYSTICK_KERNEL_PATCH_OVERRIDE_DIR:-}" ]] || {
+	[[ -n "${KERNEL_PATCH_OVERRIDE_DIR:-}" ]] || {
 		echo "CMD53_BB_GATE_FAIL: use linux/build-cmd53-bb.sh (nm-rendered 0052 required)" >&2
 		exit 1
 	}
-	override_dir=$(cd -- "${EASYSTICK_KERNEL_PATCH_OVERRIDE_DIR}" && pwd)
-	[[ -f "${override_dir}/0052-easystick-dw-mmc-cmd53-retention-bb.patch" ]] || {
+	override_dir=$(cd -- "${KERNEL_PATCH_OVERRIDE_DIR}" && pwd)
+	[[ -f "${override_dir}/0052-dw-mmc-cmd53-retention-bb.patch" ]] || {
 		echo "CMD53_BB_GATE_FAIL: missing rendered 0052" >&2
 		exit 1
 	}
-	[[ -f "${override_dir}/0053-easystick-mmc-cmd53-post-bb.patch" ]] || {
+	[[ -f "${override_dir}/0053-mmc-cmd53-post-bb.patch" ]] || {
 		echo "CMD53_BB_GATE_FAIL: missing rendered 0053" >&2
 		exit 1
 	}
-	if grep -q BBDEAD "${override_dir}/0052-easystick-dw-mmc-cmd53-retention-bb.patch"; then
+	if grep -q BBDEAD "${override_dir}/0052-dw-mmc-cmd53-retention-bb.patch"; then
 		echo "CMD53_BB_GATE_FAIL: placeholder remains in rendered 0052" >&2
 		exit 1
 	fi
-	if grep -q BBDEAD "${override_dir}/0053-easystick-mmc-cmd53-post-bb.patch"; then
+	if grep -q BBDEAD "${override_dir}/0053-mmc-cmd53-post-bb.patch"; then
 		echo "CMD53_BB_GATE_FAIL: placeholder remains in rendered 0053" >&2
 		exit 1
 	fi
 	# The normal Shot C contract must observe DMA, not ambient FORCE_PIO=1.
 	# The only permitted exception is the explicit volume-native Linux-only PIO
 	# A/B; reject any other bypass that would still apply 0008 / ledgers.
-	if [[ "${EASYSTICK_SDIO_FORCE_PIO:-1}" != "0" ]]; then
+	if [[ "${SDIO_FORCE_PIO:-1}" != "0" ]]; then
 		if [[ "$cmd53_bb_allow_pio" == "1" &&
-		      "${EASYSTICK_LINUX_ONLY:-0}" == "1" ]]; then
+		      "${LINUX_ONLY:-0}" == "1" ]]; then
 			echo "CMD53_BB_AB: allowing FORCE_PIO=1 only for explicit Linux-only retention-BB A/B" >&2
 		else
-			echo "CMD53_BB_GATE_FAIL: EASYSTICK_SDIO_FORCE_PIO must be 0 for retention BB (DMA)" >&2
+			echo "CMD53_BB_GATE_FAIL: SDIO_FORCE_PIO must be 0 for retention BB (DMA)" >&2
 			exit 1
 		fi
 	fi
-	if [[ "${EASYSTICK_IDMAC_DESC_INVALIDATE:-0}" != "0" ||
-	      "${EASYSTICK_CMD53_RX_DESC_BYTES:-0}" != "0" ]]; then
+	if [[ "${IDMAC_DESC_INVALIDATE:-0}" != "0" ||
+	      "${CMD53_RX_DESC_BYTES:-0}" != "0" ]]; then
 		echo "CMD53_BB_GATE_FAIL: IDMAC invalidate / CMD53_RX_DESC A/B patches must be 0 for retention BB" >&2
 		exit 1
 	fi
-	if [[ "${EASYSTICK_IDMAC_NONCOHERENT_RING:-0}" != "0" ]]; then
+	if [[ "${IDMAC_NONCOHERENT_RING:-0}" != "0" ]]; then
 		# Observed 2026-08-21: NC=0 (cached/manual sync) fails M3-lab Wi-Fi
 		# association (SIOCSIFFLAGS), so SSH /bin/true is unreachable. Allow
 		# NC=1 only with an explicit override; still not FORCE_PIO.
-		if [[ "${EASYSTICK_CMD53_BB_ALLOW_IDMAC_NC:-0}" == "1" ]]; then
+		if [[ "${CMD53_BB_ALLOW_IDMAC_NC:-0}" == "1" ]]; then
 			echo "CMD53_BB_WARN: IDMAC_NONCOHERENT_RING=1 with ALLOW_IDMAC_NC (Wi-Fi reachability override)" >&2
 		else
-			echo "CMD53_BB_GATE_FAIL: IDMAC_NONCOHERENT_RING must be 0 for retention BB (or set EASYSTICK_CMD53_BB_ALLOW_IDMAC_NC=1)" >&2
+			echo "CMD53_BB_GATE_FAIL: IDMAC_NONCOHERENT_RING must be 0 for retention BB (or set CMD53_BB_ALLOW_IDMAC_NC=1)" >&2
 			exit 1
 		fi
 	fi
-	if [[ "${EASYSTICK_ESPHOSTED_TX_LEDGER:-0}" != "0" ||
-	      "${EASYSTICK_TCP22_LEDGER:-0}" != "0" ||
-	      "${EASYSTICK_SSH_LEDGER:-0}" != "0" ||
-	      "${EASYSTICK_ESPHOSTED_DIAGNOSTICS:-0}" != "0" ]]; then
+	if [[ "${ESPHOSTED_TX_LEDGER:-0}" != "0" ||
+	      "${TCP22_LEDGER:-0}" != "0" ||
+	      "${SSH_LEDGER:-0}" != "0" ||
+	      "${ESPHOSTED_DIAGNOSTICS:-0}" != "0" ]]; then
 		echo "CMD53_BB_GATE_FAIL: TX/TCP/SSH ledger and diagnostics must be 0 for retention BB" >&2
 		exit 1
 	fi
-	[[ -n "${EASYSTICK_CMD53_BB_PA:-}" ]] || {
-		echo "CMD53_BB_GATE_FAIL: EASYSTICK_CMD53_BB_PA unset" >&2
+	[[ -n "${CMD53_BB_PA:-}" ]] || {
+		echo "CMD53_BB_GATE_FAIL: CMD53_BB_PA unset" >&2
 		exit 1
 	}
-	[[ -n "${EASYSTICK_CMD53_BB_0052_SHA256:-}" ]] || {
-		echo "CMD53_BB_GATE_FAIL: EASYSTICK_CMD53_BB_0052_SHA256 unset" >&2
+	[[ -n "${CMD53_BB_0052_SHA256:-}" ]] || {
+		echo "CMD53_BB_GATE_FAIL: CMD53_BB_0052_SHA256 unset" >&2
 		exit 1
 	}
-	[[ -n "${EASYSTICK_CMD53_BB_0053_SHA256:-}" ]] || {
-		echo "CMD53_BB_GATE_FAIL: EASYSTICK_CMD53_BB_0053_SHA256 unset" >&2
+	[[ -n "${CMD53_BB_0053_SHA256:-}" ]] || {
+		echo "CMD53_BB_GATE_FAIL: CMD53_BB_0053_SHA256 unset" >&2
 		exit 1
 	}
 fi
 patches=(
-	0000-easystick-esp32-serial-resurrect.patch
+	0000-esp32-serial-resurrect.patch
 	0001-riscv-esp32p4-baseline.patch
 	0010-mm-nommu-userspace-pool.patch
 	0014-riscv-signal-mcause-hardening.patch
@@ -740,12 +740,12 @@ patches=(
 	0024-riscv-esp32p4-early-uart-marker.patch
 		0025-esp32p4-usb-jtag-earlycon.patch
 		0026-riscv-esp32p4-boot-markers.patch
-		0027-easystick-headless-uart-console.patch
+		0027-headless-uart-console.patch
 		0028-esp32p4-usb-serial-jtag-acm.patch
-		0062-easystick-esp32p4-usb-acm-tx-bounded-poll.patch
-		0080-easystick-esp32-acm-tx-irq-lock.patch
-		0082-easystick-esp32-acm-tx-irq-console.patch
-		0063-easystick-dwc2-force-pio.patch
+		0062-esp32p4-usb-acm-tx-bounded-poll.patch
+		0080-esp32-acm-tx-irq-lock.patch
+		0082-esp32-acm-tx-irq-console.patch
+		0063-dwc2-force-pio.patch
 	0031-riscv-esp32p4-m-mode-userspace.patch
 )
 if ! $c68_profile; then
@@ -757,299 +757,299 @@ fi
 # leaving it enabled during an SSH command can starve this NOMMU target's
 # watchdog even though the patch is logically behavior-neutral.
 if $lab_profile; then
-	patches+=(0035-easystick-esp32p4-wdt-feed-observe.patch)
-	if [[ "${EASYSTICK_TCP22_LEDGER:-0}" == "1" ]]; then
-		patches+=(0036-easystick-tcp22-bidirectional-ledger.patch)
+	patches+=(0035-esp32p4-wdt-feed-observe.patch)
+	if [[ "${TCP22_LEDGER:-0}" == "1" ]]; then
+		patches+=(0036-tcp22-bidirectional-ledger.patch)
 	fi
 fi
 # pstore (m3-lab default): ramoops would vmap() its PSRAM buffer, which is BUG()
 # on NOMMU (#26).
 if [[ -n "$pstore_identity" ]]; then
-	patches+=(0065-easystick-pstore-ram-nommu.patch)
+	patches+=(0065-pstore-ram-nommu.patch)
 fi
 # NOMMU execmem ignores its range; drop the false "module loading will
 # fail" warning (#12).
-patches+=(0069-easystick-execmem-nommu-quiet.patch)
-patches+=(0070-easystick-nommu-pool-multi-region.patch)
+patches+=(0069-execmem-nommu-quiet.patch)
+patches+=(0070-nommu-pool-multi-region.patch)
 # NOMMU access_ok() accepts only PSRAM, so a bad user pointer is EFAULT
 # instead of a kernel fault (vi froze the board on open(NULL)).
-patches+=(0071-easystick-nommu-access-ok.patch)
-# /sys/kernel/easystick/boot_commit writes a staged /boot image to the
+patches+=(0071-nommu-access-ok.patch)
+# /sys/kernel/board/boot_commit writes a staged /boot image to the
 # inactive A/B slot at once, so a USB drive edit needs no reboot.
-patches+=(0072-easystick-esp32p4-bootflash.patch)
+patches+=(0072-esp32p4-bootflash.patch)
 # Keep the 6.18 preemption model on 7.2: upstream 7dadeaa6e851 restricts
 # PREEMPT_NONE to ARCH_NO_PREEMPT arches, so riscv would silently get
 # PREEMPT_LAZY.  Select ARCH_NO_PREEMPT so PREEMPT_NONE remains available.
-patches+=(0074-easystick-72-no-preempt.patch)
+patches+=(0074-72-no-preempt.patch)
 # 7.2's f_op->mmap_prepare conversion requests an MMAP_REMAP_PFN action
 # that the NOMMU action backend rejects with -EINVAL, breaking /dev/mem
 # mmap (devmem tool, boot-shim staging area).  Skip the action on NOMMU;
 # NOMMU_MAP_DIRECT already places the VMA at the physical address.
-patches+=(0075-easystick-nommu-devmem-mmap.patch)
-# /sys/kernel/easystick/nommu_pool reports pool total/used/largest_free and
+patches+=(0075-nommu-devmem-mmap.patch)
+# /sys/kernel/board/nommu_pool reports pool total/used/largest_free and
 # the alloc_fail/fallback counters, so NOMMU pool exhaustion is observable
 # without aggregating /proc/*/maps (#40).
-patches+=(0076-easystick-nommu-pool-sysfs.patch)
+patches+=(0076-nommu-pool-sysfs.patch)
 # A signal handler returns through the kernel's own rt_sigreturn code, not a
 # copy on the user stack that needs an icache flush on every CPU (#44).
-patches+=(0083-easystick-esp32p4-sigreturn-in-kernel.patch)
+patches+=(0083-esp32p4-sigreturn-in-kernel.patch)
 # The C6's SDIO interrupt work is the first hop of every RX packet; run it
 # on system_highpri_wq so it is not queued behind CPU-bound work (#43).
-patches+=(0084-easystick-mmc-sdio-irq-highpri.patch)
+patches+=(0084-mmc-sdio-irq-highpri.patch)
 # #35 debug: dw_mmc.fiford_mode picks how PIO reads take words from the
 # FIFO; 0 (the default) is upstream.
-patches+=(0085-easystick-dw-mmc-fiford-mode.patch)
+patches+=(0085-dw-mmc-fiford-mode.patch)
 # #35: dw_mmc.es_dma_threshold lets short transfers use IDMAC, since the
 # P4 FIFO does not pop on CPU reads; -1 (the default) is upstream.
-patches+=(0086-easystick-dw-mmc-dma-threshold.patch)
-# #35: with easystick,fifo-no-pop in the DT, reads that would go PIO take
+patches+=(0086-dw-mmc-dma-threshold.patch)
+# #35: with espressif,fifo-no-pop in the DT, reads that would go PIO take
 # IDMAC through an aligned bounce buffer (dw_mmc.es_fifo_bounce overrides).
-patches+=(0087-easystick-dw-mmc-fifo-bounce.patch)
+patches+=(0087-dw-mmc-fifo-bounce.patch)
 # #35: same bounce for writes - preventive: raw PIO writes measured
 # correct, but keep production traffic off the CPU FIFO in both
 # directions (dw_mmc.es_fifo_bounce_wr overrides the write side only).
-patches+=(0088-easystick-dw-mmc-fifo-bounce-write.patch)
+patches+=(0088-dw-mmc-fifo-bounce-write.patch)
 # #51 experiment: switch the NOMMU user pool from first-fit to best-fit.
-if [[ "${EASYSTICK_POOL_BESTFIT:-0}" == "1" ]]; then
-	patches+=(0089-easystick-nommu-pool-best-fit.patch)
+if [[ "${NOMMU_POOL_BESTFIT:-0}" == "1" ]]; then
+	patches+=(0089-nommu-pool-best-fit.patch)
 fi
 # #51 experiment: user-alloc reserve/watermark on the NOMMU user pool.
-if [[ "${EASYSTICK_USER_RESERVE:-0}" == "1" ]]; then
-	patches+=(0090-easystick-nommu-user-reserve.patch)
+if [[ "${NOMMU_USER_RESERVE:-0}" == "1" ]]; then
+	patches+=(0090-nommu-user-reserve.patch)
 fi
-# #50 round 4: PR_EASYSTICK_SYSTEM lets system scripts clear the ancestry
+# #50 round 4: PR_SET_SYSTEM_WORK lets system scripts clear the ancestry
 # user-mark (console/SSH-started restarts).  Needs 0090's classifier.
-if [[ "${EASYSTICK_USER_SYSMARK:-0}" == "1" ]]; then
-	if [[ "${EASYSTICK_USER_RESERVE:-0}" != "1" ]]; then
-		echo "EASYSTICK_USER_SYSMARK requires EASYSTICK_USER_RESERVE=1" >&2
+if [[ "${NOMMU_SYSTEM_MARK:-0}" == "1" ]]; then
+	if [[ "${NOMMU_USER_RESERVE:-0}" != "1" ]]; then
+		echo "NOMMU_SYSTEM_MARK requires NOMMU_USER_RESERVE=1" >&2
 		exit 1
 	fi
-	patches+=(0091-easystick-nommu-user-sysmark.patch)
+	patches+=(0091-nommu-user-sysmark.patch)
 fi
 # physmap sizes a non-pow2 mtd-rom reg down to the next lower power of
 # two only for the addr-gpios aperture; with no gpios map the resource
 # at its exact size or a >4 MiB rootfs cannot be mounted.
 patches+=(0092-easystick-physmap-exact-size.patch)
 # C67-L2-STAGE: observe-only SMP breadcrumbs in smpboot.c (no behaviour change).
-if [[ "${EASYSTICK_C67_SMP_STAGE:-0}" == "1" || "${EASYSTICK_C68_CLEAN_RELEASE:-0}" == "1" ]]; then
-	patches+=(0037-easystick-c67-l2-stage-smpboot.patch)
+if [[ "${C67_SMP_STAGE:-0}" == "1" || "${C68_CLEAN_RELEASE:-0}" == "1" ]]; then
+	patches+=(0037-c67-l2-stage-smpboot.patch)
 fi
 # C68-CLEAN-RELEASE: Linux spinwait writes GO to boot-shim c68_release after bootdata.
-if [[ "${EASYSTICK_C68_CLEAN_RELEASE:-0}" == "1" ]]; then
-	patches+=(0038-easystick-c68-clean-release-spinwait.patch)
-	patches+=(0039-easystick-c68-clean-release-smpboot.patch)
-	patches+=(0040-easystick-esp32p4-ipi-provider.patch)
-	patches+=(0041-easystick-esp32p4-ipi-driver.patch)
-	patches+=(0042-easystick-esp32p4-systimer-cpu1.patch)
-	patches+=(0066-easystick-esp32p4-clic-smp-routing.patch)
-	patches+=(0067-easystick-esp32p4-cache-sync-smp-lock.patch)
+if [[ "${C68_CLEAN_RELEASE:-0}" == "1" ]]; then
+	patches+=(0038-c68-clean-release-spinwait.patch)
+	patches+=(0039-c68-clean-release-smpboot.patch)
+	patches+=(0040-esp32p4-ipi-provider.patch)
+	patches+=(0041-esp32p4-ipi-driver.patch)
+	patches+=(0042-esp32p4-systimer-cpu1.patch)
+	patches+=(0066-esp32p4-clic-smp-routing.patch)
+	patches+=(0067-esp32p4-cache-sync-smp-lock.patch)
 	# #5 diagnostic: report a CPU that stops taking interrupts (ES_DEAF).
-	if [[ "${EASYSTICK_C68_DEAF_TRACE:-0}" == "1" ]]; then
-		patches+=(0068-easystick-esp32p4-deaf-cpu-trace.patch)
+	if [[ "${C68_DEAF_TRACE:-0}" == "1" ]]; then
+		patches+=(0068-esp32p4-deaf-cpu-trace.patch)
 	fi
 	# #5 diagnostic: per-CPU trap/mret rings + CPU0 watch (ES5_WATCH).
 	# Records the mcause each mret restores and counts nonzero MPIL.
-	if [[ "${EASYSTICK_C68_MRET_TRACE:-0}" == "1" ]]; then
-		patches+=(0077-easystick-esp32p4-mret-trace.patch)
+	if [[ "${C68_MRET_TRACE:-0}" == "1" ]]; then
+		patches+=(0077-esp32p4-mret-trace.patch)
 	fi
 	# #5 mitigation: MWDT-restart the chip when CPU1 stops taking
 	# interrupts (ES5_RESET), so a latched boot becomes one retry.
-	if [[ "${EASYSTICK_C68_DEAF_RESET:-0}" == "1" ]]; then
-		patches+=(0078-easystick-esp32p4-deaf-reset.patch)
+	if [[ "${C68_DEAF_RESET:-0}" == "1" ]]; then
+		patches+=(0078-esp32p4-deaf-reset.patch)
 	fi
-	if [[ "${EASYSTICK_C68_TIMER_OBSERVE:-0}" == "1" ]]; then
-		patches+=(0044-easystick-esp32p4-systimer-observe-cpu1.patch)
+	if [[ "${C68_TIMER_OBSERVE:-0}" == "1" ]]; then
+		patches+=(0044-esp32p4-systimer-observe-cpu1.patch)
 	fi
-		if [[ "${EASYSTICK_C68_TIMER_LOCK:-0}" == "1" ]]; then
-			patches+=(0045-easystick-esp32p4-systimer-st-conf-lock.patch)
+		if [[ "${C68_TIMER_LOCK:-0}" == "1" ]]; then
+			patches+=(0045-esp32p4-systimer-st-conf-lock.patch)
 		fi
-		if [[ "${EASYSTICK_C68_CONTEXT_OBSERVE:-0}" == "1" ]]; then
-			patches+=(0046-easystick-esp32p4-cpu1-context-observe.patch)
+		if [[ "${C68_CONTEXT_OBSERVE:-0}" == "1" ]]; then
+			patches+=(0046-esp32p4-cpu1-context-observe.patch)
 		fi
-		if [[ "${EASYSTICK_C68_ILLEGAL_OBSERVE:-0}" == "1" ]]; then
-			patches+=(0047-easystick-esp32p4-cpu1-illegal-observe.patch)
+		if [[ "${C68_ILLEGAL_OBSERVE:-0}" == "1" ]]; then
+			patches+=(0047-esp32p4-cpu1-illegal-observe.patch)
 		fi
-		if [[ "${EASYSTICK_C68_L3_SMOKE:-0}" == "1" ]]; then
-			patches+=(0048-easystick-esp32p4-l3-smoke-endpoint.patch)
-			patches+=(0049-easystick-esp32p4-l3-smoke-workqueue.patch)
+		if [[ "${C68_L3_SMOKE:-0}" == "1" ]]; then
+			patches+=(0048-esp32p4-l3-smoke-endpoint.patch)
+			patches+=(0049-esp32p4-l3-smoke-workqueue.patch)
 		fi
-	if [[ "${EASYSTICK_TSENS_LINUX:-0}" == "1" ]]; then
+	if [[ "${TSENS_LINUX:-0}" == "1" ]]; then
 		patches+=(0050-thermal-esp32p4-add-lp-tsens-driver.patch)
 	fi
 fi
 # #5: drop the CLIC interrupt level at IRQ entry so an interrupt that ends
 # in schedule() cannot leave the hart deaf.  The latch hits one CPU as well
 # as two (a killed busy task left CPU0 deaf until the MWDT reset).
-if [[ "${EASYSTICK_C68_IRQ_LEVEL0:-1}" == "1" ]]; then
-	patches+=(0079-easystick-esp32p4-irq-level-drop.patch)
+if [[ "${C68_IRQ_LEVEL0:-1}" == "1" ]]; then
+	patches+=(0079-esp32p4-irq-level-drop.patch)
 fi
 # #5: clear MEXSTATUS.EXPT_VLD at exception entry.  A system call that ends
 # in schedule() can resume a task through an interrupt return, which leaves
 # the bit set, and that task's next fault locks the core up.
-if [[ "${EASYSTICK_C68_EXPT_CLEAR:-1}" == "1" ]]; then
-	patches+=(0081-easystick-esp32p4-expt-clear.patch)
+if [[ "${C68_EXPT_CLEAR:-1}" == "1" ]]; then
+	patches+=(0081-esp32p4-expt-clear.patch)
 fi
 if $network_profile; then
 	patches+=(0002-gpio-esp32p4.patch)
 	patches+=(0007-mmc-dw_mmc-esp32p4-fixes.patch)
 	# PIO is the default for m2/m3 while the NOMMU DMA ring is under
 	# validation; m3-lab defaults to DMA (see the profile block above).  Set
-	# EASYSTICK_SDIO_FORCE_PIO=0 for the board-side DMA comparison; all other
+	# SDIO_FORCE_PIO=0 for the board-side DMA comparison; all other
 	# transport patches remain identical.
-	if [[ "${EASYSTICK_SDIO_FORCE_PIO:-1}" != "0" ]]; then
-		patches+=(0008-easystick-dw-mmc-force-pio.patch)
+	if [[ "${SDIO_FORCE_PIO:-1}" != "0" ]]; then
+		patches+=(0008-dw-mmc-force-pio.patch)
 	fi
-	patches+=(0009-easystick-dw-mmc-divider0.patch)
-	patches+=(0010-easystick-dw-mmc-cmd53-status.patch)
-	patches+=(0011-easystick-dw-mmc-idmac-rx-diagnostics.patch)
+	patches+=(0009-dw-mmc-divider0.patch)
+	patches+=(0010-dw-mmc-cmd53-status.patch)
+	patches+=(0011-dw-mmc-idmac-rx-diagnostics.patch)
 	# Descriptor-coherency A/B.  Off by default so the confirmed no-0010 DMA
 	# baseline is what an unqualified build reproduces; set
-	# EASYSTICK_IDMAC_DESC_INVALIDATE=1 for the single-variable experiment
+	# IDMAC_DESC_INVALIDATE=1 for the single-variable experiment
 	# that invalidates one descriptor cache line before each des0 re-read.
-	if [[ "${EASYSTICK_IDMAC_DESC_INVALIDATE:-0}" == "1" ]]; then
-		patches+=(0012-easystick-dw-mmc-idmac-desc-invalidate.patch)
+	if [[ "${IDMAC_DESC_INVALIDATE:-0}" == "1" ]]; then
+		patches+=(0012-dw-mmc-idmac-desc-invalidate.patch)
 	fi
 	# Production descriptor-ring fix.  Replaces the devm_kzalloc +
 	# virt_to_phys fallback with dma_alloc_noncoherent() and explicit
 	# bidirectional ownership transitions.  It rewrites the same OWN polls
 	# 0012 rewrites, so the two are mutually exclusive by construction.
-	if [[ "${EASYSTICK_IDMAC_NONCOHERENT_RING:-0}" == "1" ]]; then
-		if [[ "${EASYSTICK_IDMAC_DESC_INVALIDATE:-0}" == "1" ]]; then
-			echo "EASYSTICK_IDMAC_NONCOHERENT_RING and EASYSTICK_IDMAC_DESC_INVALIDATE are mutually exclusive" >&2
+	if [[ "${IDMAC_NONCOHERENT_RING:-0}" == "1" ]]; then
+		if [[ "${IDMAC_DESC_INVALIDATE:-0}" == "1" ]]; then
+			echo "IDMAC_NONCOHERENT_RING and IDMAC_DESC_INVALIDATE are mutually exclusive" >&2
 			exit 1
 		fi
-		patches+=(0013-easystick-dw-mmc-idmac-noncoherent-ring.patch)
+		patches+=(0013-dw-mmc-idmac-noncoherent-ring.patch)
 	fi
 	# CMD53-RX descriptor-chunk diagnostic.  Stacks on the 0013 noncoherent
 	# ring (it edits the same descriptor-fill helper 0013 introduces), so
 	# it requires 0013 rather than being independently selectable.  Its own
-	# runtime parameter, easystick_cmd53_rx_desc_bytes, defaults to 0 and
+	# runtime parameter, cmd53_rx_desc_bytes, defaults to 0 and
 	# must be left at that default here; this variable only controls
 	# whether the patch is staged into the kernel source at all.
-	if [[ "${EASYSTICK_CMD53_RX_DESC_BYTES:-0}" == "1" ]]; then
-		if [[ "${EASYSTICK_IDMAC_NONCOHERENT_RING:-0}" != "1" ]]; then
-			echo "EASYSTICK_CMD53_RX_DESC_BYTES requires EASYSTICK_IDMAC_NONCOHERENT_RING=1" >&2
+	if [[ "${CMD53_RX_DESC_BYTES:-0}" == "1" ]]; then
+		if [[ "${IDMAC_NONCOHERENT_RING:-0}" != "1" ]]; then
+			echo "CMD53_RX_DESC_BYTES requires IDMAC_NONCOHERENT_RING=1" >&2
 			exit 1
 		fi
-		patches+=(0014-easystick-dw-mmc-idmac-cmd53-rx-desc-bytes.patch)
+		patches+=(0014-dw-mmc-idmac-cmd53-rx-desc-bytes.patch)
 	fi
 	# Experiment B: error-only CMD53 / DW-MMC provenance capsule.  Replaces
 	# the 0010 per-data-error printk with one ES_MMC record after failed
 	# request completion (cmd_err/data_err/status/idsts/elapsed_us).
 	# Successful CMD53 stays silent.  Off by default.
-	if [[ "${EASYSTICK_DW_MMC_CMD53_ERR_PROV:-0}" == "1" ]]; then
-		if [[ "${EASYSTICK_CMD53_RETENTION_BB:-0}" == "1" ]]; then
-			echo "EASYSTICK_DW_MMC_CMD53_ERR_PROV and EASYSTICK_CMD53_RETENTION_BB are mutually exclusive" >&2
+	if [[ "${DW_MMC_CMD53_ERR_PROV:-0}" == "1" ]]; then
+		if [[ "${CMD53_RETENTION_BB:-0}" == "1" ]]; then
+			echo "DW_MMC_CMD53_ERR_PROV and CMD53_RETENTION_BB are mutually exclusive" >&2
 			exit 1
 		fi
-		patches+=(0051-easystick-dw-mmc-cmd53-err-provenance.patch)
+		patches+=(0051-dw-mmc-cmd53-err-provenance.patch)
 	fi
 	# Experiment C/0053: retention black-box.  Template keeps 0xBBDEAD01u; only
 	# nm-rendered copies from build-cmd53-bb.sh may be applied.
-	if [[ "${EASYSTICK_CMD53_RETENTION_BB:-0}" == "1" ]]; then
-		if [[ -z "${EASYSTICK_KERNEL_PATCH_OVERRIDE_DIR:-}" ]]; then
+	if [[ "${CMD53_RETENTION_BB:-0}" == "1" ]]; then
+		if [[ -z "${KERNEL_PATCH_OVERRIDE_DIR:-}" ]]; then
 			echo "CMD53_BB_GATE_FAIL: use linux/build-cmd53-bb.sh (nm-rendered 0052/0053/0054 required)" >&2
 			exit 1
 		fi
-		patches+=(0052-easystick-dw-mmc-cmd53-retention-bb.patch)
-		patches+=(0053-easystick-mmc-cmd53-post-bb.patch)
-		if [[ "${EASYSTICK_WDT_CRASH_CAPSULE:-1}" == "1" ]]; then
-			patches+=(0054-easystick-wdt-crash-capsule.patch)
+		patches+=(0052-dw-mmc-cmd53-retention-bb.patch)
+		patches+=(0053-mmc-cmd53-post-bb.patch)
+		if [[ "${BOARD_WDT_CRASH_CAPSULE:-1}" == "1" ]]; then
+			patches+=(0054-wdt-crash-capsule.patch)
 			# A requested reboot must not record a WDT capsule (#19).
-			patches+=(0064-easystick-wdt-restart-no-capsule.patch)
+			patches+=(0064-wdt-restart-no-capsule.patch)
 		else
-			echo "CMD53_BB_WARN: skipping 0054 crash capsule (EASYSTICK_WDT_CRASH_CAPSULE=0)" >&2
+			echo "CMD53_BB_WARN: skipping 0054 crash capsule (BOARD_WDT_CRASH_CAPSULE=0)" >&2
 		fi
 		if [[ "$stacktrace_diagnostics" == "1" ]]; then
-			patches+=(0056-easystick-wdt-stacktrace.patch)
+			patches+=(0056-wdt-stacktrace.patch)
 		fi
-		if [[ "${EASYSTICK_WDT_BEAT_BREADCRUMB:-1}" == "1" ]]; then
-			if [[ "${EASYSTICK_WDT_CRASH_CAPSULE:-1}" == "1" ]]; then
-				patches+=(0057-easystick-wdt-beat-breadcrumb.patch)
+		if [[ "${BOARD_WDT_BEAT_BREADCRUMB:-1}" == "1" ]]; then
+			if [[ "${BOARD_WDT_CRASH_CAPSULE:-1}" == "1" ]]; then
+				patches+=(0057-wdt-beat-breadcrumb.patch)
 			else
 				# 0057 depends on 0054 crash-capsule context. Instrument C
 				# on the 184.5s epoch uses 0058 against 0019+0035 only.
-				patches+=(0058-easystick-wdt-beat-nocapsule.patch)
+				patches+=(0058-wdt-beat-nocapsule.patch)
 			fi
 		else
-			echo "CMD53_BB_WARN: skipping 0057/0058 beat breadcrumb (EASYSTICK_WDT_BEAT_BREADCRUMB=0)" >&2
+			echo "CMD53_BB_WARN: skipping 0057/0058 beat breadcrumb (BOARD_WDT_BEAT_BREADCRUMB=0)" >&2
 		fi
 		if [[ "$wdt_inject" == "1" ]]; then
-			patches+=(0059-easystick-wdt-inject.patch)
+			patches+=(0059-wdt-inject.patch)
 		else
-			echo "CMD53_BB_WARN: skipping 0059 WDT injector (EASYSTICK_WDT_INJECT=0)" >&2
+			echo "CMD53_BB_WARN: skipping 0059 WDT injector (BOARD_WDT_INJECT=0)" >&2
 		fi
 	fi
-	patches+=(0055-easystick-sdio-clock-attest.patch)
+	patches+=(0055-sdio-clock-attest.patch)
 	# CMD53 write that gets CMD_DONE but never DATA_OVER: arm the existing
 	# software DTO timer for SEND as well as RECV (recv-only left TX unbounded).
-	patches+=(0060-easystick-dw-mmc-tx-software-dto.patch)
+	patches+=(0060-dw-mmc-tx-software-dto.patch)
 	# 0060 only arms from BH wait sites. If BH does not re-enter after
 	# CMD_DONE, arm the same timer from the write CMD_DONE IRQ instead.
-	patches+=(0061-easystick-dw-mmc-tx-dto-on-cmd-done.patch)
+	patches+=(0061-dw-mmc-tx-dto-on-cmd-done.patch)
 fi
 for patch_name in "${patches[@]}"; do
-	if [[ "$patch_name" == 0000-easystick-esp32-serial-resurrect.patch ||
+	if [[ "$patch_name" == 0000-esp32-serial-resurrect.patch ||
 	      "$patch_name" == 0022-esp32p4-systimer-level-trigger.patch ||
 	      "$patch_name" == 0024-riscv-esp32p4-early-uart-marker.patch ||
 	      "$patch_name" == 0025-esp32p4-usb-jtag-earlycon.patch ||
 	      "$patch_name" == 0026-riscv-esp32p4-boot-markers.patch ||
-	      "$patch_name" == 0027-easystick-headless-uart-console.patch ||
+	      "$patch_name" == 0027-headless-uart-console.patch ||
 	      "$patch_name" == 0028-esp32p4-usb-serial-jtag-acm.patch ||
-	      "$patch_name" == 0062-easystick-esp32p4-usb-acm-tx-bounded-poll.patch ||
-	      "$patch_name" == 0080-easystick-esp32-acm-tx-irq-lock.patch ||
-	      "$patch_name" == 0082-easystick-esp32-acm-tx-irq-console.patch ||
-	      "$patch_name" == 0063-easystick-dwc2-force-pio.patch ||
-	      "$patch_name" == 0008-easystick-dw-mmc-force-pio.patch ||
-	      "$patch_name" == 0009-easystick-dw-mmc-divider0.patch ||
-	      "$patch_name" == 0010-easystick-dw-mmc-cmd53-status.patch ||
-	      "$patch_name" == 0011-easystick-dw-mmc-idmac-rx-diagnostics.patch ||
-	      "$patch_name" == 0012-easystick-dw-mmc-idmac-desc-invalidate.patch ||
-	      "$patch_name" == 0013-easystick-dw-mmc-idmac-noncoherent-ring.patch ||
-	      "$patch_name" == 0014-easystick-dw-mmc-idmac-cmd53-rx-desc-bytes.patch ||
-	      "$patch_name" == 0051-easystick-dw-mmc-cmd53-err-provenance.patch ||
-	      "$patch_name" == 0052-easystick-dw-mmc-cmd53-retention-bb.patch ||
-	      "$patch_name" == 0053-easystick-mmc-cmd53-post-bb.patch ||
-	      "$patch_name" == 0054-easystick-wdt-crash-capsule.patch ||
-	      "$patch_name" == 0057-easystick-wdt-beat-breadcrumb.patch ||
-	      "$patch_name" == 0058-easystick-wdt-beat-nocapsule.patch ||
-	      "$patch_name" == 0059-easystick-wdt-inject.patch ||
-	      "$patch_name" == 0064-easystick-wdt-restart-no-capsule.patch ||
-	      "$patch_name" == 0065-easystick-pstore-ram-nommu.patch ||
-	      "$patch_name" == 0066-easystick-esp32p4-clic-smp-routing.patch ||
-	      "$patch_name" == 0067-easystick-esp32p4-cache-sync-smp-lock.patch ||
-	      "$patch_name" == 0068-easystick-esp32p4-deaf-cpu-trace.patch ||
-	      "$patch_name" == 0069-easystick-execmem-nommu-quiet.patch ||
-	      "$patch_name" == 0070-easystick-nommu-pool-multi-region.patch ||
-	      "$patch_name" == 0071-easystick-nommu-access-ok.patch ||
-	      "$patch_name" == 0072-easystick-esp32p4-bootflash.patch ||
-	      "$patch_name" == 0077-easystick-esp32p4-mret-trace.patch ||
-	      "$patch_name" == 0078-easystick-esp32p4-deaf-reset.patch ||
-	      "$patch_name" == 0079-easystick-esp32p4-irq-level-drop.patch ||
-	      "$patch_name" == 0081-easystick-esp32p4-expt-clear.patch ||
-	      "$patch_name" == 0083-easystick-esp32p4-sigreturn-in-kernel.patch ||
-	      "$patch_name" == 0084-easystick-mmc-sdio-irq-highpri.patch ||
-	      "$patch_name" == 0085-easystick-dw-mmc-fiford-mode.patch ||
-	      "$patch_name" == 0086-easystick-dw-mmc-dma-threshold.patch ||
-	      "$patch_name" == 0087-easystick-dw-mmc-fifo-bounce.patch ||
-	      "$patch_name" == 0056-easystick-wdt-stacktrace.patch ||
-	      "$patch_name" == 0055-easystick-sdio-clock-attest.patch ||
-	      "$patch_name" == 0060-easystick-dw-mmc-tx-software-dto.patch ||
-	      "$patch_name" == 0061-easystick-dw-mmc-tx-dto-on-cmd-done.patch ||
-	      "$patch_name" == 0035-easystick-esp32p4-wdt-feed-observe.patch ||
-	      "$patch_name" == 0036-easystick-tcp22-bidirectional-ledger.patch ||
-	      "$patch_name" == 0037-easystick-c67-l2-stage-smpboot.patch ||
-	      "$patch_name" == 0038-easystick-c68-clean-release-spinwait.patch ||
-	      "$patch_name" == 0039-easystick-c68-clean-release-smpboot.patch ||
-	      "$patch_name" == 0040-easystick-esp32p4-ipi-provider.patch ||
-	      "$patch_name" == 0041-easystick-esp32p4-ipi-driver.patch ||
-	      "$patch_name" == 0042-easystick-esp32p4-systimer-cpu1.patch ||
-	      "$patch_name" == 0044-easystick-esp32p4-systimer-observe-cpu1.patch ||
-	      "$patch_name" == 0045-easystick-esp32p4-systimer-st-conf-lock.patch ||
-	      "$patch_name" == 0046-easystick-esp32p4-cpu1-context-observe.patch ||
-	      "$patch_name" == 0047-easystick-esp32p4-cpu1-illegal-observe.patch ||
-	      "$patch_name" == 0048-easystick-esp32p4-l3-smoke-endpoint.patch ||
-	      "$patch_name" == 0049-easystick-esp32p4-l3-smoke-workqueue.patch ||
+	      "$patch_name" == 0062-esp32p4-usb-acm-tx-bounded-poll.patch ||
+	      "$patch_name" == 0080-esp32-acm-tx-irq-lock.patch ||
+	      "$patch_name" == 0082-esp32-acm-tx-irq-console.patch ||
+	      "$patch_name" == 0063-dwc2-force-pio.patch ||
+	      "$patch_name" == 0008-dw-mmc-force-pio.patch ||
+	      "$patch_name" == 0009-dw-mmc-divider0.patch ||
+	      "$patch_name" == 0010-dw-mmc-cmd53-status.patch ||
+	      "$patch_name" == 0011-dw-mmc-idmac-rx-diagnostics.patch ||
+	      "$patch_name" == 0012-dw-mmc-idmac-desc-invalidate.patch ||
+	      "$patch_name" == 0013-dw-mmc-idmac-noncoherent-ring.patch ||
+	      "$patch_name" == 0014-dw-mmc-idmac-cmd53-rx-desc-bytes.patch ||
+	      "$patch_name" == 0051-dw-mmc-cmd53-err-provenance.patch ||
+	      "$patch_name" == 0052-dw-mmc-cmd53-retention-bb.patch ||
+	      "$patch_name" == 0053-mmc-cmd53-post-bb.patch ||
+	      "$patch_name" == 0054-wdt-crash-capsule.patch ||
+	      "$patch_name" == 0057-wdt-beat-breadcrumb.patch ||
+	      "$patch_name" == 0058-wdt-beat-nocapsule.patch ||
+	      "$patch_name" == 0059-wdt-inject.patch ||
+	      "$patch_name" == 0064-wdt-restart-no-capsule.patch ||
+	      "$patch_name" == 0065-pstore-ram-nommu.patch ||
+	      "$patch_name" == 0066-esp32p4-clic-smp-routing.patch ||
+	      "$patch_name" == 0067-esp32p4-cache-sync-smp-lock.patch ||
+	      "$patch_name" == 0068-esp32p4-deaf-cpu-trace.patch ||
+	      "$patch_name" == 0069-execmem-nommu-quiet.patch ||
+	      "$patch_name" == 0070-nommu-pool-multi-region.patch ||
+	      "$patch_name" == 0071-nommu-access-ok.patch ||
+	      "$patch_name" == 0072-esp32p4-bootflash.patch ||
+	      "$patch_name" == 0077-esp32p4-mret-trace.patch ||
+	      "$patch_name" == 0078-esp32p4-deaf-reset.patch ||
+	      "$patch_name" == 0079-esp32p4-irq-level-drop.patch ||
+	      "$patch_name" == 0081-esp32p4-expt-clear.patch ||
+	      "$patch_name" == 0083-esp32p4-sigreturn-in-kernel.patch ||
+	      "$patch_name" == 0084-mmc-sdio-irq-highpri.patch ||
+	      "$patch_name" == 0085-dw-mmc-fiford-mode.patch ||
+	      "$patch_name" == 0086-dw-mmc-dma-threshold.patch ||
+	      "$patch_name" == 0087-dw-mmc-fifo-bounce.patch ||
+	      "$patch_name" == 0056-wdt-stacktrace.patch ||
+	      "$patch_name" == 0055-sdio-clock-attest.patch ||
+	      "$patch_name" == 0060-dw-mmc-tx-software-dto.patch ||
+	      "$patch_name" == 0061-dw-mmc-tx-dto-on-cmd-done.patch ||
+	      "$patch_name" == 0035-esp32p4-wdt-feed-observe.patch ||
+	      "$patch_name" == 0036-tcp22-bidirectional-ledger.patch ||
+	      "$patch_name" == 0037-c67-l2-stage-smpboot.patch ||
+	      "$patch_name" == 0038-c68-clean-release-spinwait.patch ||
+	      "$patch_name" == 0039-c68-clean-release-smpboot.patch ||
+	      "$patch_name" == 0040-esp32p4-ipi-provider.patch ||
+	      "$patch_name" == 0041-esp32p4-ipi-driver.patch ||
+	      "$patch_name" == 0042-esp32p4-systimer-cpu1.patch ||
+	      "$patch_name" == 0044-esp32p4-systimer-observe-cpu1.patch ||
+	      "$patch_name" == 0045-esp32p4-systimer-st-conf-lock.patch ||
+	      "$patch_name" == 0046-esp32p4-cpu1-context-observe.patch ||
+	      "$patch_name" == 0047-esp32p4-cpu1-illegal-observe.patch ||
+	      "$patch_name" == 0048-esp32p4-l3-smoke-endpoint.patch ||
+	      "$patch_name" == 0049-esp32p4-l3-smoke-workqueue.patch ||
 	      "$patch_name" == 0050-thermal-esp32p4-add-lp-tsens-driver.patch ]]; then
 		src="${firmware_root}/linux/kernel-patches/${patch_name}"
 	else
@@ -1062,8 +1062,8 @@ for patch_name in "${patches[@]}"; do
 		src="${firmware_root}/linux/kernel-patches/${patch_name}"
 	fi
 	if [[ -f "$src" ]]; then
-		override_src="${EASYSTICK_KERNEL_PATCH_OVERRIDE_DIR:-}/${patch_name}"
-		if [[ -n "${EASYSTICK_KERNEL_PATCH_OVERRIDE_DIR:-}" && -f "$override_src" ]]; then
+		override_src="${KERNEL_PATCH_OVERRIDE_DIR:-}/${patch_name}"
+		if [[ -n "${KERNEL_PATCH_OVERRIDE_DIR:-}" && -f "$override_src" ]]; then
 			cp -- "$override_src" "${patch_stage}/${patch_name}"
 		else
 			cp -- "$src" "${patch_stage}/${patch_name}"
@@ -1092,21 +1092,21 @@ printf '%s\n' "stacktrace-diagnostics: ${stacktrace_diagnostics}" >>"${patch_sta
 printf '%s\n' "esp-hosted-cmd52-trace: ${cmd52_trace}" >>"${patch_stage}/SOURCE.txt"
 printf '%s\n' "esp-hosted-cmd52-marker: ${cmd52_marker}" >>"${patch_stage}/SOURCE.txt"
 printf '%s\n' "esp-hosted-cmd52-shot-gate: ${cmd52_marker}" >>"${patch_stage}/SOURCE.txt"
-printf '%s\n' "c68-maxcpus: ${EASYSTICK_C68_MAXCPUS:-1}" >>"${patch_stage}/SOURCE.txt"
-printf '%s\n' "c68-mret-trace: ${EASYSTICK_C68_MRET_TRACE:-0}" >>"${patch_stage}/SOURCE.txt"
-printf '%s\n' "c68-deaf-reset: ${EASYSTICK_C68_DEAF_RESET:-0}" >>"${patch_stage}/SOURCE.txt"
-printf '%s\n' "c68-irq-level0: ${EASYSTICK_C68_IRQ_LEVEL0:-1}" >>"${patch_stage}/SOURCE.txt"
-printf '%s\n' "c68-expt-clear: ${EASYSTICK_C68_EXPT_CLEAR:-1}" >>"${patch_stage}/SOURCE.txt"
+printf '%s\n' "c68-maxcpus: ${C68_MAXCPUS:-1}" >>"${patch_stage}/SOURCE.txt"
+printf '%s\n' "c68-mret-trace: ${C68_MRET_TRACE:-0}" >>"${patch_stage}/SOURCE.txt"
+printf '%s\n' "c68-deaf-reset: ${C68_DEAF_RESET:-0}" >>"${patch_stage}/SOURCE.txt"
+printf '%s\n' "c68-irq-level0: ${C68_IRQ_LEVEL0:-1}" >>"${patch_stage}/SOURCE.txt"
+printf '%s\n' "c68-expt-clear: ${C68_EXPT_CLEAR:-1}" >>"${patch_stage}/SOURCE.txt"
 
 # Linux 6.12+ expects out-of-tree DTS overlays to retain their vendor
 # directory and Makefile.  Keep the board DTS single-sourced in Git, then
 # materialize that tiny vendor tree in generated output for Buildroot.
 rm -rf -- "$dts_stage"
 mkdir -p -- "${dts_stage}/espressif"
-cp -- "${firmware_root}/linux/dts/easystick-stamp-p4.dts" \
-	"${dts_stage}/espressif/easystick-stamp-p4.dts"
+cp -- "${firmware_root}/linux/dts/esp32p4-m5stamp-p4.dts" \
+	"${dts_stage}/espressif/esp32p4-m5stamp-p4.dts"
 if [[ "$wdt_test_timeout_s" != "0" ]]; then
-	python3 - "${dts_stage}/espressif/easystick-stamp-p4.dts" \
+	python3 - "${dts_stage}/espressif/esp32p4-m5stamp-p4.dts" \
 		"$wdt_test_timeout_s" "$wdt_test_no_feed" <<'PY'
 from pathlib import Path
 import sys
@@ -1127,18 +1127,18 @@ path.write_text(text.replace(needle, replacement, 1), encoding="utf-8", newline=
 PY
 fi
 if [[ -n "$sdio_max_identity" ]]; then
-	dts_file="${dts_stage}/espressif/easystick-stamp-p4.dts"
+	dts_file="${dts_stage}/espressif/esp32p4-m5stamp-p4.dts"
 	[[ $(grep -c 'max-frequency = <40000000>;' "$dts_file") == 1 ]] || {
 		echo "SDIO_MAX_GATE_FAIL: expected exactly one 40 MHz max-frequency in the DTS" >&2
 		exit 1
 	}
-	sed -i "s/max-frequency = <40000000>;/max-frequency = <${EASYSTICK_SDIO_MAX_KHZ}000>;/" "$dts_file"
+	sed -i "s/max-frequency = <40000000>;/max-frequency = <${SDIO_MAX_KHZ}000>;/" "$dts_file"
 fi
 if [[ -n "$pstore_identity" ]]; then
 	# 64 KB just below the boot-update request page; the boot-shim does not
 	# load anything there (kernel 0x48000000, DTB 0x48800000, boot FAT
 	# 0x499c0000).
-	dts_file="${dts_stage}/espressif/easystick-stamp-p4.dts"
+	dts_file="${dts_stage}/espressif/esp32p4-m5stamp-p4.dts"
 	[[ $(grep -c 'linux_nommu_pool: nommu-userspace-pool@49a00000 {' "$dts_file") == 1 ]] || {
 		echo "PSTORE_GATE_FAIL: nommu pool node not found in the DTS" >&2
 		exit 1
@@ -1158,8 +1158,8 @@ grep -Fqx -- "CONFIG_SMP=n" "${firmware_root}/linux/linux.config" || {
 	echo "UP kernel config gate failed: source linux.config must keep CONFIG_SMP=n" >&2
 	exit 1
 }
-if grep -q 'cpu@1' "${firmware_root}/linux/dts/easystick-stamp-p4.dts"; then
-	echo "UP DTS gate failed: source easystick-stamp-p4.dts must not contain cpu@1" >&2
+if grep -q 'cpu@1' "${firmware_root}/linux/dts/esp32p4-m5stamp-p4.dts"; then
+	echo "UP DTS gate failed: source esp32p4-m5stamp-p4.dts must not contain cpu@1" >&2
 	exit 1
 fi
 if $network_profile; then
@@ -1194,7 +1194,7 @@ EOF
 fi
 cat >>"${kernel_config_fragment}" <<'EOF'
 
-# Paired with 0074-easystick-72-no-preempt.patch (ARCH_NO_PREEMPT):
+# Paired with 0074-72-no-preempt.patch (ARCH_NO_PREEMPT):
 # keep the 6.18 preemption model through olddefconfig on 7.2.
 CONFIG_PREEMPT_NONE=y
 EOF
@@ -1213,7 +1213,7 @@ EOF
 CONFIG_SERIAL_ESP32_ACM=y
 CONFIG_SERIAL_ESP32_ACM_CONSOLE=y
 EOF
-	if [[ "${EASYSTICK_TSENS_LINUX:-0}" == "1" ]]; then
+	if [[ "${TSENS_LINUX:-0}" == "1" ]]; then
 		cat >>"${kernel_config_fragment}" <<'EOF'
 
 # Experimental ESP32-P4 LP-TSENS bring-up.
@@ -1223,16 +1223,16 @@ CONFIG_ESP32P4_TSENS=y
 EOF
 	fi
 	python3 "${firmware_root}/linux/c68/insert_cpu1.py" \
-		"${dts_stage}/espressif/easystick-stamp-p4.dts" \
+		"${dts_stage}/espressif/esp32p4-m5stamp-p4.dts" \
 		"${firmware_root}/linux/c68/cpu1.dts.inc" \
 		"${firmware_root}/linux/c68/ipi.dts.inc"
-	if [[ "${EASYSTICK_C68_MAXCPUS:-1}" == "2" ]]; then
+	if [[ "${C68_MAXCPUS:-1}" == "2" ]]; then
 		# #5: let CPU1 come up (the C68 default).  "maxcpus=1" ->
 		# "maxcpus=2" is a same-length rewrite, so the DTB layout is
 		# unchanged.  Update both sources: the DT bootargs win on this
 		# kernel (CONFIG_CMDLINE_FORCE is unset); the CONFIG_CMDLINE
 		# copy stays in sync.
-		[[ $(grep -c 'maxcpus=1' "${dts_stage}/espressif/easystick-stamp-p4.dts") == 1 ]] || {
+		[[ $(grep -c 'maxcpus=1' "${dts_stage}/espressif/esp32p4-m5stamp-p4.dts") == 1 ]] || {
 			echo "MAXCPUS_GATE_FAIL: expected exactly one maxcpus=1 in the staged DTS" >&2
 			exit 1
 		}
@@ -1241,11 +1241,11 @@ EOF
 			exit 1
 		}
 		sed -i 's/maxcpus=1/maxcpus=2/' \
-			"${dts_stage}/espressif/easystick-stamp-p4.dts"
+			"${dts_stage}/espressif/esp32p4-m5stamp-p4.dts"
 		sed -i 's/maxcpus=1/maxcpus=2/' "${kernel_config_fragment}"
 	fi
 else
-	if grep -q 'cpu@1' "${dts_stage}/espressif/easystick-stamp-p4.dts"; then
+	if grep -q 'cpu@1' "${dts_stage}/espressif/esp32p4-m5stamp-p4.dts"; then
 		echo "UP DTS gate failed: staged DTB source contains cpu@1" >&2
 		exit 1
 	fi
@@ -1256,7 +1256,7 @@ else
 fi
 cat >"${dts_stage}/espressif/Makefile" <<'EOF'
 # SPDX-License-Identifier: GPL-2.0-only
-dtb-$(CONFIG_ARCH_ESPRESSIF) += easystick-stamp-p4.dtb
+dtb-$(CONFIG_ARCH_ESPRESSIF) += esp32p4-m5stamp-p4.dtb
 EOF
 
 make_args=(
@@ -1269,12 +1269,12 @@ make_args=(
 	BR2_LINUX_KERNEL_CUSTOM_TARBALL=y
 	BR2_LINUX_KERNEL_CUSTOM_TARBALL_LOCATION="file://${linux_tarball}"
 )
-if [[ -n ${EASYSTICK_CCACHE_DIR:-} ]]; then
+if [[ -n ${CCACHE_DIR:-} ]]; then
 	# Keep cache storage outside the repository and make the location explicit
 	# for container/CI callers.  Without this opt-in, Buildroot's default is
 	# the invoking user's home directory and is often ephemeral in a container.
-	export BR2_CCACHE_DIR="${EASYSTICK_CCACHE_DIR}"
-	make_args+=(BR2_CCACHE_DIR="${EASYSTICK_CCACHE_DIR}")
+	export BR2_CCACHE_DIR="${CCACHE_DIR}"
+	make_args+=(BR2_CCACHE_DIR="${CCACHE_DIR}")
 fi
 if $network_profile; then
 	# The package source is selected from the same locked source root as
@@ -1284,14 +1284,14 @@ if $network_profile; then
 	make_args+=(BR2_DL_DIR="${buildroot_root}/dl")
 fi
 
-if [[ -n ${EASYSTICK_BUILDROOT_JLEVEL:-} ]]; then
-	case "$EASYSTICK_BUILDROOT_JLEVEL" in
+if [[ -n ${BUILDROOT_JLEVEL:-} ]]; then
+	case "$BUILDROOT_JLEVEL" in
 		''|*[!0-9]*|0)
-			echo "EASYSTICK_BUILDROOT_JLEVEL must be a positive integer" >&2
+			echo "BUILDROOT_JLEVEL must be a positive integer" >&2
 			exit 2
 			;;
 	esac
-	make_args+=("BR2_JLEVEL=${EASYSTICK_BUILDROOT_JLEVEL}")
+	make_args+=("BR2_JLEVEL=${BUILDROOT_JLEVEL}")
 fi
 
 # sdio-max-khz is left out of profile_identity: it only edits the staged DTS,
@@ -1300,11 +1300,11 @@ fi
 
 # Retention BB PA / rendered-0052 digest must be part of identity so a reused
 # Buildroot tree cannot keep a kernel built against a previous nm PA.
-cmd53_bb_pa_id="${EASYSTICK_CMD53_BB_PA:-none}"
-cmd53_bb_0052_sha_id="${EASYSTICK_CMD53_BB_0052_SHA256:-none}"
-cmd53_bb_0053_sha_id="${EASYSTICK_CMD53_BB_0053_SHA256:-none}"
-cmd53_bb_0054_sha_id="${EASYSTICK_CMD53_BB_0054_SHA256:-none}"
-profile_identity="profile-contract=21 profile=${profile} network=${network_profile} ssh=${ssh_profile} lab=${lab_profile} sdio-default-mhz=${sdio_default_mhz} wdt-test-timeout-s=${wdt_test_timeout_s} wdt-test-no-feed=${wdt_test_no_feed} stacktrace-diagnostics=${stacktrace_diagnostics} stacktrace-module-debug-strip=${stacktrace_diagnostics} esp-hosted-cmd52-trace=${cmd52_trace} esp-hosted-cmd52-marker=${cmd52_marker} ssh-ledger=${EASYSTICK_SSH_LEDGER:-0} tcp22-ledger=${EASYSTICK_TCP22_LEDGER:-0} esp-hosted-tx-ledger=${EASYSTICK_ESPHOSTED_TX_LEDGER:-0} esp-hosted-diagnostics=${EASYSTICK_ESPHOSTED_DIAGNOSTICS:-0} dw-mmc-cmd53-err-prov=${EASYSTICK_DW_MMC_CMD53_ERR_PROV:-0} cmd53-retention-bb=${EASYSTICK_CMD53_RETENTION_BB:-0} cmd53-bb-allow-pio=${cmd53_bb_allow_pio} cmd53-bb-pa=${cmd53_bb_pa_id} cmd53-bb-0052-sha=${cmd53_bb_0052_sha_id} cmd53-bb-0053-sha=${cmd53_bb_0053_sha_id} cmd53-bb-0054-sha=${cmd53_bb_0054_sha_id} force-pio=${EASYSTICK_SDIO_FORCE_PIO:-1} idmac-inv=${EASYSTICK_IDMAC_DESC_INVALIDATE:-0} idmac-nc=${EASYSTICK_IDMAC_NONCOHERENT_RING:-0} cmd53-rx-desc=${EASYSTICK_CMD53_RX_DESC_BYTES:-0} buildroot-jlevel=${EASYSTICK_BUILDROOT_JLEVEL:-auto} c68=${c68_profile} top=${c68_top_profile} stress=${c68_stress_profile} l3=${EASYSTICK_C68_L3_SMOKE:-0} tsens-linux=${EASYSTICK_TSENS_LINUX:-0} tsens-oracle=${EASYSTICK_TSENS_ORACLE:-0}${lab_tools_identity}${pstore_identity}"
+cmd53_bb_pa_id="${CMD53_BB_PA:-none}"
+cmd53_bb_0052_sha_id="${CMD53_BB_0052_SHA256:-none}"
+cmd53_bb_0053_sha_id="${CMD53_BB_0053_SHA256:-none}"
+cmd53_bb_0054_sha_id="${CMD53_BB_0054_SHA256:-none}"
+profile_identity="profile-contract=21 profile=${profile} network=${network_profile} ssh=${ssh_profile} lab=${lab_profile} sdio-default-mhz=${sdio_default_mhz} wdt-test-timeout-s=${wdt_test_timeout_s} wdt-test-no-feed=${wdt_test_no_feed} stacktrace-diagnostics=${stacktrace_diagnostics} stacktrace-module-debug-strip=${stacktrace_diagnostics} esp-hosted-cmd52-trace=${cmd52_trace} esp-hosted-cmd52-marker=${cmd52_marker} ssh-ledger=${SSH_LEDGER:-0} tcp22-ledger=${TCP22_LEDGER:-0} esp-hosted-tx-ledger=${ESPHOSTED_TX_LEDGER:-0} esp-hosted-diagnostics=${ESPHOSTED_DIAGNOSTICS:-0} dw-mmc-cmd53-err-prov=${DW_MMC_CMD53_ERR_PROV:-0} cmd53-retention-bb=${CMD53_RETENTION_BB:-0} cmd53-bb-allow-pio=${cmd53_bb_allow_pio} cmd53-bb-pa=${cmd53_bb_pa_id} cmd53-bb-0052-sha=${cmd53_bb_0052_sha_id} cmd53-bb-0053-sha=${cmd53_bb_0053_sha_id} cmd53-bb-0054-sha=${cmd53_bb_0054_sha_id} force-pio=${SDIO_FORCE_PIO:-1} idmac-inv=${IDMAC_DESC_INVALIDATE:-0} idmac-nc=${IDMAC_NONCOHERENT_RING:-0} cmd53-rx-desc=${CMD53_RX_DESC_BYTES:-0} buildroot-jlevel=${BUILDROOT_JLEVEL:-auto} c68=${c68_profile} top=${c68_top_profile} stress=${c68_stress_profile} l3=${C68_L3_SMOKE:-0} tsens-linux=${TSENS_LINUX:-0} tsens-oracle=${TSENS_ORACLE:-0}${lab_tools_identity}${pstore_identity}"
 
 set_config_value() {
 	local config=$1 key=$2 value=$3
@@ -1354,9 +1354,9 @@ PY
 }
 
 wdt_inject_fail_closed_after_linux() {
-	[[ "${EASYSTICK_CMD53_RETENTION_BB:-0}" == "1" ]] || return 0
-	[[ "${EASYSTICK_WDT_INJECT:-1}" == "1" ]] || {
-		echo "CMD53_BB_WARN: skipping 0059 inject gate (EASYSTICK_WDT_INJECT=0)" >&2
+	[[ "${CMD53_RETENTION_BB:-0}" == "1" ]] || return 0
+	[[ "${BOARD_WDT_INJECT:-1}" == "1" ]] || {
+		echo "CMD53_BB_WARN: skipping 0059 inject gate (BOARD_WDT_INJECT=0)" >&2
 		return 0
 	}
 	local source="${br_output}/build/linux-custom/drivers/watchdog/esp32p4_wdt.c"
@@ -1365,34 +1365,34 @@ wdt_inject_fail_closed_after_linux() {
 		echo "WDT_INJECT_GATE_FAIL: missing $source or $vmlinux" >&2
 		exit 1
 	}
-	contains_binary_text "$source" 'easystick_wdt_inject_spin' || {
-		echo "WDT_INJECT_GATE_FAIL: easystick_wdt_inject_spin missing from source" >&2
+	contains_binary_text "$source" 'wdt_inject_spin' || {
+		echo "WDT_INJECT_GATE_FAIL: wdt_inject_spin missing from source" >&2
 		exit 1
 	}
 	contains_binary_text "$source" 'local_irq_disable();' || {
 		echo "WDT_INJECT_GATE_FAIL: local_irq_disable missing from inject source" >&2
 		exit 1
 	}
-	contains_binary_text "$vmlinux" 'EASYSTICK_WDT INJECT' || {
+	contains_binary_text "$vmlinux" 'BOARD_WDT INJECT' || {
 		echo "WDT_INJECT_GATE_FAIL: INJECT banner missing from vmlinux" >&2
 		exit 1
 	}
 }
 
 wdt_crash_fail_closed_after_linux() {
-	[[ "${EASYSTICK_CMD53_RETENTION_BB:-0}" == "1" ]] || return 0
-	if [[ "${EASYSTICK_WDT_CRASH_CAPSULE:-1}" != "1" ]]; then
-		echo "CMD53_BB_WARN: skipping 0054 fail-closed gate (EASYSTICK_WDT_CRASH_CAPSULE=0)" >&2
+	[[ "${CMD53_RETENTION_BB:-0}" == "1" ]] || return 0
+	if [[ "${BOARD_WDT_CRASH_CAPSULE:-1}" != "1" ]]; then
+		echo "CMD53_BB_WARN: skipping 0054 fail-closed gate (BOARD_WDT_CRASH_CAPSULE=0)" >&2
 		return 0
 	fi
 
-	local patch="${patch_stage}/0054-easystick-wdt-crash-capsule.patch"
+	local patch="${patch_stage}/0054-wdt-crash-capsule.patch"
 	local source="${br_output}/build/linux-custom/drivers/watchdog/esp32p4_wdt.c"
 	local vmlinux="${br_output}/build/linux-custom/vmlinux"
 	local image="${br_output}/images/Image"
 	local attest="${output}/wdt-crash-capsule-attestation.json"
-	local expected_patch_sha="${EASYSTICK_CMD53_BB_0054_SHA256:-}"
-	local expected_bb_pa="${EASYSTICK_CMD53_BB_PA:-}"
+	local expected_patch_sha="${CMD53_BB_0054_SHA256:-}"
+	local expected_bb_pa="${CMD53_BB_PA:-}"
 	local nm="${br_output}/host/bin/riscv32-buildroot-linux-uclibc-nm"
 	local objdump="${br_output}/host/bin/riscv32-buildroot-linux-uclibc-objdump"
 
@@ -1415,7 +1415,7 @@ wdt_crash_fail_closed_after_linux() {
 		exit 1
 	}
 
-	# The source gate below asserts that easystick_capture_crash, the
+	# The source gate below asserts that capture_crash, the
 	# PRETIMEOUT pr_emerg and dump_stack() are all PRESENT.  Presence was
 	# never the problem.  The 2026-08-28 S0 shot lost its capsule because the
 	# print came FIRST and the handler had only 1.000 s before the stage-1
@@ -1482,7 +1482,7 @@ if actual_patch_sha.lower() != expected_patch_sha.lower():
 
 source = Path(source_path).read_text(encoding="utf-8", errors="replace")
 required_source = (
-    "EASYSTICK_CRASH_CAPSULE_MAGIC",
+    "CRASH_CAPSULE_MAGIC",
     "TIMG_WDT_STG1",
     "FIELD_PREP(TIMG_WDT_STG0, TIMG_WDT_STG_SEL_INT)",
     "FIELD_PREP(TIMG_WDT_STG1, TIMG_WDT_STG_SEL_RESET_SYSTEM)",
@@ -1491,13 +1491,13 @@ required_source = (
     "writel(int_ena | TIMG_WDT_INT, wdt->base + TIMG_INT_ENA_TIMERS)",
     "writel(int_ena & ~TIMG_WDT_INT, wdt->base + TIMG_INT_ENA_TIMERS)",
     "devm_request_irq(dev, wdt->irq, esp32p4_wdt_pretimeout",
-    "easystick_capture_crash",
+    "capture_crash",
     "module_param_named(test_no_feed",
-    "if (easystick_wdt_test_no_feed)",
-    'pr_emerg("EASYSTICK_WDT PRETIMEOUT',
-    'pr_emerg("EASYSTICK_WDT CAPSULE_COMMIT',
+    "if (wdt_test_no_feed)",
+    'pr_emerg("BOARD_WDT PRETIMEOUT',
+    'pr_emerg("BOARD_WDT CAPSULE_COMMIT',
 )
-if os.environ.get("EASYSTICK_STACKTRACE_DIAGNOSTICS", "0") == "1":
+if os.environ.get("STACKTRACE_DIAGNOSTICS", "0") == "1":
     required_source += ("dump_stack();",)
 missing_source = [marker for marker in required_source if marker not in source]
 if missing_source:
@@ -1518,7 +1518,7 @@ if nm.returncode:
 symbol_names = (
     "esp32p4_wdt_arm",
     "esp32p4_wdt_pretimeout",
-    "easystick_capture_crash",
+    "capture_crash",
 )
 nm_lines = nm.stdout.splitlines()
 missing_symbols = [
@@ -1543,7 +1543,7 @@ for name in symbol_names:
 
 payload = {
     "schema": 1,
-    "kind": "easystick-wdt-crash-capsule-build-attestation",
+    "kind": "wdt-crash-capsule-build-attestation",
     "patch": {
         "path": patch_path,
         "sha256": actual_patch_sha,
@@ -1576,7 +1576,7 @@ PY
 c68_fail_closed_after_linux() {
 	local kernel_config="${br_output}/build/linux-custom/.config"
 	local image="${br_output}/images/Image"
-	local dtb="${br_output}/images/easystick-stamp-p4.dtb"
+	local dtb="${br_output}/images/esp32p4-m5stamp-p4.dtb"
 	local vmlinux="${br_output}/build/linux-custom/vmlinux"
 	local dtc="${br_output}/host/bin/dtc"
 	[[ -f "$kernel_config" ]] || {
@@ -1617,7 +1617,7 @@ c68_fail_closed_after_linux() {
 				exit 1
 			}
 		fi
-		if [[ "${EASYSTICK_TSENS_LINUX:-0}" == "1" ]]; then
+		if [[ "${TSENS_LINUX:-0}" == "1" ]]; then
 			for expected in \
 				"CONFIG_THERMAL=y" \
 				"CONFIG_THERMAL_OF=y" \
@@ -1655,14 +1655,14 @@ c68_fail_closed_after_linux() {
 			echo "C68_GATE_FAIL: decompiled DTB has no CPU1 SYSTIMER route" >&2
 			exit 1
 		}
-		if [[ "${EASYSTICK_TSENS_LINUX:-0}" == "1" ]]; then
+		if [[ "${TSENS_LINUX:-0}" == "1" ]]; then
 			"$dtc" -I dtb -O dts "$dtb" |
 				grep -Fq 'espressif,esp32p4-tsens' || {
 				echo "C68_GATE_FAIL: decompiled DTB has no ESP32-P4 TSENS node" >&2
 				exit 1
 			}
 		fi
-		if [[ "${EASYSTICK_C68_L3_SMOKE:-0}" == "1" ]]; then
+		if [[ "${C68_L3_SMOKE:-0}" == "1" ]]; then
 			[[ -x "${br_output}/target/usr/sbin/m5stamp-smp-smoke" ]] || {
 				echo "C68_GATE_FAIL: L3 smoke helper is missing from target rootfs" >&2
 				exit 1
@@ -1679,13 +1679,13 @@ c68_fail_closed_after_linux() {
 				}
 			done
 		fi
-		if $c68_stress_profile && [[ "${EASYSTICK_LINUX_ONLY:-0}" != "1" ]]; then
+		if $c68_stress_profile && [[ "${LINUX_ONLY:-0}" != "1" ]]; then
 			[[ -x "${br_output}/target/usr/sbin/m5stamp-smp-stress" ]] || {
 				echo "C68_GATE_FAIL: SMP stress helper is missing from target rootfs" >&2
 				exit 1
 			}
 		fi
-		local ipi_driver_patch="${patch_stage}/0041-easystick-esp32p4-ipi-driver.patch"
+		local ipi_driver_patch="${patch_stage}/0041-esp32p4-ipi-driver.patch"
 		grep -Fq 'riscv_ipi_set_virq_range' "$ipi_driver_patch" || {
 			echo "C68_GATE_FAIL: staged IPI provider does not publish virq range" >&2
 			exit 1
@@ -1694,7 +1694,7 @@ c68_fail_closed_after_linux() {
 			echo "C68_GATE_FAIL: staged IPI provider has no CPU-start ordering hook" >&2
 			exit 1
 		}
-		local timer_patch="${patch_stage}/0042-easystick-esp32p4-systimer-cpu1.patch"
+		local timer_patch="${patch_stage}/0042-esp32p4-systimer-cpu1.patch"
 		grep -Fq 'CPUHP_AP_IRQ_ESP32P4_TIMER_STARTING' "$timer_patch" || {
 			echo "C68_GATE_FAIL: staged SYSTIMER patch has no CPU-start timer hook" >&2
 			exit 1
@@ -1711,8 +1711,8 @@ c68_fail_closed_after_linux() {
 			echo "C68_GATE_FAIL: staged SYSTIMER patch uses target mask for COMPx_LOAD" >&2
 			exit 1
 		fi
-		local timer_lock_patch="${patch_stage}/0045-easystick-esp32p4-systimer-st-conf-lock.patch"
-		if [[ "${EASYSTICK_C68_TIMER_LOCK:-0}" == "1" ]]; then
+		local timer_lock_patch="${patch_stage}/0045-esp32p4-systimer-st-conf-lock.patch"
+		if [[ "${C68_TIMER_LOCK:-0}" == "1" ]]; then
 			grep -Fq 'DEFINE_RAW_SPINLOCK(st_lock)' "$timer_lock_patch" || {
 				echo "C68_GATE_FAIL: staged SYSTIMER lock patch has no shared-register lock" >&2
 				exit 1
@@ -1722,8 +1722,8 @@ c68_fail_closed_after_linux() {
 				exit 1
 			}
 		fi
-		local timer_observe_patch="${patch_stage}/0044-easystick-esp32p4-systimer-observe-cpu1.patch"
-		if [[ "${EASYSTICK_C68_TIMER_OBSERVE:-0}" == "1" ]]; then
+		local timer_observe_patch="${patch_stage}/0044-esp32p4-systimer-observe-cpu1.patch"
+		if [[ "${C68_TIMER_OBSERVE:-0}" == "1" ]]; then
 			grep -Fq 'OBS cpu1-set-next' "$timer_observe_patch" || {
 				echo "C68_GATE_FAIL: timer observe patch has no CPU1 set_next snapshot" >&2
 				exit 1
@@ -1769,8 +1769,8 @@ c68_fail_closed_after_linux() {
 				exit 1
 			}
 		fi
-		local context_observe_patch="${patch_stage}/0046-easystick-esp32p4-cpu1-context-observe.patch"
-		if [[ "${EASYSTICK_C68_CONTEXT_OBSERVE:-0}" == "1" ]]; then
+		local context_observe_patch="${patch_stage}/0046-esp32p4-cpu1-context-observe.patch"
+		if [[ "${C68_CONTEXT_OBSERVE:-0}" == "1" ]]; then
 			grep -Fq 'OBS cpu1-context' "$context_observe_patch" || {
 				echo "C68_GATE_FAIL: CPU1 context observe patch has no switch trace" >&2
 				exit 1
@@ -1780,16 +1780,16 @@ c68_fail_closed_after_linux() {
 				exit 1
 			}
 		fi
-		local illegal_observe_patch="${patch_stage}/0047-easystick-esp32p4-cpu1-illegal-observe.patch"
-		if [[ "${EASYSTICK_C68_ILLEGAL_OBSERVE:-0}" == "1" ]]; then
+		local illegal_observe_patch="${patch_stage}/0047-esp32p4-cpu1-illegal-observe.patch"
+		if [[ "${C68_ILLEGAL_OBSERVE:-0}" == "1" ]]; then
 			grep -Fq 'OBS cpu1-illegal' "$illegal_observe_patch" || {
 				echo "C68_GATE_FAIL: CPU1 illegal observe patch has no trap trace" >&2
 				exit 1
 			}
 		fi
-		local l3_smoke_patch="${patch_stage}/0048-easystick-esp32p4-l3-smoke-endpoint.patch"
-		local l3_workqueue_patch="${patch_stage}/0049-easystick-esp32p4-l3-smoke-workqueue.patch"
-		if [[ "${EASYSTICK_C68_L3_SMOKE:-0}" == "1" ]]; then
+		local l3_smoke_patch="${patch_stage}/0048-esp32p4-l3-smoke-endpoint.patch"
+		local l3_workqueue_patch="${patch_stage}/0049-esp32p4-l3-smoke-workqueue.patch"
+		if [[ "${C68_L3_SMOKE:-0}" == "1" ]]; then
 			grep -Fq '/proc/m5stamp_smp_smoke' "$l3_smoke_patch" || {
 				echo "C68_GATE_FAIL: L3 smoke patch has no proc endpoint" >&2
 				exit 1
@@ -1820,7 +1820,7 @@ c68_fail_closed_after_linux() {
 			}
 		fi
 		grep -Fq '<&clic0 23 54 IRQ_TYPE_LEVEL_HIGH>' \
-			"${dts_stage}/espressif/easystick-stamp-p4.dts" || {
+			"${dts_stage}/espressif/esp32p4-m5stamp-p4.dts" || {
 			echo "C68_GATE_FAIL: staged DTS has no CPU1 SYSTIMER target1 route" >&2
 			exit 1
 		}
@@ -1838,12 +1838,12 @@ if smpboot.index("notify_cpu_starting") > smpboot.index("riscv_ipi_enable"):
 PY
 		local f
 		for f in \
-			"${patch_stage}/0038-easystick-c68-clean-release-spinwait.patch" \
-			"${patch_stage}/0039-easystick-c68-clean-release-smpboot.patch" \
-			"${patch_stage}/0040-easystick-esp32p4-ipi-provider.patch" \
-			"${patch_stage}/0041-easystick-esp32p4-ipi-driver.patch" \
-			"${patch_stage}/0042-easystick-esp32p4-systimer-cpu1.patch" \
-			"${patch_stage}/0049-easystick-esp32p4-l3-smoke-workqueue.patch" \
+			"${patch_stage}/0038-c68-clean-release-spinwait.patch" \
+			"${patch_stage}/0039-c68-clean-release-smpboot.patch" \
+			"${patch_stage}/0040-esp32p4-ipi-provider.patch" \
+			"${patch_stage}/0041-esp32p4-ipi-driver.patch" \
+			"${patch_stage}/0042-esp32p4-systimer-cpu1.patch" \
+			"${patch_stage}/0049-esp32p4-l3-smoke-workqueue.patch" \
 			"$vmlinux" "$image"; do
 			[[ -f "$f" ]] || continue
 			if contains_c68dead "$f"; then
@@ -1903,24 +1903,24 @@ PY
 			l3_smoke_manifest="$l3_smoke_patch"
 		fi
 		local tsens_linux_manifest=""
-		if [[ "${EASYSTICK_TSENS_LINUX:-0}" == "1" &&
+		if [[ "${TSENS_LINUX:-0}" == "1" &&
 			-f "${patch_stage}/0050-thermal-esp32p4-add-lp-tsens-driver.patch" ]]; then
 			tsens_linux_manifest="${patch_stage}/0050-thermal-esp32p4-add-lp-tsens-driver.patch"
 		fi
 		python3 - "$manifest_in" "$kernel_config" "$image" "$dtb" "$vmlinux" \
-			"${EASYSTICK_C68_BOOT_SHIM_BIN:-}" "${EASYSTICK_C68_BOOT_SHIM_ELF:-}" \
-			"${patch_stage}/0038-easystick-c68-clean-release-spinwait.patch" \
-			"${patch_stage}/0039-easystick-c68-clean-release-smpboot.patch" \
-			"${patch_stage}/0040-easystick-esp32p4-ipi-provider.patch" \
-			"${patch_stage}/0041-easystick-esp32p4-ipi-driver.patch" \
-			"${patch_stage}/0042-easystick-esp32p4-systimer-cpu1.patch" \
+			"${C68_BOOT_SHIM_BIN:-}" "${C68_BOOT_SHIM_ELF:-}" \
+			"${patch_stage}/0038-c68-clean-release-spinwait.patch" \
+			"${patch_stage}/0039-c68-clean-release-smpboot.patch" \
+			"${patch_stage}/0040-esp32p4-ipi-provider.patch" \
+			"${patch_stage}/0041-esp32p4-ipi-driver.patch" \
+			"${patch_stage}/0042-esp32p4-systimer-cpu1.patch" \
 			"$timer_lock_manifest" \
 			"$context_observe_manifest" \
 			"$illegal_observe_manifest" \
 			"$timer_observe_manifest" \
 			"$l3_smoke_manifest" \
 			"$tsens_linux_manifest" \
-			"${dts_stage}/espressif/easystick-stamp-p4.dts" \
+			"${dts_stage}/espressif/esp32p4-m5stamp-p4.dts" \
 			"${kernel_config_fragment}" <<'PY'
 import json, os, sys
 from pathlib import Path
@@ -1956,9 +1956,9 @@ if shim_elf:
     files["boot_shim_elf"] = shim_elf
 payload = {
     "profile": "c68-clean-release",
-    "release_pa": os.environ.get("EASYSTICK_C68_RELEASE_PA", ""),
-    "stage_pa": os.environ.get("EASYSTICK_C68_STAGE_PA", ""),
-    "entry_pa": os.environ.get("EASYSTICK_C68_ENTRY_PA", ""),
+    "release_pa": os.environ.get("C68_RELEASE_PA", ""),
+    "stage_pa": os.environ.get("C68_STAGE_PA", ""),
+    "entry_pa": os.environ.get("C68_ENTRY_PA", ""),
     "files": files,
     "kernel_config_digest_note": "sha256 recorded by write_manifest.py",
 }
@@ -1997,7 +1997,7 @@ profile_fail_closed_after_rootfs() {
 			"${target}/etc/init.d/S01seedrng" \
 			"${target}/etc/init.d/S40network" \
 			"${target}/etc/init.d/S41timesync" \
-			"${target}/usr/sbin/easystick-sdio-diag"; do
+			"${target}/usr/sbin/sdio-diag"; do
 			[[ ! -e "$stale" ]] || {
 				echo "profile gate failed: non-network rootfs contains ${stale}" >&2
 				exit 1
@@ -2013,9 +2013,9 @@ profile_fail_closed_after_rootfs() {
 		if $lab_profile; then
 			for required in \
 				"${target}/etc/init.d/S45bootsync" \
-				"${target}/usr/sbin/easystick-bootsync" \
-				"${target}/usr/sbin/easystick-usb-lun" \
-				"${target}/usr/sbin/easystick-update-status"; do
+				"${target}/usr/sbin/bootsyncd" \
+				"${target}/usr/sbin/usb-lun" \
+				"${target}/usr/sbin/update-status"; do
 				[[ -x "$required" ]] || {
 					echo "m3-lab rootfs check failed: required executable missing or not executable: ${required}" >&2
 					exit 1
@@ -2030,7 +2030,7 @@ profile_fail_closed_after_rootfs() {
 		}
 		for stale in \
 			"${target}/etc/init.d/S50dropbear" \
-			"${target}/etc/init.d/S85easystick-ssh" \
+			"${target}/etc/init.d/S85ssh" \
 			"${target}/usr/sbin/dropbear" \
 			"${target}/usr/bin/dropbear" \
 			"${target}/etc/dropbear"; do
@@ -2041,7 +2041,7 @@ profile_fail_closed_after_rootfs() {
 		done
 	fi
 
-	if [[ "${EASYSTICK_C68_L3_SMOKE:-0}" == "1" ]]; then
+	if [[ "${C68_L3_SMOKE:-0}" == "1" ]]; then
 		grep -Fqx -- "BR2_PACKAGE_M5STAMP_SMP_SMOKE=y" "$config" || {
 			echo "profile gate failed: L3 profile has no M5Stamp smoke package" >&2
 			exit 1
@@ -2092,7 +2092,7 @@ profile_fail_closed_after_rootfs() {
 
 if $print_only; then
 	echo "${profile^^} preflight passed; would run:"
-	printf '  make'; printf ' %q' "${make_args[@]}"; echo " easystick_stamp_p4_defconfig"
+	printf '  make'; printf ' %q' "${make_args[@]}"; echo " stamp_p4_defconfig"
 	printf '  make'; printf ' %q' "${make_args[@]}"; echo " olddefconfig"
 	printf '  make'; printf ' %q' "${make_args[@]}"; echo " all"
 	exit 0
@@ -2113,8 +2113,8 @@ if [[ ! -s "$linux_tarball" ]]; then
 	mv -f -- "$linux_tarball_tmp" "$linux_tarball"
 fi
 
-if [[ "${EASYSTICK_CMD53_BB_SKIP_BR_CLEAN:-0}" == "1" ]]; then
-	echo "CMD53_BB: skipping Buildroot clean (EASYSTICK_CMD53_BB_SKIP_BR_CLEAN=1); linux-dirclean still applies" >&2
+if [[ "${CMD53_BB_SKIP_BR_CLEAN:-0}" == "1" ]]; then
+	echo "CMD53_BB: skipping Buildroot clean (CMD53_BB_SKIP_BR_CLEAN=1); linux-dirclean still applies" >&2
 	# Keep stamp in sync so a later non-skip rebuild still sees the real identity.
 	mkdir -p -- "$(dirname -- "$profile_stamp")"
 	printf '%s\n' "$profile_identity" >"$profile_stamp"
@@ -2125,7 +2125,7 @@ elif [[ -d "$br_output" && ! -f "$profile_stamp" &&
 	echo "Buildroot output has no profile stamp; cleaning ${br_output}" >&2
 	make "${make_args[@]}" clean
 fi
-if [[ "${EASYSTICK_CMD53_BB_SKIP_BR_CLEAN:-0}" != "1" && -f "$profile_stamp" ]]; then
+if [[ "${CMD53_BB_SKIP_BR_CLEAN:-0}" != "1" && -f "$profile_stamp" ]]; then
 	previous_profile=""
 	previous_profile=$(<"$profile_stamp")
 	if [[ "$previous_profile" != "$profile_identity" ]]; then
@@ -2135,7 +2135,7 @@ if [[ "${EASYSTICK_CMD53_BB_SKIP_BR_CLEAN:-0}" != "1" && -f "$profile_stamp" ]];
 	fi
 fi
 
-make "${make_args[@]}" easystick_stamp_p4_defconfig
+make "${make_args[@]}" stamp_p4_defconfig
 # Buildroot's defconfig intentionally contains the board defaults only.  Lock
 # the source revision and patch staging path in the generated output so the
 # repository does not duplicate a moving hash or vendor reference patches.
@@ -2147,45 +2147,45 @@ set_config_value "${br_output}/.config" BR2_LINUX_KERNEL_PATCH "\"${patch_stage}
 set_config_value "${br_output}/.config" BR2_LINUX_KERNEL_USE_CUSTOM_CONFIG y
 set_config_value "${br_output}/.config" BR2_LINUX_KERNEL_CUSTOM_CONFIG_FILE "\"${firmware_root}/linux/linux.config\""
 set_config_value "${br_output}/.config" BR2_LINUX_KERNEL_DTS_SUPPORT y
-set_config_value "${br_output}/.config" BR2_LINUX_KERNEL_INTREE_DTS_NAME '\"espressif/easystick-stamp-p4\"'
+set_config_value "${br_output}/.config" BR2_LINUX_KERNEL_INTREE_DTS_NAME '\"espressif/stamp-p4\"'
 set_config_value "${br_output}/.config" BR2_LINUX_KERNEL_CUSTOM_DTS_PATH "# BR2_LINUX_KERNEL_CUSTOM_DTS_PATH is not set"
 set_config_value "${br_output}/.config" BR2_LINUX_KERNEL_CUSTOM_DTS_DIR "\"${dts_stage}\""
 set_config_value "${br_output}/.config" BR2_RISCV_USE_MMU "# BR2_RISCV_USE_MMU is not set"
 set_config_value "${br_output}/.config" BR2_BINFMT_FLAT y
 if $network_profile; then
-	set_config_value "${br_output}/.config" BR2_PACKAGE_EASYSTICK_STAMP_P4_M2 y
-	set_config_value "${br_output}/.config" BR2_PACKAGE_EASYSTICK_STAMP_P4_M1 "# BR2_PACKAGE_EASYSTICK_STAMP_P4_M1 is not set"
+	set_config_value "${br_output}/.config" BR2_PACKAGE_STAMP_P4_M2 y
+	set_config_value "${br_output}/.config" BR2_PACKAGE_STAMP_P4_M1 "# BR2_PACKAGE_STAMP_P4_M1 is not set"
 	set_config_value "${br_output}/.config" BR2_PACKAGE_ESP_HOSTED_NG y
 	set_config_value "${br_output}/.config" BR2_PACKAGE_IW y
 	set_config_value "${br_output}/.config" BR2_GLOBAL_PATCH_DIR "\"${global_patch_stage}\""
 else
-	set_config_value "${br_output}/.config" BR2_PACKAGE_EASYSTICK_STAMP_P4_M2 "# BR2_PACKAGE_EASYSTICK_STAMP_P4_M2 is not set"
-	set_config_value "${br_output}/.config" BR2_PACKAGE_EASYSTICK_STAMP_P4_M1 y
+	set_config_value "${br_output}/.config" BR2_PACKAGE_STAMP_P4_M2 "# BR2_PACKAGE_STAMP_P4_M2 is not set"
+	set_config_value "${br_output}/.config" BR2_PACKAGE_STAMP_P4_M1 y
 	set_config_value "${br_output}/.config" BR2_PACKAGE_ESP_HOSTED_NG "# BR2_PACKAGE_ESP_HOSTED_NG is not set"
 	set_config_value "${br_output}/.config" BR2_PACKAGE_IW "# BR2_PACKAGE_IW is not set"
 	set_config_value "${br_output}/.config" BR2_GLOBAL_PATCH_DIR "# BR2_GLOBAL_PATCH_DIR is not set"
 fi
-if [[ "${EASYSTICK_C68_L3_SMOKE:-0}" == "1" ]]; then
+if [[ "${C68_L3_SMOKE:-0}" == "1" ]]; then
 	[[ "$c68_profile" == true ]] || {
-		echo "L3 smoke requires EASYSTICK_C68_CLEAN_RELEASE=1" >&2
+		echo "L3 smoke requires C68_CLEAN_RELEASE=1" >&2
 		exit 1
 	}
-	[[ "${EASYSTICK_LINUX_ONLY:-0}" != "1" ]] || {
-		echo "L3 smoke requires a full Buildroot build, not EASYSTICK_LINUX_ONLY=1" >&2
+	[[ "${LINUX_ONLY:-0}" != "1" ]] || {
+		echo "L3 smoke requires a full Buildroot build, not LINUX_ONLY=1" >&2
 		exit 1
 	}
 	set_config_value "${br_output}/.config" BR2_PACKAGE_M5STAMP_SMP_SMOKE y
 fi
 if $c68_stress_profile; then
 	[[ "$c68_profile" == true ]] || {
-		echo "C68 stress requires EASYSTICK_C68_CLEAN_RELEASE=1" >&2
+		echo "C68 stress requires C68_CLEAN_RELEASE=1" >&2
 		exit 1
 	}
-	[[ "${EASYSTICK_C68_L3_SMOKE:-0}" == "1" ]] || {
-		echo "C68 stress requires EASYSTICK_C68_L3_SMOKE=1" >&2
+	[[ "${C68_L3_SMOKE:-0}" == "1" ]] || {
+		echo "C68 stress requires C68_L3_SMOKE=1" >&2
 		exit 1
 	}
-	[[ "${EASYSTICK_LINUX_ONLY:-0}" != "1" ]] || {
+	[[ "${LINUX_ONLY:-0}" != "1" ]] || {
 		echo "C68 stress requires a full Buildroot build" >&2
 		exit 1
 	}
@@ -2193,20 +2193,20 @@ if $c68_stress_profile; then
 else
 	set_config_value "${br_output}/.config" BR2_PACKAGE_M5STAMP_SMP_STRESS "# BR2_PACKAGE_M5STAMP_SMP_STRESS is not set"
 fi
-if [[ "${EASYSTICK_C68_L3_SMOKE:-0}" != "1" ]]; then
+if [[ "${C68_L3_SMOKE:-0}" != "1" ]]; then
 	set_config_value "${br_output}/.config" BR2_PACKAGE_M5STAMP_SMP_SMOKE "# BR2_PACKAGE_M5STAMP_SMP_SMOKE is not set"
 fi
 
-rootfs_overlay="${external_root}/board/easystick-stamp-p4/rootfs-overlay"
-post_build_scripts="${external_root}/board/easystick-stamp-p4/post-build.sh"
-users_table="${external_root}/board/easystick-stamp-p4/users.txt"
+rootfs_overlay="${external_root}/board/stamp-p4/rootfs-overlay"
+post_build_scripts="${external_root}/board/stamp-p4/post-build.sh"
+users_table="${external_root}/board/stamp-p4/users.txt"
 busybox_fragments=""
 if $network_profile; then
 	# M2 loads esp32_sdio.ko from S40network.  Keep the module-loader
 	# applets enabled even when no SSH profile is selected; otherwise the
 	# script's deliberately swallowed `modprobe` failure leaves SDIO
 	# discovery looking healthy while wlan0 can never appear.
-	busybox_fragments="${external_root}/board/easystick-stamp-p4/busybox.fragment"
+	busybox_fragments="${external_root}/board/stamp-p4/busybox.fragment"
 fi
 if $ssh_profile; then
 	rootfs_overlay="${rootfs_overlay} ${m3_stage}/rootfs-overlay"
@@ -2229,7 +2229,7 @@ if $ssh_profile; then
 	if $lab_tools; then
 		# Lab needs dbclient for loopback SSH proof and tcpdump for
 		# directional ARP/ICMP/TCP/22 evidence.  Production m3 and
-		# EASYSTICK_LAB_TOOLS=0 stay client-less.
+		# LAB_TOOLS=0 stay client-less.
 		set_config_value "${br_output}/.config" BR2_PACKAGE_DROPBEAR_CLIENT y
 		set_config_value "${br_output}/.config" BR2_PACKAGE_LIBPCAP y
 		set_config_value "${br_output}/.config" BR2_PACKAGE_TCPDUMP y
@@ -2258,13 +2258,13 @@ if $lab_profile; then
 	# The PSRAM-to-flash A/B commit request is deliberately restricted to the
 	# m3-lab USB configuration workflow.  Other profiles may read the boot
 	# image, but cannot stage a durable replacement.
-	set_config_value "${br_output}/.config" BR2_PACKAGE_EASYSTICK_BOOT_COMMIT y
+	set_config_value "${br_output}/.config" BR2_PACKAGE_BOOT_COMMIT y
 	# Signed regulatory.db for country= in config.txt (#32).
 	set_config_value "${br_output}/.config" BR2_PACKAGE_WIRELESS_REGDB y
 	# <hostname>.local (#25); mdnsd/avahi need fork().
-	set_config_value "${br_output}/.config" BR2_PACKAGE_EASYSTICK_MDNS y
+	set_config_value "${br_output}/.config" BR2_PACKAGE_MDNSD y
 	# Respawn daemons without a resident BusyBox subshell each.
-	set_config_value "${br_output}/.config" BR2_PACKAGE_EASYSTICK_RESPAWN y
+	set_config_value "${br_output}/.config" BR2_PACKAGE_RESPAWN y
 	# init, inetd, syslogd and udhcpd from a minimal second BusyBox (#23).
 	set_config_value "${br_output}/.config" BR2_PACKAGE_BUSYBOX_DAEMONS y
 	# A setuid su-only BusyBox: m5 -> root over SSH (#37).
@@ -2274,11 +2274,11 @@ if $lab_profile; then
 	# udhcpc alone in a dedicated BusyBox so the lease-lifetime process
 	# keeps ~300 KB of pool that the full image would pin (#45).
 	set_config_value "${br_output}/.config" BR2_PACKAGE_BUSYBOX_UDHCPC y
-	# PR_EASYSTICK_SYSTEM wrapper so system scripts keep system-side
+	# PR_SET_SYSTEM_WORK wrapper so system scripts keep system-side
 	# NOMMU classification when a user starts them (#50 round 4).
-	set_config_value "${br_output}/.config" BR2_PACKAGE_EASYSTICK_SYS y
+	set_config_value "${br_output}/.config" BR2_PACKAGE_RUN_SYSTEM y
 else
-	set_config_value "${br_output}/.config" BR2_PACKAGE_EASYSTICK_BOOT_COMMIT "# BR2_PACKAGE_EASYSTICK_BOOT_COMMIT is not set"
+	set_config_value "${br_output}/.config" BR2_PACKAGE_BOOT_COMMIT "# BR2_PACKAGE_BOOT_COMMIT is not set"
 fi
 set_config_value "${br_output}/.config" BR2_ROOTFS_OVERLAY "\"${rootfs_overlay}\""
 set_config_value "${br_output}/.config" BR2_ROOTFS_POST_BUILD_SCRIPT "\"${post_build_scripts}\""
@@ -2326,12 +2326,12 @@ if $ssh_profile; then
 	# header even when BR2_PACKAGE_DROPBEAR_LOCALOPTIONS_FILE changes.
 	make "${make_args[@]}" dropbear-dirclean
 fi
-if [[ "${EASYSTICK_C68_L3_SMOKE:-0}" == "1" ]]; then
+if [[ "${C68_L3_SMOKE:-0}" == "1" ]]; then
 	# The L3 endpoint is a kernel patch, so a reused linux-custom tree can
 	# otherwise retain the previous 0045+0047 image without applying 0048.
 	make "${make_args[@]}" linux-dirclean
 fi
-if [[ "${EASYSTICK_CMD53_RETENTION_BB:-0}" == "1" ]]; then
+if [[ "${CMD53_RETENTION_BB:-0}" == "1" ]]; then
 	# nm PA is baked into rendered 0052. A reused linux-custom tree can keep
 	# a previous PA even when profile_identity also lists the new one, so
 	# retention BB always discards the kernel build directory.
@@ -2341,16 +2341,16 @@ fi
 # linux-custom tree would silently keep the previous series when a patch is
 # added, removed or edited, so discard it whenever the staged series changes.
 kernel_patch_sum=$(cd "$patch_stage" && sha256sum -- * | sha256sum | cut -d' ' -f1)
-kernel_patch_stamp="${br_output}/.easystick-kernel-patches.sha256"
+kernel_patch_stamp="${br_output}/.kernel-patches.sha256"
 if [[ "$(cat "$kernel_patch_stamp" 2>/dev/null)" != "$kernel_patch_sum" ]]; then
 	make "${make_args[@]}" linux-dirclean
 	echo "$kernel_patch_sum" >"$kernel_patch_stamp"
 fi
 # The staged DTS is rsynced into the kernel tree only by the build step, so a
-# changed DTS (a repository edit or EASYSTICK_SDIO_MAX_KHZ) needs linux-rebuild
+# changed DTS (a repository edit or SDIO_MAX_KHZ) needs linux-rebuild
 # to reach the DTB; Buildroot does not track it.
 dts_sum=$(cd "$dts_stage" && find . -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1)
-dts_stamp="${br_output}/.easystick-dts.sha256"
+dts_stamp="${br_output}/.dts.sha256"
 if [[ "$(cat "$dts_stamp" 2>/dev/null)" != "$dts_sum" ]]; then
 	if [[ -f "${br_output}/build/linux-custom/.stamp_built" ]]; then
 		echo "Staged DTS changed; rebuilding the kernel and DTB" >&2
@@ -2368,13 +2368,13 @@ for pkg_dir in "$external_root"/package/*/; do
 	pkg_name=$(basename -- "$pkg_dir")
 	[[ -f "${pkg_dir}/${pkg_name}.mk" ]] || continue
 	pkg_sum=$(cd "$pkg_dir" && find . -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1)
-	pkg_stamp="${br_output}/.easystick-pkg-${pkg_name}.sha256"
+	pkg_stamp="${br_output}/.pkg-${pkg_name}.sha256"
 	if [[ "$(cat "$pkg_stamp" 2>/dev/null)" != "$pkg_sum" ]]; then
 		make "${make_args[@]}" "${pkg_name}-dirclean"
 		echo "$pkg_sum" >"$pkg_stamp"
 	fi
 done
-if [[ "${EASYSTICK_LINUX_ONLY:-0}" == "1" ]]; then
+if [[ "${LINUX_ONLY:-0}" == "1" ]]; then
 	make "${make_args[@]}" linux-dirclean
 	make "${make_args[@]}" linux
 	wdt_crash_fail_closed_after_linux
@@ -2456,10 +2456,10 @@ if $ssh_profile; then
 	}
 	if $lab_profile; then
 		for expected in \
-			"BR2_PACKAGE_EASYSTICK_BOOT_COMMIT=y" \
+			"BR2_PACKAGE_BOOT_COMMIT=y" \
 			"BR2_PACKAGE_WIRELESS_REGDB=y" \
-			"BR2_PACKAGE_EASYSTICK_MDNS=y" \
-			"BR2_PACKAGE_EASYSTICK_RESPAWN=y" \
+			"BR2_PACKAGE_MDNSD=y" \
+			"BR2_PACKAGE_RESPAWN=y" \
 			"BR2_PACKAGE_BUSYBOX_DAEMONS=y" \
 			"BR2_PACKAGE_BUSYBOX_SU=y" \
 			"BR2_PACKAGE_BUSYBOX_TOOLS=y" \
@@ -2469,7 +2469,7 @@ if $ssh_profile; then
 				exit 1
 			}
 		done
-		[[ -x "${br_output}/target/usr/sbin/easystick-boot-commit" ]] || {
+		[[ -x "${br_output}/target/usr/sbin/boot-commit" ]] || {
 			echo "m3-lab check failed: boot commit helper missing" >&2
 			exit 1
 		}
@@ -2565,7 +2565,7 @@ if $ssh_profile; then
 				usr/bin/micropython usr/bin/python usr/bin/python3 \
 				usr/bin/dropbearconvert usr/bin/nc; do
 				[[ ! -e "${br_output}/target/${stale}" && ! -L "${br_output}/target/${stale}" ]] || {
-					echo "m3-lab check failed: EASYSTICK_LAB_TOOLS=0 image still has /${stale}" >&2
+					echo "m3-lab check failed: LAB_TOOLS=0 image still has /${stale}" >&2
 					exit 1
 				}
 			done
@@ -2617,7 +2617,7 @@ fi
 
 profile_fail_closed_after_rootfs
 printf '%s\n' "$profile_identity" >"$profile_stamp"
-if [[ ${EASYSTICK_LEGAL_INFO:-0} == 1 ]]; then
+if [[ ${LEGAL_INFO:-0} == 1 ]]; then
 	rm -rf -- "${br_output}/legal-info"
 	make "${make_args[@]}" legal-info
 fi

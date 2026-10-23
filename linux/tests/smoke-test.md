@@ -44,13 +44,13 @@ python3 linux/tests/check-boot-log.py --after-reboot reboot.bin
 ## 3. Services and listeners
 
 ```sh
-easystick-info
+sysinfo
 netstat -ltnu            # 0.0.0.0:22 LISTEN (inetd); udhcpd on :67 in SoftAP mode
-ps | grep -E 'inetd|udhcpd|wpa_supplicant|easystick-(bootsync|mdns)'
+ps | grep -E 'inetd|udhcpd|wpa_supplicant|(bootsync|mdns)'
 ```
 
 Then from a Wi-Fi client: `ssh m5@192.168.4.1` (SoftAP) and
-`ssh m5@easystick.local` (mDNS, #25; the `hostname=` value if set).
+`ssh m5@stamp-p4.local` (mDNS, #25; the `hostname=` value if set).
 
 ## 4. Services come back (#17, #29)
 
@@ -89,13 +89,13 @@ while :; do date; grep MemAvailable /proc/meminfo; cat /proc/loadavg; read -t 60
 (`mkfifo /run/.soak` first; `read -t` on a FIFO avoids an exec per sample.)
 MemAvailable must not trend downwards.
 
-## 7. SDIO clock (images built with `EASYSTICK_SDIO_MAX_KHZ`, #21)
+## 7. SDIO clock (images built with `SDIO_MAX_KHZ`, #21)
 
 Record `dmesg | grep ES_SDIO_CLOCK` (root console; it is below the console loglevel),
 time a 1 MB `scp` in both directions, and repeat steps 1, 4 and 6.  Only a
 rate that passes all of them should become the DTS default.
 
-## 8. pstore (default since #26; skip for `EASYSTICK_PSTORE=0` images)
+## 8. pstore (default since #26; skip for `PSTORE=0` images)
 
 ```sh
 echo c > /proc/sysrq-trigger     # deliberate panic; sysrq is only in this image

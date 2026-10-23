@@ -1,8 +1,8 @@
 [CmdletBinding()]
 param(
-    [string]$C6Source = 'D:\Users\Developer\easystick-tmp-20260820\p1-esp-hosted-mcu',
+    [string]$C6Source = 'D:\Users\Developer\tmp-20260820\p1-esp-hosted-mcu',
     [string]$IdfSource = '',
-    [string]$BuildDirectory = 'D:\Users\Developer\easystick-tmp-20260820\build-p1-c6'
+    [string]$BuildDirectory = 'D:\Users\Developer\tmp-20260820\build-p1-c6'
 )
 
 $ErrorActionPreference = 'Stop'

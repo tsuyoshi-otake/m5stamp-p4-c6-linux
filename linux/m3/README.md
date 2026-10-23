@@ -12,8 +12,8 @@ per-device Ed25519 host keys.  The server is started only when all of the
 following are true:
 
 - the board-specific writable `/config` mount is present;
-- `/config/easystick/p4/.ssh/authorized_keys` contains an OpenSSH public key;
-- `/config/easystick/dropbear/dropbear_ed25519_host_key` exists (generated on
+- `/config/stamp-p4/p4/.ssh/authorized_keys` contains an OpenSSH public key;
+- `/config/stamp-p4/dropbear/dropbear_ed25519_host_key` exists (generated on
   first provisioning when absent).
 
 This is the production profile specification, not a flashable image.  The
@@ -36,7 +36,7 @@ Buildroot output directory and run `olddefconfig`:
 ```bash
 make -C "$BUILDROOT" O="$OUT" \
   BR2_EXTERNAL="$REPO/linux/buildroot-external" \
-  easystick_stamp_p4_defconfig
+  stamp_p4_defconfig
 cat "$REPO/linux/m3/buildroot.fragment" >> "$OUT/.config"
 make -C "$BUILDROOT" O="$OUT" \
   BR2_EXTERNAL="$REPO/linux/buildroot-external" \
@@ -59,7 +59,7 @@ BusyBox `inetd` rather than the normal MMU `S50dropbear` service.
 
 The complete console contract and acceptance notes are in
 [`initial-setup.md`](initial-setup.md).  The provisioning command is
-`/usr/sbin/easystick-firstboot`.  It sets the `p4` local-console password,
+`/usr/sbin/firstboot`.  It sets the `p4` local-console password,
 stores Wi-Fi settings, and writes the operator's public key beneath
 `/config`; private keys never belong on the target image.  Run the same
 command through either of these local paths:

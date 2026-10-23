@@ -34,7 +34,7 @@ fi
 # used by the 7 MiB flash partition (physmap rounds the window down to a
 # power-of-two size).  Strip only the target-rootfs copy; the unstripped
 # module remains in the build output for offline analysis.
-if [ "${EASYSTICK_STACKTRACE_DIAGNOSTICS:-0}" = "1" ]; then
+if [ "${STACKTRACE_DIAGNOSTICS:-0}" = "1" ]; then
 	strip_tool=
 	if [ -n "${TARGET_CROSS:-}" ] && [ -x "${TARGET_CROSS}strip" ]; then
 		strip_tool="${TARGET_CROSS}strip"
@@ -47,15 +47,15 @@ if [ "${EASYSTICK_STACKTRACE_DIAGNOSTICS:-0}" = "1" ]; then
 		done
 	fi
 	[ -n "$strip_tool" ] || {
-		echo "EASYSTICK_STACKTRACE: target cross-strip tool not found" >&2
+		echo "STACKTRACE: target cross-strip tool not found" >&2
 		exit 1
 	}
 	[ -n "$sdio_module" ] || {
-		echo "EASYSTICK_STACKTRACE: ESP-Hosted module missing" >&2
+		echo "STACKTRACE: ESP-Hosted module missing" >&2
 		exit 1
 	}
 	"$strip_tool" --strip-debug "$sdio_module"
-	echo "EASYSTICK_STACKTRACE: stripped ESP-Hosted module debug sections"
+	echo "STACKTRACE: stripped ESP-Hosted module debug sections"
 fi
 for init_script in \
 	"${TARGET_DIR}/etc/init.d/S40network" \
@@ -64,7 +64,7 @@ for init_script in \
 		chmod 0755 "${init_script}"
 	fi
 done
-if [ -f "${TARGET_DIR}/usr/sbin/easystick-sdio-diag" ]; then
-	sed -i 's/\r$//' "${TARGET_DIR}/usr/sbin/easystick-sdio-diag"
-	chmod 0755 "${TARGET_DIR}/usr/sbin/easystick-sdio-diag"
+if [ -f "${TARGET_DIR}/usr/sbin/sdio-diag" ]; then
+	sed -i 's/\r$//' "${TARGET_DIR}/usr/sbin/sdio-diag"
+	chmod 0755 "${TARGET_DIR}/usr/sbin/sdio-diag"
 fi

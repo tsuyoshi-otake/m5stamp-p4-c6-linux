@@ -1,5 +1,5 @@
 /*
- * EasyStick Stamp-P4 P1 control application.
+ * Stamp-P4 Stamp-P4 P1 control application.
  *
  * P1 intentionally stops at the ESP-Hosted-MCU Wi-Fi path.  SSH, NTP, SMP,
  * and Bluetooth are not part of this image's acceptance claim.
@@ -19,7 +19,7 @@
 #include <zephyr/net/net_mgmt.h>
 #include <zephyr/net/wifi_mgmt.h>
 
-LOG_MODULE_REGISTER(easystick_p1, LOG_LEVEL_INF);
+LOG_MODULE_REGISTER(p1, LOG_LEVEL_INF);
 
 #define P1_WIFI_EVENTS                                                                    \
 	(NET_EVENT_WIFI_SCAN_RESULT | NET_EVENT_WIFI_SCAN_DONE |                          \
@@ -62,12 +62,12 @@ static void p1_wifi_event_handler(struct net_mgmt_event_callback *cb,
 
 		if (result == NULL ||
 		    cb->info_length < sizeof(struct wifi_scan_result)) {
-			LOG_ERR("EASYSTICK_P1 WIFI_SCAN_RESULT FAIL malformed");
+			LOG_ERR("P1 WIFI_SCAN_RESULT FAIL malformed");
 			return;
 		}
 
 		scan_result_count++;
-		LOG_INF("EASYSTICK_P1 WIFI_SCAN_RESULT index=%u ssid=%.*s channel=%u rssi=%d",
+		LOG_INF("P1 WIFI_SCAN_RESULT index=%u ssid=%.*s channel=%u rssi=%d",
 			scan_result_count, result->ssid_length,
 			(const char *)result->ssid, result->channel, result->rssi);
 		break;
@@ -78,10 +78,10 @@ static void p1_wifi_event_handler(struct net_mgmt_event_callback *cb,
 
 		scan_pending = false;
 		if (status == 0) {
-			LOG_INF("EASYSTICK_P1 STEP 09 WIFI_SCAN PASS results=%u",
+			LOG_INF("P1 STEP 09 WIFI_SCAN PASS results=%u",
 				scan_result_count);
 		} else {
-			LOG_ERR("EASYSTICK_P1 STEP 09 WIFI_SCAN FAIL status=%d results=%u",
+			LOG_ERR("P1 STEP 09 WIFI_SCAN FAIL status=%d results=%u",
 				status, scan_result_count);
 		}
 		break;
@@ -94,9 +94,9 @@ static void p1_wifi_event_handler(struct net_mgmt_event_callback *cb,
 		associated = (status == 0);
 		ipv4_ready = false;
 		if (associated) {
-			LOG_INF("EASYSTICK_P1 STEP 10 ASSOCIATION PASS");
+			LOG_INF("P1 STEP 10 ASSOCIATION PASS");
 		} else {
-			LOG_ERR("EASYSTICK_P1 STEP 10 ASSOCIATION FAIL status=%d", status);
+			LOG_ERR("P1 STEP 10 ASSOCIATION FAIL status=%d", status);
 		}
 		break;
 	}
@@ -104,7 +104,7 @@ static void p1_wifi_event_handler(struct net_mgmt_event_callback *cb,
 	case NET_EVENT_WIFI_DISCONNECT_RESULT:
 		associated = false;
 		ipv4_ready = false;
-		LOG_INF("EASYSTICK_P1 WIFI_DISCONNECT");
+		LOG_INF("P1 WIFI_DISCONNECT");
 		break;
 
 	default:
@@ -126,12 +126,12 @@ static void p1_ipv4_event_handler(struct net_mgmt_event_callback *cb,
 
 	addr = net_if_ipv4_get_global_addr(iface, NET_ADDR_PREFERRED);
 	if (addr == NULL) {
-		LOG_ERR("EASYSTICK_P1 IPV4 FAIL no_preferred_address");
+		LOG_ERR("P1 IPV4 FAIL no_preferred_address");
 		return;
 	}
 
 	ipv4_ready = true;
-	LOG_INF("EASYSTICK_P1 IPV4 PASS address=%s",
+	LOG_INF("P1 IPV4 PASS address=%s",
 		net_addr_ntop(NET_AF_INET, addr, address, sizeof(address)));
 }
 
@@ -158,11 +158,11 @@ static int cmd_p1_scan(const struct shell *sh, size_t argc, char **argv)
 	params.bands = BIT(WIFI_FREQ_BAND_2_4_GHZ);
 	params.max_bss_cnt = 0;
 
-	LOG_INF("EASYSTICK_P1 STEP 09 WIFI_SCAN BEGIN");
+	LOG_INF("P1 STEP 09 WIFI_SCAN BEGIN");
 	ret = net_mgmt(NET_REQUEST_WIFI_SCAN, sta_iface, &params, sizeof(params));
 	if (ret != 0) {
 		scan_pending = false;
-		LOG_ERR("EASYSTICK_P1 STEP 09 WIFI_SCAN FAIL request_errno=%d", ret);
+		LOG_ERR("P1 STEP 09 WIFI_SCAN FAIL request_errno=%d", ret);
 		shell_error(sh, "scan request failed: %d", ret);
 		return ret;
 	}
@@ -205,12 +205,12 @@ static int cmd_p1_connect(const struct shell *sh, size_t argc, char **argv)
 	params.timeout = 30;
 
 	connect_pending = true;
-	LOG_INF("EASYSTICK_P1 STEP 10 ASSOCIATION BEGIN ssid_length=%u",
+	LOG_INF("P1 STEP 10 ASSOCIATION BEGIN ssid_length=%u",
 		(unsigned int)ssid_len);
 	ret = net_mgmt(NET_REQUEST_WIFI_CONNECT, sta_iface, &params, sizeof(params));
 	if (ret != 0) {
 		connect_pending = false;
-		LOG_ERR("EASYSTICK_P1 STEP 10 ASSOCIATION FAIL request_errno=%d", ret);
+		LOG_ERR("P1 STEP 10 ASSOCIATION FAIL request_errno=%d", ret);
 		shell_error(sh, "connect request failed: %d", ret);
 		return ret;
 	}
@@ -245,7 +245,7 @@ static int cmd_p1_ping(const struct shell *sh, size_t argc, char **argv)
 
 	if (!associated || !ipv4_ready) {
 		shell_error(sh, "association and DHCPv4 address are required first");
-		LOG_ERR("EASYSTICK_P1 STEP 11 PING FAIL ipv4_not_ready");
+		LOG_ERR("P1 STEP 11 PING FAIL ipv4_not_ready");
 		return -ENETDOWN;
 	}
 
@@ -253,7 +253,7 @@ static int cmd_p1_ping(const struct shell *sh, size_t argc, char **argv)
 	ret = net_addr_pton(NET_AF_INET, argv[1], &destination.sin_addr);
 	if (ret != 0) {
 		shell_error(sh, "invalid IPv4 address: %s", argv[1]);
-		LOG_ERR("EASYSTICK_P1 STEP 11 PING FAIL invalid_target=%s", argv[1]);
+		LOG_ERR("P1 STEP 11 PING FAIL invalid_target=%s", argv[1]);
 		return -EINVAL;
 	}
 
@@ -262,23 +262,23 @@ static int cmd_p1_ping(const struct shell *sh, size_t argc, char **argv)
 	params.data_size = 16;
 	k_sem_reset(&ping_reply_sem);
 
-	LOG_INF("EASYSTICK_P1 STEP 11 PING BEGIN target=%s", argv[1]);
+	LOG_INF("P1 STEP 11 PING BEGIN target=%s", argv[1]);
 	ret = net_icmp_send_echo_request(&ping_ctx, sta_iface,
 					 (struct net_sockaddr *)&destination,
 					 &params, NULL);
 	if (ret != 0) {
-		LOG_ERR("EASYSTICK_P1 STEP 11 PING FAIL send_errno=%d", ret);
+		LOG_ERR("P1 STEP 11 PING FAIL send_errno=%d", ret);
 		shell_error(sh, "ping send failed: %d", ret);
 		return ret;
 	}
 
 	if (k_sem_take(&ping_reply_sem, K_SECONDS(5)) != 0) {
-		LOG_ERR("EASYSTICK_P1 STEP 11 PING FAIL timeout");
+		LOG_ERR("P1 STEP 11 PING FAIL timeout");
 		shell_error(sh, "ping timeout");
 		return -ETIMEDOUT;
 	}
 
-	LOG_INF("EASYSTICK_P1 STEP 11 PING PASS target=%s", argv[1]);
+	LOG_INF("P1 STEP 11 PING PASS target=%s", argv[1]);
 	shell_print(sh, "ping reply received");
 	return 0;
 }
@@ -305,7 +305,7 @@ SHELL_STATIC_SUBCMD_SET_CREATE(p1_commands,
 	SHELL_SUBCMD_SET_END
 );
 
-SHELL_CMD_REGISTER(p1, &p1_commands, "EasyStick P1 controls", NULL);
+SHELL_CMD_REGISTER(p1, &p1_commands, "Stamp-P4 P1 controls", NULL);
 
 int main(void)
 {
@@ -313,7 +313,7 @@ int main(void)
 
 	sta_iface = net_if_get_wifi_sta();
 	if (sta_iface == NULL) {
-		LOG_ERR("EASYSTICK_P1 READY FAIL wifi_sta_interface_missing");
+		LOG_ERR("P1 READY FAIL wifi_sta_interface_missing");
 		return 0;
 	}
 
@@ -326,11 +326,11 @@ int main(void)
 	ret = net_icmp_init_ctx(&ping_ctx, NET_AF_INET,
 				NET_ICMPV4_ECHO_REPLY, 0, p1_ping_handler);
 	if (ret != 0) {
-		LOG_ERR("EASYSTICK_P1 READY FAIL icmp_init_errno=%d", ret);
+		LOG_ERR("P1 READY FAIL icmp_init_errno=%d", ret);
 		return 0;
 	}
 
-	LOG_INF("EASYSTICK_P1 READY host=zephyr wifi=esp-hosted-mcu");
-	LOG_INF("EASYSTICK_P1 COMMANDS p1 scan | p1 connect <ssid> [psk] | p1 ping <ipv4>");
+	LOG_INF("P1 READY host=zephyr wifi=esp-hosted-mcu");
+	LOG_INF("P1 COMMANDS p1 scan | p1 connect <ssid> [psk] | p1 ping <ipv4>");
 	return 0;
 }

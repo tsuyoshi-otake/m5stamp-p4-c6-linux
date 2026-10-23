@@ -2,8 +2,8 @@
 set -eu
 
 repo_root=$(cd -- "$(dirname -- "$0")/../.." && pwd)
-helper="$repo_root/linux/m3-lab/rootfs-overlay/usr/sbin/easystick-usb-lun"
-tmp=${TMPDIR:-/tmp}/easystick-usb-lun-test.$$
+helper="$repo_root/linux/m3-lab/rootfs-overlay/usr/sbin/usb-lun"
+tmp=${TMPDIR:-/tmp}/usb-lun-test.$$
 trap 'rm -rf -- "$tmp"' EXIT HUP INT TERM
 
 lun0="$tmp/sys/udc0/device/udc/controller/gadget/lun0"
@@ -14,8 +14,8 @@ mkdir -p "$lun0"
 : > "$lun0/file"
 
 run_helper() {
-	EASYSTICK_SYS_CLASS_UDC_ROOT="$tmp/sys" \
-	EASYSTICK_BOOT_IMG="$tmp/boot.img" \
+	RUN_SYSTEM_CLASS_UDC_ROOT="$tmp/sys" \
+	BOOT_IMG="$tmp/boot.img" \
 		sh "$helper" "$@"
 }
 

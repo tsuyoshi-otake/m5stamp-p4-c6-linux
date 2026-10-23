@@ -12,7 +12,7 @@ rm -f "${TARGET_DIR}/etc/modules-load.d/esp-hosted-ng.conf"
 # SSH.  The lab image deliberately uses a volatile Dropbear key and the
 # Raspberry-Pi-style bring-up account, so that gate must not run first on its
 # read-only squashfs root.  Keep the production script in m3/ unchanged.
-rm -f "${TARGET_DIR}/etc/init.d/S10easystick-config"
+rm -f "${TARGET_DIR}/etc/init.d/S10config"
 
 # uClibc's utils install getconf as an ELF executable.  This NOMMU kernel runs
 # only bFLT, so the shell fell back to BusyBox and printed "getconf: applet
@@ -20,17 +20,17 @@ rm -f "${TARGET_DIR}/etc/init.d/S10easystick-config"
 rm -f "${TARGET_DIR}/usr/bin/getconf"
 
 for path in \
-	"${TARGET_DIR}/etc/init.d/S05easystick-tmpfs" \
+	"${TARGET_DIR}/etc/init.d/S05tmpfs" \
 	"${TARGET_DIR}/etc/init.d/S40network" \
 	"${TARGET_DIR}/etc/init.d/S45bootsync" \
-	"${TARGET_DIR}/etc/init.d/S85easystick-ssh" \
-	"${TARGET_DIR}/etc/init.d/S90easystick-watchdog" \
-	"${TARGET_DIR}/usr/sbin/easystick-bootsync" \
-	"${TARGET_DIR}/usr/sbin/easystick-usb-lun" \
-	"${TARGET_DIR}/usr/sbin/easystick-watchdog" \
-	"${TARGET_DIR}/usr/sbin/easystick-update-status" \
-	"${TARGET_DIR}/usr/sbin/easystick-autorun" \
-	"${TARGET_DIR}/usr/lib/easystick/autorun.sh" \
+	"${TARGET_DIR}/etc/init.d/S85ssh" \
+	"${TARGET_DIR}/etc/init.d/S90watchdog-feed" \
+	"${TARGET_DIR}/usr/sbin/bootsyncd" \
+	"${TARGET_DIR}/usr/sbin/usb-lun" \
+	"${TARGET_DIR}/usr/sbin/watchdog-feed" \
+	"${TARGET_DIR}/usr/sbin/update-status" \
+	"${TARGET_DIR}/usr/sbin/autorun" \
+	"${TARGET_DIR}/usr/lib/board/autorun.sh" \
 	"${TARGET_DIR}/etc/inetd.conf"; do
 	if [ ! -f "${path}" ]; then
 		echo "M3-lab file missing from rootfs: ${path}" >&2
@@ -38,17 +38,17 @@ for path in \
 	fi
 done
 
-chmod 0755 "${TARGET_DIR}/etc/init.d/S05easystick-tmpfs"
+chmod 0755 "${TARGET_DIR}/etc/init.d/S05tmpfs"
 chmod 0755 "${TARGET_DIR}/etc/init.d/S40network"
 chmod 0755 "${TARGET_DIR}/etc/init.d/S45bootsync"
-chmod 0755 "${TARGET_DIR}/etc/init.d/S85easystick-ssh"
-chmod 0755 "${TARGET_DIR}/etc/init.d/S90easystick-watchdog"
-chmod 0755 "${TARGET_DIR}/usr/sbin/easystick-bootsync"
-chmod 0755 "${TARGET_DIR}/usr/sbin/easystick-usb-lun"
-chmod 0755 "${TARGET_DIR}/usr/sbin/easystick-watchdog"
-chmod 0755 "${TARGET_DIR}/usr/sbin/easystick-update-status"
-chmod 0755 "${TARGET_DIR}/usr/sbin/easystick-info"
-chmod 0755 "${TARGET_DIR}/usr/sbin/easystick-autorun"
+chmod 0755 "${TARGET_DIR}/etc/init.d/S85ssh"
+chmod 0755 "${TARGET_DIR}/etc/init.d/S90watchdog-feed"
+chmod 0755 "${TARGET_DIR}/usr/sbin/bootsyncd"
+chmod 0755 "${TARGET_DIR}/usr/sbin/usb-lun"
+chmod 0755 "${TARGET_DIR}/usr/sbin/watchdog-feed"
+chmod 0755 "${TARGET_DIR}/usr/sbin/update-status"
+chmod 0755 "${TARGET_DIR}/usr/sbin/sysinfo"
+chmod 0755 "${TARGET_DIR}/usr/sbin/autorun"
 # Overrides Buildroot's udhcpc script: the m3-lab copy sources its *.d
 # hooks instead of exec'ing them (#40).
 chmod 0755 "${TARGET_DIR}/usr/share/udhcpc/default.script"
@@ -121,7 +121,7 @@ if [ -x "${TARGET_DIR}/bin/busybox-udhcpc" ]; then
 	ln -sfn ../bin/busybox-udhcpc "${TARGET_DIR}/sbin/udhcpc"
 fi
 
-# EASYSTICK_LAB_TOOLS=0 (#32) builds without dbclient; drop the other
+# LAB_TOOLS=0 (#32) builds without dbclient; drop the other
 # bring-up entry points with it.
 if [ -n "${BR2_CONFIG:-}" ] &&
    grep -qx '# BR2_PACKAGE_DROPBEAR_CLIENT is not set' "${BR2_CONFIG}"; then
@@ -141,7 +141,7 @@ fi
 # OpenSSH 9.x clients) uses >32 KB of stack and the overflow corrupted the
 # uClibc sighandler[] table -> SIGILL on signal delivery (#54).  32 KB
 # (same as micropython) keeps three wpa_supplicant/tcpdump children within
-# the RAM budget.  easystick-boot-commit was left at 4 KB.
+# the RAM budget.  boot-commit was left at 4 KB.
 FLTHDR=""
 for c in "${HOST_DIR:-/nonexistent}"/bin/*-flthdr; do
 	[ -x "$c" ] && FLTHDR=$c && break
@@ -159,7 +159,7 @@ if [ -x "${FLTHDR}" ]; then
 		fi
 	done
 	for bin in usr/sbin/wpa_supplicant usr/sbin/iw \
-		usr/bin/tcpdump usr/sbin/easystick-boot-commit; do
+		usr/bin/tcpdump usr/sbin/boot-commit; do
 		if [ -f "${TARGET_DIR}/${bin}" ]; then
 			"${FLTHDR}" -s 32768 "${TARGET_DIR}/${bin}"
 			# Fail the build if the stack did not stick (#28).
@@ -170,7 +170,7 @@ if [ -x "${FLTHDR}" ]; then
 		fi
 	done
 	# Small helpers only need BusyBox's floor.
-	for bin in usr/sbin/easystick-respawn usr/sbin/easystick-mdns usr/sbin/easystick-sys; do
+	for bin in usr/sbin/respawn usr/sbin/mdnsd usr/sbin/run-system; do
 		if [ -f "${TARGET_DIR}/${bin}" ]; then
 			"${FLTHDR}" -s 16384 "${TARGET_DIR}/${bin}"
 		fi
@@ -188,19 +188,19 @@ fi
 
 # Boot FAT template (#8, #22): the USB drive image used on first boot and as
 # the flashed boot.img.  Generate it here from text so a clean checkout (CI)
-# has it and its hash is reproducible.  S05easystick-tmpfs fills in the rest
+# has it and its hash is reproducible.  S05tmpfs fills in the rest
 # (cmdline.txt reference, credentials.txt) on first boot.
 make_boot_template() {
-	out="${TARGET_DIR}/etc/easystick/boot-template.img"
-	wpa="${TARGET_DIR}/etc/easystick/wpa_supplicant.conf"
+	out="${TARGET_DIR}/etc/board/boot-template.img"
+	wpa="${TARGET_DIR}/etc/board/wpa_supplicant.conf"
 	[ -f "${wpa}" ] || { echo "M3-lab: ${wpa} missing" >&2; exit 1; }
 	mkfs=$(command -v mkfs.vfat || command -v mkfs.fat || echo /sbin/mkfs.vfat)
 	stage=$(mktemp -d)
 	cat > "${stage}/config.txt" <<'EOF'
-# EasyStick Stamp-P4 Boot & Hardware Configuration
-# Device: M5Stamp ESP32-P4 + C6 SDIO (EasyStick Stamp-P4)
+# Stamp-P4 Stamp-P4 Boot & Hardware Configuration
+# Device: M5Stamp ESP32-P4 + C6 SDIO (Stamp-P4 Stamp-P4)
 # hostname is applied at boot by S40network.
-hostname=easystick
+hostname=stamp-p4
 # wifi_mode: ap or sta.  Leave unset to auto-detect from mode=2 in wpa_supplicant.conf.
 #wifi_mode=ap
 # wifi_ssid/wifi_psk replace wpa_supplicant.conf (station, or SoftAP with wifi_mode=ap).
@@ -224,7 +224,7 @@ hostname=easystick
 EOF
 	cp "${wpa}" "${stage}/wpa_supplicant.conf"
 	rm -f "${out}"
-	"${mkfs}" -C -F 12 -r 64 -n EASYSTICK --invariant "${out}" 256 >/dev/null
+	"${mkfs}" -C -F 12 -r 64 -n STAMP_P4 --invariant "${out}" 256 >/dev/null
 	# FAT cannot store dates before 1980.
 	epoch=${SOURCE_DATE_EPOCH:-315532800}
 	[ "${epoch}" -ge 315532800 ] || epoch=315532800
@@ -254,7 +254,7 @@ mkdir -p "${TARGET_DIR}/boot"
 	echo "git=${GIT_REV}"
 	echo "dirty=${GIT_DIRTY}"
 	echo "build_date=$(date -u -d "@${SOURCE_DATE_EPOCH:-$(date +%s)}" +%Y-%m-%dT%H:%M:%SZ)"
-} > "${TARGET_DIR}/etc/easystick-release"
+} > "${TARGET_DIR}/etc/build-info"
 
 # No dangling symlinks (#28), except those into runtime filesystems.
 find "${TARGET_DIR}" -type l | while read -r link; do

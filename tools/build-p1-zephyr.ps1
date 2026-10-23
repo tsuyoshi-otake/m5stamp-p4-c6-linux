@@ -1,8 +1,8 @@
 [CmdletBinding()]
 param(
-    [string]$ZephyrSource = 'D:\Users\Developer\easystick-tmp-20260820\p1-zephyr',
-    [string]$WestWorkspace = 'D:\Users\Developer\easystick-tmp-20260820\zephyr-p1-work',
-    [string]$BuildDirectory = 'D:\Users\Developer\easystick-tmp-20260820\build-p1-zephyr',
+    [string]$ZephyrSource = 'D:\Users\Developer\tmp-20260820\p1-zephyr',
+    [string]$WestWorkspace = 'D:\Users\Developer\tmp-20260820\zephyr-p1-work',
+    [string]$BuildDirectory = 'D:\Users\Developer\tmp-20260820\build-p1-zephyr',
     [string]$ContainerImage = 'zephyrprojectrtos/ci@sha256:e3d3643e50dbbbb22aa6e3efd65d9edc8a281d3e113e03c39527a896b1feedc0',
     [switch]$SkipWestUpdate,
     [switch]$ReuseBuildDirectory
@@ -12,7 +12,7 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..\..')).Path
-$appSource = Join-Path $repoRoot 'projects\easystick-stamp-p4\firmware\zephyr-p1'
+$appSource = Join-Path $repoRoot 'projects\stamp-p4\firmware\zephyr-p1'
 $patch = Join-Path $appSource 'patches\0001-p1-transport-ladder.patch'
 $overlay = Join-Path $appSource 'boards\esp32p4_function_ev_board_esp32p4_hpcore.overlay'
 $expectedZephyr = 'd544481d9ad9c711cefe984c5ea926d71cb56341'

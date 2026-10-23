@@ -12,7 +12,7 @@ less secure than the production M3 profile:
 
 Use it only on a private test network.  `passwd` does not persist (read-only
 rootfs); edit and save `password=` in `credentials.txt` instead.
-easystick-bootsync applies it a few seconds later and S05easystick-tmpfs at
+bootsyncd applies it a few seconds later and S05tmpfs at
 every boot (#30).  Move to
 the key-only M3 profile after the console/config overlay path
 has been validated.  The lab image's `askfirst` shell is on `ttyGS1`, so the
@@ -22,7 +22,7 @@ USB-A/USB-C power restriction.
 
 ## Build-time Wi-Fi provisioning
 
-Set `EASYSTICK_WIFI_SSID` and `EASYSTICK_WIFI_PSK` in the Linux build
+Set `WIFI_SSID` and `WIFI_PSK` in the Linux build
 container before invoking `build-m1.sh --profile m3-lab`.  If either is absent,
 the image still builds but reports that Wi-Fi is not provisioned and does not
 start `wpa_supplicant`.
@@ -35,16 +35,16 @@ the external build directory when the test is complete.
 
 The USB FAT image has exactly one owner. While it is exported through
 `g_mass_storage`, Linux neither mounts nor writes the backing image.
-`easystick-bootsync` imports the drive 3 seconds after the host's last write
+`bootsyncd` imports the drive 3 seconds after the host's last write
 (it polls the image mtime), or at once after the host's safe-eject action (the
 empty legacy LUN `file` attribute is the hand-off; the LUN is reattached
 afterwards). Either way it reads a copy: it validates a private read-only
 snapshot and applies the configuration. The daemon never uses `forced_eject`.
 
-Network status is written atomically to `/run/easystick-status.txt` for SSH or
+Network status is written atomically to `/run/status.txt` for SSH or
 serial inspection. It is not written into the exported FAT image. A validated
 snapshot is staged in reserved PSRAM, and the kernel (patch 0072,
-`/sys/kernel/easystick/boot_commit`) writes the inactive flash slot, verifies
+`/sys/kernel/board/boot_commit`) writes the inactive flash slot, verifies
 its CRC, and atomically switches redundant metadata, as boot-shim would at the
 next reboot. Power loss during the flash operation leaves the previous slot
 selected. The edit is durable once the serial log shows `Saved to flash`. If
@@ -68,7 +68,7 @@ obtain a DHCP lease (or a documented static lab address) and accept an
 Connect as `m5`.  Root logs in by key only (`dropbear -g`), and only after a
 `root_authorized_keys` file is put on the drive (#37).
 
-`S85easystick-ssh` starts inetd on `0.0.0.0:22` without waiting for `wlan0`
+`S85ssh` starts inetd on `0.0.0.0:22` without waiting for `wlan0`
 or `ethsta0`.
 
 ### Non-gating: DUT loopback `dbclient`
@@ -78,11 +78,11 @@ Production `m3` disables `dbclient`. A DUT→DUT loopback SSH runs client crypto
 server crypto, inetd, and a shell together on a ~20 MB NOMMU image — that is
 harsher than the product path and is **not** an M2.5 failure by itself.
 
-`EASYSTICK_LAB_TOOLS=0` builds the same m3-lab image without the bring-up
+`LAB_TOOLS=0` builds the same m3-lab image without the bring-up
 tools: no `tcpdump`/libpcap, MicroPython (`python`, `python3`), `dbclient`,
 `dropbearconvert` or `nc` (#32).  The release workflow still builds the default
 (`1`), because its hashes are checked against hardware validation records; a
-release switches over only after a `EASYSTICK_LAB_TOOLS=0` image has been
+release switches over only after a `LAB_TOOLS=0` image has been
 validated on hardware.
 
 Prefer:
@@ -97,9 +97,9 @@ Pi:  ssh -T … 'id'
 
 The Dropbear ledger is **opt-in**. The default `m3-lab` build leaves Dropbear
 unmodified so the SSH acceptance shot exercises the real command path. Set
-`EASYSTICK_SSH_LEDGER=1` when a stage trace is specifically required; that
+`SSH_LEDGER=1` when a stage trace is specifically required; that
 build applies
-[`dropbear-patches/0001-easystick-ssh-stage-ledger.patch`](dropbear-patches/0001-easystick-ssh-stage-ledger.patch)
+[`dropbear-patches/0001-ssh-stage-ledger.patch`](dropbear-patches/0001-ssh-stage-ledger.patch)
 and its companion patches, causing each connection to emit fixed
 `ES_SSH …` lines to a **dual sink** (test-only):
 `/dev/kmsg` and `/dev/ttyGS1`, each opened once with
@@ -126,7 +126,7 @@ write of the full server banner completed; Pi seeing the banner is a separate
 end-to-end check. See
 [`dropbear-patches/README.md`](dropbear-patches/README.md) for the KEX→AUTH
 and post-exec classification tables. Rebuild with `--profile m3-lab` after
-setting `EASYSTICK_SSH_LEDGER=1` when the ledger is wanted; the observer stub
+setting `SSH_LEDGER=1` when the ledger is wanted; the observer stub
 that prints `SSH: deferred until L3` does not include it. The ledger is
 diagnostic only and may perturb the NOMMU watchdog timing, so it is not part
 of the SSH acceptance image. This change alone does not complete M2 / M2.5.
@@ -141,7 +141,7 @@ hot-path `BOOT_CMD53_DATA` / `RXTRACE` console dumps — demoting to
 `KERN_DEBUG` is not enough while the cmdline uses `loglevel=8`).  On this
 NOMMU target those messages can starve SDIO and make ARP or SSH appear to fail.
 `S40network` also runs `dmesg -n 1` at start so the lab shot does not need a
-manual console `dmesg -n 1`.  Set `EASYSTICK_ESPHOSTED_DIAGNOSTICS=1` only when
+manual console `dmesg -n 1`.  Set `ESPHOSTED_DIAGNOSTICS=1` only when
 collecting that transport evidence (it drops `0024` and `0025`); do not use
 that diagnostic image for the SSH acceptance shot.
 
@@ -153,7 +153,7 @@ wedged networking within seconds and a concurrent ttyGS1 capture showed
 `rst:0x7 (HP_SYS_HP_WDT_RESET)` — so M2.5 `ssh … 'id'` remains blocked on the
 post-auth spawn/WDT path, not on banner reachability.
 
-Ledger refinement (same day, `EASYSTICK_SSH_LEDGER=1`):
+Ledger refinement (same day, `SSH_LEDGER=1`):
 
 - Auth-only idle SSH (~35 s, no channel/exec) **survives** through `AUTH_OK`
   and clean `DROPBEAR_EXIT`.
@@ -168,7 +168,7 @@ Ledger refinement (same day, `EASYSTICK_SSH_LEDGER=1`):
 - Next classify with host TX stage ledger `0023-A` (`ES_TX` …
   `CMD53_OK/ERR` on TCP sport 22) rather than further WDT stretching.
 
-TX-ledger classification (2026-08-21, `EASYSTICK_ESPHOSTED_TX_LEDGER=1` on
+TX-ledger classification (2026-08-21, `ESPHOSTED_TX_LEDGER=1` on
 quiet+SSH-ledger rootfs; capture
 `console-txledger-true-then-id-20260821.bin`):
 
@@ -196,7 +196,7 @@ command-response timeout (RTO) from data-phase timeout (DRTO/EBE), nor prove
 the timeout causes DUT death. Marker density still perturbs behavior.
 FORCE_PIO deferred until error provenance is classified. Evidence:
 `REPORT-A-split.md`, `REPORT-A-sport22-trace.md` under
-`D:\Users\Developer\easystick-tmp-20260820\easystick-p4-m3-lab-quiet-txledger-20260821\`.
+`D:\Users\Developer\tmp-20260820\p4-m3-lab-quiet-txledger-20260821\`.
 
 Experiment B (2026-08-21): error-only DW-MMC CMD53 provenance
 (`Image-b-errprov` / `0051`). Zero CLAIM/MEMCPY; `ES_MMC CMD53_ERR` count 0;
@@ -215,11 +215,11 @@ boot-shim m2; always `linux-dirclean`; writes fail-closed
 non-selftest). CMD53-only attribution on cmd_done/err/cto. See
 `cmd53-bb/README.md`. Sparse IDF cannot complete HW.
 
-Opt-in: `EASYSTICK_ESPHOSTED_TX_LEDGER=1` applies
-`0023-easystick-sdio-tx-stage-ledger.patch` (includes sport22-only
+Opt-in: `ESPHOSTED_TX_LEDGER=1` applies
+`0023-sdio-tx-stage-ledger.patch` (includes sport22-only
 CLAIM/MEMCPY with caller-owned `trace_id`). Default quiet acceptance
-images omit it. `EASYSTICK_DW_MMC_CMD53_ERR_PROV=1` applies `0051`
-error-only DW-MMC provenance (default off). `EASYSTICK_CMD53_RETENTION_BB=1`
+images omit it. `DW_MMC_CMD53_ERR_PROV=1` applies `0051`
+error-only DW-MMC provenance (default off). `CMD53_RETENTION_BB=1`
 requires `build-cmd53-bb.sh` (mutually exclusive with `0051`).
 
 This is a bring-up check, not a release credential.  Record the lease and

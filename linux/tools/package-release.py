@@ -19,17 +19,17 @@ FLASH_BYTES = 0x1000000
 ARTIFACTS = {
     "bootloader.bin": (0x002000, 0x006000, "{shim}/build/bootloader/bootloader.bin"),
     "partition-table.bin": (0x008000, 0x001000, "{shim}/build/partition_table/partition-table.bin"),
-    "boot-shim.bin": (0x010000, 0x080000, "{shim}/build/easystick_stamp_p4_boot_shim.bin"),
+    "boot-shim.bin": (0x010000, 0x080000, "{shim}/build/stamp_p4_boot_shim.bin"),
     "Image": (0x090000, 0x780000, "buildroot/images/Image"),
     "rootfs.squashfs": (0x810000, 0x700000, "buildroot/images/rootfs.squashfs"),
-    "easystick-stamp-p4.dtb": (0xF10000, 0x010000, "buildroot/images/easystick-stamp-p4.dtb"),
+    "esp32p4-m5stamp-p4.dtb": (0xF10000, 0x010000, "buildroot/images/esp32p4-m5stamp-p4.dtb"),
 }
 # Debug material (#22): needed to resolve crash-capsule epc/ra of the exact image.
 DEBUG_FILES = {
     "System.map": "buildroot/build/linux-custom/System.map",
     "vmlinux": "buildroot/build/linux-custom/vmlinux",
     "kernel.config": "buildroot/build/linux-custom/.config",
-    "boot-shim.elf": "{shim}/build/easystick_stamp_p4_boot_shim.elf",
+    "boot-shim.elf": "{shim}/build/stamp_p4_boot_shim.elf",
 }
 BOOT_OFFSET = 0xF40000
 BOOT_BYTES = 0x40000

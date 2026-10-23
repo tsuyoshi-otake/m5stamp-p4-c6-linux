@@ -1,10 +1,10 @@
 [CmdletBinding()]
 param(
-    [string]$ZephyrSource = 'D:\Users\Developer\easystick-tmp-20260820\p1-zephyr',
-    [string]$C6Source = 'D:\Users\Developer\easystick-tmp-20260820\p1-esp-hosted-mcu',
+    [string]$ZephyrSource = 'D:\Users\Developer\tmp-20260820\p1-zephyr',
+    [string]$C6Source = 'D:\Users\Developer\tmp-20260820\p1-esp-hosted-mcu',
     [string]$IdfSource = '',
-    [string]$ZephyrBuildDirectory = 'D:\Users\Developer\easystick-tmp-20260820\build-p1-zephyr',
-    [string]$C6BuildDirectory = 'D:\Users\Developer\easystick-tmp-20260820\build-p1-c6'
+    [string]$ZephyrBuildDirectory = 'D:\Users\Developer\tmp-20260820\build-p1-zephyr',
+    [string]$C6BuildDirectory = 'D:\Users\Developer\tmp-20260820\build-p1-c6'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -12,10 +12,10 @@ Set-StrictMode -Version Latest
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..\..')).Path
 if ([string]::IsNullOrWhiteSpace($IdfSource)) {
-    $IdfSource = Join-Path $repoRoot 'projects\easystick-stamp-p4\firmware\vendor\esp-idf'
+    $IdfSource = Join-Path $repoRoot 'projects\stamp-p4\firmware\vendor\esp-idf'
 }
 
-$appSource = Join-Path $repoRoot 'projects\easystick-stamp-p4\firmware\zephyr-p1'
+$appSource = Join-Path $repoRoot 'projects\stamp-p4\firmware\zephyr-p1'
 $protobufSource = Join-Path $C6Source 'common\protobuf-c'
 $overlay = Join-Path $appSource 'boards\esp32p4_function_ev_board_esp32p4_hpcore.overlay'
 $zephyrDts = Join-Path $ZephyrBuildDirectory 'zephyr\zephyr.dts'

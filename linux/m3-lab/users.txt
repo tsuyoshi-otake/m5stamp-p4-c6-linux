@@ -1,7 +1,7 @@
 # username uid group gid password home shell groups comment
 # Deliberate M5Stack first-boot account for the image.
 # No built-in password (#11): `*` disables password login until
-# S05easystick-tmpfs applies password= from credentials.txt on the USB drive
+# S05tmpfs applies password= from credentials.txt on the USB drive
 # (generated per device on first boot, #24/#30).  `*`, unlike `!`, still lets
 # Dropbear accept authorized_keys.  `passwd` does not persist on the
 # read-only rootfs.
