@@ -70,19 +70,35 @@ records, `docs/`, `board/hardware/`, READMEs, `#55 compat` regions).
 - [x] clean build (C68 clean-release, `M3-LAB Buildroot build complete`)
 - [x] `check-boot-log.py` 13/13 (captured boot, all markers pass)
 - [x] host tests pass (all 10 scripts)
-- [ ] SSH via `stamp-p4.local` and `easystick.local`
-  (inetd `0.0.0.0:22 LISTEN` confirmed; TCP connect from host on the
-  10.255.10.x path timed out — same host-side routing quirk seen in
-  earlier rounds; needs a LAN run to exercise the dropbear path)
+- [x] SSH via `stamp-p4.local` and `easystick.local`
+  (harness `ensure_ssh` installed the pubkey over serial; `ssh
+  root@stamp-p4.local` and `ssh root@easystick.local` both exec `hostname`
+  → `stamp-p4`.  Host ping resolves both names to the STA lease)
 - [x] old and new command names work (`easystick-sys true` → `ALIAS_WORKS`,
   `which` resolves `sysinfo`/`easystick-info`/`run-system`)
 - [x] `sysinfo` == old `easystick-info` output (identical release block)
-- [ ] USB update + `config.txt` apply
+- [x] USB update + `config.txt` apply
+  (drive `config.txt` `hostname=` + `wifi_mode=` edits written into the
+  g_mass_storage backing `/tmp/boot.img`; bootsyncd detected, copied to
+  `/tmp/config.txt`, applied — live hostname changed, then STA lease
+  re-acquired after the network apply)
 - [x] STA lease (`inet 10.255.10.160/24` on wlan0)
-- [ ] board-side AP
-- [ ] autorun
-- [ ] crash scenario, 0 faults
-- [ ] 30-min soak, `alloc_fail 0`
+- [x] board-side AP (`wifi_mode=ap` + test ssid/psk via drive config.txt →
+  `/run/wpa_cfg.conf` generated `mode=2` `ssid="stamp-p4-aptest"`
+  WPA-PSK/CCMP; wlan0 bound the SoftAP address `192.168.4.1/24`; restored
+  to `wifi_mode=sta`, lease back to `10.255.10.160/24`)
+- [x] autorun (`main.sh` on the drive staged by bootsyncd;
+  `autorun status` → `running: pid 914` as `m5`; `autorun stop` clean)
+- [x] crash scenario, 0 faults
+  (`--scenario crash --n 20 --transport lan`: 4 churn sessions + 5
+  `S40network restart`s (recoveries 72.7/22.2/22.2/22.2/22.2 s), then
+  20/20 probes auth-ok, 0 post-auth closes, 0 `Unable to access
+  instruction` dmesg crashes)
+- [x] 30-min soak, `alloc_fail 0`
+  (30-min SSH-probe soak on `stamp-p4.local`: 27/29 probes ok, 2 lost to
+  the lab's ~1 s TCP-flow cutoff; final counters `alloc_fail 0`,
+  `system_alloc_fail 0`, `user_denied 86`/`fallback 86` = reserve
+  steering to buddy as designed; uptime 1:06 with no reboots)
 - [x] `git grep -i easystick` outside allowlist = 0
   (build-time guard: `#55 check: no 'easystick' references outside the allowlist`)
 - [x] `/sys/kernel/board/` primary + `/sys/kernel/easystick/` compat link
@@ -90,6 +106,17 @@ records, `docs/`, `board/hardware/`, READMEs, `#55 compat` regions).
   `system_alloc_fail`, `boot_commit`
 - [x] `/run/status.txt` primary + `/run/easystick-status.txt` mirror
   both written (`# Stamp-P4 Network Status`)
+
+## physmap exact-size (0092, carried from i45)
+
+- `mtd0: 00700000` — the 7 MiB rootfs partition maps at its exact reg
+  size, no power-of-two shrink or shim workaround.
+- `/dev/root on / type squashfs (ro,...)` — rootfs mounts.
+- `dd if=/dev/mtdblock0 of=/dev/null` → `14336+0 records` =
+  7,340,032 B = exactly `0x700000`, `DDRC=0`, no fault.
+- Note: a stale drive `config.txt` `hostname=easystick` (persisted user
+  config) made `stamp-p4.local` not answer until the drive config was
+  updated — mdnsd answers `<hostname>.local`, not the file's value.
 
 ## Build notes
 
