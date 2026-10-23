@@ -79,7 +79,7 @@ been started, and none should be started without a decision:
 | Candidate | Needs | What it could discriminate |
 | --- | --- | --- |
 | Raise the DTS `max-frequency` above the 400 kHz identification clock | P4-only rebuild and flash over the existing USB-C cable | Whether the bus rate cap contributes; the only run that ever produced `wlan0` was not capped this way |
-| Rebuild without `easystick,force-pio` | same | The DMA path, which the one historical `wlan0` run used and every recent capture has not |
+| Rebuild without `espressif,force-pio` | same | The DMA path, which the one historical `wlan0` run used and every recent capture has not |
 | Extend the `BOOT_POLL` window well past 2.7 s | same | A boot frame arriving later than any capture has waited |
 | Rebuild the C6 image and compare it byte-for-byte against the retained `network_adapter.bin` | container build only, no flash | Whether the retained artifact is reproducible from the locked submodules — a check on the artifact, not on the C6 |
 

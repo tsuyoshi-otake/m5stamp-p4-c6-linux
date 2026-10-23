@@ -15,7 +15,7 @@ The opt-in kernel patch is:
 Enable it with:
 
 ```text
-EASYSTICK_TSENS_LINUX=1
+TSENS_LINUX=1
 ```
 
 The C68 build path then appends:
@@ -72,7 +72,7 @@ service.
 Run from the repository root:
 
 ```text
-py -3 projects/easystick-stamp-p4/firmware/linux/tests/test-tsens-linux.py
+py -3 projects/stamp-p4/firmware/linux/tests/test-tsens-linux.py
 ```
 
 Expected result:
@@ -89,7 +89,7 @@ result.
 Run the independent expected-value vectors as well:
 
 ```text
-py -3 projects/easystick-stamp-p4/firmware/linux/tests/test-tsens-linux-conversion.py
+py -3 projects/stamp-p4/firmware/linux/tests/test-tsens-linux-conversion.py
 ```
 
 It checks the ESP-IDF-specific eFuse sign/magnitude cases, including ignored
@@ -101,8 +101,8 @@ reference vectors, not evidence that the kernel binary has executed.
 Build a separate output directory from the same C68 SMP baseline:
 
 ```text
-export EASYSTICK_TSENS_LINUX=1
-projects/easystick-stamp-p4/firmware/linux/build-c68.sh \
+export TSENS_LINUX=1
+projects/stamp-p4/firmware/linux/build-c68.sh \
   --vendor <output-dir> --profile m1
 ```
 
@@ -183,7 +183,7 @@ boot-shim.bin  20342d54d20775d3775873da5658bf6df2936236436166e12ca7a263dbffdb6c
 Image          e55ae1674a39790030d70a9b1dac58f14502891ffe56e3215a12eb579dd2da8c
 rootfs.squashfs
                6cb7fed9a0ec5c5ecab6d13f4fdffa774d1b2d5d172a7fa8a798b1c188e3bafd
-easystick-stamp-p4.dtb
+esp32p4-m5stamp-p4.dtb
                cf57cc0e87b66252345a1573ccd725f162a9d12918eba4bc5164da931dfbfc24
 ```
 

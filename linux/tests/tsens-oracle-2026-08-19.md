@@ -3,7 +3,7 @@
 Status: **Phase-0 and first Linux Phase-1 hardware PASS recorded; three-run regression pending**
 
 The optional boot-shim oracle is enabled only when
-`EASYSTICK_TSENS_ORACLE=1` is present during the C68 boot-shim build. It is
+`TSENS_ORACLE=1` is present during the C68 boot-shim build. It is
 not part of the normal SMP baseline. The oracle:
 
 1. Enables the P4 SAR/TSENS internal REGI2C path.
@@ -40,7 +40,7 @@ floating point.
 Run from the repository root:
 
 ```text
-py -3 projects/easystick-stamp-p4/firmware/linux/tests/test-tsens-oracle.py
+py -3 projects/stamp-p4/firmware/linux/tests/test-tsens-oracle.py
 ```
 
 Expected result:
@@ -59,7 +59,7 @@ as the current `m1-topcapfix` baseline, with this additional environment
 variable:
 
 ```text
-EASYSTICK_TSENS_ORACLE=1
+TSENS_ORACLE=1
 ```
 
 `build-c68.sh` must print that the oracle was linked. The resulting UART

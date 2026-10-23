@@ -12,7 +12,7 @@ recovery path.
 Raw host output remains outside Git:
 
 ```text
-C:\Users\developer\tmp\easystick-p4-rom-recovery-20260810.log
+C:\Users\developer\tmp\stamp-p4-rom-recovery-20260810.log
 SHA256 18005F8D0D037E25EBB772CB2CFC03FBA948FFB7459DDDC04CB8B2E0A1E16AA9
 ```
 

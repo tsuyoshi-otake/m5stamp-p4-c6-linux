@@ -8,17 +8,17 @@ aggregate receive-queue patch and its result without changing the C6 image.
 ## Build
 
 - Profile: `build-m1.sh --profile m3-lab`
-- Host build: Docker `easystick-p4-build:latest`
-- Persistent compiler cache: Docker volume `easystick-p4-ccache`
-- Added diagnostic: `package/esp-hosted-ng/0009-easystick-sdio-rx-aggregate.patch`
+- Host build: Docker `stamp-p4-build:latest`
+- Persistent compiler cache: Docker volume `stamp-p4-ccache`
+- Added diagnostic: `package/esp-hosted-ng/0009-sdio-rx-aggregate.patch`
 - Candidate output: external directory
-  `C:\Users\developer\tmp\easystick-p4-m3-sdioagg-20260810`
+  `C:\Users\developer\tmp\stamp-p4-m3-sdioagg-20260810`
 
 | Artifact | Size | SHA-256 |
 | --- | ---: | --- |
 | `Image` | 6,497,284 bytes | `bc1ba145e7346616f1df321dedb75bbf8417cc22b8cbbba82e7dd054af541182` |
 | `rootfs.squashfs` | 1,826,816 bytes | `9f96804f0d6adb5817c03d1cb873bf72f39897752ad0135ac4506f66e628d560` |
-| `easystick-stamp-p4.dtb` | 2,858 bytes | `a4284b333bfee614c6f41e7ed8566a910af7eca9916cff750a06c62fc439b0f7` |
+| `esp32p4-m5stamp-p4.dtb` | 2,858 bytes | `a4284b333bfee614c6f41e7ed8566a910af7eca9916cff750a06c62fc439b0f7` |
 
 `verify-images.py` passed the candidate overlap and 16 MiB bounds checks.
 
@@ -29,7 +29,7 @@ readback as its recovery guard.  esptool 4.8.1 verified every P4 artifact;
 the C6 was not reflashed.  The raw capture is outside Git:
 
 ```text
-C:\Users\developer\tmp\easystick-p4-m3-sdioagg-boot-20260810.log
+C:\Users\developer\tmp\stamp-p4-m3-sdioagg-boot-20260810.log
 SHA-256 62c17f7d8f5568e4615b9a4cf2826b5bf1791fd5ba4a750c0e3839174c0310c0
 ```
 

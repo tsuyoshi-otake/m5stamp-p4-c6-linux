@@ -32,12 +32,12 @@ b7d1a5d8644e2a2695b2e45d134694ab316c9275e90d5f47209bb17ad4461bd0  bootloader.bin
 1746f4c0343686fcb9127b2ed3a80be6ca80d4edae1e586b7a08f58b635c1e2c  boot-shim.bin
 790e053c6024d0c8959dd2fb8ac472ce1db46aff09a877f43294f506a75523dc  Image
 838a1ed22574d27a7f2f6d98f085b66c0468bad798495f65dd9d8a5553c6510b  rootfs.squashfs
-a12b18e1347ade36c499c79338ff7125bd4140bf56c64ecfedce8f93b4d3a852  easystick-stamp-p4.dtb
+a12b18e1347ade36c499c79338ff7125bd4140bf56c64ecfedce8f93b4d3a852  esp32p4-m5stamp-p4.dtb
 f3485f3b19ef885e269146900964c754c091b929d7702cec4e546ee90193330c  boot.img
 ```
 
 The boot-shim prints `boot-shim git=56461d5ccc1b`; the kernel prints
-`Linux version 6.18.57`; `/etc/easystick-release` reads `git=56461d5ccc1b`,
+`Linux version 6.18.57`; `/etc/build-info` reads `git=56461d5ccc1b`,
 `dirty=0`, `version=v0.2.5-1-g56461d5`.
 
 ## Results
@@ -49,7 +49,7 @@ The same checks as the v0.2.5 record, with the same test program.
 | `check-boot-log.py` after the flash | 11/11; `ES_AUTORUN STAGED` |
 | STA settings and m5 password written into the live drive | applied without a reboot; `/etc/resolv.conf` `-rw-r--r--`; `nslookup` works |
 | `main.py` + `lib/` saved to the drive | runs as `m5`; `HTTP/1.1 200 OK` |
-| Edit `main.py` (v1 → v2), `easystick-autorun restart` as `m5`, `autorun=off` | restarted, restarted, stopped; `wlan0` `carrier_changes` stayed 0 |
+| Edit `main.py` (v1 → v2), `autorun restart` as `m5`, `autorun=off` | restarted, restarted, stopped; `wlan0` `carrier_changes` stayed 0 |
 | `timeout 2 sleep 8` | exit 143 |
 | 3 resets with `main.py` on the drive | 11/11 each; `boot selection: generation=6 slot=0 crc=e7f7d8ba` each; autorun started each time |
 | `dmesg` | only the `regulatory.db` load failure, as on v0.2.5 |

@@ -18,7 +18,7 @@ Two local m3-lab builds (`build-c68.sh --profile m3-lab`, flashed with
 5da85fc38a6aafb5c0bb202e62df779a9918beb256e778877d2d387a2240ce8c  boot-shim.bin
 f4c8bb020b8913206683dec2b6ea3a255a06aeed40822dad8769150471bb4bd0  Image
 d5ce1649067ac95e463b7a4e8d6c189b87e9ad1ea9cc90a634a12e592f422b94  rootfs.squashfs
-a12b18e1347ade36c499c79338ff7125bd4140bf56c64ecfedce8f93b4d3a852  easystick-stamp-p4.dtb
+a12b18e1347ade36c499c79338ff7125bd4140bf56c64ecfedce8f93b4d3a852  esp32p4-m5stamp-p4.dtb
 e4e8b7ba55073654f9870b3df947255e4a4b28ff062bf20f87415c3b98cb0756  boot.img
 ```
 

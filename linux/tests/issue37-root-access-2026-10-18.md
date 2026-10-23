@@ -22,7 +22,7 @@ kept its v0.3.1 `credentials.txt` (no `root_password=`):
 680d0ae34991de82b754cec10404d05025bbeec0307767b26461ef8d66bc27d6  boot-shim.bin
 17f6ab23ab317a6f9b40c3d95f946258bfbc4877a41421d71bcb991abc202ce3  Image
 2931588d8a00ee9def3f627e97b0c67b26f93cfdaeca1c3c882ab08282826b02  rootfs.squashfs
-a12b18e1347ade36c499c79338ff7125bd4140bf56c64ecfedce8f93b4d3a852  easystick-stamp-p4.dtb
+a12b18e1347ade36c499c79338ff7125bd4140bf56c64ecfedce8f93b4d3a852  esp32p4-m5stamp-p4.dtb
 9353437c79648b69e3722b2b56880403ec87a5dce45932be9812fa6dae2e9729  boot.img
 ```
 
@@ -74,7 +74,7 @@ over the `issue37-b` drive:
 9af335180fa519f57a6abb37fe7101b149e947a2c3c17a280d41eb18bb1bb0b6  boot-shim.bin
 17f6ab23ab317a6f9b40c3d95f946258bfbc4877a41421d71bcb991abc202ce3  Image
 45536f8c5a41277db88cc437b0163a7977ea44f74b14298424883d2ae630c4f8  rootfs.squashfs
-a12b18e1347ade36c499c79338ff7125bd4140bf56c64ecfedce8f93b4d3a852  easystick-stamp-p4.dtb
+a12b18e1347ade36c499c79338ff7125bd4140bf56c64ecfedce8f93b4d3a852  esp32p4-m5stamp-p4.dtb
 b9c8919bccd5c3c144b33df9736f18d977392498867aabb53908096ceeb99234  boot.img
 ```
 
@@ -110,7 +110,7 @@ bc6fcca on `main`, local build `issue37-e`, flashed the same way:
 582f3a5624e96321298e4ed8aafe6186a3872f38b5cb98344ec446f4cf39de60  boot-shim.bin
 17f6ab23ab317a6f9b40c3d95f946258bfbc4877a41421d71bcb991abc202ce3  Image
 b03d3817d1419fa83690e7a3e8dd2d0270a6b938331f48cc70304a3f3d67f365  rootfs.squashfs
-a12b18e1347ade36c499c79338ff7125bd4140bf56c64ecfedce8f93b4d3a852  easystick-stamp-p4.dtb
+a12b18e1347ade36c499c79338ff7125bd4140bf56c64ecfedce8f93b4d3a852  esp32p4-m5stamp-p4.dtb
 fad995bf9548815f6ef7430a1e5f2d3d7b0fef13ddfd5b14c83b7aaa89d118a1  boot.img
 ```
 

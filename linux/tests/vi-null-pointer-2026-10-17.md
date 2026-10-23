@@ -33,7 +33,7 @@ is the upper half of a 32-bit instruction.  The other runs left nothing.
 
 ## Fix
 
-`linux/kernel-patches/0071-easystick-nommu-access-ok.patch` gives this SoC its
+`linux/kernel-patches/0071-nommu-access-ok.patch` gives this SoC its
 own `__access_ok()`.  A range is accepted only if it starts in
 `[phys_ram_base, high_memory)` (the PSRAM Linux manages) or in the mtd-rom
 flash window that physmap registers.  Everything else returns `-EFAULT`

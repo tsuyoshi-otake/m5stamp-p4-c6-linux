@@ -97,7 +97,7 @@ not `#N`.
 | Capture | `m3-cmd53regs` 20:03:29 JST | `m3-sdioagg-boot` 21:55:21 JST |
 | `Tx Pos` | 10 | 0 |
 | `len=40` frames | 8 | 0 |
-| Preserved set | `easystick-p4-m3-lab-resetpin-20260810/` | `easystick-p4-m3-sdioagg-20260810/` |
+| Preserved set | `stamp-p4-m3-lab-resetpin-20260810/` | `stamp-p4-m3-sdioagg-20260810/` |
 
 The success is not a one-off: **33 captures contain `BOOT_CMD53_RX: len=40`**,
 spanning 15:30:17 → 20:03:29 JST across builds `#2`(06:01:41) through `#29`.
@@ -110,7 +110,7 @@ It closes permanently at 20:03:29; the first failure is 21:55:21.
 | `bootloader.bin` | 0x2000 | `681e730b…` | `681e730b…` | **identical** |
 | `partition-table.bin` | 0x8000 | `580a0ca9…` | `580a0ca9…` | **identical** |
 | `boot-shim.bin` | 0x10000 | `3e90e8b0…` | `3e90e8b0…` | **identical** |
-| `easystick-stamp-p4.dtb` | 0xf10000 | `a4284b33…` | `a4284b33…` | **identical** |
+| `esp32p4-m5stamp-p4.dtb` | 0xf10000 | `a4284b33…` | `a4284b33…` | **identical** |
 | `Image` | 0x90000 | `6ee6e984…` | `bc1ba145…` | differs — **66 bytes, all banner** |
 | `rootfs.squashfs` | 0x810000 | `a615f3c9…` | `9f96804f…` | **differs** |
 
@@ -141,7 +141,7 @@ Each axis raised in the investigation, and what closed it:
 | GPIO42 ownership | **eliminated** | `boot-shim.bin` byte-identical; `Triggering ESP reset` appears in **0 of 173** captures — the driver has never once driven the pin |
 | GPIO42 timing | **eliminated** | same identical shim binary across the boundary |
 | `resetpin` module default | **eliminated** | `warn42=2` present in *both* #29 and #30. `esp_reset()` skips the entire body when `resetpin == -1` and prints-then-skips when `gpio_is_valid(42)` fails — neither touches a GPIO |
-| DTS / device tree | **eliminated** | `easystick-stamp-p4.dtb` byte-identical |
+| DTS / device tree | **eliminated** | `esp32p4-m5stamp-p4.dtb` byte-identical |
 | `max-frequency = <400000>` | **eliminated** | identical DTB; both captures log `Bus speed (slot 1) = 40000000Hz (slot req 400000Hz, actual 400000HZ div = 50)` verbatim |
 | 4-bit bus width | **eliminated** | identical DTB, identical bus line |
 | DW-MMC DMA vs PIO | **eliminated** | identical DTB; node selection is a DT property |
@@ -198,7 +198,7 @@ per-directory convention (§14.9). Identify these sets by stamp, never by name.
 
 **Recoverable — complete and flashable now:**
 
-`C:\Users\developer\tmp\easystick-p4-m3-lab-resetpin-20260810\`, all six
+`C:\Users\developer\tmp\stamp-p4-m3-lab-resetpin-20260810\`, all six
 regions present, this is the exact byte-for-byte state that produced `Tx Pos=10`
 / `len=40` / `wlan0`:
 
@@ -208,7 +208,7 @@ regions present, this is the exact byte-for-byte state that produced `Tx Pos=10`
 3e90e8b01bf2f347d6fd68c6fd3f67409b79c33fee2043773b46543ce44df418  boot-shim.bin         @0x10000
 6ee6e9844818f5fee8ed0fcf4ff1cf720caf0a99da7e443717eefad0fc59e53a  Image                 @0x90000
 a615f3c99a0d9c54c421399dfdc4806ce6790b32f740ce62730e583481849538  rootfs.squashfs       @0x810000
-a4284b333bfee614c6f41e7ed8566a910af7eca9916cff750a06c62fc439b0f7  easystick-stamp-p4.dtb @0xf10000
+a4284b333bfee614c6f41e7ed8566a910af7eca9916cff750a06c62fc439b0f7  esp32p4-m5stamp-p4.dtb @0xf10000
 ```
 
 **Permanently missing:**
@@ -238,7 +238,7 @@ a4284b333bfee614c6f41e7ed8566a910af7eca9916cff750a06c62fc439b0f7  easystick-stam
 All four are pure P4-software; none requires probing, wiring, or any C6 write.
 
 **A0 — restore the last-good set verbatim.** Flash all six regions of
-`easystick-p4-m3-lab-resetpin-20260810/` via `flash-candidate.ps1`. This is a
+`stamp-p4-m3-lab-resetpin-20260810/` via `flash-candidate.ps1`. This is a
 one-variable binary bisect using artifacts already on disk, against a boundary
 where four of six regions are provably identical.
 
@@ -268,7 +268,7 @@ is the whole rootfs delta. Rank it after A0/A1 for that reason.
 
 ## 7. Defects found along the way, independent of this regression
 
-In `0009-easystick-sdio-rx-aggregate.patch`:
+In `0009-sdio-rx-aggregate.patch`:
 
 1. `context->rx_q` is dereferenced **before** the `!context` NULL check:
 

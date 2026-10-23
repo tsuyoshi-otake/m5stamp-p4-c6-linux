@@ -15,7 +15,7 @@ ac11cac958c4468e96ce821051fe7da545cafd53289d554b2d88c3d9279e4041  Image
 fe27b66d7b2be07147928f6b1804969f0832c83f289777727a6d26a95fa1caaf  rootfs.squashfs
 bd8b9ea5abe09cfb04f814140dd1473e17cc1db5cb456f0f0ffafb34796ebe57  boot.img
 9892921c9d1068140f0b84351b52c535a84e9ad83d062ae7302d38e9f0182a63  boot-shim.bin
-a12b18e1347ade36c499c79338ff7125bd4140bf56c64ecfedce8f93b4d3a852  easystick-stamp-p4.dtb
+a12b18e1347ade36c499c79338ff7125bd4140bf56c64ecfedce8f93b4d3a852  esp32p4-m5stamp-p4.dtb
 ```
 
 Every boot passed `linux/tests/check-boot-log.py` (11 checks) and printed
@@ -60,7 +60,7 @@ while True:
 | Drive edit picked up while running | `main.py` started as `m5` (`ps`: `m5 ... SN python3 main.py`) |
 | `lib/` import, `json`, `socket` + DNS, `time.sleep` | log: `main.py v1 start: helper from lib/`, `http b'HTTP/1.1 200 OK'`, a JSON line every 5 s |
 | Edit `main.py` (v1 → v2) | restarted by itself: `--- autorun: start main.py` / `main.py v2 start` |
-| `easystick-autorun restart` / `status` as `m5` | `stopped pid 466`, `started main.py pid 489`, `running: pid 489` |
+| `autorun restart` / `status` as `m5` | `stopped pid 466`, `started main.py pid 489`, `running: pid 489` |
 | `autorun=off` in `config.txt` | `--- autorun: stopped`, status `mode=off` |
 | Wi-Fi during the autorun edits | `wlan0` `carrier_changes` stayed 0; no network reload |
 | Power-on with `main.py` on the drive | `[bootsync] autorun: started main.py` about 20 s after reset; HTTP 200 and ticks in the log |
@@ -95,7 +95,7 @@ the same way; 11/11 boot-log checks passed.
 3e56fb0e580f93cba2160c6ff39f6030af87fe2a56ee0d9ac4251f600309ebd2  rootfs.squashfs
 7bd0ed9b2c69b3d005c6446f9667837ff23cf6a47b8c97b9ce1bbe8313d83499  boot.img
 3349c37e1905e9a73b7b8d92b0f15d182b3866fb64d9ddc460ee5668c62718e0  boot-shim.bin
-a12b18e1347ade36c499c79338ff7125bd4140bf56c64ecfedce8f93b4d3a852  easystick-stamp-p4.dtb
+a12b18e1347ade36c499c79338ff7125bd4140bf56c64ecfedce8f93b4d3a852  esp32p4-m5stamp-p4.dtb
 ```
 
 | Check | Result |

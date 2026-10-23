@@ -36,7 +36,7 @@ d4495e6 (same kernel patches and DTB, full BusyBox for every daemon).
 |---|---|
 | `rootfs.squashfs` | `343383d5a764d0db16111a0027e4bc03fb82b19f8c2acad4a65adb9c4425fcca` |
 | `Image` | `f7a612cfca29ff1d7737f777955de4def7e818034f0d6b8c782fb30453e0f2ca` |
-| `easystick-stamp-p4.dtb` | `a12b18e1347ade36c499c79338ff7125bd4140bf56c64ecfedce8f93b4d3a852` |
+| `esp32p4-m5stamp-p4.dtb` | `a12b18e1347ade36c499c79338ff7125bd4140bf56c64ecfedce8f93b4d3a852` |
 
 ## Pool use
 
@@ -73,7 +73,7 @@ length 614400 from process … (dropbear) failed` and the client sees
 | syslogd writes `/run/messages` (`udhcpd[…]: started`, init's `starting pid`) | yes |
 | udhcpd in SoftAP mode, listening on UDP 67 | yes |
 | Station mode: raw TCP 295–345 KB/s, SSH 209–219 KB/s at 5 MHz | same as before |
-| `killall inetd`: easystick-respawn restarts it, SSH works | yes |
+| `killall inetd`: respawn restarts it, SSH works | yes |
 | `reboot` from the console | board back up, daemons running |
 | 10 resets (`capture-boot.ps1 -Reset`) | 11/11 each, no `Allocation of length`, no tty errors |
 

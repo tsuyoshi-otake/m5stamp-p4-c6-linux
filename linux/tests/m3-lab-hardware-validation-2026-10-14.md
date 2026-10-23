@@ -18,7 +18,7 @@ The restore was exercised once during the bisect below and booted with wlan0.
 ## Final candidate ("D")
 
 Built by `build-c68.sh --profile m3-lab` from a staged copy of the tree, so
-`/etc/easystick-release` reports `git=51decbdca0c1 dirty=1`
+`/etc/build-info` reports `git=51decbdca0c1 dirty=1`
 (`version=v0.2.1-smp-25-g51decbd`, kernel 6.18.35).  The staged tree matches
 commit 20bebd5 for every file that reaches the image.
 
@@ -27,7 +27,7 @@ commit 20bebd5 for every file that reaches the image.
 3540fdd5a350953148063244dd0583d186e2a256928130271530c9ae05a5d55c  boot-shim.bin
 47a395e21f0dd6eb3990387fcbf0baa0d06a80c415be94a96fbcdf6b281c50ed  boot.img
 9581932b9bd542b84e06d43ba7eef997315c3a1cc43abb5c00c9516e6f8ded10  bootloader.bin
-cda3cbe1f944e5c6f5dd25dcca2017158cb3248542f8068c8a9bdfbfd9944989  easystick-stamp-p4.dtb
+cda3cbe1f944e5c6f5dd25dcca2017158cb3248542f8068c8a9bdfbfd9944989  esp32p4-m5stamp-p4.dtb
 7937656f29960d53b63010b51836e233d092e067e320cde5778ec43e04218870  partition-table.bin
 b462a4be7a5c37ce98ae554d1ea97a0730bb0372884f875a5fea25acb276fe79  rootfs.squashfs
 ```
@@ -51,7 +51,7 @@ Flashed with `flash-candidate.ps1 -AllowCandidateWrite` (write + verify passed).
    (`Drop invalid pkt len=3 offset=0`), so no wlan0.  Not 0034 and not BT
    (boot-A was built without 0034 and still failed).  The shipped v0.2.1
    used the IDMAC path.  Fixed in 6c341f5: m3-lab defaults to
-   `EASYSTICK_SDIO_FORCE_PIO=0`, `EASYSTICK_IDMAC_NONCOHERENT_RING=1`.
+   `SDIO_FORCE_PIO=0`, `IDMAC_NONCOHERENT_RING=1`.
 2. **/boot mount point missing.**  The squashfs root is read-only, so S05
    could not create it.  Fixed in 78f1c86 (`ES_BOOT_FAT OK`).
 3. **Console keystrokes stolen.**  hush applies a bare `<>` to fd 1, so
@@ -67,7 +67,7 @@ Flashed with `flash-candidate.ps1 -AllowCandidateWrite` (write + verify passed).
 ## Smoke-test results (smoke-test.md)
 
 - Step 1–2: boot and reboot pass (table above).
-- Step 3: `netstat` shows :22 LISTEN, udp 67 and 5353; `easystick-info` runs;
+- Step 3: `netstat` shows :22 LISTEN, udp 67 and 5353; `sysinfo` runs;
   MemAvailable 6.3–6.9 MB.
 - Step 5 (#17): **not run.**  `CONFIG_SHMEM` depends on MMU, so `tmpfs` is
   ramfs: `size=4M` is ignored and `df /tmp` reports 0.  An 8 MB fill would
@@ -159,7 +159,7 @@ Flashed with `flash-candidate.ps1 -AllowCandidateWrite` (write + verify passed).
       then an MWDT reset.  A third run went fully silent with no MWDT
       reset for more than 2 minutes, which is the original #5 report.
   - **Root cause, at register level (2026-10-15, opt-in patch 0068,
-    `EASYSTICK_C68_DEAF_TRACE=1`, candidates Z2–Z4):** CPU1's CLIC stops
+    `C68_DEAF_TRACE=1`, candidates Z2–Z4):** CPU1's CLIC stops
     delivering interrupts that are pending, enabled and above threshold.
     This is the CLIC interrupt-acceptance latch documented in the vendored
     why2025-linux tree (`docs/KNOWN-ISSUES.md`, `docs/RUNTIME-WEDGE.md`),
@@ -226,8 +226,8 @@ Flashed with `flash-candidate.ps1 -AllowCandidateWrite` (write + verify passed).
     shows CPU1's real PC at the reset (e.g. `arch_cpu_idle+0x146`).
     A shell watcher that read `/proc/interrupts` through `$(...)`
     OOM-killed the console (the known NOMMU limit).
-- **#26 pstore** (candidate G = D + `EASYSTICK_PSTORE=1`
-  `EASYSTICK_SDIO_MAX_KHZ=5000`; candidate E, the same without 0065,
+- **#26 pstore** (candidate G = D + `PSTORE=1`
+  `SDIO_MAX_KHZ=5000`; candidate E, the same without 0065,
   panicked at boot with `kernel BUG at mm/nommu.c:311`):
   - `echo c > /proc/sysrq-trigger`: reset via MWDT, then
     `ES_PSTORE OK: 1 record(s)`; `console-ramoops-0` holds the panic and
@@ -255,7 +255,7 @@ Flashed with `flash-candidate.ps1 -AllowCandidateWrite` (write + verify passed).
 - **First-boot OOM (#17, #29), 9210dc2**: three resident respawn
   subshells (about 500 KB of BusyBox each on NOMMU) made S40's `conf_get`
   pipelines fail on the first boot and print an empty SSID.  The new
-  `easystick-respawn` supervisor (about 110 KB) replaces them.  On
+  `respawn` supervisor (about 110 KB) replaces them.  On
   candidate P, the first boot after flashing gave 11/11 with the right
   SSID and no OOM, and a reboot gave 12/12.  Still seen: one `sed`
   OOM-killed during host-key generation on a reboot.  Nested `$(...)` on
@@ -288,7 +288,7 @@ Flashed with `flash-candidate.ps1 -AllowCandidateWrite` (write + verify passed).
   line stayed off the console.  `ES_WDT` (KERN_INFO) is only in dmesg
   unless `debug=1`; `OBS` markers are in opt-in builds only.
 - **#26 pstore on by default (candidate AL: 6fe7bbe, built without
-  `EASYSTICK_PSTORE`)**: the boot reserves `ramoops@499af000` (64 KiB)
+  `PSTORE`)**: the boot reserves `ramoops@499af000` (64 KiB)
   and logs `pstore: Registered ramoops as persistent store backend`;
   S05 printed `ES_PSTORE OK: 0 record(s) in /sys/fs/pstore` and the
   check gave 11/11.  `echo c > /proc/sysrq-trigger` panicked the kernel,
@@ -303,7 +303,7 @@ generated new credentials (SSID `m5-F314`, then `m5-4D54` after H and
 ## Board state at the end of the session
 
 Running candidate F (main at 2ed8648 built without
-`EASYSTICK_C68_DEAF_TRACE`, so the same kernel as candidate Y) with the
+`C68_DEAF_TRACE`, so the same kernel as candidate Y) with the
 normal `maxcpus=1` DTB, 11/11 PASS; SoftAP at 192.168.4.1
 (credentials in credentials.txt on the USB drive).
 The backup
