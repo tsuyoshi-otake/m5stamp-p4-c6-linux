@@ -1,4 +1,4 @@
-From: EasyStick maintainers <noreply@example.invalid>
+From: Stamp-P4 maintainers <noreply@example.invalid>
 Subject: [PATCH] host: use Stamp-P4 AddOn-C6 SDIO defaults
 
 The NOMMU lab rootfs removes BusyBox mdev's generic SDIO modalias autoload rule

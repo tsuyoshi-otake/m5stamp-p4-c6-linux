@@ -1,10 +1,10 @@
-From: EasyStick maintainers <noreply@example.invalid>
+From: Stamp-P4 maintainers <noreply@example.invalid>
 Subject: [PATCH] sdio: drop BOOT_CMD53/RXTRACE console dumps
 
 loglevel=8 keeps KERN_DEBUG on the console, so demoting the hex dump is not
 enough.  Remove the hot-path BOOT_CMD53_DATA print_hex_dump and RXTRACE
 pr_info calls from the quiet default image.  Functional RX paths are
-unchanged.  EASYSTICK_ESPHOSTED_DIAGNOSTICS=1 omits this patch.
+unchanged.  ESPHOSTED_DIAGNOSTICS=1 omits this patch.
 
 ---
 diff --git a/sdio/esp_sdio.c b/sdio/esp_sdio.c

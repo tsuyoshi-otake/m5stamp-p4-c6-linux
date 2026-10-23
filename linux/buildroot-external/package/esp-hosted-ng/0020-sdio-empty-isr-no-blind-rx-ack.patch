@@ -1,4 +1,4 @@
-From: EasyStick maintainers <noreply@example.invalid>
+From: Stamp-P4 maintainers <noreply@example.invalid>
 Subject: [PATCH] sdio: never blind-ack RX_NEW_PACKET after RX ready
 
 0018 correctly ACKs a nonzero INT_RAW sample when INT_ST==0 and BIT 23

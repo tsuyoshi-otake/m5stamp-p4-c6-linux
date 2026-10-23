@@ -1,4 +1,4 @@
-From: EasyStick maintainers <noreply@example.invalid>
+From: Stamp-P4 maintainers <noreply@example.invalid>
 Subject: [PATCH] sdio: read-only /proc/esp32_sdio_h2c_obs (CMD52)
 
 Expose C6 H2C observe scratch (host SCRATCH_REG_8..15 = slave pos 32..63)

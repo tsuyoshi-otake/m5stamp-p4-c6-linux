@@ -1,4 +1,4 @@
-From: EasyStick maintainers <noreply@example.invalid>
+From: Stamp-P4 maintainers <noreply@example.invalid>
 Subject: [PATCH] esp32_sdio: es_reg_cmd53 param to A/B register reads (#35)
 
 Adds module parameter es_reg_cmd53 (default 0).  When nonzero,

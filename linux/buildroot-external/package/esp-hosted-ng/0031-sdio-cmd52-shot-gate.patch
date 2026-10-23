@@ -1,4 +1,4 @@
-From: EasyStick maintainers <noreply@example.invalid>
+From: Stamp-P4 maintainers <noreply@example.invalid>
 Subject: [PATCH] esp-hosted: add an explicit CMD52 shot gate
 
 Add a root-writable module parameter that clears the four CMD52 boundary
@@ -16,8 +16,8 @@ timestamping to the observed path.
 @@ -14,5 +14,6 @@
  int esp_write_reg(struct esp_sdio_context *context, u32 reg, u8 *data, u16 size, u8 is_lock_needed);
  int esp_write_block(struct esp_sdio_context *context, u32 reg, u8 *data, u16 size, u8 is_lock_needed);
- void easystick_cmd52_marker_arm(void);
-+void easystick_cmd52_marker_shot_arm(void);
+ void cmd52_marker_arm(void);
++void cmd52_marker_shot_arm(void);
  
  #endif
 --- a/sdio/esp_sdio_api.c
@@ -26,21 +26,21 @@ timestamping to the observed path.
  	wmb();
  }
  
-+void easystick_cmd52_marker_shot_arm(void)
++void cmd52_marker_shot_arm(void)
 +{
-+	easystick_cmd52_marker_store_word(0u, EASYSTICK_CMD52_MARKER_EMPTY);
-+	easystick_cmd52_marker_store_word(1u, EASYSTICK_CMD52_MARKER_EMPTY);
-+	easystick_cmd52_marker_store_word(2u, EASYSTICK_CMD52_MARKER_EMPTY);
-+	easystick_cmd52_marker_store_word(3u, EASYSTICK_CMD52_MARKER_EMPTY);
-+	easystick_cmd52_marker_store_word(4u, EASYSTICK_CMD52_MARKER_EMPTY);
-+	easystick_cmd52_marker_store_word(5u, EASYSTICK_CMD52_MARKER_EMPTY);
++	cmd52_marker_store_word(0u, CMD52_MARKER_EMPTY);
++	cmd52_marker_store_word(1u, CMD52_MARKER_EMPTY);
++	cmd52_marker_store_word(2u, CMD52_MARKER_EMPTY);
++	cmd52_marker_store_word(3u, CMD52_MARKER_EMPTY);
++	cmd52_marker_store_word(4u, CMD52_MARKER_EMPTY);
++	cmd52_marker_store_word(5u, CMD52_MARKER_EMPTY);
 +	wmb();
-+	easystick_cmd52_marker_store_word(0u, EASYSTICK_CMD52_MARKER_MAGIC);
-+	easystick_cmd52_marker_store_word(1u, EASYSTICK_CMD52_MARKER_ARMED);
++	cmd52_marker_store_word(0u, CMD52_MARKER_MAGIC);
++	cmd52_marker_store_word(1u, CMD52_MARKER_ARMED);
 +	wmb();
 +}
 +
- static __always_inline bool easystick_cmd52_marker_target(u32 reg, u16 size)
+ static __always_inline bool cmd52_marker_target(u32 reg, u16 size)
  {
  	return reg == (ESP_SLAVE_TOKEN_RDATA & ESP_ADDRESS_MASK) &&
 --- a/main.c
@@ -67,7 +67,7 @@ timestamping to the observed path.
 +	if (parsed != 0 && parsed != 1)
 +		return -EINVAL;
 +	if (parsed == 1)
-+		easystick_cmd52_marker_shot_arm();
++		cmd52_marker_shot_arm();
 +	WRITE_ONCE(cmd52_marker_shot, parsed);
 +	return 0;
 +}

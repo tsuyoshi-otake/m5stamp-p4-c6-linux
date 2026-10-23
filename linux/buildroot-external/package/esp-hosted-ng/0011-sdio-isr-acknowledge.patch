@@ -1,4 +1,4 @@
-From: EasyStick maintainers <noreply@example.invalid>
+From: Stamp-P4 maintainers <noreply@example.invalid>
 Subject: [PATCH] sdio: acknowledge the slave interrupt instead of echoing it
 
 esp_handle_isr() writes the value it just read from INT_ST back to INT_CLR.
@@ -42,7 +42,7 @@ esp_sdio_decl.h names, the forced acknowledge cannot clear it and the loop
 persists -- the INT_RAW sample is there to identify exactly that case.
 
 Verified on hardware 2026-08-11, cold Type-C power cycle, read-only 60 s
-capture (easystick-p4-israck-boot-20260811.log, sha256
+capture (p4-israck-boot-20260811.log, sha256
 85994ab595eee6a386b20a85ced7e9f90b13be8642a987909f0fceaf30ed6227):
 
   - The loop stops.  254 distinct callbacks became 2, both inside the first

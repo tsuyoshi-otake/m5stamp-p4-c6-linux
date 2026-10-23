@@ -1,4 +1,4 @@
-From: EasyStick maintainers <noreply@example.invalid>
+From: Stamp-P4 maintainers <noreply@example.invalid>
 Subject: [PATCH] sdio: skip function 2 without a probe error
 
 The C6 exposes two SDIO functions and only function 1 carries the

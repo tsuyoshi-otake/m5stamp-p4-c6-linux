@@ -5,7 +5,7 @@
  * fresh copy of BusyBox with its own ~500 KB of text and data, and three of
  * them left too little contiguous memory for fork+exec (first-boot OOM).
  *
- * usage: easystick-respawn [-d SECS] [-p PIDFILE] -- PROG [ARG...]
+ * usage: respawn [-d SECS] [-p PIDFILE] -- PROG [ARG...]
  *
  * -d  delay before each restart (default 2)
  * -p  file that holds the running child's PID; removed while none runs
@@ -83,7 +83,7 @@ int main(int argc, char **argv)
 			_exit(127);
 		}
 		if (pid < 0) {
-			perror("easystick-respawn: vfork");
+			perror("respawn: vfork");
 		} else {
 			child = pid;
 			write_pid(pid);

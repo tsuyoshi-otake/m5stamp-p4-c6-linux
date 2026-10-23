@@ -1,4 +1,4 @@
-From: EasyStick maintainers <noreply@example.invalid>
+From: Stamp-P4 maintainers <noreply@example.invalid>
 Subject: [PATCH] sdio: log command-path CMD53 transmit result
 
 Record the CMD53 write used by ESP-Hosted control commands.  Together with

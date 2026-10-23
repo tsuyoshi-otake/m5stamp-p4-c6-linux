@@ -1,11 +1,11 @@
-/* EasyStick 0023-A: test-only P4 host TX stage ledger helpers.
+/* Stamp-P4 0023-A: test-only P4 host TX stage ledger helpers.
  * Observe TCP source port 22 with payload_len > 0 only.
  * No ciphertext; no behaviour change when included.
  * Experiment A follow-up: optional per-call CMD53 claim/memcpy
  * markers keyed by caller-allocated trace_id (no global flag).
  */
-#ifndef EASYSTICK_TX_LEDGER_H
-#define EASYSTICK_TX_LEDGER_H
+#ifndef TX_LEDGER_H
+#define TX_LEDGER_H
 
 #include <linux/if_ether.h>
 #include <linux/ip.h>
@@ -171,4 +171,4 @@ static inline void es_tx_mark_cmd53(const char *stage,
 		       tr->xfer);
 }
 
-#endif /* EASYSTICK_TX_LEDGER_H */
+#endif /* TX_LEDGER_H */

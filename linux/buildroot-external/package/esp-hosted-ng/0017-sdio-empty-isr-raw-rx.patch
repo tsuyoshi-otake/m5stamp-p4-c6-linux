@@ -1,4 +1,4 @@
-From: EasyStick maintainers <noreply@example.invalid>
+From: Stamp-P4 maintainers <noreply@example.invalid>
 Subject: [PATCH] sdio: dispatch RX_NEW_PACKET latched only in INT_RAW
 
 0011 acknowledges INT_ST==0 by writing ESP_SLAVE_INT_CLR_KNOWN so the

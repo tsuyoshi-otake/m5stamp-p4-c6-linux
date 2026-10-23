@@ -1,4 +1,4 @@
-From: EasyStick maintainers <noreply@example.invalid>
+From: Stamp-P4 maintainers <noreply@example.invalid>
 Subject: [PATCH] host: defer Bluetooth initialization in Wi-Fi-only lab
 
 The AddOn C6 advertises WLAN and BLE over SDIO.  The M3 lab acceptance scope

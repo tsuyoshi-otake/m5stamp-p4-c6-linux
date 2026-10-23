@@ -1,4 +1,4 @@
-From: EasyStick maintainers <noreply@example.invalid>
+From: Stamp-P4 maintainers <noreply@example.invalid>
 Subject: [PATCH] sdio: attest requested and effective host clock
 
 The module parameter is only a request.  Record the value applied to the MMC

@@ -1,4 +1,4 @@
-From: EasyStick maintainers <noreply@example.invalid>
+From: Stamp-P4 maintainers <noreply@example.invalid>
 Subject: [PATCH] esp32_sdio: opt-in CMD53 PIO-write probe (#35)
 
 es_reg_probe (0041) exercises the host read path; this battery

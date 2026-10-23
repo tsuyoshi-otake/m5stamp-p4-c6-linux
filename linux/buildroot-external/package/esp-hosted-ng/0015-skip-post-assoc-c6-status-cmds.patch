@@ -1,4 +1,4 @@
-From: EasyStick maintainers <noreply@example.invalid>
+From: Stamp-P4 maintainers <noreply@example.invalid>
 Subject: [PATCH] cfg80211: do not query C6 TX power or RSSI after assoc
 
 After association, nl80211 get_tx_power issues CMD_GET_TXPOWER (0xF).

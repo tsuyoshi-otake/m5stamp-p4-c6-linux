@@ -1,4 +1,4 @@
-From: EasyStick maintainers <noreply@example.invalid>
+From: Stamp-P4 maintainers <noreply@example.invalid>
 Subject: [PATCH] esp32_sdio: opt-in CMD53 register-window probe (#35)
 
 Root-cause aid for the C6 slave register-window CMD53 reads that

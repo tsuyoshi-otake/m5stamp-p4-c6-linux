@@ -1,4 +1,4 @@
-From: EasyStick maintainers <noreply@example.invalid>
+From: Stamp-P4 maintainers <noreply@example.invalid>
 Subject: [PATCH] sdio: drain a boot packet after opening the data path
 
 The P4 in-band interrupt input is edge sensitive.  The C6 can queue its

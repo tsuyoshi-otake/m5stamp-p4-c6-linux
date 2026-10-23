@@ -1,4 +1,4 @@
-From: EasyStick maintainers <noreply@example.invalid>
+From: Stamp-P4 maintainers <noreply@example.invalid>
 Subject: [PATCH] sdio: trace DMA receive buffer lifecycle
 
 Capture the state of the small sequence of SDIO receive buffers that leads to

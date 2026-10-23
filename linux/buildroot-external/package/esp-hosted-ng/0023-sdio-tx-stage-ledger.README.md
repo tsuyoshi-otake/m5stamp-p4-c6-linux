@@ -1,6 +1,6 @@
 # 0023-A: P4 host TX stage ledger (observe-only)
 
-Test-only markers for ESP-Hosted NG host TX on EasyStick Stamp-P4.
+Test-only markers for ESP-Hosted NG host TX on Stamp-P4 Stamp-P4.
 
 ## Intent
 
@@ -13,16 +13,16 @@ P4 host path:
 
 Buildroot series file:
 
-`0023-easystick-sdio-tx-stage-ledger.patch`
+`0023-sdio-tx-stage-ledger.patch`
 
-`build-m1.sh` applies it only when `EASYSTICK_ESPHOSTED_TX_LEDGER=1`.
+`build-m1.sh` applies it only when `ESPHOSTED_TX_LEDGER=1`.
 The default quiet acceptance image omits it.
 
 This patch contains only the TX ledger. Quiet console and hexdump suppression
 remain independently owned by `0024` and `0025`, so the three patches can be
 applied together without duplicate hunks.
 
-Header source: `include-easystick_tx_ledger.h` → `include/easystick_tx_ledger.h`
+Header source: `include-tx_ledger.h` → `include/tx_ledger.h`
 
 ## Markers (`ES_TX`, `printk(KERN_EMERG)`)
 
@@ -54,4 +54,4 @@ PSRAM. Logging only.
 - Sport22+trace: `console-a-sport22-true-20260821.bin` — same `trace=10`
   reaches `MEMCPY_DONE ret=-110` / `CMD53_ERR` then DUT dies.
 - Staging reports under
-  `D:\Users\Developer\easystick-tmp-20260820\easystick-p4-m3-lab-quiet-txledger-20260821\`.
+  `D:\Users\Developer\tmp-20260820\p4-m3-lab-quiet-txledger-20260821\`.

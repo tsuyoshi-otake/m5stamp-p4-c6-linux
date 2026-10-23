@@ -1,7 +1,7 @@
 #define _GNU_SOURCE
 /*
  * Stage a verified boot image in PSRAM for boot-shim's A/B commit, then ask
- * the kernel to do that commit now (/sys/kernel/easystick/boot_commit, patch
+ * the kernel to do that commit now (/sys/kernel/board/boot_commit, patch
  * 0072).  The request's commit word is written last, so an interrupted
  * staging operation is ignored by firmware.  If the kernel cannot write
  * flash, the request stays and boot-shim commits it at the next reboot.
@@ -20,16 +20,16 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-#define EASYSTICK_PSRAM_REQUEST_PHYS UINT32_C(0x499bf000)
-#define EASYSTICK_PSRAM_IMAGE_PHYS   UINT32_C(0x499c0000)
-#define EASYSTICK_IMAGE_BYTES        UINT32_C(0x00040000)
-#define EASYSTICK_REQUEST_MAGIC      UINT32_C(0x45534243) /* "ESBC" */
-#define EASYSTICK_REQUEST_VERSION    UINT32_C(1)
-#define EASYSTICK_REQUEST_COMMIT     UINT32_C(0x434f4d4d) /* "COMM" */
-#define EASYSTICK_FLASH_COMMIT       "/sys/kernel/easystick/boot_commit"
+#define PSRAM_REQUEST_PHYS UINT32_C(0x499bf000)
+#define PSRAM_IMAGE_PHYS   UINT32_C(0x499c0000)
+#define IMAGE_BYTES        UINT32_C(0x00040000)
+#define REQUEST_MAGIC      UINT32_C(0x45534243) /* "ESBC" */
+#define REQUEST_VERSION    UINT32_C(1)
+#define REQUEST_COMMIT     UINT32_C(0x434f4d4d) /* "COMM" */
+#define FLASH_COMMIT       "/sys/kernel/board/boot_commit"
 #define EXIT_STAGED_ONLY             2
 
-struct easystick_commit_request {
+struct commit_request {
 	uint32_t magic;
 	uint32_t version;
 	uint32_t image_bytes;
@@ -37,7 +37,7 @@ struct easystick_commit_request {
 	uint32_t commit;
 } __attribute__((packed));
 
-_Static_assert(sizeof(struct easystick_commit_request) == 20,
+_Static_assert(sizeof(struct commit_request) == 20,
 	"commit request layout changed");
 
 static uint32_t crc32_ieee_update(uint32_t crc, const uint8_t *buf, size_t len)
@@ -85,7 +85,7 @@ static void *map_physical(int memfd, uint32_t phys, size_t length)
 static int stage_image(int imagefd, volatile uint8_t *psram, uint32_t *crc_out)
 {
 	uint8_t buffer[4096];
-	size_t remaining = EASYSTICK_IMAGE_BYTES;
+	size_t remaining = IMAGE_BYTES;
 	size_t offset = 0;
 	uint32_t crc = UINT32_MAX;
 
@@ -115,23 +115,23 @@ static uint32_t crc32_volatile(const volatile uint8_t *buf, size_t len)
 	return ~crc;
 }
 
-static void publish_request(volatile struct easystick_commit_request *request,
+static void publish_request(volatile struct commit_request *request,
 				    uint32_t crc)
 {
 	/* Metadata must be visible before the final commit store. */
-	request->magic = EASYSTICK_REQUEST_MAGIC;
-	request->version = EASYSTICK_REQUEST_VERSION;
-	request->image_bytes = EASYSTICK_IMAGE_BYTES;
+	request->magic = REQUEST_MAGIC;
+	request->version = REQUEST_VERSION;
+	request->image_bytes = IMAGE_BYTES;
 	request->image_crc32 = crc;
 	__sync_synchronize();
-	request->commit = EASYSTICK_REQUEST_COMMIT;
+	request->commit = REQUEST_COMMIT;
 	__sync_synchronize();
 }
 
 /* The kernel writes the staged image to the inactive slot and switches. */
 static int commit_to_flash(void)
 {
-	int fd = open(EASYSTICK_FLASH_COMMIT, O_WRONLY | O_CLOEXEC);
+	int fd = open(FLASH_COMMIT, O_WRONLY | O_CLOEXEC);
 	ssize_t written;
 	int err;
 
@@ -179,9 +179,9 @@ int main(int argc, char **argv)
 		fprintf(stderr, "boot commit: cannot stat %s: %s\n", argv[1], strerror(errno));
 		goto out;
 	}
-	if (!S_ISREG(st.st_mode) || st.st_size != (off_t)EASYSTICK_IMAGE_BYTES) {
+	if (!S_ISREG(st.st_mode) || st.st_size != (off_t)IMAGE_BYTES) {
 		fprintf(stderr, "boot commit: input must be a regular %u-byte image\n",
-			EASYSTICK_IMAGE_BYTES);
+			IMAGE_BYTES);
 		goto out;
 	}
 	memfd = open(mem_path, O_RDWR | O_SYNC | O_CLOEXEC);
@@ -189,36 +189,36 @@ int main(int argc, char **argv)
 		fprintf(stderr, "boot commit: cannot open %s: %s\n", mem_path, strerror(errno));
 		goto out;
 	}
-	image_map = map_physical(memfd, EASYSTICK_PSRAM_IMAGE_PHYS, EASYSTICK_IMAGE_BYTES);
-	request_map = map_physical(memfd, EASYSTICK_PSRAM_REQUEST_PHYS,
-				   sizeof(struct easystick_commit_request));
+	image_map = map_physical(memfd, PSRAM_IMAGE_PHYS, IMAGE_BYTES);
+	request_map = map_physical(memfd, PSRAM_REQUEST_PHYS,
+				   sizeof(struct commit_request));
 	if (image_map == NULL || request_map == NULL) {
 		fprintf(stderr, "boot commit: cannot map PSRAM staging area: %s\n", strerror(errno));
 		goto out;
 	}
 	/* Invalidate a prior request before changing any image byte. */
-	((volatile struct easystick_commit_request *)request_map)->commit = 0;
+	((volatile struct commit_request *)request_map)->commit = 0;
 	__sync_synchronize();
-	if (((volatile struct easystick_commit_request *)request_map)->commit != 0) {
+	if (((volatile struct commit_request *)request_map)->commit != 0) {
 		fprintf(stderr, "boot commit: could not clear prior request\n");
 		goto out;
 	}
 	if (stage_image(imagefd, image_map, &expected_crc) != 0 ||
-	    crc32_volatile(image_map, EASYSTICK_IMAGE_BYTES) != expected_crc) {
+	    crc32_volatile(image_map, IMAGE_BYTES) != expected_crc) {
 		fprintf(stderr, "boot commit: PSRAM image readback CRC failed\n");
 		goto out;
 	}
 	publish_request(request_map, expected_crc);
-	if (((volatile struct easystick_commit_request *)request_map)->magic != EASYSTICK_REQUEST_MAGIC ||
-	    ((volatile struct easystick_commit_request *)request_map)->version != EASYSTICK_REQUEST_VERSION ||
-	    ((volatile struct easystick_commit_request *)request_map)->image_bytes != EASYSTICK_IMAGE_BYTES ||
-	    ((volatile struct easystick_commit_request *)request_map)->image_crc32 != expected_crc ||
-	    ((volatile struct easystick_commit_request *)request_map)->commit != EASYSTICK_REQUEST_COMMIT) {
+	if (((volatile struct commit_request *)request_map)->magic != REQUEST_MAGIC ||
+	    ((volatile struct commit_request *)request_map)->version != REQUEST_VERSION ||
+	    ((volatile struct commit_request *)request_map)->image_bytes != IMAGE_BYTES ||
+	    ((volatile struct commit_request *)request_map)->image_crc32 != expected_crc ||
+	    ((volatile struct commit_request *)request_map)->commit != REQUEST_COMMIT) {
 		fprintf(stderr, "boot commit: request readback failed\n");
 		goto out;
 	}
 	fprintf(stderr, "boot commit: staged %u bytes, crc32=%08" PRIx32 "\n",
-		EASYSTICK_IMAGE_BYTES, expected_crc);
+		IMAGE_BYTES, expected_crc);
 	if (commit_to_flash() == 0) {
 		fprintf(stderr, "boot commit: written to flash\n");
 		rc = EXIT_SUCCESS;
@@ -229,9 +229,9 @@ int main(int argc, char **argv)
 	}
 out:
 	if (request_map != NULL)
-		munmap(request_map, sizeof(struct easystick_commit_request));
+		munmap(request_map, sizeof(struct commit_request));
 	if (image_map != NULL)
-		munmap(image_map, EASYSTICK_IMAGE_BYTES);
+		munmap(image_map, IMAGE_BYTES);
 	if (memfd >= 0)
 		close(memfd);
 	if (imagefd >= 0)

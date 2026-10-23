@@ -1,4 +1,4 @@
-From: EasyStick maintainers <noreply@example.invalid>
+From: Stamp-P4 maintainers <noreply@example.invalid>
 Subject: [PATCH] sdio: record the first forced receive drain
 
 Separate a missed initial interrupt from a CMD53 FIFO failure.  This is

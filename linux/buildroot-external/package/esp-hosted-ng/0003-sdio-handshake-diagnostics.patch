@@ -1,4 +1,4 @@
-From: EasyStick maintainers <noreply@example.invalid>
+From: Stamp-P4 maintainers <noreply@example.invalid>
 Subject: [PATCH] sdio: log bring-up interrupt handshake
 
 Keep the messages narrowly scoped to initial bring-up.  They distinguish a

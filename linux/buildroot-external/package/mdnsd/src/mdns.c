@@ -4,7 +4,7 @@
  * the current IPv4 address of one interface.  No service discovery, no
  * probing, no cache.  mdnsd/avahi need fork() and do not build for NOMMU.
  *
- * usage: easystick-mdns [-i IFNAME] [-p PORT]
+ * usage: mdnsd [-i IFNAME] [-p PORT]
  */
 #include <arpa/inet.h>
 #include <errno.h>
@@ -125,7 +125,7 @@ int main(int argc, char **argv)
 
 	fd = socket(AF_INET, SOCK_DGRAM, 0);
 	if (fd < 0) {
-		perror("easystick-mdns: socket");
+		perror("mdnsd: socket");
 		return 1;
 	}
 	setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
@@ -133,7 +133,7 @@ int main(int argc, char **argv)
 	sa.sin_family = AF_INET;
 	sa.sin_port = htons((uint16_t)port);
 	if (bind(fd, (struct sockaddr *)&sa, sizeof(sa)) < 0) {
-		perror("easystick-mdns: bind");
+		perror("mdnsd: bind");
 		return 1;
 	}
 	{

@@ -1,4 +1,4 @@
-From: EasyStick maintainers <noreply@example.invalid>
+From: Stamp-P4 maintainers <noreply@example.invalid>
 Subject: [PATCH] esp32_sdio: wake the TX thread on enqueue (#43)
 
 When the queues are empty the TX thread polls once every two jiffies;

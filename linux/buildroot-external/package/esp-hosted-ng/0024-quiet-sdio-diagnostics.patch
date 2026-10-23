@@ -1,4 +1,4 @@
-From: EasyStick maintainers <noreply@example.invalid>
+From: Stamp-P4 maintainers <noreply@example.invalid>
 Subject: [PATCH] sdio: keep transport breadcrumbs off the normal console path
 
 The functional RX interrupt fixes remain enabled, but the ESP-Hosted source

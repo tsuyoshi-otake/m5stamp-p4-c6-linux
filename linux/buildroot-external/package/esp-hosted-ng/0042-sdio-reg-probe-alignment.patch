@@ -1,4 +1,4 @@
-From: EasyStick maintainers <noreply@example.invalid>
+From: Stamp-P4 maintainers <noreply@example.invalid>
 Subject: [PATCH] esp32_sdio: extend #35 probe - alignment vs length bits
 
 Extends the es_reg_probe battery (patch 0041) with four tests that
@@ -17,7 +17,7 @@ The destination prefill already distinguishes "slave sent zeros" from
 "host moved nothing"; this also makes the log line print all read
 bytes (up to 32) instead of truncating at 16.
 
-With easystick,force-pio in the DT every transfer takes the dw_mmc
+With espressif,force-pio in the DT every transfer takes the dw_mmc
 PIO path; the buffer alignment only selects between the aligned and
 bounce branches of dw_mci_pull_data*().
 
@@ -35,7 +35,7 @@ bounce branches of dw_mci_pull_data*().
 + *   0x800 c53u16      memcpy_fromio 16B into buf+1 (unaligned, same len
 + *                     as the working 0x10 case: isolates alignment)
 + *
-+ * Note: with easystick,force-pio in the DT every transfer takes the PIO
++ * Note: with espressif,force-pio in the DT every transfer takes the PIO
 + * path; the aligned/unaligned choice only selects the aligned or bounce
 + * branch of dw_mci_pull_data*.
   *

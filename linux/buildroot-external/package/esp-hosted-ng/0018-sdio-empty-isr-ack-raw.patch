@@ -1,4 +1,4 @@
-From: EasyStick maintainers <noreply@example.invalid>
+From: Stamp-P4 maintainers <noreply@example.invalid>
 Subject: [PATCH] sdio: empty ISR must not ACK bits it did not read
 
 0017 dispatches when INT_ST==0 and INT_RAW has ESP_SLAVE_RX_NEW_PACKET_INT

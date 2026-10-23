@@ -1,4 +1,4 @@
-From: EasyStick maintainers <noreply@example.invalid>
+From: Stamp-P4 maintainers <noreply@example.invalid>
 Subject: [PATCH] sdio: idle-wait in the TX thread so it is not counted as load
 
 tx_process() polls its queues with msleep(), which sleeps in

@@ -1,4 +1,4 @@
-From: EasyStick maintainers <noreply@example.invalid>
+From: Stamp-P4 maintainers <noreply@example.invalid>
 Subject: [PATCH] sdio: poll the raw packet-length register after OPEN_DATA_PATH
 
 The single 100 ms drain added by 0005 only proves the C6 boot-up frame is

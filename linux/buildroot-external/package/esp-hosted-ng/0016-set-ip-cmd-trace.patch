@@ -1,4 +1,4 @@
-From: EasyStick maintainers <noreply@example.invalid>
+From: Stamp-P4 maintainers <noreply@example.invalid>
 Subject: [PATCH] cmd: skip SET_IP(0); do not retune the 4-way path
 
 CMD_SET_IP_ADDR (0xD) ACKs on this C6 when the exclusive command path

@@ -1,4 +1,4 @@
-From: EasyStick maintainers <noreply@example.invalid>
+From: Stamp-P4 maintainers <noreply@example.invalid>
 Subject: [PATCH] sdio: log TX dequeue and slave-buffer drops
 
 0018 closed 4-way. The following gwping run queued Linux TX (wlan0

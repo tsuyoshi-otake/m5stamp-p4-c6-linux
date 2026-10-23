@@ -1,4 +1,4 @@
-From: EasyStick maintainers <noreply@example.invalid>
+From: Stamp-P4 maintainers <noreply@example.invalid>
 Subject: [PATCH] cfg80211: use wireless_dev for key/station ops on Linux 7.2
 
 Linux 7.2 cfg80211_ops passes struct wireless_dev to add_key,

@@ -1,4 +1,4 @@
-From: EasyStick maintainers <noreply@example.invalid>
+From: Stamp-P4 maintainers <noreply@example.invalid>
 Subject: [PATCH] sdio: add TX inter-packet pacing and increase buffer retry
 
 C6 SDIO slave SLC DMA descriptor reload takes ~1ms after a Wi-Fi transmission.

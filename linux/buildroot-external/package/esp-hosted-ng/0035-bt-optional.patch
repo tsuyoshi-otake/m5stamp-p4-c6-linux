@@ -1,4 +1,4 @@
-From: EasyStick maintainers <noreply@example.invalid>
+From: Stamp-P4 maintainers <noreply@example.invalid>
 Subject: [PATCH] host: build without CONFIG_BT
 
 0007 never creates an HCI device, so the Bluetooth core was built into the

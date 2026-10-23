@@ -1,4 +1,4 @@
-From: EasyStick maintainers <noreply@example.invalid>
+From: Stamp-P4 maintainers <noreply@example.invalid>
 Subject: [PATCH] sdio: trace token CMD52 boundaries for P4 diagnosis
 
 The P4 port reads the ESP slave token register one byte at a time over
@@ -29,25 +29,25 @@ diff --git a/sdio/esp_sdio_api.c b/sdio/esp_sdio_api.c
  #include <linux/mmc/host.h>
  #include "esp_sdio_api.h"
  
-+#define EASYSTICK_CMD52_TRACE_CAP 128
-+#define EASYSTICK_CMD52_TRACE_TOKEN_BASE \
++#define CMD52_TRACE_CAP 128
++#define CMD52_TRACE_TOKEN_BASE \
 +	(ESP_SLAVE_TOKEN_RDATA & ESP_ADDRESS_MASK)
 +
-+static atomic_t easystick_cmd52_trace_count = ATOMIC_INIT(0);
++static atomic_t cmd52_trace_count = ATOMIC_INIT(0);
 +
-+static bool easystick_cmd52_trace_token(u32 reg)
++static bool cmd52_trace_token(u32 reg)
 +{
-+	u32 base = EASYSTICK_CMD52_TRACE_TOKEN_BASE;
++	u32 base = CMD52_TRACE_TOKEN_BASE;
 +
 +	return reg >= base && reg < base + sizeof(u32);
 +}
 +
-+static void easystick_cmd52_trace(const char *stage, u32 addr, u16 index,
++static void cmd52_trace(const char *stage, u32 addr, u16 index,
 +				  u16 size, u8 lock, u8 value, int ret)
 +{
-+	int seq = atomic_inc_return(&easystick_cmd52_trace_count);
++	int seq = atomic_inc_return(&cmd52_trace_count);
 +
-+	if (seq > EASYSTICK_CMD52_TRACE_CAP)
++	if (seq > CMD52_TRACE_CAP)
 +		return;
 +	pr_emerg("ES_CMD52 seq=%d stage=%s addr=0x%x index=%u size=%u "
 +		"lock=%u value=0x%02x ret=%d\n",
@@ -65,9 +65,9 @@ diff --git a/sdio/esp_sdio_api.c b/sdio/esp_sdio_api.c
  
  	/* Need to apply address mask when reading/writing slave registers */
  	reg &= ESP_ADDRESS_MASK;
-+	trace_enabled = easystick_cmd52_trace_token(reg);
++	trace_enabled = cmd52_trace_token(reg);
 +	if (trace_enabled)
-+		easystick_cmd52_trace("READ_BEGIN", reg, 0, size, is_lock_needed,
++		cmd52_trace("READ_BEGIN", reg, 0, size, is_lock_needed,
 +				       0xff, 0);
  
  	if (!context || !context->func || !data) {
@@ -80,11 +80,11 @@ diff --git a/sdio/esp_sdio_api.c b/sdio/esp_sdio_api.c
 -	if (is_lock_needed)
 +	if (is_lock_needed) {
 +		if (trace_enabled)
-+			easystick_cmd52_trace("CLAIM_ENTER", reg, 0, size,
++			cmd52_trace("CLAIM_ENTER", reg, 0, size,
 +					       is_lock_needed, 0xff, 0);
  		sdio_claim_host(func);
 +		if (trace_enabled)
-+			easystick_cmd52_trace("CLAIM_DONE", reg, 0, size,
++			cmd52_trace("CLAIM_DONE", reg, 0, size,
 +					       is_lock_needed, 0xff, 0);
 +	}
  
@@ -95,11 +95,11 @@ diff --git a/sdio/esp_sdio_api.c b/sdio/esp_sdio_api.c
  	 */
  	for (i = 0; i < size; i++) {
 +		if (trace_enabled)
-+			easystick_cmd52_trace("BYTE_ENTER", reg + i, i, size,
++			cmd52_trace("BYTE_ENTER", reg + i, i, size,
 +					       is_lock_needed, 0xff, 0);
  		data[i] = sdio_readb(func, reg + i, &ret);
 +		if (trace_enabled)
-+			easystick_cmd52_trace("BYTE_DONE", reg + i, i, size,
++			cmd52_trace("BYTE_DONE", reg + i, i, size,
 +					       is_lock_needed, data[i], ret);
  		if (ret)
  			break;
@@ -108,15 +108,15 @@ diff --git a/sdio/esp_sdio_api.c b/sdio/esp_sdio_api.c
 -	if (is_lock_needed)
 +	if (is_lock_needed) {
 +		if (trace_enabled)
-+			easystick_cmd52_trace("RELEASE_ENTER", reg, i, size,
++			cmd52_trace("RELEASE_ENTER", reg, i, size,
 +					       is_lock_needed, 0xff, ret);
  		sdio_release_host(func);
 +		if (trace_enabled)
-+			easystick_cmd52_trace("RELEASE_DONE", reg, i, size,
++			cmd52_trace("RELEASE_DONE", reg, i, size,
 +					       is_lock_needed, 0xff, ret);
 +	}
 +	if (trace_enabled)
-+		easystick_cmd52_trace("READ_DONE", reg, i, size, is_lock_needed,
++		cmd52_trace("READ_DONE", reg, i, size, is_lock_needed,
 +				       0xff, ret);
  
  	return ret;

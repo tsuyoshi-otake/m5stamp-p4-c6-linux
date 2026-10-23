@@ -1,4 +1,4 @@
-From: EasyStick maintainers <noreply@example.invalid>
+From: Stamp-P4 maintainers <noreply@example.invalid>
 Subject: [PATCH] sdio: split queued ESP-Hosted receive frames
 
 SDIO stream mode can return more than one ESP-Hosted frame when the P4

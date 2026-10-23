@@ -1,5 +1,5 @@
-config BR2_PACKAGE_EASYSTICK_MDNS
-	bool "EasyStick minimal mDNS responder"
+config BR2_PACKAGE_MDNSD
+	bool "Stamp-P4 minimal mDNS responder"
 	help
 	  Answers mDNS A queries for <hostname>.local with the IPv4 address
 	  of wlan0.  No service discovery.  Unlike mdnsd and avahi it does

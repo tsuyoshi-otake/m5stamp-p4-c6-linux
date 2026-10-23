@@ -1,4 +1,4 @@
-From: EasyStick maintainers <noreply@example.invalid>
+From: Stamp-P4 maintainers <noreply@example.invalid>
 Subject: [PATCH] sdio: transmit exact packet length without 512-byte block padding
 
 The ESP-Hosted-NG host driver previously padded every outgoing frame to a

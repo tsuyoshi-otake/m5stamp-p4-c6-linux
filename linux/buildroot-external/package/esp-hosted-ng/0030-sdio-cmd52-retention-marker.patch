@@ -1,4 +1,4 @@
-From: EasyStick maintainers <noreply@example.invalid>
+From: Stamp-P4 maintainers <noreply@example.invalid>
 Subject: [PATCH] esp-hosted: retain CMD52 marker words with positive control
 
 Keep the existing byte-wise register access path and replace the previous
@@ -23,7 +23,7 @@ or return-value change is introduced.
  int esp_read_block(struct esp_sdio_context *context, u32 reg, u8 *data, u16 size, u8 is_lock_needed);
  int esp_write_reg(struct esp_sdio_context *context, u32 reg, u8 *data, u16 size, u8 is_lock_needed);
  int esp_write_block(struct esp_sdio_context *context, u32 reg, u8 *data, u16 size, u8 is_lock_needed);
-+void easystick_cmd52_marker_arm(void);
++void cmd52_marker_arm(void);
  
  #endif
 --- a/sdio/esp_sdio_api.c
@@ -40,34 +40,34 @@ or return-value change is introduced.
  	return ret;
  }
  
-+/* EasyStick: six independent non-console words for the CMD52 shot. */
-+#define EASYSTICK_CMD53_BB_PA		0xBBDEAD01u
-+#define EASYSTICK_CMD52_MARKER_OFFSET	0x120u
-+#define EASYSTICK_CMD52_MARKER_WORDS	6u
-+#define EASYSTICK_CMD52_MARKER_EMPTY	0u
-+#define EASYSTICK_CMD52_MARKER_MAGIC	0x45534d30u /* 'ESM0' */
-+#define EASYSTICK_CMD52_MARKER_ARMED	0x45534d31u /* 'ESM1' */
-+#define EASYSTICK_CMD52_MARKER_TOKEN_ENTER	0x45534d32u /* 'ESM2' */
-+#define EASYSTICK_CMD52_MARKER_AFTER_46	0x45534d33u /* 'ESM3' */
-+#define EASYSTICK_CMD52_MARKER_BEFORE_47	0x45534d34u /* 'ESM4' */
-+#define EASYSTICK_CMD52_MARKER_AFTER_47	0x45534d35u /* 'ESM5' */
++/* Stamp-P4: six independent non-console words for the CMD52 shot. */
++#define CMD53_BB_PA		0xBBDEAD01u
++#define CMD52_MARKER_OFFSET	0x120u
++#define CMD52_MARKER_WORDS	6u
++#define CMD52_MARKER_EMPTY	0u
++#define CMD52_MARKER_MAGIC	0x45534d30u /* 'ESM0' */
++#define CMD52_MARKER_ARMED	0x45534d31u /* 'ESM1' */
++#define CMD52_MARKER_TOKEN_ENTER	0x45534d32u /* 'ESM2' */
++#define CMD52_MARKER_AFTER_46	0x45534d33u /* 'ESM3' */
++#define CMD52_MARKER_BEFORE_47	0x45534d34u /* 'ESM4' */
++#define CMD52_MARKER_AFTER_47	0x45534d35u /* 'ESM5' */
 +
-+static __always_inline void easystick_cmd52_marker_store_word(u32 word, u32 value)
++static __always_inline void cmd52_marker_store_word(u32 word, u32 value)
 +{
 +	WRITE_ONCE(*(volatile u32 *)(unsigned long)
-+		   (EASYSTICK_CMD53_BB_PA + EASYSTICK_CMD52_MARKER_OFFSET +
++		   (CMD53_BB_PA + CMD52_MARKER_OFFSET +
 +		    word * sizeof(u32)),
 +		   value);
 +}
 +
-+void easystick_cmd52_marker_arm(void)
++void cmd52_marker_arm(void)
 +{
-+	easystick_cmd52_marker_store_word(0u, EASYSTICK_CMD52_MARKER_MAGIC);
-+	easystick_cmd52_marker_store_word(1u, EASYSTICK_CMD52_MARKER_ARMED);
++	cmd52_marker_store_word(0u, CMD52_MARKER_MAGIC);
++	cmd52_marker_store_word(1u, CMD52_MARKER_ARMED);
 +	wmb();
 +}
 +
-+static __always_inline bool easystick_cmd52_marker_target(u32 reg, u16 size)
++static __always_inline bool cmd52_marker_target(u32 reg, u16 size)
 +{
 +	return reg == (ESP_SLAVE_TOKEN_RDATA & ESP_ADDRESS_MASK) &&
 +	       size == sizeof(u32);
@@ -89,7 +89,7 @@ or return-value change is introduced.
 -	}
 -
 -	func = context->func;
-+	marker_target = easystick_cmd52_marker_target(reg, size);
++	marker_target = cmd52_marker_target(reg, size);
 +
 +	if (!context || !context->func || !data) {
 +		esp_err("Invalid or incomplete arguments!\n");
@@ -99,7 +99,7 @@ or return-value change is introduced.
 +	func = context->func;
 +
 +	if (marker_target)
-+		easystick_cmd52_marker_store_word(2u, EASYSTICK_CMD52_MARKER_TOKEN_ENTER);
++		cmd52_marker_store_word(2u, CMD52_MARKER_TOKEN_ENTER);
  
  	if (is_lock_needed)
  		sdio_claim_host(func);
@@ -108,12 +108,12 @@ or return-value change is introduced.
  	 */
  	for (i = 0; i < size; i++) {
 +		if (marker_target && i == 3u)
-+			easystick_cmd52_marker_store_word(4u, EASYSTICK_CMD52_MARKER_BEFORE_47);
++			cmd52_marker_store_word(4u, CMD52_MARKER_BEFORE_47);
  		data[i] = sdio_readb(func, reg + i, &ret);
 +		if (marker_target && i == 2u)
-+			easystick_cmd52_marker_store_word(3u, EASYSTICK_CMD52_MARKER_AFTER_46);
++			cmd52_marker_store_word(3u, CMD52_MARKER_AFTER_46);
 +		if (marker_target && i == 3u)
-+			easystick_cmd52_marker_store_word(5u, EASYSTICK_CMD52_MARKER_AFTER_47);
++			cmd52_marker_store_word(5u, CMD52_MARKER_AFTER_47);
  		if (ret)
  			break;
  	}
@@ -122,7 +122,7 @@ or return-value change is introduced.
 @@ -909,5 +909,7 @@
  	esp_h2c_obs_proc_create();
  
-+	easystick_cmd52_marker_arm();
++	cmd52_marker_arm();
 +
  	return sdio_register_driver(&esp_sdio_driver);
  }

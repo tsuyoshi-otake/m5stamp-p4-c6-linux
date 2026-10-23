@@ -1,4 +1,4 @@
-From: EasyStick maintainers <noreply@example.invalid>
+From: Stamp-P4 maintainers <noreply@example.invalid>
 Subject: [PATCH] esp32_sdio: name WQ_PERCPU explicitly in alloc_workqueue
 
 Linux 7.x WARN_ONCE()s when alloc_workqueue() gets neither WQ_PERCPU

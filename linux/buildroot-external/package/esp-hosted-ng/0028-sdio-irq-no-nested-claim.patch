@@ -1,4 +1,4 @@
-From: EasyStick maintainers <noreply@example.invalid>
+From: Stamp-P4 maintainers <noreply@example.invalid>
 Subject: [PATCH] sdio: do not re-claim host in the IRQ callback
 
 The MMC SDIO core invokes a function IRQ callback while the host is already

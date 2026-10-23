@@ -1,4 +1,4 @@
-From: EasyStick maintainers <noreply@example.invalid>
+From: Stamp-P4 maintainers <noreply@example.invalid>
 Subject: [PATCH] sdio: read and write slave registers one byte at a time
 
 Restores the register-access behaviour of the last known-good ESP32-P4 build

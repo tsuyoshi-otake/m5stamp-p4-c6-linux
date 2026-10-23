@@ -1,4 +1,4 @@
-From: EasyStick maintainers <noreply@example.invalid>
+From: Stamp-P4 maintainers <noreply@example.invalid>
 Subject: [PATCH] esp32_sdio: raise RX workqueue and TX thread priority (#43)
 
 Everything a Wi-Fi packet waits behind on the host runs at nice 0:

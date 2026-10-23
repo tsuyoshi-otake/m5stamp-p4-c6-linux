@@ -1,4 +1,4 @@
-From: EasyStick maintainers <noreply@example.invalid>
+From: Stamp-P4 maintainers <noreply@example.invalid>
 Subject: [PATCH] cfg80211: skip an empty multicast filter update
 
 The first wlan0 RX-mode update can send a broadcast/multicast filter update

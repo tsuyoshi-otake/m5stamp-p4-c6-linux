@@ -1,21 +1,21 @@
 ################################################################################
-# EasyStick minimal mDNS responder
+# Stamp-P4 minimal mDNS responder
 ################################################################################
 
-EASYSTICK_MDNS_SITE = \
-	$(BR2_EXTERNAL_EASYSTICK_STAMP_P4_PATH)/package/easystick-mdns/src
-EASYSTICK_MDNS_SITE_METHOD = local
-EASYSTICK_MDNS_LICENSE = GPL-2.0-only
+MDNSD_SITE = \
+	$(BR2_EXTERNAL_STAMP_P4_PATH)/package/mdnsd/src
+MDNSD_SITE_METHOD = local
+MDNSD_LICENSE = GPL-2.0-only
 
-define EASYSTICK_MDNS_BUILD_CMDS
+define MDNSD_BUILD_CMDS
 	$(TARGET_CC) $(TARGET_CFLAGS) -std=gnu11 -Wall -Wextra -Werror \
-		$(TARGET_LDFLAGS) -o $(@D)/easystick-mdns \
-		$(@D)/easystick-mdns.c
+		$(TARGET_LDFLAGS) -o $(@D)/mdnsd \
+		$(@D)/mdnsd.c
 endef
 
-define EASYSTICK_MDNS_INSTALL_TARGET_CMDS
-	$(INSTALL) -D -m 0755 $(@D)/easystick-mdns \
-		$(TARGET_DIR)/usr/sbin/easystick-mdns
+define MDNSD_INSTALL_TARGET_CMDS
+	$(INSTALL) -D -m 0755 $(@D)/mdnsd \
+		$(TARGET_DIR)/usr/sbin/mdnsd
 endef
 
 $(eval $(generic-package))
