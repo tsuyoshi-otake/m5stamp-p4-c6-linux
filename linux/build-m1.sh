@@ -826,6 +826,10 @@ if [[ "${EASYSTICK_USER_SYSMARK:-0}" == "1" ]]; then
 	fi
 	patches+=(0091-easystick-nommu-user-sysmark.patch)
 fi
+# physmap sizes a non-pow2 mtd-rom reg down to the next lower power of
+# two only for the addr-gpios aperture; with no gpios map the resource
+# at its exact size or a >4 MiB rootfs cannot be mounted.
+patches+=(0092-easystick-physmap-exact-size.patch)
 # C67-L2-STAGE: observe-only SMP breadcrumbs in smpboot.c (no behaviour change).
 if [[ "${EASYSTICK_C67_SMP_STAGE:-0}" == "1" || "${EASYSTICK_C68_CLEAN_RELEASE:-0}" == "1" ]]; then
 	patches+=(0037-easystick-c67-l2-stage-smpboot.patch)
