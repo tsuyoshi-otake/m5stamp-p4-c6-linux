@@ -1,6 +1,6 @@
-# Optional EasyStick USB mass-storage carrier
+# Optional USB mass-storage carrier
 
-EasyStick Stamp-P4 Rev0.15 is an optional carrier that makes the Linux
+The Stamp-P4 USB carrier Rev0.15 (named EasyStick in its design files) is an optional carrier that makes the Linux
 firmware's USB mass-storage configuration drive easy to connect to a PC.
 It routes the Stamp-P4's Full-Speed USB signals (GPIO26 D− / GPIO27 D+)
 to USB-A with power and ESD protection, and provides BOOT/RESET switches.
@@ -47,7 +47,7 @@ and checksums; they predate the owner's report of successful manufacture/use.
 
 1. Flash the Linux release through the Stamp-P4 USB-C port.
 2. Disconnect USB-C, then connect the carrier through USB-A to the PC.
-3. Edit the files on the 256KB `EASYSTICK` configuration drive and safely eject
+3. Edit the files on the 256KB `STAMP_P4` configuration drive (`EASYSTICK` on v0.4.2 and older) and safely eject
    it. Wait for validation/re-attachment before reconnecting or removing power.
 4. Reboot normally to commit validated settings to flash. Removing power before
    that reboot loses staged changes.
@@ -64,7 +64,7 @@ be recorded before claiming end-to-end release acceptance for that workflow.
 
 ## License
 
-EasyStick schematics and Gerber files here are licensed under the
+The schematics and Gerber files here are licensed under the
 [MIT License](LICENSE). This license applies to these hardware design files;
 it does not change the licenses of software elsewhere in the repository or
 of third-party reference materials.
