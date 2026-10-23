@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * EasyStick Stamp-P4 Rev0.15 WIP — M1 minimal Linux board description.
+ * Stamp-P4 Stamp-P4 Rev0.15 WIP — M1 minimal Linux board description.
  *
  * The first bring-up uses one HP hart, UART0, the P4 CLIC/SYSTIMER pair, and
  * the read-only flash window populated by the ESP-IDF boot shim. The M2
@@ -18,8 +18,8 @@
 / {
 	#address-cells = <1>;
 	#size-cells = <1>;
-	model = "EasyStick Stamp-P4 Rev0.15 (M1)";
-	compatible = "tsuyoshi-otake,easystick-stamp-p4", "espressif,esp32p4";
+	model = "Stamp-P4 Stamp-P4 Rev0.15 (M1)";
+	compatible = "tsuyoshi-otake,stamp-p4", "espressif,esp32p4";
 
 	cpus {
 		#address-cells = <1>;
@@ -221,12 +221,12 @@
 			disable-wp;
 			cap-sdio-irq;
 			dma-noncoherent;
-			easystick,force-pio;
+			espressif,force-pio;
 			/* The P4 FIFO does not pop on CPU reads (#35); patches
 			 * 0087/0088 send multi-word PIO transfers through IDMAC
 			 * instead.
 			 */
-			easystick,fifo-no-pop;
+			espressif,fifo-no-pop;
 			snps,slot-id = <1>;
 			status = "okay";
 		};
