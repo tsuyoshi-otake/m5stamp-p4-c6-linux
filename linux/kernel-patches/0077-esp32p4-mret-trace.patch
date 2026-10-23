@@ -1,4 +1,4 @@
-Subject: [PATCH] easystick: esp32p4 trap/mret/irq ring trace for the CPU1 interrupt latch (#5)
+Subject: [PATCH] stamp-p4: esp32p4 trap/mret/irq ring trace for the CPU1 interrupt latch (#5)
 
 The CPU1 CLIC acceptance latch leaves pending+enabled interrupts
 untaken while the hart keeps running.  The "stale mcause" hypothesis is
@@ -7,7 +7,7 @@ that some return path executes mret with a nonzero mcause.MPIL
 below threshold forever.
 
 Observe-only recorder, applied only for C68 diagnostic builds
-(EASYSTICK_C68_MRET_TRACE=1, requires the C68 SMP series).  Three
+(C68_MRET_TRACE=1, requires the C68 SMP series).  Three
 per-CPU rings plus a bounded post-interrupt buffer, all written inline
 in entry.S:
 

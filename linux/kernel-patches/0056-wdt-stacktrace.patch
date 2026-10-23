@@ -1,4 +1,4 @@
-Subject: [PATCH] easystick: print a bounded WDT pretimeout stack trace
+Subject: [PATCH] stamp-p4: print a bounded WDT pretimeout stack trace
 
 The crash capsule preserves EPC, RA, SP, and 32 bytes of stack.  When kernel
 stacktrace support is enabled, also print the active trace during the
@@ -16,10 +16,10 @@ diff --git a/drivers/watchdog/esp32p4_wdt.c b/drivers/watchdog/esp32p4_wdt.c
 @@ -371,12 +371,15 @@ static irqreturn_t esp32p4_wdt_pretimeout(int irq, void *data)
  	struct esp32p4_wdt *wdt = data;
  
- 	easystick_capture_crash(wdt, get_irq_regs(),
- 				EASYSTICK_CRASH_CAPSULE_REASON_WDT);
+ 	capture_crash(wdt, get_irq_regs(),
+ 				CRASH_CAPSULE_REASON_WDT);
  
- 	pr_emerg("EASYSTICK_WDT PRETIMEOUT\n");
+ 	pr_emerg("BOARD_WDT PRETIMEOUT\n");
 +#ifdef CONFIG_STACKTRACE
 +	dump_stack();
 +#endif

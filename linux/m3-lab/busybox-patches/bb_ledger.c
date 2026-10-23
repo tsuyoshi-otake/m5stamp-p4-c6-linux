@@ -1,8 +1,8 @@
 /* vi: set sw=4 ts=4: */
-//kbuild:lib-y += easystick_bb_ledger.o
+//kbuild:lib-y += bb_ledger.o
 
-/* EasyStick M2.5 post-exec BusyBox ledger implementation. */
-#include "easystick_bb_ledger.h"
+/* Stamp-P4 M2.5 post-exec BusyBox ledger implementation. */
+#include "bb_ledger.h"
 
 #include <errno.h>
 #include <fcntl.h>

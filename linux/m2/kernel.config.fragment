@@ -39,7 +39,7 @@ CONFIG_SERIAL_ESP32_ACM=y
 CONFIG_CMDLINE="earlycon=esp32p4usbjtag,mmio32,0x500d2000 console=ttyGS1,115200n8 keep_bootcon loglevel=8 root=/dev/mtdblock0 rootfstype=squashfs ro init=/sbin/init idle=poll"
 # Honor /chosen/bootargs from the flashed DTB.  FORCE=y made the 0014
 # cap=16 DTB rewrite a no-op: the device-tree string contained
-# dw_mmc.easystick_cmd53_rx_desc_bytes=16 and /proc/cmdline did not.
+# dw_mmc.cmd53_rx_desc_bytes=16 and /proc/cmdline did not.
 # CONFIG_CMDLINE_FORCE is not set
 CONFIG_CMDLINE_FALLBACK=y
 

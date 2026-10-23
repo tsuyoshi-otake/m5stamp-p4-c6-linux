@@ -1,5 +1,5 @@
-From: EasyStick <noreply@easystick.local>
-Subject: [PATCH] easystick: disable C6 Wi-Fi modem-sleep (WIFI_PS_NONE)
+From: Stamp-P4 <noreply@stamp-p4.local>
+Subject: [PATCH] stamp-p4: disable C6 Wi-Fi modem-sleep (WIFI_PS_NONE)
 
 Keep NG-1.0.6.0.1. On set_ps failure: log only; do not abort.
 ---
@@ -9,7 +9,7 @@ Keep NG-1.0.6.0.1. On set_ps failure: log only; do not abort.
          return result;
      }
  
-+    /* EasyStick 0021: keep STA awake so the AP does not buffer downlink for
++    /* Stamp-P4 0021: keep STA awake so the AP does not buffer downlink for
 +     * modem-sleep/DTIM windows (observed ~21 s burst of ICMP replies). */
 +    {
 +        esp_err_t ps_ret = esp_wifi_set_ps(WIFI_PS_NONE);

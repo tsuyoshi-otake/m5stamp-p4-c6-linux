@@ -10,7 +10,7 @@ available in that environment. The script only builds the ESP-IDF shim; it
 never invokes esptool or writes a target. Use a separate output directory so
 the M1 recovery image cannot be overwritten by an M2 experiment.
 
-Set EASYSTICK_TSENS_ORACLE=1 for an explicit C68-only ESP32-P4 LP-TSENS
+Set TSENS_ORACLE=1 for an explicit C68-only ESP32-P4 LP-TSENS
 reference build. It emits one P4_TSENS_REF PASS line, then disables the
 sensor and its internal REGI2C path before handing off to Linux.
 EOF
@@ -31,8 +31,8 @@ while [[ $# -gt 0 ]]; do
 	esac
 done
 case "$profile" in m1|m2|c68) ;; *) echo "unsupported profile: $profile" >&2; exit 2 ;; esac
-if [[ "${EASYSTICK_TSENS_ORACLE:-0}" == "1" && "$profile" != "c68" ]]; then
-	echo "EASYSTICK_TSENS_ORACLE requires the C68 single-core profile" >&2
+if [[ "${TSENS_ORACLE:-0}" == "1" && "$profile" != "c68" ]]; then
+	echo "TSENS_ORACLE requires the C68 single-core profile" >&2
 	exit 2
 fi
 
@@ -50,9 +50,9 @@ command -v idf.py >/dev/null || {
 export IDF_TARGET=esp32p4
 ES_GIT_REV=${ES_GIT_REV:-$(git -C "${script_dir}" rev-parse --short=12 HEAD 2>/dev/null || echo unknown)}
 export ES_GIT_REV
-export EASYSTICK_BOOT_PROFILE="$profile"
+export BOOT_PROFILE="$profile"
 if [[ "$profile" == c68 ]]; then
-	export EASYSTICK_C68_CLEAN_RELEASE=1
+	export C68_CLEAN_RELEASE=1
 	# The checked-in sdkconfig is a dual-core M1/M2 snapshot
 	# (# CONFIG_FREERTOS_UNICORE is not set). C68 must not inherit it.
 	c68_src="${output}/boot-shim-src"
@@ -76,7 +76,7 @@ fi
 
 idf.py -B "${output}/build" -C "$project_dir" reconfigure build
 
-for artifact in bootloader/bootloader.bin partition_table/partition-table.bin easystick_stamp_p4_boot_shim.bin; do
+for artifact in bootloader/bootloader.bin partition_table/partition-table.bin stamp_p4_boot_shim.bin; do
 	[[ -s "${output}/build/${artifact}" ]] || {
 		echo "missing ESP-IDF artifact: ${output}/build/${artifact}" >&2
 		exit 1

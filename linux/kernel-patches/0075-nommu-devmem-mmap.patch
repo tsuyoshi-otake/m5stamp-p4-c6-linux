@@ -1,4 +1,4 @@
-From: EasyStick maintainers <noreply@example.invalid>
+From: Stamp-P4 maintainers <noreply@example.invalid>
 Subject: [PATCH] char/mem: keep /dev/mem mmap working on NOMMU under
  mmap_prepare
 

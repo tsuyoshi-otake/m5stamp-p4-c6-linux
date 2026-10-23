@@ -1,6 +1,6 @@
-Subject: [PATCH] easystick: esp32p4 drop the CLIC interrupt level at IRQ entry (#5)
+Subject: [PATCH] stamp-p4: esp32p4 drop the CLIC interrupt level at IRQ entry (#5)
 
-Fix for the #5 latch, applied to every build (EASYSTICK_C68_IRQ_LEVEL0=0
+Fix for the #5 latch, applied to every build (C68_IRQ_LEVEL0=0
 leaves it out).  The latch is not SMP-only: with one CPU, killing a busy
 task can leave CPU0 deaf until the MWDT resets the chip.
 

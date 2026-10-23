@@ -1,5 +1,5 @@
---- a/src/easystick-ssh-ledger.h
-+++ b/src/easystick-ssh-ledger.h
+--- a/src/ssh-ledger.h
++++ b/src/ssh-ledger.h
 @@ -34,5 +34,8 @@
  void es_ssh_mark_channel_eof(void);
  void es_ssh_mark_exit_status(void);
@@ -8,9 +8,9 @@
 +void es_ssh_mark_fatal_site(unsigned int site);
 +void es_ssh_mark_signal_term(void);
  
- #endif /* EASYSTICK_SSH_LEDGER_H_ */
---- a/src/easystick-ssh-ledger.c
-+++ b/src/easystick-ssh-ledger.c
+ #endif /* SSH_LEDGER_H_ */
+--- a/src/ssh-ledger.c
++++ b/src/ssh-ledger.c
 @@ -287,3 +287,22 @@
  	es_ssh_channel_close_marked = 1;
  	es_ssh_mark("ES_SSH CHANNEL_CLOSE\n");
@@ -102,7 +102,7 @@
  #include "runopts.h"
  #include "crypto_desc.h"
  #include "fuzz.h"
-+#include "easystick-ssh-ledger.h"
++#include "ssh-ledger.h"
  
  static void svr_remoteclosed(void);
  static void svr_algos_initialise(void);
@@ -121,7 +121,7 @@
  #include "signkey.h"
  #include "buffer.h"
  #include "dbutil.h"
-+#include "easystick-ssh-ledger.h"
++#include "ssh-ledger.h"
  #include "algo.h"
  #include "ecdsa.h"
  

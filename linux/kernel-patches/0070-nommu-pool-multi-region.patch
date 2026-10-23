@@ -1,4 +1,4 @@
-Subject: [PATCH] easystick: accept more than one nommu user pool region
+Subject: [PATCH] stamp-p4: accept more than one nommu user pool region
 
 The vendor pool (0010-mm-nommu-userspace-pool) takes one reserved-memory
 region and ignores the rest.  On the Stamp-P4 the 6 MB pool at 0x49a00000

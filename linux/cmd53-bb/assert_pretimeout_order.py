@@ -8,14 +8,14 @@ black box, but reported CRASH_CAPSULE empty/invalid.  That silence was
 uninterpretable, because the instrument meant to survive the stall was gated
 behind the very subsystem the stall might have taken down:
 
-    pr_emerg("EASYSTICK_WDT PRETIMEOUT ...");  /* console: may block forever */
-    easystick_capture_crash(...);              /* never reached if it does   */
+    pr_emerg("BOARD_WDT PRETIMEOUT ...");  /* console: may block forever */
+    capture_crash(...);              /* never reached if it does   */
 
 and the whole handler had only 1.000 s before the stage-1 hardware reset.  An
 empty capsule therefore could not distinguish an IRQ-off hard lock from a
 printk/console deadlock.  The repair reorders the handler capsule-first.
 
-build-m1.sh already gates on the PRESENCE of easystick_capture_crash, the
+build-m1.sh already gates on the PRESENCE of capture_crash, the
 PRETIMEOUT pr_emerg, and dump_stack() in the built source.  Presence was never
 the problem: every defective ordering above satisfies all three markers.  ORDER
 is the invariant, and nothing checked it.  (CLAUDE.md 14.2: a checker only
@@ -40,7 +40,7 @@ running counter. Writing `grace_ticks` (<= timeout_ticks/2) into stage 1 when
 stage 0 already holds `pretimeout_ticks` (> timeout_ticks/2 in general) makes
 stage 1's threshold SMALLER than stage 0's, so the hardware reset can fire
 before the counter ever reaches stage 0's threshold: the pretimeout interrupt,
-and therefore easystick_capture_crash(), may never run at all, independent of
+and therefore capture_crash(), may never run at all, independent of
 whether the CPU is otherwise healthy. This is a second, independent way to
 reach the same symptom item 3 below already named ("no source-level check can
 see" an IRQ never taken) -- except this one IS visible at the source level,
@@ -58,13 +58,13 @@ What this checker CANNOT see
 2.  Any TIME dimension (CLAUDE.md 14.19).  It cannot prove the grace window is
     long enough for the handler to finish, only that correctness no longer
     depends on the window being long enough for a printk.
-3.  Whether easystick_capture_crash is reached at all.  An IRQ-off hard lock
+3.  Whether capture_crash is reached at all.  An IRQ-off hard lock
     never takes the interrupt, and no source-level check can see that.
 4.  Anything the preprocessor decides.  dump_stack() sits under
     #ifdef CONFIG_STACKTRACE; this tool checks the text is present and
     correctly ordered, not that the kernel config selects it.
 5.  Callees.  It checks ordering inside the pretimeout handler and inside
-    easystick_capture_crash only.  A console call reached indirectly through
+    capture_crash only.  A console call reached indirectly through
     some other callee of the handler is invisible to it.
 """
 
@@ -80,9 +80,9 @@ NL = chr(10)
 BS = chr(92)
 
 HANDLER = "esp32p4_wdt_pretimeout"
-CAPTURE = "easystick_capture_crash"
+CAPTURE = "capture_crash"
 CAPSULE_CALL = CAPTURE + "("
-PRETIMEOUT_PRINT = 'pr_emerg("EASYSTICK_WDT PRETIMEOUT'
+PRETIMEOUT_PRINT = 'pr_emerg("BOARD_WDT PRETIMEOUT'
 COMMIT_STORE = "WRITE_ONCE(capsule->commit,"
 DUMP_STACK = "dump_stack()"
 
@@ -286,11 +286,11 @@ GOOD = (
     "static void " + CAPTURE + "(struct esp32p4_wdt *wdt," + NL
     + TAB * 5 + "    struct pt_regs *regs, u32 reason)" + NL
     + "{" + NL
-    + TAB + "WRITE_ONCE(capsule->magic, EASYSTICK_CRASH_CAPSULE_MAGIC);" + NL
+    + TAB + "WRITE_ONCE(capsule->magic, CRASH_CAPSULE_MAGIC);" + NL
     + TAB + "wmb();" + NL
     + TAB + COMMIT_STORE + NL
-    + TAB * 3 + "   sequence ^ EASYSTICK_CRASH_CAPSULE_COMMIT_XOR);" + NL
-    + TAB + 'pr_emerg("EASYSTICK_WDT CAPSULE_COMMIT seq=%u' + BS + 'n", seq);'
+    + TAB * 3 + "   sequence ^ CRASH_CAPSULE_COMMIT_XOR);" + NL
+    + TAB + 'pr_emerg("BOARD_WDT CAPSULE_COMMIT seq=%u' + BS + 'n", seq);'
     + NL
     + "}" + NL
     + NL
@@ -299,7 +299,7 @@ GOOD = (
     + TAB + "struct esp32p4_wdt *wdt = data;" + NL
     + NL
     + TAB + CAPSULE_CALL + "wdt, get_irq_regs()," + NL
-    + TAB * 4 + "EASYSTICK_CRASH_CAPSULE_REASON_WDT);" + NL
+    + TAB * 4 + "CRASH_CAPSULE_REASON_WDT);" + NL
     + NL
     + TAB + PRETIMEOUT_PRINT + BS + 'n");' + NL
     + "#ifdef CONFIG_STACKTRACE" + NL
@@ -317,7 +317,7 @@ GOOD = (
 
 CAPSULE_STMT = (
     TAB + CAPSULE_CALL + "wdt, get_irq_regs()," + NL
-    + TAB * 4 + "EASYSTICK_CRASH_CAPSULE_REASON_WDT);"
+    + TAB * 4 + "CRASH_CAPSULE_REASON_WDT);"
 )
 PRINT_STMT = TAB + PRETIMEOUT_PRINT + BS + 'n");'
 
@@ -369,7 +369,7 @@ def selftest():
             "C6: printk before the commit store inside capture",
             GOOD.replace(
                 TAB + "WRITE_ONCE(capsule->magic, "
-                "EASYSTICK_CRASH_CAPSULE_MAGIC);",
+                "CRASH_CAPSULE_MAGIC);",
                 TAB + 'pr_info("capturing' + BS + 'n");',
             ),
             True, 30000, "C6",

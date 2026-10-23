@@ -16,12 +16,12 @@ EXPECTED_CMD52_MARKER_OFFSET = 0x120
 EXPECTED_CMD52_MARKER_WORDS = 6
 EXPECTED_CMD52_MARKER_SIZE = EXPECTED_CMD52_MARKER_WORDS * 4
 EXPECTED_CMD52_MARKER_VALUES = {
-    "EASYSTICK_CMD52_MARKER_MAGIC": 0x45534D30,
-    "EASYSTICK_CMD52_MARKER_ARMED": 0x45534D31,
-    "EASYSTICK_CMD52_MARKER_TOKEN_ENTER": 0x45534D32,
-    "EASYSTICK_CMD52_MARKER_AFTER_46": 0x45534D33,
-    "EASYSTICK_CMD52_MARKER_BEFORE_47": 0x45534D34,
-    "EASYSTICK_CMD52_MARKER_AFTER_47": 0x45534D35,
+    "CMD52_MARKER_MAGIC": 0x45534D30,
+    "CMD52_MARKER_ARMED": 0x45534D31,
+    "CMD52_MARKER_TOKEN_ENTER": 0x45534D32,
+    "CMD52_MARKER_AFTER_46": 0x45534D33,
+    "CMD52_MARKER_BEFORE_47": 0x45534D34,
+    "CMD52_MARKER_AFTER_47": 0x45534D35,
 }
 
 
@@ -50,7 +50,7 @@ def extract_pa_from_patch(patch: Path) -> str:
     text = patch.read_text(encoding="utf-8", errors="replace")
     if "BBDEAD" in text:
         raise SystemExit("CMD53_BB_GATE_FAIL: BBDEAD remains in rendered 0052")
-    return f"0x{extract_define_u32(patch, 'EASYSTICK_CMD53_BB_PA'):08x}u"
+    return f"0x{extract_define_u32(patch, 'CMD53_BB_PA'):08x}u"
 
 
 def write_manifest(args: argparse.Namespace) -> int:
@@ -69,7 +69,7 @@ def write_manifest(args: argparse.Namespace) -> int:
         raise SystemExit(
             f"CMD53_BB_GATE_FAIL: PA mismatch nm={pa} rendered={patch_pa}"
         )
-    bb_version = extract_define_u32(rendered, "EASYSTICK_CMD53_BB_VERSION")
+    bb_version = extract_define_u32(rendered, "CMD53_BB_VERSION")
     if bb_version != EXPECTED_BB_VERSION:
         raise SystemExit(
             f"CMD53_BB_GATE_FAIL: unexpected BB version {bb_version}"
@@ -94,13 +94,13 @@ def write_manifest(args: argparse.Namespace) -> int:
                 "CMD52_MARKER_GATE_FAIL: PA mismatch in rendered 0030"
             )
         if extract_define_u32(
-            marker_patch, "EASYSTICK_CMD52_MARKER_OFFSET"
+            marker_patch, "CMD52_MARKER_OFFSET"
         ) != EXPECTED_CMD52_MARKER_OFFSET:
             raise SystemExit(
                 "CMD52_MARKER_GATE_FAIL: unexpected marker offset"
             )
         if extract_define_u32(
-            marker_patch, "EASYSTICK_CMD52_MARKER_WORDS"
+            marker_patch, "CMD52_MARKER_WORDS"
         ) != EXPECTED_CMD52_MARKER_WORDS:
             raise SystemExit(
                 "CMD52_MARKER_GATE_FAIL: unexpected marker word count"
@@ -142,9 +142,9 @@ def write_manifest(args: argparse.Namespace) -> int:
         "shot_c_allowed": shot_c_allowed,
         "product_profile": args.product_profile,
         "boot_shim_profile": args.boot_shim_profile,
-        "easystick_cmd53_bb_pa": pa,
-        "easystick_cmd53_bb_version": bb_version,
-        "easystick_cmd53_bb_size": args.bb_size,
+        "cmd53_bb_pa": pa,
+        "cmd53_bb_version": bb_version,
+        "cmd53_bb_size": args.bb_size,
         "cmd52_marker_enabled": args.cmd52_marker,
         "cmd52_marker_pa": (
             f"0x{int(pa.rstrip('u'), 16) + EXPECTED_CMD52_MARKER_OFFSET:08x}u"
@@ -167,15 +167,15 @@ def write_manifest(args: argparse.Namespace) -> int:
         "selftest": selftest,
         "selftest_torn": selftest_torn,
         "dma_contract": {
-            "EASYSTICK_SDIO_FORCE_PIO": "0",
-            "EASYSTICK_IDMAC_DESC_INVALIDATE": "0",
-            "EASYSTICK_IDMAC_NONCOHERENT_RING": args.idmac_noncoherent_ring,
-            "EASYSTICK_CMD53_RX_DESC_BYTES": "0",
-            "EASYSTICK_ESPHOSTED_TX_LEDGER": "0",
-            "EASYSTICK_TCP22_LEDGER": "0",
-            "EASYSTICK_SSH_LEDGER": "0",
-            "EASYSTICK_ESPHOSTED_DIAGNOSTICS": "0",
-            "EASYSTICK_DW_MMC_CMD53_ERR_PROV": "0",
+            "SDIO_FORCE_PIO": "0",
+            "IDMAC_DESC_INVALIDATE": "0",
+            "IDMAC_NONCOHERENT_RING": args.idmac_noncoherent_ring,
+            "CMD53_RX_DESC_BYTES": "0",
+            "ESPHOSTED_TX_LEDGER": "0",
+            "TCP22_LEDGER": "0",
+            "SSH_LEDGER": "0",
+            "ESPHOSTED_DIAGNOSTICS": "0",
+            "DW_MMC_CMD53_ERR_PROV": "0",
         },
         "artifacts": {
             "boot_shim_bin": str(boot_bin),
@@ -201,7 +201,7 @@ def write_manifest(args: argparse.Namespace) -> int:
             raise SystemExit(f"CMD53_BB_GATE_FAIL: missing artifact {p53}")
         if extract_pa_from_patch(p53) != pa:
             raise SystemExit("CMD53_BB_GATE_FAIL: PA mismatch in rendered 0053")
-        if extract_define_u32(p53, "EASYSTICK_CMD53_BB_VERSION") != bb_version:
+        if extract_define_u32(p53, "CMD53_BB_VERSION") != bb_version:
             raise SystemExit("CMD53_BB_GATE_FAIL: BB version mismatch in rendered 0053")
         doc["artifacts"]["rendered_0053"] = str(p53)
         doc["artifacts"]["rendered_0053_sha256"] = sha256_file(p53)
@@ -219,7 +219,7 @@ def write_manifest(args: argparse.Namespace) -> int:
             raise SystemExit(f"CMD53_BB_GATE_FAIL: missing artifact {p26}")
         if extract_pa_from_patch(p26) != pa:
             raise SystemExit("CMD53_BB_GATE_FAIL: PA mismatch in rendered 0026")
-        if extract_define_u32(p26, "EASYSTICK_CMD53_BB_VERSION") != bb_version:
+        if extract_define_u32(p26, "CMD53_BB_VERSION") != bb_version:
             raise SystemExit("CMD53_BB_GATE_FAIL: BB version mismatch in rendered 0026")
         doc["artifacts"]["rendered_0026_esp_hosted"] = str(p26)
         doc["artifacts"]["rendered_0026_esp_hosted_sha256"] = sha256_file(p26)
@@ -240,9 +240,9 @@ def verify_manifest(args: argparse.Namespace) -> int:
         raise SystemExit(
             "CMD53_BB_GATE_FAIL: manifest is selftest; rebuild non-selftest final"
         )
-    if man.get("easystick_cmd53_bb_version") != EXPECTED_BB_VERSION:
+    if man.get("cmd53_bb_version") != EXPECTED_BB_VERSION:
         raise SystemExit("CMD53_BB_GATE_FAIL: unexpected manifest BB version")
-    if man.get("easystick_cmd53_bb_size") != EXPECTED_BB_SIZE:
+    if man.get("cmd53_bb_size") != EXPECTED_BB_SIZE:
         raise SystemExit("CMD53_BB_GATE_FAIL: unexpected manifest BB size")
     arts = man["artifacts"]
     checks = [
@@ -280,10 +280,10 @@ def verify_manifest(args: argparse.Namespace) -> int:
         if alt.is_file():
             patch = alt
     patch_pa = extract_pa_from_patch(patch)
-    if patch_pa != man["easystick_cmd53_bb_pa"]:
+    if patch_pa != man["cmd53_bb_pa"]:
         raise SystemExit("CMD53_BB_GATE_FAIL: PA vs rendered 0052 mismatch")
-    if extract_define_u32(patch, "EASYSTICK_CMD53_BB_VERSION") != man[
-        "easystick_cmd53_bb_version"
+    if extract_define_u32(patch, "CMD53_BB_VERSION") != man[
+        "cmd53_bb_version"
     ]:
         raise SystemExit("CMD53_BB_GATE_FAIL: manifest vs rendered BB version mismatch")
     marker_enabled = bool(man.get("cmd52_marker_enabled"))
@@ -293,7 +293,7 @@ def verify_manifest(args: argparse.Namespace) -> int:
         if man.get("cmd52_marker_size") != EXPECTED_CMD52_MARKER_SIZE:
             raise SystemExit("CMD52_MARKER_GATE_FAIL: manifest marker size")
         expected_marker_pa = (
-            int(man["easystick_cmd53_bb_pa"].rstrip("u"), 16)
+            int(man["cmd53_bb_pa"].rstrip("u"), 16)
             + EXPECTED_CMD52_MARKER_OFFSET
         )
         if man.get("cmd52_marker_pa") != f"0x{expected_marker_pa:08x}u":
@@ -311,10 +311,10 @@ def verify_manifest(args: argparse.Namespace) -> int:
             raise SystemExit(f"CMD52_MARKER_GATE_FAIL: missing {marker_path}")
         if sha256_file(marker_path).lower() != marker_sha.lower():
             raise SystemExit("CMD52_MARKER_GATE_FAIL: marker SHA mismatch")
-        if extract_pa_from_patch(marker_path) != man["easystick_cmd53_bb_pa"]:
+        if extract_pa_from_patch(marker_path) != man["cmd53_bb_pa"]:
             raise SystemExit("CMD52_MARKER_GATE_FAIL: marker PA mismatch")
         if extract_define_u32(
-            marker_path, "EASYSTICK_CMD52_MARKER_WORDS"
+            marker_path, "CMD52_MARKER_WORDS"
         ) != EXPECTED_CMD52_MARKER_WORDS:
             raise SystemExit("CMD52_MARKER_GATE_FAIL: marker word count mismatch")
         for name, expected in EXPECTED_CMD52_MARKER_VALUES.items():

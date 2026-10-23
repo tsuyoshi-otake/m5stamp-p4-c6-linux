@@ -47,7 +47,7 @@ index 67fa8b8b1052..33d1c8ce0511 100644
  		 * and report a data timeout to the core.
  		 */
 +		dev_err(host->dev,
-+			"EASYSTICK_MMC TX_DRTO state=%d dir=%u\n",
++			"MMC TX_DRTO state=%d dir=%u\n",
 +			host->state, host->dir_status);
  		host->data_status = SDMMC_INT_DRTO;
  		trace = dw_mci_cmd53_trace_active(host);

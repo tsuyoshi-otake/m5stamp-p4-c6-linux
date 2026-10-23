@@ -26,9 +26,9 @@ def main() -> int:
             return 1
         payload.setdefault("sha256", {})[key] = sha256_file(p)
     payload["environ"] = {
-        "EASYSTICK_C68_CLEAN_RELEASE": os.environ.get("EASYSTICK_C68_CLEAN_RELEASE", ""),
-        "EASYSTICK_KERNEL_PATCH_OVERRIDE_DIR": os.environ.get(
-            "EASYSTICK_KERNEL_PATCH_OVERRIDE_DIR", ""
+        "C68_CLEAN_RELEASE": os.environ.get("C68_CLEAN_RELEASE", ""),
+        "KERNEL_PATCH_OVERRIDE_DIR": os.environ.get(
+            "KERNEL_PATCH_OVERRIDE_DIR", ""
         ),
     }
     out.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")

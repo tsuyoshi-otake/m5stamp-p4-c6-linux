@@ -1,5 +1,5 @@
 # C68-CLEAN-RELEASE kernel fragment. Appended only when
-# EASYSTICK_C68_CLEAN_RELEASE=1. The UP baseline linux.config stays CONFIG_SMP=n.
+# C68_CLEAN_RELEASE=1. The UP baseline linux.config stays CONFIG_SMP=n.
 CONFIG_SMP=y
 CONFIG_NR_CPUS=2
 CONFIG_RISCV_BOOT_SPINWAIT=y

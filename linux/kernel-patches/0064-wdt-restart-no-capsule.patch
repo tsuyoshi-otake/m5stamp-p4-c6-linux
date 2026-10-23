@@ -1,4 +1,4 @@
-Subject: [PATCH] easystick: do not record a crash capsule on a requested reboot
+Subject: [PATCH] stamp-p4: do not record a crash capsule on a requested reboot
 
 The restart handler arms the MWDT for 1 ms.  With 0054 stage 0 is the
 pretimeout interrupt, so every normal `reboot` wrote a WDT CRASH_CAPSULE
@@ -15,7 +15,7 @@ diff --git a/drivers/watchdog/esp32p4_wdt.c b/drivers/watchdog/esp32p4_wdt.c
  	struct esp32p4_wdt *wdt = watchdog_get_drvdata(wdd);
  
 +	/* A requested reboot is not a crash: no capsule for this arm. */
-+	atomic_set(&easystick_crash_claimed, 1);
++	atomic_set(&crash_claimed, 1);
 +
  	esp32p4_wdt_arm(wdt, 1);	/* fire in 1 ms */
  	mdelay(100);			/* reset happens under us */

@@ -1,4 +1,4 @@
-Subject: [PATCH] easystick: no false execmem warning on NOMMU
+Subject: [PATCH] stamp-p4: no false execmem warning on NOMMU
 
 On NOMMU VMALLOC_START is 0, so the default execmem range fails
 execmem_validate() and the kernel prints "Invalid parameters for execmem

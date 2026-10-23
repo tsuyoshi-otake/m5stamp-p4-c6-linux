@@ -12,7 +12,7 @@
  	void __iomem *base;
  };
  
-+/* EasyStick 0024 observe-only: feed telemetry (do not change timeout/policy). */
++/* Stamp-P4 0024 observe-only: feed telemetry (do not change timeout/policy). */
 +static unsigned long es_wdt_feed_count;
 +static unsigned long es_wdt_last_feed_jiffies;
 +

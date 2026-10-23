@@ -18,7 +18,7 @@ upstream value.  Set it at runtime through
  	.cleanup = dw_mci_dma_cleanup,
  };
 
-+/* EasyStick #35: the P4 FIFO does not pop on CPU reads, so every PIO
++/* Stamp-P4 #35: the P4 FIFO does not pop on CPU reads, so every PIO
 + * read longer than one word is corrupt.  es_dma_threshold >= 0 replaces
 + * host->dma_threshold (16) so short transfers can take IDMAC instead;
 + * -1 (the default) keeps upstream behavior.

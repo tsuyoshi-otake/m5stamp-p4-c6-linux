@@ -40,7 +40,7 @@ is the variant every PIO transfer takes.
  	}
  }
  
-+/* EasyStick #35 debug (opt-in, default 0): P4 BUFFIFO pop behavior.
++/* Stamp-P4 #35 debug (opt-in, default 0): P4 BUFFIFO pop behavior.
 + *
 + * On this board every PIO read of more than one 32-bit word returns
 + * the first FIFO word for every mci_fifo_readl(), whether the sg is

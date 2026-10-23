@@ -1,4 +1,4 @@
-Subject: [PATCH] easystick: riscv: esp32p4: return from signal handlers through the kernel's sigreturn code (#44)
+Subject: [PATCH] stamp-p4: riscv: esp32p4: return from signal handlers through the kernel's sigreturn code (#44)
 
 Without an MMU there is no vDSO, so setup_rt_frame() copies the two
 instructions that call rt_sigreturn (li a7, __NR_rt_sigreturn; ecall) into

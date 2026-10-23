@@ -1,4 +1,4 @@
-Subject: [PATCH] easystick: reject user pointers outside user memory on NOMMU
+Subject: [PATCH] stamp-p4: reject user pointers outside user memory on NOMMU
 
 `vi` with no file name froze the board until the watchdog reset it.
 BusyBox vi calls open(NULL), and the same happens with write(1, NULL, 4)

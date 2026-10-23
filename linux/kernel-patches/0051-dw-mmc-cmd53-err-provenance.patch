@@ -7,7 +7,7 @@ index 67fa8b8b1052..33d1c8ce0511 100644
  }
  
 +
-+/* EasyStick B: error-only CMD53 / DW-MMC provenance (observe-only). */
++/* Stamp-P4 B: error-only CMD53 / DW-MMC provenance (observe-only). */
 +#define ES_MMC_CMD53_PRINT_CAP 8
 +
 +static void es_mmc_cmd53_mark_start(struct dw_mci *host, struct mmc_command *cmd)
@@ -126,7 +126,7 @@ index 67fa8b8b1052..33d1c8ce0511 100644
 -				 mci_readl(host, MINTSTS), mci_readl(host, STATUS),
 -				 mci_readl(host, CTYPE), mci_readl(host, CLKDIV),
 -				 mci_readl(host, CLKSRC));
-+		/* EasyStick B: 0010 CMD53 telemetry replaced by ES_MMC error-only capsule. */
++		/* Stamp-P4 B: 0010 CMD53 telemetry replaced by ES_MMC error-only capsule. */
  		dev_dbg(host->dev, "data error, status 0x%08x\n", status);
  
  		/*
@@ -187,7 +187,7 @@ index 9c761ed0be2d..1987ae2a613d 100644
  
  	u32			cmd_status;
  	u32			data_status;
-+	/* EasyStick B: error-only CMD53 provenance (observe-only). */
++	/* Stamp-P4 B: error-only CMD53 provenance (observe-only). */
 +	u32			es_cmd53_seq;
 +	u32			es_cmd53_prints;
 +	u32			es_cmd53_active;

@@ -1,4 +1,4 @@
-Subject: [PATCH] easystick: user-allocation reserve for the NOMMU user pool (#51)
+Subject: [PATCH] stamp-p4: user-allocation reserve for the NOMMU user pool (#51)
 
 One pool, no fixed split.  Allocations from tasks classified "user"
 succeed only while a system reserve survives the request: afterwards a
@@ -14,17 +14,17 @@ its controlling tty is ttyGS1 (the askfirst console shell and every
 command it runs) or when its own comm or any ancestor's comm is
 "dropbear" (inetd spawns "dropbear -i" per session and that process
 stays in the session's parent chain for its lifetime).  System tasks
--- wpa_supplicant, udhcpc/udhcpd, inetd itself, easystick-* helpers,
+-- wpa_supplicant, udhcpc/udhcpd, inetd itself, * helpers,
 the boot sync scripts -- sit outside both trees and stay unmarked.
 
-/sys/kernel/easystick gains user_reserve_contig and user_reserve_total
+/sys/kernel/board gains user_reserve_contig and user_reserve_total
 (read/write, decimal bytes; defaults 1200 KiB and 2 MiB; writing 0/0
 disables the gate) plus read-only counters user_denied (alloc refused
 for a marked task) and system_alloc_fail (pool failed an unmarked
 alloc).  The same four values are appended to the aggregated
 nommu_pool key/value file.
 
-Staged only when EASYSTICK_USER_RESERVE=1; applies with or without
+Staged only when NOMMU_USER_RESERVE=1; applies with or without
 0089 (best-fit), since the reserve/best-fit combination is one of the
 measured arms.  The >=128K high-region routing from the #51 sketch is
 left out: gen_pool's algo hook picks within a chunk, not across the
@@ -78,7 +78,7 @@ diff --git a/mm/nommu_userspace_pool.c b/mm/nommu_userspace_pool.c
 + *    the new comm before binfmt_flat maps the file.
 + *
 + * System tasks (init scripts, wpa_supplicant, udhcpc/udhcpd, inetd
-+ * itself, easystick-* helpers, the boot sync) sit outside both trees
++ * itself, * helpers, the boot sync) sit outside both trees
 + * and stay unmarked.  The PF_KTHREAD guard also keeps get_current_tty
 + * away from sighand-less kernel threads.
 + */
@@ -214,7 +214,7 @@ diff --git a/mm/nommu_userspace_pool.c b/mm/nommu_userspace_pool.c
  	return (void *)va; /* 0 → NULL on failure, which is what we want */
  }
 @@ -158,10 +303,12 @@
-  * /sys/kernel/easystick/nommu_pool — one "key value" pair per line:
+  * /sys/kernel/board/nommu_pool — one "key value" pair per line:
   * total, used and largest_free in bytes, the cumulative alloc_fail
   * (pool present but could not satisfy the allocation) and fallback
 - * (times mmap fell back to the buddy allocator) counters, and one
@@ -257,7 +257,7 @@ diff --git a/mm/nommu_userspace_pool.c b/mm/nommu_userspace_pool.c
  
 +/*
 + * #51 reserve knobs (read/write, decimal bytes) and counters
-+ * (read-only), alongside nommu_pool under /sys/kernel/easystick/.
++ * (read-only), alongside nommu_pool under /sys/kernel/board/.
 + * The same values are also emitted inside nommu_pool so a single
 + * read still shows the whole pool state.
 + */

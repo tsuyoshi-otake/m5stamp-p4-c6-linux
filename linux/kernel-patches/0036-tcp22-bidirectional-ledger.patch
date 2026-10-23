@@ -1,12 +1,12 @@
 --- /dev/null
-+++ b/include/net/easystick_tcp_ledger.h
++++ b/include/net/tcp_ledger.h
 @@ -0,0 +1,183 @@
-+/* EasyStick 0024-C2: TCP/22 bidirectional observe ledger (m3-lab only).
++/* Stamp-P4 0024-C2: TCP/22 bidirectional observe ledger (m3-lab only).
 + * Observe-only. No behaviour change. Port 22 only; payload>0 preferred;
 + * pure ACK only after a port-22 payload was seen on this boot.
 + */
-+#ifndef _NET_EASYSTICK_TCP_LEDGER_H
-+#define _NET_EASYSTICK_TCP_LEDGER_H
++#ifndef _NET_TCP_LEDGER_H
++#define _NET_TCP_LEDGER_H
 +
 +#include <linux/atomic.h>
 +#include <linux/ip.h>
@@ -183,14 +183,14 @@
 +	es_tcp_emit(stage, sport, dport, seq, ack, plen, flags, sk);
 +}
 +
-+#endif /* _NET_EASYSTICK_TCP_LEDGER_H */
++#endif /* _NET_TCP_LEDGER_H */
 --- a/net/ipv4/tcp_output.c
 +++ b/net/ipv4/tcp_output.c
 @@ -38,6 +38,7 @@
  #define pr_fmt(fmt) "TCP: " fmt
  
  #include <net/tcp.h>
-+#include <net/easystick_tcp_ledger.h>
++#include <net/tcp_ledger.h>
  #include <net/tcp_ecn.h>
  #include <net/mptcp.h>
  #include <net/proto_memory.h>
@@ -272,7 +272,7 @@
  #include <net/inet_common.h>
  #include <net/inet_ecn.h>
  #include <net/tcp.h>
-+#include <net/easystick_tcp_ledger.h>
++#include <net/tcp_ledger.h>
  #include <net/tcp_ecn.h>
  #include <net/mptcp.h>
  #include <net/proto_memory.h>
@@ -303,7 +303,7 @@
  #include <net/flow.h>
  #include <net/snmp.h>
  #include <net/ip.h>
-+#include <net/easystick_tcp_ledger.h>
++#include <net/tcp_ledger.h>
  #include <net/protocol.h>
  #include <net/route.h>
  #include <net/xfrm.h>
@@ -322,7 +322,7 @@
  
  #include <net/snmp.h>
  #include <net/ip.h>
-+#include <net/easystick_tcp_ledger.h>
++#include <net/tcp_ledger.h>
  #include <net/protocol.h>
  #include <net/route.h>
  #include <linux/skbuff.h>
@@ -341,7 +341,7 @@
  #include <net/icmp.h>
  #include <net/inet_hashtables.h>
  #include <net/tcp.h>
-+#include <net/easystick_tcp_ledger.h>
++#include <net/tcp_ledger.h>
  #include <net/tcp_ecn.h>
  #include <net/transp_v6.h>
  #include <net/ipv6.h>
@@ -359,7 +359,7 @@
  #include <linux/bitops.h>
  #include <net/dst.h>
  #include <net/tcp.h>
-+#include <net/easystick_tcp_ledger.h>
++#include <net/tcp_ledger.h>
  #include <net/tcp_ecn.h>
  #include <net/proto_memory.h>
  #include <net/inet_common.h>
@@ -414,7 +414,7 @@
  #include <linux/ethtool.h>
  #include <linux/ethtool_netlink.h>
  #include <linux/skbuff.h>
-+#include <net/easystick_tcp_ledger.h>
++#include <net/tcp_ledger.h>
  #include <linux/kthread.h>
  #include <linux/bpf.h>
  #include <linux/bpf_trace.h>

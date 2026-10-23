@@ -1,4 +1,4 @@
-Subject: [PATCH] easystick: best-fit allocation for the NOMMU user pool (#51)
+Subject: [PATCH] stamp-p4: best-fit allocation for the NOMMU user pool (#51)
 
 The vendor pool (0010/0070) keeps gen_pool's default first-fit, so
 exec-sized blocks (0.5-1.8 MB) and small heap/stack allocs interleave in

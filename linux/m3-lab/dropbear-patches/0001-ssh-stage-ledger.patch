@@ -5,14 +5,14 @@
  MAN_DIR=@srcdir@/manpages
  
 -_COMMONOBJS=dbutil.o buffer.o dbhelpers.o \
-+_COMMONOBJS=dbutil.o easystick-ssh-ledger.o buffer.o dbhelpers.o \
++_COMMONOBJS=dbutil.o ssh-ledger.o buffer.o dbhelpers.o \
  		dss.o bignum.o \
  		signkey.o rsa.o dbrandom.o \
  		queue.o \
 --- /dev/null
-+++ b/src/easystick-ssh-ledger.h
++++ b/src/ssh-ledger.h
 @@ -0,0 +1,24 @@
-+/* EasyStick M2.5 test-only SSH stage ledger.
++/* Stamp-P4 M2.5 test-only SSH stage ledger.
 + * Dual sink (test-only): /dev/kmsg + /dev/ttyGS1, each opened once at start
 + * with O_WRONLY|O_CLOEXEC|O_NONBLOCK. Markers are write()-only; errno saved.
 + * Never stdout/stderr — inetd binds the SSH socket to stdio.
@@ -24,8 +24,8 @@
 + * Pi observing the banner is a separate end-to-end RX check.
 + * EXEC success never returns: EXEC_BEGIN present + EXEC_FAIL absent + id stdout.
 + */
-+#ifndef EASYSTICK_SSH_LEDGER_H_
-+#define EASYSTICK_SSH_LEDGER_H_
++#ifndef SSH_LEDGER_H_
++#define SSH_LEDGER_H_
 +
 +void es_ssh_ledger_open(void);
 +void es_ssh_mark(const char *msg);
@@ -35,12 +35,12 @@
 + * (run_command closes fds 3..maxfd before execv; vfork shares .data). */
 +void es_ssh_mark_fail(const char *tag, int err);
 +
-+#endif /* EASYSTICK_SSH_LEDGER_H_ */
++#endif /* SSH_LEDGER_H_ */
 --- /dev/null
-+++ b/src/easystick-ssh-ledger.c
++++ b/src/ssh-ledger.c
 @@ -0,0 +1,92 @@
-+/* EasyStick M2.5 test-only SSH stage ledger implementation. */
-+#include "easystick-ssh-ledger.h"
++/* Stamp-P4 M2.5 test-only SSH stage ledger implementation. */
++#include "ssh-ledger.h"
 +
 +#include <errno.h>
 +#include <fcntl.h>
@@ -137,7 +137,7 @@
  #include "runopts.h"
  #include "dbrandom.h"
  #include "crypto_desc.h"
-+#include "easystick-ssh-ledger.h"
++#include "ssh-ledger.h"
  
  static size_t listensockets(int *sock, size_t sockcount, int *maxfd);
  static void sigchld_handler(int dummy);
@@ -164,7 +164,7 @@
  #include "session.h"
  #include "dbutil.h"
 +#include "atomicio.h"
-+#include "easystick-ssh-ledger.h"
++#include "ssh-ledger.h"
  #include "packet.h"
  #include "algo.h"
  #include "buffer.h"
@@ -213,7 +213,7 @@
  #include "session.h"
  #include "kex.h"
  #include "ssh.h"
-+#include "easystick-ssh-ledger.h"
++#include "ssh-ledger.h"
  #include "packet.h"
  #include "bignum.h"
  #include "dbrandom.h"
@@ -233,7 +233,7 @@
  #include "ssh.h"
  #include "packet.h"
  #include "auth.h"
-+#include "easystick-ssh-ledger.h"
++#include "ssh-ledger.h"
  #include "runopts.h"
  #include "dbrandom.h"
  
@@ -269,7 +269,7 @@
  #include "packet.h"
  #include "algo.h"
  #include "runopts.h"
-+#include "easystick-ssh-ledger.h"
++#include "ssh-ledger.h"
  
  #if DROPBEAR_SVR_PUBKEY_AUTH
  
@@ -334,7 +334,7 @@
  #include "sshpty.h"
  #include "termcodes.h"
  #include "ssh.h"
-+#include "easystick-ssh-ledger.h"
++#include "ssh-ledger.h"
  #include "dbrandom.h"
  #include "x11fwd.h"
  #include "agentfwd.h"
@@ -353,7 +353,7 @@
  
  #include "includes.h"
  #include "dbutil.h"
-+#include "easystick-ssh-ledger.h"
++#include "ssh-ledger.h"
  #include "buffer.h"
  #include "session.h"
  #include "atomicio.h"

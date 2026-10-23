@@ -9,7 +9,7 @@ pop behaviour already broken in one direction there is no reason to
 keep pushing production data through it in the other, so PIO-bound
 writes go through IDMAC as well.
 
-With `easystick,fifo-no-pop` in the DT (or dw_mmc.es_fifo_bounce=1),
+With `espressif,fifo-no-pop` in the DT (or dw_mmc.es_fifo_bounce=1),
 a write of 5..1024 bytes that dw_mci_pre_dma_transfer() would send to
 PIO is instead staged into the aligned bounce buffer and submitted
 through IDMAC, exactly like the read workaround in patch 0087.  The
@@ -45,7 +45,7 @@ that the IDMAC read-back relies on.
  MODULE_PARM_DESC(es_fifo_bounce,
  		 "#35: IDMAC bounce for multi-word PIO reads (-1=DT, 0=off, 1=on)");
  
-+/* EasyStick #35: write-side-only override; -1 follows es_fifo_bounce. */
++/* Stamp-P4 #35: write-side-only override; -1 follows es_fifo_bounce. */
 +static int dw_mmc_es_fifo_bounce_wr = -1;
 +module_param_named(es_fifo_bounce_wr, dw_mmc_es_fifo_bounce_wr, int, 0644);
 +MODULE_PARM_DESC(es_fifo_bounce_wr,
@@ -59,7 +59,7 @@ that the IDMAC read-back relies on.
  }
  
 +/*
-+ * EasyStick #35: submit a PIO-bound write through the IDMAC using the
++ * Stamp-P4 #35: submit a PIO-bound write through the IDMAC using the
 + * same aligned bounce buffer as the read side.  Preventive: raw PIO
 + * writes measured byte-correct on the bench, but the P4 BUFFIFO is
 + * already proven not to pop on reads, so writes stay off the CPU FIFO
@@ -121,9 +121,9 @@ that the IDMAC read-back relies on.
  	dw_mci_ctrl_thld(host, data);
  
  	if (dw_mci_submit_data_dma(host, data)) {
--		/* EasyStick #35: on the P4 a multi-word CPU FIFO read returns
+-		/* Stamp-P4 #35: on the P4 a multi-word CPU FIFO read returns
 -		 * the first word repeated; bounce reads through IDMAC instead.
-+		/* EasyStick #35: the P4 CPU FIFO does not pop on multi-word
++		/* Stamp-P4 #35: the P4 CPU FIFO does not pop on multi-word
 +		 * reads; keep PIO-bound transfers off it in both directions
 +		 * (the write side is preventive - see 0088).
  		 */

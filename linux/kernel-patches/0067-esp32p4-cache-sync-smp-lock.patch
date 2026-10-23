@@ -1,4 +1,4 @@
-Subject: [PATCH] easystick: serialise ESP32-P4 ROM cache thunks across harts
+Subject: [PATCH] stamp-p4: serialise ESP32-P4 ROM cache thunks across harts
 
 The ROM cache-sync helpers drive one shared set of CACHE_SYNC registers.
 The callers only disabled local interrupts, which is enough on UP but not

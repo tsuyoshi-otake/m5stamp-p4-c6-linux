@@ -1,7 +1,7 @@
-Subject: [PATCH] easystick: esp32p4 deaf-CPU1 watchdog restart (#5)
+Subject: [PATCH] stamp-p4: esp32p4 deaf-CPU1 watchdog restart (#5)
 
 Mitigation for the #5 latch, applied only for C68 diagnostic builds
-(EASYSTICK_C68_DEAF_RESET=1, requires the C68 SMP series): a latched
+(C68_DEAF_RESET=1, requires the C68 SMP series): a latched
 boot becomes one bounded retry instead of an indefinite hang.
 
 esp32p4_deaf_reset_tick() is called from each CPU's own SYSTIMER

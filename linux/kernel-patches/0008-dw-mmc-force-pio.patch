@@ -7,7 +7,7 @@
 +	 * The ESP32-P4 NOMMU port has no coherent DMA allocation yet. Allow
 +	 * this board to validate SDIO CMD53 with the controller FIFO path.
 +	 */
-+	if (device_property_present(dev, "easystick,force-pio"))
++	if (device_property_present(dev, "espressif,force-pio"))
 +		goto no_dma;
  
 	/*

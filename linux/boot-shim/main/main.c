@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 /*
- * EasyStick Stamp-P4 M1 boot shim.
+ * Stamp-P4 Stamp-P4 M1 boot shim.
  *
  * The ESP-IDF app is deliberately small: validate a flat RV32 Image, copy
  * it and the project DTS into HEX PSRAM, map the read-only squashfs partition,
@@ -42,22 +42,22 @@
 #include "soc/systimer_reg.h"
 #include "soc/system_intr.h"
 
-#ifdef EASYSTICK_TSENS_ORACLE
+#ifdef TSENS_ORACLE
 #include "tsens_oracle.h"
 #endif
 
-#ifdef EASYSTICK_CMD53_RETENTION_BB
-#include "easystick_cmd53_bb_boot.h"
+#ifdef CMD53_RETENTION_BB
+#include "cmd53_bb_boot.h"
 #endif
 
-#ifdef EASYSTICK_C68_CLEAN_RELEASE
+#ifdef C68_CLEAN_RELEASE
 #include "sdkconfig.h"
 #if !CONFIG_ESP_SYSTEM_SINGLE_CORE_MODE
 #error "C68 requires CONFIG_ESP_SYSTEM_SINGLE_CORE_MODE"
 #endif
 #endif
 
-#ifdef EASYSTICK_M2_SDIO
+#ifdef M2_SDIO
 #include "m2_sdmmc.h"
 #endif
 
@@ -69,9 +69,9 @@
 #include "driver/gpio.h"
 #include "boot_ab.h"
 
-static void easystick_usb_otg_init(void)
+static void usb_otg_init(void)
 {
-	ESP_LOGI("easystick-otg", "enabling USB OTG 1.1 (FS GPIO26/27) clock and PHY...");
+	ESP_LOGI("otg", "enabling USB OTG 1.1 (FS GPIO26/27) clock and PHY...");
 	_usb_wrap_ll_enable_bus_clock(true);
 	_usb_wrap_ll_reset_register();
 	usb_wrap_ll_phy_set_defaults(&USB_WRAP);
@@ -93,7 +93,7 @@ static void easystick_usb_otg_init(void)
 	gpio_pullup_dis(GPIO_NUM_27);
 }
 
-static const char *TAG = "easystick-boot";
+static const char *TAG = "boot";
 
 /* Patched ESP-IDF vectors.S C13 hook; must stay linked (zero = inert). */
 volatile uint32_t c13_redirect_pc IRAM_DATA_ATTR;
@@ -446,7 +446,7 @@ static void IRAM_ATTR jump_to_linux(uint32_t entry, uint32_t dtb_pa)
 	__builtin_unreachable();
 }
 
-#ifdef EASYSTICK_C68_CLEAN_RELEASE
+#ifdef C68_CLEAN_RELEASE
 
 #define C68_STAGE_WAITING      0xC6810001u
 #define C68_RELEASE_GO         0xC68A11A5u
@@ -493,15 +493,15 @@ static void prepare_cpu1_c68_clean_release(void)
 	 * "Guru Meditation Error: Core 1".
 	 */
 	ets_set_appcpu_boot_addr(0);
-	ets_printf("easystick-boot: C68 WAIT stage=1\n");
+	ets_printf("boot: C68 WAIT stage=1\n");
 	/* 0: CPU1 read back every PMA/PMP CSR as CPU0 has it. */
-	ets_printf("easystick-boot: C68 CPU1 PMA/PMP diff=%08x\n", (unsigned)prot_diff);
+	ets_printf("boot: C68 CPU1 PMA/PMP diff=%08x\n", (unsigned)prot_diff);
 	ESP_LOGI(TAG, "C68 CPU1 WAITING; CPU0 -> Linux");
 }
 
-#else /* !EASYSTICK_C68_CLEAN_RELEASE */
+#else /* !C68_CLEAN_RELEASE */
 
-#ifndef EASYSTICK_UP_BOOT
+#ifndef UP_BOOT
 
 /*
  * CPU1 bring-up (probe C66): MID_1107475_ALARM.
@@ -517,7 +517,7 @@ static void prepare_cpu1_c68_clean_release(void)
 volatile uint32_t c13_isr_seen IRAM_DATA_ATTR;
 volatile uint32_t c13_tramp_entered IRAM_DATA_ATTR;
 
-#define EASYSTICK_CPU1_HANDOFF_PA 0x487FF000u
+#define CPU1_HANDOFF_PA 0x487FF000u
 #define C33_STACK_DEPTH 2048u
 #define C40_EXPECT_RELEASE_PA 0x4ff15f1cu
 #define C40_EXPECT_TCB 0x4ff128c4u
@@ -527,7 +527,7 @@ volatile uint32_t c13_tramp_entered IRAM_DATA_ATTR;
 #define C40_EXPECT_FN 0x4000ba3cu
 
 /* Length-matched to C39 SNAP1 format; linked-but-not-executed on C41. */
-#define C40_UART_FMT "easystick-boot: QQ0 WWWWW tasks=%u ready1=%u top=%u\n"
+#define C40_UART_FMT "boot: QQ0 WWWWW tasks=%u ready1=%u top=%u\n"
 _Static_assert(sizeof(C40_UART_FMT) == 53,
 	       "C40 UART format length must match C39 (52 chars + NUL)");
 /* C66: C64 delay; alarm/pending snapshot (post-stall read only). */
@@ -611,9 +611,9 @@ static void c40_keep_c35_layout_symbols(void)
 	sink = (uintptr_t)&s_c33_tcb;
 	sink ^= (uintptr_t)s_c33_stack;
 	sink ^= (uintptr_t)cpu0_c33_should_not_run;
-	sink ^= (uintptr_t)easystick_c33_init_only;
-	sink ^= (uintptr_t)easystick_c33_validate_tcb;
-	sink ^= (uintptr_t)easystick_c33_sched_snapshot;
+	sink ^= (uintptr_t)c33_init_only;
+	sink ^= (uintptr_t)c33_validate_tcb;
+	sink ^= (uintptr_t)c33_sched_snapshot;
 	sink ^= (uintptr_t)&s_c33_ran;
 	sink ^= (uintptr_t)C40_UART_FMT;
 	sink ^= (uintptr_t)c41_dead_c40_print;
@@ -627,7 +627,7 @@ static void prepare_cpu1_linux_trampoline(uint32_t entry, uint32_t dtb_pa)
 	unsigned bump_applied;
 	uint32_t t0;
 	uint32_t release_pa;
-	volatile uint32_t *handoff = (volatile uint32_t *)(uintptr_t)EASYSTICK_CPU1_HANDOFF_PA;
+	volatile uint32_t *handoff = (volatile uint32_t *)(uintptr_t)CPU1_HANDOFF_PA;
 
 	(void)entry;
 	(void)dtb_pa;
@@ -640,8 +640,8 @@ static void prepare_cpu1_linux_trampoline(uint32_t entry, uint32_t dtb_pa)
 
 	if ((uint32_t)(uintptr_t)&s_c33_tcb != C40_EXPECT_TCB ||
 	    (uint32_t)(uintptr_t)s_c33_stack != C40_EXPECT_STACK ||
-	    (uint32_t)(uintptr_t)easystick_c33_init_only != C40_EXPECT_INIT ||
-	    (uint32_t)(uintptr_t)easystick_c33_validate_tcb != C40_EXPECT_VAL ||
+	    (uint32_t)(uintptr_t)c33_init_only != C40_EXPECT_INIT ||
+	    (uint32_t)(uintptr_t)c33_validate_tcb != C40_EXPECT_VAL ||
 	    (uint32_t)(uintptr_t)cpu0_c33_should_not_run != C40_EXPECT_FN)
 		fatal_restart("C40 layout INVALID symbol addresses vs C35");
 
@@ -655,7 +655,7 @@ static void prepare_cpu1_linux_trampoline(uint32_t entry, uint32_t dtb_pa)
 		fatal_restart("C40 layout INVALID release_pa vs C35");
 
 	ESP_LOGI(TAG, "CPU1 prep: C36 layout-keep C29-runtime + stall");
-	ets_printf("easystick-boot: C36 HANDOFF release_pa=0x%08x\n",
+	ets_printf("boot: C36 HANDOFF release_pa=0x%08x\n",
 		   (unsigned)handoff[0]);
 
 	pre = uxTaskPriorityGet(NULL);
@@ -665,7 +665,7 @@ static void prepare_cpu1_linux_trampoline(uint32_t entry, uint32_t dtb_pa)
 		bump_applied = 1;
 	}
 	post = uxTaskPriorityGet(NULL);
-	ets_printf("easystick-boot: C36 PRE_PRIO=%u POST_PRIO=%u BUMP_APPLIED=%u\n",
+	ets_printf("boot: C36 PRE_PRIO=%u POST_PRIO=%u BUMP_APPLIED=%u\n",
 		   (unsigned)pre, (unsigned)post, bump_applied);
 	if (pre != 1 || post != 2 || bump_applied != 1)
 		fatal_restart("C40 INVALID priority mutation vs C29");
@@ -691,13 +691,13 @@ static void prepare_cpu1_linux_trampoline(uint32_t entry, uint32_t dtb_pa)
 		if (s_c33_ran != 0)
 			fatal_restart("C40 RAN flipped during busy-wait");
 
-		ets_printf("easystick-boot: C36 CPU0_STALL_BEFORE\n");
+		ets_printf("boot: C36 CPU0_STALL_BEFORE\n");
 		esp_cpu_stall(1);
 		/* CPU1 stalled: read SYSTIMER/CLIC snapshot only after stall. */
 		tick_after = c59_get_core1_systick_epoch();
 		(void)tick_after;
 		alarm12 = c66_alarm_pending12();
-		ets_printf("easystick-boot: C36 CPU0_STALL_AFTER; A=%03X; CPU0 -> Linux\n",
+		ets_printf("boot: C36 CPU0_STALL_AFTER; A=%03X; CPU0 -> Linux\n",
 			   (unsigned)alarm12);
 		if (s_c33_ran != 0)
 			fatal_restart("C40 RAN flipped at stall");
@@ -705,41 +705,41 @@ static void prepare_cpu1_linux_trampoline(uint32_t entry, uint32_t dtb_pa)
 	ESP_LOGI(TAG, "C36 C29-runtime+CPU1 stalled; jump Linux");
 }
 
-#endif /* !EASYSTICK_UP_BOOT */
-#endif /* EASYSTICK_C68_CLEAN_RELEASE */
+#endif /* !UP_BOOT */
+#endif /* C68_CLEAN_RELEASE */
 
-#ifndef EASYSTICK_GIT_REV
-#define EASYSTICK_GIT_REV "unknown"
+#ifndef GIT_REV
+#define GIT_REV "unknown"
 #endif
 
 void app_main(void)
 {
-	ESP_LOGI(TAG, "boot-shim git=%s", EASYSTICK_GIT_REV);
-#ifdef EASYSTICK_CMD53_RETENTION_BB
+	ESP_LOGI(TAG, "boot-shim git=%s", GIT_REV);
+#ifdef CMD53_RETENTION_BB
 	/*
 	 * Retention dump must run before C6/SDIO/Linux handoff. Do not clear
 	 * the black-box until the dump and optional self-test have completed.
 	 */
-	easystick_cmd53_bb_dump_early();
-	easystick_crash_capsule_dump_early();
-	easystick_crash_capsule_flush();
-#ifdef EASYSTICK_CMD53_BB_SELFTEST_TORN
-	easystick_cmd53_bb_selftest_torn_maybe();
-#elif defined(EASYSTICK_CMD53_BB_SELFTEST)
-	easystick_cmd53_bb_selftest_maybe();
+	cmd53_bb_dump_early();
+	crash_capsule_dump_early();
+	crash_capsule_flush();
+#ifdef CMD53_BB_SELFTEST_TORN
+	cmd53_bb_selftest_torn_maybe();
+#elif defined(CMD53_BB_SELFTEST)
+	cmd53_bb_selftest_maybe();
 #endif
-	easystick_cmd53_bb_release_after_dump();
+	cmd53_bb_release_after_dump();
 #endif
-#ifdef EASYSTICK_TSENS_ORACLE
-	if (!easystick_tsens_oracle_run())
+#ifdef TSENS_ORACLE
+	if (!tsens_oracle_run())
 		fatal_restart("TSENS oracle failed");
 #endif
-	#ifdef EASYSTICK_M2_SDIO
+	#ifdef M2_SDIO
 	/* M2 opts in to the raw Slot 1 bootstrap; M1 keeps the proven path. */
-	easystick_m2_sdmmc_init();
+	m2_sdmmc_init();
 	#endif
 	/* Enable Full-Speed USB OTG (DWC2) for Type-A USB Gadget */
-	easystick_usb_otg_init();
+	usb_otg_init();
 	const esp_partition_t *kernel = esp_partition_find_first(
 		ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_ANY, "kernel");
 	const esp_partition_t *dtb_part = esp_partition_find_first(
@@ -793,7 +793,7 @@ void app_main(void)
 	cache_hal_writeback_addr(DTB_LOAD_PA, total);
 
 	ESP_LOGI(TAG, "Linux artifacts valid; kernel=%" PRIu32 " bytes, rootfs=%" PRIu32 " bytes", image_bytes, rootfs->size);
-#ifdef EASYSTICK_C68_CLEAN_RELEASE
+#ifdef C68_CLEAN_RELEASE
 	ESP_LOGI(TAG, "C68 clean-release: CPU1 bare-metal WAITING, CPU0 -> Linux 0x%08x DTB 0x%08x",
 		 KERNEL_LOAD_PA, DTB_LOAD_PA);
 #else
@@ -805,9 +805,9 @@ void app_main(void)
 	(void)rootfs_handle;
 	esp_hw_stack_guard_monitor_stop();
 	grant_psram_to_umode();
-#ifdef EASYSTICK_C68_CLEAN_RELEASE
+#ifdef C68_CLEAN_RELEASE
 	prepare_cpu1_c68_clean_release();
-#elif defined(EASYSTICK_UP_BOOT)
+#elif defined(UP_BOOT)
 	ESP_LOGI(TAG, "UP boot: CONFIG_SMP=n; CPU1 preparation skipped");
 #else
 	/*

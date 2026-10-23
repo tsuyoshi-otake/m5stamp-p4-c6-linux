@@ -1,4 +1,4 @@
-Subject: [PATCH] easystick: esp32 ACM: take the port lock for TX in the IRQ handler (#5)
+Subject: [PATCH] stamp-p4: esp32 ACM: take the port lock for TX in the IRQ handler (#5)
 
 The USB Serial/JTAG IRQ handler fills the TX FIFO from the xmit kfifo
 without the port lock, while start_tx() does the same under it.  On one

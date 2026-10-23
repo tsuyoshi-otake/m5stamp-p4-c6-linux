@@ -9,7 +9,7 @@ In production this hits esp-hosted RX packet tails: when the packet
 length mod 512 is 1..15, esp_sdio.c reads the tail with a 4..16 byte
 CMD53, which is below the 16-byte DMA threshold and goes PIO.
 
-With `easystick,fifo-no-pop` in the DT (or dw_mmc.es_fifo_bounce=1 at
+With `espressif,fifo-no-pop` in the DT (or dw_mmc.es_fifo_bounce=1 at
 boot), a read of 5..1024 bytes that dw_mci_pre_dma_transfer() would
 send to PIO is retried through IDMAC into an aligned 1 KiB bounce
 buffer and copied back into the caller's sg on a clean completion.
@@ -58,10 +58,10 @@ es_fifo_bounce: -1 follows the DT (default), 0 off, 1 on.
  MODULE_PARM_DESC(es_dma_threshold, "#35: DMA threshold override (-1=default)");
  
 +/*
-+ * EasyStick #35: es_fifo_bounce selects the IDMAC bounce workaround for
++ * Stamp-P4 #35: es_fifo_bounce selects the IDMAC bounce workaround for
 + * PIO reads on the P4, whose BUFFIFO register does not pop on CPU reads
 + * (a multi-word CPU read returns its first word repeated).  -1 follows
-+ * the DT property `easystick,fifo-no-pop`, 0 disables the workaround,
++ * the DT property `espressif,fifo-no-pop`, 0 disables the workaround,
 + * 1 forces it on for hosts without the property.
 + */
 +static int dw_mmc_es_fifo_bounce = -1;
@@ -113,7 +113,7 @@ es_fifo_bounce: -1 follows the DT (default), 0 off, 1 on.
  }
  
 +/*
-+ * EasyStick #35: retry a PIO-bound read through the IDMAC using an
++ * Stamp-P4 #35: retry a PIO-bound read through the IDMAC using an
 + * aligned bounce buffer.  The P4 BUFFIFO does not pop on CPU reads, so
 + * dw_mci_pull_data() reads the same first word len/4 times; routing the
 + * transfer through DMA makes the silicon do the FIFO work that works.
@@ -189,7 +189,7 @@ es_fifo_bounce: -1 follows the DT (default), 0 off, 1 on.
  	dw_mci_ctrl_thld(host, data);
  
  	if (dw_mci_submit_data_dma(host, data)) {
-+		/* EasyStick #35: on the P4 a multi-word CPU FIFO read returns
++		/* Stamp-P4 #35: on the P4 a multi-word CPU FIFO read returns
 +		 * the first word repeated; bounce reads through IDMAC instead.
 +		 */
 +		if (!dw_mci_es_pio_bounce_read(host, data))
@@ -235,7 +235,7 @@ es_fifo_bounce: -1 follows the DT (default), 0 off, 1 on.
  	}
  
 +	/*
-+	 * EasyStick #35: bounce buffer for multi-word reads that the DMA
++	 * Stamp-P4 #35: bounce buffer for multi-word reads that the DMA
 +	 * gates would send to the (non-popping) PIO FIFO.  Plain kzalloc +
 +	 * dma_map_sg is deliberate: on this NOMMU target dmam_alloc_coherent
 +	 * is unavailable and every production transfer already goes through
@@ -262,12 +262,12 @@ es_fifo_bounce: -1 follows the DT (default), 0 off, 1 on.
  	host->sdio_irq = host->slot_id;
  
 +	/*
-+	 * EasyStick #35: the ESP32-P4 SDMMC BUFFIFO register never advances
++	 * Stamp-P4 #35: the ESP32-P4 SDMMC BUFFIFO register never advances
 +	 * its read pointer on CPU reads, so any PIO read longer than one
 +	 * word returns the first word repeated.  Opt the host into the
 +	 * IDMAC bounce-buffer workaround; see dw_mci_es_pio_bounce_read().
 +	 */
-+	if (device_property_present(dev, "easystick,fifo-no-pop"))
++	if (device_property_present(dev, "espressif,fifo-no-pop"))
 +		host->fifo_nopop = 1;
 +
  	if (device_property_present(dev, "fifo-watermark-aligned"))

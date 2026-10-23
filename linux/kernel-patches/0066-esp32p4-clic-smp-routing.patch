@@ -1,4 +1,4 @@
-Subject: [PATCH] easystick: esp32p4 CLIC routing for SMP
+Subject: [PATCH] stamp-p4: esp32p4 CLIC routing for SMP
 
 Each hart has its own CLIC at 0x20801000, but mask/unmask/set_type wrote
 the CLIC of whichever CPU ran them, and map configured ATTR/CTL only on

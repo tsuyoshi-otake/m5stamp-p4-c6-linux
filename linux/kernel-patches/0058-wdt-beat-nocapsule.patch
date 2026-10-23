@@ -1,4 +1,4 @@
-Subject: [PATCH] easystick: persist beat breadcrumbs without 0054
+Subject: [PATCH] stamp-p4: persist beat breadcrumbs without 0054
 
 Instrument C on the 0019+0035 MWDT (no crash capsule). A 100 ms kthread
 per CPU writes {seq,cpu,beat_jiffies,last_feed_jiffies} at BB PA + 0x120
@@ -22,39 +22,39 @@ diff --git a/drivers/watchdog/esp32p4_wdt.c b/drivers/watchdog/esp32p4_wdt.c
  #include <linux/watchdog.h>
  
 @@ -64,6 +67,54 @@
- /* EasyStick 0024 observe-only: feed telemetry (do not change timeout/policy). */
+ /* Stamp-P4 0024 observe-only: feed telemetry (do not change timeout/policy). */
  static unsigned long es_wdt_feed_count;
  static unsigned long es_wdt_last_feed_jiffies;
-+#define EASYSTICK_CMD53_BB_PA		0x50108080u
-+#define EASYSTICK_CMD53_BB_BYTES	0x120u
-+#define EASYSTICK_CMD52_MARKER_BYTES	(6u * sizeof(u32))
-+#define EASYSTICK_BEAT_CPUS		2u
-+#define EASYSTICK_BEAT_PERIOD_MS	100u
++#define CMD53_BB_PA		0x50108080u
++#define CMD53_BB_BYTES	0x120u
++#define CMD52_MARKER_BYTES	(6u * sizeof(u32))
++#define BEAT_CPUS		2u
++#define BEAT_PERIOD_MS	100u
 +
-+struct easystick_beat {
++struct beat {
 +	u32 seq;
 +	u32 cpu;
 +	u32 beat_jiffies;
 +	u32 last_feed_jiffies;
 +};
 +
-+static struct task_struct *easystick_beat_tasks[EASYSTICK_BEAT_CPUS];
++static struct task_struct *beat_tasks[BEAT_CPUS];
 +
-+static volatile struct easystick_beat *easystick_beat_ptr(unsigned int cpu)
++static volatile struct beat *beat_ptr(unsigned int cpu)
 +{
 +	uintptr_t base;
 +
-+	if (cpu >= EASYSTICK_BEAT_CPUS)
++	if (cpu >= BEAT_CPUS)
 +		return NULL;
-+	base = (uintptr_t)EASYSTICK_CMD53_BB_PA + EASYSTICK_CMD53_BB_BYTES +
-+	       EASYSTICK_CMD52_MARKER_BYTES;
-+	return (volatile struct easystick_beat *)base + cpu;
++	base = (uintptr_t)CMD53_BB_PA + CMD53_BB_BYTES +
++	       CMD52_MARKER_BYTES;
++	return (volatile struct beat *)base + cpu;
 +}
 +
-+static int easystick_beat_fn(void *arg)
++static int beat_fn(void *arg)
 +{
 +	unsigned int cpu = (unsigned int)(uintptr_t)arg;
-+	volatile struct easystick_beat *slot = easystick_beat_ptr(cpu);
++	volatile struct beat *slot = beat_ptr(cpu);
 +	u32 seq = 0;
 +
 +	if (!slot)
@@ -69,7 +69,7 @@ diff --git a/drivers/watchdog/esp32p4_wdt.c b/drivers/watchdog/esp32p4_wdt.c
 +		WRITE_ONCE(slot->last_feed_jiffies,
 +			   (u32)es_wdt_last_feed_jiffies);
 +		schedule_timeout_interruptible(
-+			msecs_to_jiffies(EASYSTICK_BEAT_PERIOD_MS));
++			msecs_to_jiffies(BEAT_PERIOD_MS));
 +	}
 +	return 0;
 +}
@@ -82,18 +82,18 @@ diff --git a/drivers/watchdog/esp32p4_wdt.c b/drivers/watchdog/esp32p4_wdt.c
 +	{
 +		unsigned int beat_cpu;
 +
-+		for (beat_cpu = 0; beat_cpu < EASYSTICK_BEAT_CPUS; beat_cpu++) {
++		for (beat_cpu = 0; beat_cpu < BEAT_CPUS; beat_cpu++) {
 +			struct task_struct *task;
 +
 +			if (beat_cpu >= num_possible_cpus())
 +				break;
-+			task = kthread_create(easystick_beat_fn,
++			task = kthread_create(beat_fn,
 +					      (void *)(uintptr_t)beat_cpu,
 +					      "es-beat/%u", beat_cpu);
 +			if (IS_ERR(task))
 +				return PTR_ERR(task);
 +			kthread_bind(task, beat_cpu);
-+			easystick_beat_tasks[beat_cpu] = task;
++			beat_tasks[beat_cpu] = task;
 +			wake_up_process(task);
 +		}
 +	}

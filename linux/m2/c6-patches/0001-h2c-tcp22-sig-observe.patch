@@ -1,5 +1,5 @@
-From: EasyStick <noreply@easystick.local>
-Subject: [PATCH] easystick: 0023-A2 H2C TCP/22 signature observe
+From: Stamp-P4 <noreply@stamp-p4.local>
+Subject: [PATCH] stamp-p4: 0023-A2 H2C TCP/22 signature observe
 
 Observe-only. Keep NG-1.0.6.0.1. No WIFI_PS_NONE, no TX retry, no
 send_task notify. TCP sport=22 plen>0 only; unique sig64 table +
@@ -24,7 +24,7 @@ index 5a54d37..4bcca6e 100644
  volatile uint8_t ota_ongoing = 0;
  volatile uint8_t power_save_on = 0;
 +
-+/* EasyStick 0023-A2: H2C TCP sport=22 plen>0 signature observer.
++/* Stamp-P4 0023-A2: H2C TCP sport=22 plen>0 signature observer.
 + * Observe-only. No PS_NONE, no TX retry, no send_task notify.
 + * Identity stays NG-1.0.6.0.1.
 + *

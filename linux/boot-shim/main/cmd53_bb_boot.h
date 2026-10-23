@@ -1,15 +1,15 @@
-#ifndef EASYSTICK_CMD53_BB_BOOT_H
-#define EASYSTICK_CMD53_BB_BOOT_H
+#ifndef CMD53_BB_BOOT_H
+#define CMD53_BB_BOOT_H
 
-void easystick_cmd53_bb_dump_early(void);
-void easystick_cmd53_bb_release_after_dump(void);
-void easystick_crash_capsule_dump_early(void);
-void easystick_crash_capsule_flush(void);
-#ifdef EASYSTICK_CMD53_BB_SELFTEST
-void easystick_cmd53_bb_selftest_maybe(void);
+void cmd53_bb_dump_early(void);
+void cmd53_bb_release_after_dump(void);
+void crash_capsule_dump_early(void);
+void crash_capsule_flush(void);
+#ifdef CMD53_BB_SELFTEST
+void cmd53_bb_selftest_maybe(void);
 #endif
-#ifdef EASYSTICK_CMD53_BB_SELFTEST_TORN
-void easystick_cmd53_bb_selftest_torn_maybe(void);
+#ifdef CMD53_BB_SELFTEST_TORN
+void cmd53_bb_selftest_torn_maybe(void);
 #endif
 
 #endif

@@ -16,27 +16,27 @@ The reference patch files are fetched externally using `versions.lock.json`.
 They are not copied into this repository unchanged. Before a flashable M1
 release, the build script must materialize a reproducible, reviewed patch
 series in an external worktree, record each source hash, and add any
-EasyStick-specific deltas here. The Stamp-P4 DTS in `../dts/` is the only
+Stamp-P4-specific deltas here. The Stamp-P4 DTS in `../dts/` is the only
 board description allowed; the WHY2025 DTS and its SPI C6 nodes must not be
 applied.
 
-`0022-esp32p4-systimer-level-trigger.patch` is an EasyStick-owned extraction
+`0022-esp32p4-systimer-level-trigger.patch` is an Stamp-P4-owned extraction
 of the driver hunk from the reference `0022` patch. The reference file also
 edits the WHY2025 DTS, which is intentionally not applied; the board-owned
 DTS in `../dts/` already selects `IRQ_TYPE_LEVEL_HIGH`.
 
-`0035-easystick-esp32p4-wdt-feed-observe.patch` is m3-lab-only observe
+`0035-esp32p4-wdt-feed-observe.patch` is m3-lab-only observe
 telemetry on `esp32p4_wdt_ping`: it prints `ES_WDT WDT_FEED_COUNT` and
 `last_feed_jiffies` without changing timeout, stage policy, or feed rate. It prints the first 16 feeds and then only
 power-of-two counts, so a long uptime does not fill the kernel log (#12).
 
-`0036-easystick-tcp22-bidirectional-ledger.patch` is m3-lab-only observe
+`0036-tcp22-bidirectional-ledger.patch` is m3-lab-only observe
 telemetry for TCP port 22 (`ES_TCP` markers on sendmsg/push/write_xmit,
 ip_queue_xmit, dev_queue_xmit, ip_rcv, tcp_v4_rcv, established, data_queue,
 and ACK build/xmit). It does not change TCP behaviour, Nagle, or sysctls.
 
-`0037-easystick-c67-l2-stage-smpboot.patch` is enabled for C67-L2-STAGE
-(`EASYSTICK_C67_SMP_STAGE=1`) and the C68 fail-closed profile. It adds
+`0037-c67-l2-stage-smpboot.patch` is enabled for C67-L2-STAGE
+(`C67_SMP_STAGE=1`) and the C68 fail-closed profile. It adds
 observe-only `pr_info` breadcrumbs in `arch/riscv/kernel/smpboot.c`:
 `C67 UP`, `C67 START`, `C67 CALLIN`, `C67 ONLINE`, then after
 `complete(&cpu_running)` `C67 COMPLETE`, immediately before
@@ -44,20 +44,20 @@ observe-only `pr_info` breadcrumbs in `arch/riscv/kernel/smpboot.c`:
 return `C67 UP_RETURN`. It does not change CPU start policy, timeouts,
 or IPI handling.
 
-`0038-easystick-c68-clean-release-spinwait.patch` is a **template**. It
+`0038-c68-clean-release-spinwait.patch` is a **template**. It
 keeps `0xC68DEAD1/2` placeholders in Git. `linux/build-c68.sh` renders it
 into `<output>/c68-rendered-patches` after extracting boot-shim `nm`
-addresses. `build-m1.sh` with `EASYSTICK_C68_CLEAN_RELEASE=1` refuses the
+addresses. `build-m1.sh` with `C68_CLEAN_RELEASE=1` refuses the
 kernel build unless that override directory is set, is not the patch
 stage, and contains no `C68DEAD` bytes.
 
-`0039-easystick-c68-clean-release-smpboot.patch` is rendered the same way.
+`0039-c68-clean-release-smpboot.patch` is rendered the same way.
 It extends the C67 observe breadcrumbs with C68 timeout diagnostics in
 `__cpu_up()` without duplicating the C67 marker set.
 
-`0040-easystick-esp32p4-ipi-provider.patch` extends the ESP32-P4 CLIC
+`0040-esp32p4-ipi-provider.patch` extends the ESP32-P4 CLIC
 interrupt-matrix mapping to both HP harts and adds the `CPUHP` anchor used by
-the provider. `0041-easystick-esp32p4-ipi-driver.patch` maps the
+the provider. `0041-esp32p4-ipi-driver.patch` maps the
 `CPU_INT_FROM_CPU_0/1` sources, multiplexes them into the generic RISC-V IPI
 range, and calls `riscv_ipi_set_virq_range()` only after the CPU-starting hook
 has been installed. The C68 fail-closed gate checks that both patches, the
@@ -65,7 +65,7 @@ provider symbol, and the IPI DTS node are present in the same staged triple.
 The 2026-08-19 A' capture passed that virq-range gate in hardware:
 `smp.c:176` was absent and `Brought up 1 node, 2 CPUs` was observed.
 
-`0042-easystick-esp32p4-systimer-cpu1.patch` gives SYSTIMER target 1 and its
+`0042-esp32p4-systimer-cpu1.patch` gives SYSTIMER target 1 and its
 source-54 CLIC route to CPU1. It is the next implementation candidate because
 the same capture still stalled before init with CPU1 timer delivery absent.
 The first 0042 coherent triple was classified on hardware for 120 seconds.
@@ -82,13 +82,13 @@ before a replacement triple can be staged. The corrected patch must be
 classified as another coherent triple; the initial result is not retroactive
 evidence for L2.5 or L3.
 
-`0045-easystick-esp32p4-systimer-st-conf-lock.patch` serializes the shared
+`0045-esp32p4-systimer-st-conf-lock.patch` serializes the shared
 `ST_CONF`/`ST_INT_ENA` programming sequence with a raw spinlock while
 preserving the target-local write-one `COMP*_LOAD` operation. Its standalone
 120 s hardware control still reached the CPU1 illegal-execution/RCU/CRED
 failure, so it is not accepted as a complete fix by itself.
 
-`0046-easystick-esp32p4-cpu1-context-observe.patch` is an observation-only
+`0046-esp32p4-cpu1-context-observe.patch` is an observation-only
 patch. It reports CPU1 illegal traps and sampled CPU1 context switches; it
 does not change the hotplug, IPI, or timer policy. The first coherent
 0045+0046 hardware shot reached `Run /sbin/init`, observed valid CPU1 context
@@ -98,14 +98,14 @@ but not an L3 result and not proof that the observer fixed the race: its
 `pr_info()` in `context_switch()` changes timing. The next control must retain
 0045 while removing that printk.
 
-`0047-easystick-esp32p4-cpu1-illegal-observe.patch` is that low-overhead
+`0047-esp32p4-cpu1-illegal-observe.patch` is that low-overhead
 control: it retains only the CPU1 illegal-trap snapshot from 0046 and contains
 no scheduler/context-switch printk. With 0045 and 0047 selected, the ordinary
 path has no new log operation; the observer runs only if the illegal trap
 recurs. Its staged hash and complete triple must be recorded before any
 hardware classification.
 
-`0048-easystick-esp32p4-l3-smoke-endpoint.patch` is selected only for the
+`0048-esp32p4-l3-smoke-endpoint.patch` is selected only for the
 explicit C68 L3 smoke profile. It creates the test-only
 `/proc/m5stamp_smp_smoke` endpoint. A userspace write runs a bounded,
 CPU-verified CPU0 -> CPU1 `smp_call_function_single()` and a non-blocking
@@ -115,7 +115,7 @@ CPU0 callback returns; waiting inside that callback would deadlock the CPU0
 IPI handler. It does not alter the generic IPI provider, timer policy, or
 scheduler path, and it is not included in ordinary C68 or M3 images.
 
-`0049-easystick-esp32p4-l3-smoke-workqueue.patch` completes that reverse leg
+`0049-esp32p4-l3-smoke-workqueue.patch` completes that reverse leg
 without calling `smp_call_function_single()` from the CPU1 IPI callback.
 The callback queues CPU1 work, and the work item performs the reverse call
 from task context; the L3 gate also requires work cleanup before the result
@@ -128,7 +128,7 @@ interrupt-context warnings it is intended to diagnose.
 
 `0050-thermal-esp32p4-add-lp-tsens-driver.patch` is an experimental, opt-in
 Linux temperature-sensor driver. It is selected only with
-`EASYSTICK_TSENS_LINUX=1` on the C68 build path, and is intentionally separate
+`TSENS_LINUX=1` on the C68 build path, and is intentionally separate
 from the SMP patches. The probe maps the P4 LP-TSENS, LP_PERI, LP analog-I2C
 master, PMU, and eFuse windows; enables the analog-I2C path; resets TSENS;
 performs the REGI2C DAC sequence `7 -> readback -> 15 -> readback`; then
@@ -164,7 +164,7 @@ Committed `linux.config` remains `CONFIG_SMP=n` and the board DTS remains
 `cpu@0` only. The C68 profile appends `linux/c68/linux.config.fragment` and
 inserts `linux/c68/cpu1.dts.inc` at build time.
 
-`0077-easystick-esp32p4-mret-trace.patch` (`EASYSTICK_C68_MRET_TRACE=1`,
+`0077-esp32p4-mret-trace.patch` (`C68_MRET_TRACE=1`,
 C68 profile only) is an observe-only #5 diagnostic: entry.S records a
 per-CPU ring of trap entries (raw mcause incl. hardware MPIL, mepc,
 mstatus; the mintstatus slot is always `0xffffffff`, since `csrr` of
@@ -178,7 +178,7 @@ dumps the rings (CPU1 in full, CPU0's newest 8) as
 ES5_WATCH/ES5_TRAP/ES5_IRQ/ES5_MRET/ES5_POST lines when CPU1's stamp is
 2 s stale.
 
-`0078-easystick-esp32p4-deaf-reset.patch` (`EASYSTICK_C68_DEAF_RESET=1`,
+`0078-esp32p4-deaf-reset.patch` (`C68_DEAF_RESET=1`,
 C68 profile only) is the matching #5 mitigation: a per-CPU jiffies stamp
 written by each CPU's own SYSTIMER interrupt lets CPU0 notice a deaf
 CPU1 after 3 s and take the chip down through `emergency_restart()`
@@ -188,8 +188,8 @@ latched boot becomes one bounded retry.  Both default OFF.
 Detection order for #5 is deliberate: 0068 ES_DEAF at 1 s + 200 ms, then
 0077 ES5_WATCH at 2 s, then 0078 ES5_RESET at 3 s.
 
-`0079-easystick-esp32p4-irq-level-drop.patch` is the #5 fix and is applied
-to every build (`EASYSTICK_C68_IRQ_LEVEL0=0` leaves it out for A/B tests).
+`0079-esp32p4-irq-level-drop.patch` is the #5 fix and is applied
+to every build (`C68_IRQ_LEVEL0=0` leaves it out for A/B tests).
 As far as the #5 captures show (it is not confirmed against Espressif
 documentation), this CLIC raises `mintstatus.mil` to the level of an
 accepted interrupt and lowers it only on an mret with `mcause.INT=1`.  An interrupt taken from
@@ -202,12 +202,12 @@ MPIE=0, MPIL=0), so `mil` is 0 before `do_irq` and an abandoned frame holds
 no level.  The 1-CPU image needs it as well: without it, killing a busy
 task wedged CPU0 until the MWDT reset the chip.
 
-`0080-easystick-esp32-acm-tx-irq-lock.patch` takes `port->lock` around the
+`0080-esp32-acm-tx-irq-lock.patch` takes `port->lock` around the
 transmit in the USB Serial/JTAG ACM interrupt handler.  Without it the
 handler and `start_tx` on the other CPU drained the `xmit` kfifo at the
 same time, `out` passed `in`, and ttyGS1 re-sent its 4 KiB buffer in a loop.
 
-`0082-easystick-esp32-acm-tx-irq-console.patch` (#42) fixes two faults of
+`0082-esp32-acm-tx-irq-console.patch` (#42) fixes two faults of
 the same port under load.  When the host had not read the previous packet
 yet, `transmit_buffer()` returned without arming the IN-empty interrupt, so
 the end of the output (the last line's `\r\n`) waited 0.5 s for the serial
@@ -219,8 +219,8 @@ last byte the FIFO took, so a host that stops reading costs one wait, not one
 per character.  Characters dropped after that are counted in
 `/sys/class/tty/ttyGS1/console_dropped`.
 
-`0081-easystick-esp32p4-expt-clear.patch` is applied to every build as well
-(`EASYSTICK_C68_EXPT_CLEAR=0` leaves it out).  The core sets
+`0081-esp32p4-expt-clear.patch` is applied to every build as well
+(`C68_EXPT_CLEAR=0` leaves it out).  The core sets
 MEXSTATUS.EXPT_VLD (CSR 0x7e1, bit 5) when it takes an exception, and only
 an mret with `mcause.INT=0` clears it.  An exception other than ecall taken
 while the bit is set is a double exception: the core locks up at the
@@ -231,7 +231,7 @@ or not) stopped the core, on one CPU as on two.  0081 is the exception-side
 counterpart of 0079: one mret to the next instruction once the frame is
 saved (INT=0, MPP=M, MPIE=0), so the bit is clear before the handler runs.
 
-`0083-easystick-esp32p4-sigreturn-in-kernel.patch` (#44, every build) makes
+`0083-esp32p4-sigreturn-in-kernel.patch` (#44, every build) makes
 a signal handler return through the kernel's own `__user_rt_sigreturn`
 (`li a7, __NR_rt_sigreturn; ecall` in `.rodata`).  Without a vDSO the NOMMU
 code copies those two instructions to the signal frame and calls
@@ -245,7 +245,7 @@ same bytes.  20,000 returns from a SIGSEGV handler (40,000 faults) take 0.7 s
 on either CPU, against 2.5 to 2.7 s before and 1.49 s on one CPU without
 0083.
 
-`0084-easystick-mmc-sdio-irq-highpri.patch` (#43, every build) queues
+`0084-mmc-sdio-irq-highpri.patch` (#43, every build) queues
 `host->sdio_irq_work` on `system_highpri_wq` instead of the normal workqueue
 when `sdio_signal_irq()` runs.  The work is the first hop of every packet
 from the C6, and under CPU load it sat a tick or more behind normal-priority
@@ -256,7 +256,7 @@ esp-hosted package patches `0039` and `0040` cover the rest of the same
 path: waking `esp_TX` when a packet is queued, and running the RX workqueue
 and the TX thread ahead of nice 0.
 
-`0072-easystick-esp32p4-bootflash.patch` (`/sys/kernel/easystick/boot_commit`,
+`0072-esp32p4-bootflash.patch` (`/sys/kernel/board/boot_commit`,
 every build) writes the `/boot` drive to flash with the ROM's SPI1 routines.
 Each ROM read, erase and program runs under `stop_machine()`: CPU0 makes the
 call with interrupts off while the other CPU spins with interrupts off, so
@@ -282,8 +282,8 @@ of 65 pings came back, the slowest in 280 ms; see
 [`../tests/issue41-44-2026-10-20.md`](../tests/issue41-44-2026-10-20.md).
 
 With 0079 and 0080, the C68 profile (`build-c68.sh`, used by the release
-workflow) boots both CPUs by default; `EASYSTICK_C68_MAXCPUS=1` builds the
-1-CPU image.  A 2-CPU build with `EASYSTICK_C68_IRQ_LEVEL0=0` brings the CPU1
+workflow) boots both CPUs by default; `C68_MAXCPUS=1` builds the
+1-CPU image.  A 2-CPU build with `C68_IRQ_LEVEL0=0` brings the CPU1
 latch back.  The boot-shim gives CPU1 CPU0's PMA/PMP setup before CPU1
 waits for Linux; without it a user fault on CPU1 arrived late, inside the
 trap handler, and panicked the kernel.  See

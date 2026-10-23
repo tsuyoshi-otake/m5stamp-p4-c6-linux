@@ -2,7 +2,7 @@
 
 Test-only Buildroot global patches for Dropbear **2026.91**. They are staged
 into `BR2_GLOBAL_PATCH_DIR/dropbear/` only when
-`EASYSTICK_SSH_LEDGER=1 build-m1.sh --profile m3-lab` runs. The default
+`SSH_LEDGER=1 build-m1.sh --profile m3-lab` runs. The default
 `m3-lab` image and production `--profile m3` do **not** apply them, because
 the hot-path markers can perturb the NOMMU watchdog timing.
 
@@ -24,7 +24,7 @@ The next one-shot discriminator is **`IDENT_SENT` presence/absence**:
 - Pi observing the banner = separate end-to-end RX through TCP/IP →
   ESP-Hosted → SDIO → C6
 
-Keyfix one-shot (`easystick-m25-ssh-ledger-keyfix-20260816`) hung past
+Keyfix one-shot (`m25-ssh-ledger-keyfix-20260816`) hung past
 banner into auth and hit **WDT**, wiping `/dev/kmsg`. Passive passive serial
 raw had **no live `ES_SSH` lines before reset** (only the post-reboot
 `dmesg | grep ES_SSH` command). Therefore the test-only sink is **dual**:
@@ -36,7 +36,7 @@ Never written to stdout/stderr (inetd binds the SSH socket to stdio).
 Both `/dev/kmsg` and `/dev/ttyGS1` are opened once at Dropbear start
 (`O_WRONLY|O_CLOEXEC|O_NONBLOCK`); markers are fixed `write()`s with errno
 save/restore. No flash/MTD/PSRAM/RTC persistence. Implementation is
-`easystick-ssh-ledger.c` + `Makefile.in` object (not a multi-included static
+`ssh-ledger.c` + `Makefile.in` object (not a multi-included static
 header).
 
 ### Pre-auth / session (unchanged set)

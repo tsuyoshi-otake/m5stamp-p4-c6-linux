@@ -1,7 +1,7 @@
-Subject: [PATCH] easystick: esp32p4 clear MEXSTATUS.EXPT_VLD at exception entry (#5)
+Subject: [PATCH] stamp-p4: esp32p4 clear MEXSTATUS.EXPT_VLD at exception entry (#5)
 
 Fix for a core lockup on a user fault, applied to every build
-(EASYSTICK_C68_EXPT_CLEAR=0 leaves it out).  Like the 0079 latch it is
+(C68_EXPT_CLEAR=0 leaves it out).  Like the 0079 latch it is
 not SMP-only: on one CPU the MWDT resets the chip a minute or two after
 the lockup.  With two CPUs a lockup of CPU1 did not always reset it:
 twice CPU0 reported an RCU stall on CPU1 and the chip reset about 80 s

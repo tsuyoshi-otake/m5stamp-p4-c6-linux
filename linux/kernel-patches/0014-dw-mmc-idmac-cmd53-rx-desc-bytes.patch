@@ -21,12 +21,12 @@ index 47acf92..2e39c99 100644
 + * store handler only when a write bit is set in perm, so this stays
 + * settable on the kernel command line but can never become
 + * runtime-writable, while still publishing the value the kernel actually
-+ * parsed at /sys/module/dw_mmc/parameters/easystick_cmd53_rx_desc_bytes.
++ * parsed at /sys/module/dw_mmc/parameters/cmd53_rx_desc_bytes.
 + */
-+static unsigned int easystick_cmd53_rx_desc_bytes;
-+module_param_named(easystick_cmd53_rx_desc_bytes,
-+		   easystick_cmd53_rx_desc_bytes, uint, 0444);
-+MODULE_PARM_DESC(easystick_cmd53_rx_desc_bytes,
++static unsigned int cmd53_rx_desc_bytes;
++module_param_named(cmd53_rx_desc_bytes,
++		   cmd53_rx_desc_bytes, uint, 0444);
++MODULE_PARM_DESC(cmd53_rx_desc_bytes,
 +		 "Diagnostic-only IDMAC descriptor chunk size in bytes for CMD53 SDIO reads (0 = disabled, default chunking)");
 +
 +/*
@@ -131,8 +131,8 @@ index 47acf92..2e39c99 100644
 +	 * Read once: pass 1's poll, the pre-count below and pass 2's fill
 +	 * must all chunk the same way.
 +	 */
-+	unsigned int cap = (record && easystick_cmd53_rx_desc_bytes) ?
-+			    easystick_cmd53_rx_desc_bytes :
++	unsigned int cap = (record && cmd53_rx_desc_bytes) ?
++			    cmd53_rx_desc_bytes :
 +			    DW_MCI_DESC_DATA_LENGTH;
 +	unsigned int desc_len, required, mask_n = 0;
  	struct idmac_desc_64addr *desc_first, *desc_last, *desc;
@@ -258,8 +258,8 @@ index 47acf92..2e39c99 100644
 +	 * CMD53-RX trace record) is the eligibility predicate, and why cap is
 +	 * snapshotted once here rather than re-read per descriptor.
 +	 */
-+	unsigned int cap = (record && easystick_cmd53_rx_desc_bytes) ?
-+			    easystick_cmd53_rx_desc_bytes :
++	unsigned int cap = (record && cmd53_rx_desc_bytes) ?
++			    cmd53_rx_desc_bytes :
 +			    DW_MCI_DESC_DATA_LENGTH;
 +	unsigned int desc_len, required, mask_n = 0;
  	struct idmac_desc *desc_first, *desc_last, *desc;
@@ -370,19 +370,19 @@ index 47acf92..2e39c99 100644
  	host->dma_ops = host->pdata->dma_ops;
  	dw_mci_init_dma(host);
  
-+	if (easystick_cmd53_rx_desc_bytes &&
-+	    (easystick_cmd53_rx_desc_bytes < 4 ||
-+	     easystick_cmd53_rx_desc_bytes > DW_MCI_DESC_DATA_LENGTH ||
-+	     easystick_cmd53_rx_desc_bytes % 4)) {
++	if (cmd53_rx_desc_bytes &&
++	    (cmd53_rx_desc_bytes < 4 ||
++	     cmd53_rx_desc_bytes > DW_MCI_DESC_DATA_LENGTH ||
++	     cmd53_rx_desc_bytes % 4)) {
 +		dev_warn(host->dev,
-+			 "easystick_cmd53_rx_desc_bytes=%u out of range [4..%u] step 4, disabling\n",
-+			 easystick_cmd53_rx_desc_bytes,
++			 "cmd53_rx_desc_bytes=%u out of range [4..%u] step 4, disabling\n",
++			 cmd53_rx_desc_bytes,
 +			 DW_MCI_DESC_DATA_LENGTH);
-+		easystick_cmd53_rx_desc_bytes = 0;
-+	} else if (easystick_cmd53_rx_desc_bytes) {
++		cmd53_rx_desc_bytes = 0;
++	} else if (cmd53_rx_desc_bytes) {
 +		dev_info(host->dev,
-+			 "easystick_cmd53_rx_desc_bytes=%u: CMD53 RX descriptor chunk diagnostic active\n",
-+			 easystick_cmd53_rx_desc_bytes);
++			 "cmd53_rx_desc_bytes=%u: CMD53 RX descriptor chunk diagnostic active\n",
++			 cmd53_rx_desc_bytes);
 +	}
 +
  	/* Clear the interrupts for the host controller */

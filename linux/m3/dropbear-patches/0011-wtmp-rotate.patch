@@ -1,6 +1,6 @@
 Rotate /var/log/wtmp at 32 KiB
 
-On the EasyStick images /var/log is /tmp, a 2 MB ext2 ramdisk shared with
+On the Stamp-P4 images /var/log is /tmp, a 2 MB ext2 ramdisk shared with
 /home, and no logrotate runs.  Each SSH login with a terminal adds two
 384-byte records (login and logout), so wtmp would grow until the ramdisk
 is full.  Rotate it where it is written: once the next record would take
@@ -30,7 +30,7 @@ login).
   **/
  
  #ifdef USE_WTMPX
-+/* EasyStick: /var/log/wtmp is on the small /tmp ramdisk and nothing else
++/* Stamp-P4: /var/log/wtmp is on the small /tmp ramdisk and nothing else
 + * rotates it.  When the next record would take it past WTMPX_ROTATE_SIZE,
 + * copy it over wtmp.1 and empty it.  It is copied, not renamed: after
 + * authentication this process runs as the user and only switches its

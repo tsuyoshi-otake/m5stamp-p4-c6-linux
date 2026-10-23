@@ -1,4 +1,4 @@
-Subject: [PATCH] easystick: esp32p4 diagnostic for a CPU that stops taking interrupts (#5)
+Subject: [PATCH] stamp-p4: esp32p4 diagnostic for a CPU that stops taking interrupts (#5)
 
 Under maxcpus=2, CPU1 sometimes takes no tick and no IPI any more (RCU:
 "0 ticks this GP", "timer wakeup didn't happen ... on cpu=1").  Stamp
@@ -21,7 +21,7 @@ jiffies from each CPU's SYSTIMER interrupt.
   through the assist_debug PC recorder (0x3ff06000 + 0xc4/0xc8/0xcc),
   which CPU0 switches on from its first SMP tick.
 
-Opt-in with EASYSTICK_C68_DEAF_TRACE=1.  Observe-only apart from the one
+Opt-in with C68_DEAF_TRACE=1.  Observe-only apart from the one
 extra IPI.
 
 ---

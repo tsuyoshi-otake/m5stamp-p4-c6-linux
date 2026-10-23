@@ -1,10 +1,10 @@
-# C6 application patches (EasyStick)
+# C6 application patches (Stamp-P4)
 
 Patches here are applied to the **disposable** `network_adapter` copy created
 by `build-c6.sh` after `cp -a`. The locked `vendor/esp-hosted` submodule is
 never modified.
 
-## Active: `0001-easystick-h2c-tcp22-sig-observe.patch` (0023-A2)
+## Active: `0001-h2c-tcp22-sig-observe.patch` (0023-A2)
 
 - Intent: correlate P4 `ES_TX` TCP/22 payload packets with C6 H2C arrival and
   `esp_wifi_internal_tx()` OK using a shared 64-bit signature.
@@ -23,12 +23,12 @@ never modified.
 - Keep `NG-1.0.6.0.1` (`PROJECT_REVISION_PATCH_2 = 1`).
 - Identify the image by `network_adapter.bin` SHA-256 and this patch SHA-256.
 
-## Disabled: `disabled/0001-easystick-h2c-echo-reply-observe.patch` (0022)
+## Disabled: `disabled/0001-h2c-echo-reply-observe.patch` (0022)
 
 ICMP Echo-Reply mask observer (ABI v2 magic `0x0B22`). Superseded for the
 TCP/22 correlation shot; retained for history.
 
-## Disabled: `disabled/0001-easystick-disable-wifi-modem-sleep.patch` (0021)
+## Disabled: `disabled/0001-disable-wifi-modem-sleep.patch` (0021)
 
 `WIFI_PS_NONE` A/B was rejected: VALID_ASSOC + PS_NONE still showed ~22 s
 reply bursts. Kept for history; not applied while it sits under `disabled/`.

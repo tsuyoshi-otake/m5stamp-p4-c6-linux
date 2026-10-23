@@ -10,23 +10,23 @@ index 889ee8f..dc24d95 100644
  
 -int esp_write_block(struct esp_sdio_context *context, u32 reg, u8 *data, u16 size, u8 is_lock_needed)
 +
-+/* EasyStick 0053: post-mmc_request_done retention crumbs (no printk). */
-+#define EASYSTICK_CMD53_BB_PA		0xBBDEAD01u
-+#define EASYSTICK_CMD53_BB_MAGIC	0x45534242u
-+#define EASYSTICK_CMD53_BB_VERSION	6u
-+#define EASYSTICK_CMD53_BB_COMMIT_XOR	0xC0FFEE01u
-+#define EASYSTICK_CMD53_BB_ARM_FREE	0u
-+#define EASYSTICK_CMD53_BB_ARMING	1u
-+#define EASYSTICK_CMD53_BB_ARMED	2u
-+#define EASYSTICK_CRASH_CAPSULE_MAGIC	0x45534350u
-+#define EASYSTICK_CRASH_CAPSULE_VERSION	1u
-+#define EASYSTICK_CRASH_CAPSULE_COMMIT_XOR	0xC3A5C0DEu
-+#define EASYSTICK_CRASH_CAPSULE_REASON_WDT	1u
-+#define EASYSTICK_CRASH_CAPSULE_REASON_OOPS	2u
-+#define EASYSTICK_CRASH_CAPSULE_REASON_PANIC	3u
-+#define EASYSTICK_CRASH_CAPSULE_STACK_BYTES	32u
++/* Stamp-P4 0053: post-mmc_request_done retention crumbs (no printk). */
++#define CMD53_BB_PA		0xBBDEAD01u
++#define CMD53_BB_MAGIC	0x45534242u
++#define CMD53_BB_VERSION	6u
++#define CMD53_BB_COMMIT_XOR	0xC0FFEE01u
++#define CMD53_BB_ARM_FREE	0u
++#define CMD53_BB_ARMING	1u
++#define CMD53_BB_ARMED	2u
++#define CRASH_CAPSULE_MAGIC	0x45534350u
++#define CRASH_CAPSULE_VERSION	1u
++#define CRASH_CAPSULE_COMMIT_XOR	0xC3A5C0DEu
++#define CRASH_CAPSULE_REASON_WDT	1u
++#define CRASH_CAPSULE_REASON_OOPS	2u
++#define CRASH_CAPSULE_REASON_PANIC	3u
++#define CRASH_CAPSULE_STACK_BYTES	32u
 +
-+struct easystick_crash_capsule {
++struct crash_capsule {
 +	u32 magic;
 +	u32 version;
 +	u32 sequence;
@@ -46,10 +46,10 @@ index 889ee8f..dc24d95 100644
 +	u32 wdt_config2;
 +	u32 wdt_int_raw;
 +	u32 stack_len;
-+	u8 stack[EASYSTICK_CRASH_CAPSULE_STACK_BYTES];
++	u8 stack[CRASH_CAPSULE_STACK_BYTES];
 +};
 +
-+struct easystick_cmd53_bb {
++struct cmd53_bb {
 +	u32 magic;
 +	u32 version;
 +	u32 generation;
@@ -82,13 +82,13 @@ index 889ee8f..dc24d95 100644
 +	s32 data_error;
 +	u32 bytes_xfered;
 +	u32 reset_reason_hint;
-+	struct easystick_crash_capsule crash;
++	struct crash_capsule crash;
 +	s32 bb4_ret;
 +	s32 bb5_ret;
 +	s32 bb6_ret;
 +	/*
 +	 * v6 boundary stages.  Keep these after crash so the capsule remains
-+	 * at EASYSTICK_CMD53_BB_PA + 0x80 for the independent WDT patch.
++	 * at CMD53_BB_PA + 0x80 for the independent WDT patch.
 +	 */
 +	u32 stage_idmac_complete_enter;
 +	u32 stage_idmac_complete_exit;
@@ -98,7 +98,7 @@ index 889ee8f..dc24d95 100644
 +	u32 stage_irq_exit;
 +	/*
 +	 * v6 request-end split stages.  Keep these after crash so the capsule
-+	 * remains at EASYSTICK_CMD53_BB_PA + 0x80.
++	 * remains at CMD53_BB_PA + 0x80.
 +	 */
 +	u32 stage_request_end_enter;
 +	u32 stage_request_end_before_next;
@@ -106,60 +106,60 @@ index 889ee8f..dc24d95 100644
 +	u32 stage_request_end_idle;
 +};
 +
-+static inline volatile struct easystick_cmd53_bb *easystick_cmd53_bb_ptr(void)
++static inline volatile struct cmd53_bb *cmd53_bb_ptr(void)
  {
 -	if (size <= 1) {
 -		return esp_write_byte(context, reg, *data, is_lock_needed);
 -	} else {
 -		return esp_write_multi_byte(context, reg, data, size, is_lock_needed);
-+	return (volatile struct easystick_cmd53_bb *)(uintptr_t)EASYSTICK_CMD53_BB_PA;
++	return (volatile struct cmd53_bb *)(uintptr_t)CMD53_BB_PA;
 +}
 +
-+static void easystick_cmd53_bb_seal(volatile struct easystick_cmd53_bb *bb,
++static void cmd53_bb_seal(volatile struct cmd53_bb *bb,
 +				   u32 gen, u32 seq)
 +{
 +	wmb();
-+	WRITE_ONCE(bb->commit, gen ^ seq ^ EASYSTICK_CMD53_BB_COMMIT_XOR);
++	WRITE_ONCE(bb->commit, gen ^ seq ^ CMD53_BB_COMMIT_XOR);
 +}
 +
-+static void easystick_cmd53_bb_invalidate(volatile struct easystick_cmd53_bb *bb)
++static void cmd53_bb_invalidate(volatile struct cmd53_bb *bb)
 +{
 +	WRITE_ONCE(bb->commit, 0);
 +	wmb();
 +}
 +
-+static bool easystick_cmd53_bb_post_open(void)
++static bool cmd53_bb_post_open(void)
 +{
-+	volatile struct easystick_cmd53_bb *bb = easystick_cmd53_bb_ptr();
++	volatile struct cmd53_bb *bb = cmd53_bb_ptr();
 +	u32 gen = READ_ONCE(bb->generation);
 +
-+	return READ_ONCE(bb->magic) == EASYSTICK_CMD53_BB_MAGIC &&
-+	       READ_ONCE(bb->version) == EASYSTICK_CMD53_BB_VERSION &&
-+	       READ_ONCE(bb->arm_state) == EASYSTICK_CMD53_BB_ARMED &&
++	return READ_ONCE(bb->magic) == CMD53_BB_MAGIC &&
++	       READ_ONCE(bb->version) == CMD53_BB_VERSION &&
++	       READ_ONCE(bb->arm_state) == CMD53_BB_ARMED &&
 +	       gen != 0 &&
 +	       READ_ONCE(bb->stage_request) == gen &&
 +	       READ_ONCE(bb->stage_end) == gen &&
 +	       READ_ONCE(bb->stage_bb6) != gen;
 +}
 +
-+static bool easystick_cmd53_bb_post_open_gen(u32 gen)
++static bool cmd53_bb_post_open_gen(u32 gen)
 +{
-+	volatile struct easystick_cmd53_bb *bb = easystick_cmd53_bb_ptr();
++	volatile struct cmd53_bb *bb = cmd53_bb_ptr();
 +
 +	return gen != 0u &&
-+	       READ_ONCE(bb->arm_state) == EASYSTICK_CMD53_BB_ARMED &&
++	       READ_ONCE(bb->arm_state) == CMD53_BB_ARMED &&
 +	       READ_ONCE(bb->generation) == gen &&
 +	       READ_ONCE(bb->stage_request) == gen &&
 +	       READ_ONCE(bb->stage_end) == gen &&
 +	       READ_ONCE(bb->stage_bb6) != gen;
 +}
 +
-+static void easystick_cmd53_bb_post_stage(u32 gen,
++static void cmd53_bb_post_stage(u32 gen,
 +					  volatile u32 *stage_word,
 +					  volatile s32 *ret_word,
 +					  s32 ret)
 +{
-+	if (!easystick_cmd53_bb_post_open_gen(gen))
++	if (!cmd53_bb_post_open_gen(gen))
 +		return;
 +	if (ret_word)
 +		WRITE_ONCE(*ret_word, ret);
@@ -168,20 +168,20 @@ index 889ee8f..dc24d95 100644
 +	WRITE_ONCE(*stage_word, gen);
 +}
 +
-+static void easystick_cmd53_bb_mark_bb6(int ret)
++static void cmd53_bb_mark_bb6(int ret)
 +{
-+	volatile struct easystick_cmd53_bb *bb = easystick_cmd53_bb_ptr();
++	volatile struct cmd53_bb *bb = cmd53_bb_ptr();
 +	u32 gen;
 +
-+	if (!easystick_cmd53_bb_post_open())
++	if (!cmd53_bb_post_open())
 +		return;
 +	gen = READ_ONCE(bb->generation);
 +	if (READ_ONCE(bb->stage_bb5) != gen)
 +		return;
-+	easystick_cmd53_bb_post_stage(gen, &bb->stage_bb6, &bb->bb6_ret, ret);
++	cmd53_bb_post_stage(gen, &bb->stage_bb6, &bb->bb6_ret, ret);
 +	if (READ_ONCE(bb->stage_bb6) == gen) {
 +		wmb();
-+		WRITE_ONCE(bb->arm_state, EASYSTICK_CMD53_BB_ARM_FREE);
++		WRITE_ONCE(bb->arm_state, CMD53_BB_ARM_FREE);
  	}
 @@ -149 +312,14 @@ int esp_write_block(struct esp_sdio_context *context, u32 reg, u8 *data, u16 siz
  
@@ -194,7 +194,7 @@ index 889ee8f..dc24d95 100644
 +		ret = esp_write_byte(context, reg, *data, is_lock_needed);
 +	else
 +		ret = esp_write_multi_byte(context, reg, data, size, is_lock_needed);
-+	easystick_cmd53_bb_mark_bb6(ret);
++	cmd53_bb_mark_bb6(ret);
 +	return ret;
 +}
 +

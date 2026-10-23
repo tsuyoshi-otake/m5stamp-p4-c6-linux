@@ -49,7 +49,7 @@ def run_diff(old: Path, new: Path, rel: str) -> str:
 
 def apply_dw_mmc(src: Path, dst: Path) -> None:
     text = src.read_text(encoding="utf-8")
-    if "easystick_cmd53_bb_begin" in text:
+    if "cmd53_bb_begin" in text:
         raise SystemExit("dw_mmc.c already has BB hooks — use clean vendor")
 
     anchor = "static void __dw_mci_start_request(struct dw_mci *host,\n"
@@ -58,7 +58,7 @@ def apply_dw_mmc(src: Path, dst: Path) -> None:
     text = text.replace(anchor, KERN_HELPER + "\n" + anchor, 1)
 
     old = "\thost->dir_status = 0;\n\n\tdata = cmd->data;\n"
-    new = "\thost->dir_status = 0;\n\teasystick_cmd53_bb_begin(cmd);\n\n\tdata = cmd->data;\n"
+    new = "\thost->dir_status = 0;\n\tcmd53_bb_begin(cmd);\n\n\tdata = cmd->data;\n"
     if old not in text:
         raise SystemExit("dir_status anchor missing")
     text = text.replace(old, new, 1)
@@ -69,7 +69,7 @@ def apply_dw_mmc(src: Path, dst: Path) -> None:
             "\t\t\tsmp_wmb(); /* drain writebuffer */\n"
             "\t\t\tset_bit(EVENT_CMD_COMPLETE, &host->pending_events);\n",
             "\t\t\thost->cmd_status = pending;\n"
-            "\t\t\teasystick_cmd53_bb_mark_cmd_err(host->cmd, pending, pending);\n"
+            "\t\t\tcmd53_bb_mark_cmd_err(host->cmd, pending, pending);\n"
             "\t\t\tsmp_wmb(); /* drain writebuffer */\n"
             "\t\t\tset_bit(EVENT_CMD_COMPLETE, &host->pending_events);\n",
         ),
@@ -80,7 +80,7 @@ def apply_dw_mmc(src: Path, dst: Path) -> None:
             "\t\t\tset_bit(EVENT_DATA_ERROR, &host->pending_events);\n",
             "\t\t\tmci_writel(host, RINTSTS, DW_MCI_DATA_ERROR_FLAGS);\n"
             "\t\t\thost->data_status = pending;\n"
-            "\t\t\teasystick_cmd53_bb_mark_data_err(pending, pending);\n"
+            "\t\t\tcmd53_bb_mark_data_err(pending, pending);\n"
             "\t\t\tsmp_wmb(); /* drain writebuffer */\n"
             "\t\t\tset_bit(EVENT_DATA_ERROR, &host->pending_events);\n",
         ),
@@ -90,7 +90,7 @@ def apply_dw_mmc(src: Path, dst: Path) -> None:
             "\n"
             "\tdw_mci_start_fault_timer(host);\n",
             "\tset_bit(EVENT_CMD_COMPLETE, &host->pending_events);\n"
-            "\teasystick_cmd53_bb_mark_cmd_done(host->cmd);\n"
+            "\tcmd53_bb_mark_cmd_done(host->cmd);\n"
             "\tqueue_work(system_bh_wq, &host->bh_work);\n"
             "\n"
             "\tdw_mci_start_fault_timer(host);\n",
@@ -100,7 +100,7 @@ def apply_dw_mmc(src: Path, dst: Path) -> None:
             "\t\t\t\thost->data_status = pending;\n",
             "\t\t\tif (!host->data_status)\n"
             "\t\t\t\thost->data_status = pending;\n"
-            "\t\t\teasystick_cmd53_bb_mark_data_over(pending);\n",
+            "\t\t\tcmd53_bb_mark_data_over(pending);\n",
         ),
         (
             "\t\thost->cmd_status = SDMMC_INT_RTO;\n"
@@ -108,7 +108,7 @@ def apply_dw_mmc(src: Path, dst: Path) -> None:
             "\t\tqueue_work(system_bh_wq, &host->bh_work);\n"
             "\t\tbreak;\n",
             "\t\thost->cmd_status = SDMMC_INT_RTO;\n"
-            "\t\teasystick_cmd53_bb_mark_cto(host->cmd);\n"
+            "\t\tcmd53_bb_mark_cto(host->cmd);\n"
             "\t\tset_bit(EVENT_CMD_COMPLETE, &host->pending_events);\n"
             "\t\tqueue_work(system_bh_wq, &host->bh_work);\n"
             "\t\tbreak;\n",
@@ -127,12 +127,12 @@ def apply_dw_mmc(src: Path, dst: Path) -> None:
         (
             "\t\t\tmci_writel(host, IDSTS64, SDMMC_IDMAC_INT_NI);\n",
             "\t\t\tmci_writel(host, IDSTS64, SDMMC_IDMAC_INT_NI);\n"
-            "\t\t\teasystick_cmd53_bb_mark_idmac(pending);\n",
+            "\t\t\tcmd53_bb_mark_idmac(pending);\n",
         ),
         (
             "\t\t\tmci_writel(host, IDSTS, SDMMC_IDMAC_INT_NI);\n",
             "\t\t\tmci_writel(host, IDSTS, SDMMC_IDMAC_INT_NI);\n"
-            "\t\t\teasystick_cmd53_bb_mark_idmac(pending);\n",
+            "\t\t\tcmd53_bb_mark_idmac(pending);\n",
         ),
     ]
     for old_idmac, new_idmac in idmac_clear_anchors:
@@ -150,12 +150,12 @@ def apply_dw_mmc(src: Path, dst: Path) -> None:
     )
     new_dma_complete = (
         "\t\t\tif (!test_bit(EVENT_DATA_ERROR, &host->pending_events)) {\n"
-        "\t\t\t\teasystick_cmd53_bb_mark_host_stage(\n"
-        "\t\t\t\t\thost, &easystick_cmd53_bb_ptr()->"
+        "\t\t\t\tcmd53_bb_mark_host_stage(\n"
+        "\t\t\t\t\thost, &cmd53_bb_ptr()->"
         "stage_idmac_complete_enter);\n"
         "\t\t\t\thost->dma_ops->complete((void *)host);\n"
-        "\t\t\t\teasystick_cmd53_bb_mark_host_stage(\n"
-        "\t\t\t\t\thost, &easystick_cmd53_bb_ptr()->"
+        "\t\t\t\tcmd53_bb_mark_host_stage(\n"
+        "\t\t\t\t\thost, &cmd53_bb_ptr()->"
         "stage_idmac_complete_exit);\n"
         "\t\t\t}\n"
     )
@@ -172,8 +172,8 @@ def apply_dw_mmc(src: Path, dst: Path) -> None:
     old_bh = "\tstruct dw_mci *host = from_work(host, t, bh_work);\n"
     new_bh = (
         old_bh
-        + "\teasystick_cmd53_bb_mark_host_stage(\n"
-        "\t\thost, &easystick_cmd53_bb_ptr()->stage_bh_enter);\n"
+        + "\tcmd53_bb_mark_host_stage(\n"
+        "\t\thost, &cmd53_bb_ptr()->stage_bh_enter);\n"
     )
     if text.count(old_bh) != 1:
         raise SystemExit("bottom-half entry anchor count is not 1")
@@ -181,12 +181,12 @@ def apply_dw_mmc(src: Path, dst: Path) -> None:
 
     old_data_complete = "\t\t\terr = dw_mci_data_complete(host, data);\n"
     new_data_complete = (
-        "\t\t\teasystick_cmd53_bb_mark_host_stage(\n"
-        "\t\t\t\thost, &easystick_cmd53_bb_ptr()->"
+        "\t\t\tcmd53_bb_mark_host_stage(\n"
+        "\t\t\t\thost, &cmd53_bb_ptr()->"
         "stage_data_complete_enter);\n"
         "\t\t\terr = dw_mci_data_complete(host, data);\n"
-        "\t\t\teasystick_cmd53_bb_mark_host_stage(\n"
-        "\t\t\t\thost, &easystick_cmd53_bb_ptr()->"
+        "\t\t\tcmd53_bb_mark_host_stage(\n"
+        "\t\t\t\thost, &cmd53_bb_ptr()->"
         "stage_data_complete_exit);\n"
     )
     if text.count(old_data_complete) != 1:
@@ -201,8 +201,8 @@ def apply_dw_mmc(src: Path, dst: Path) -> None:
     irq_sub = text[irq_idx:]
     old_irq_return = "\treturn IRQ_HANDLED;\n}\n"
     new_irq_return = (
-        "\teasystick_cmd53_bb_mark_host_stage(\n"
-        "\t\thost, &easystick_cmd53_bb_ptr()->stage_irq_exit);\n"
+        "\tcmd53_bb_mark_host_stage(\n"
+        "\t\thost, &cmd53_bb_ptr()->stage_irq_exit);\n"
         "\treturn IRQ_HANDLED;\n"
         "}\n"
     )
@@ -216,7 +216,7 @@ def apply_dw_mmc(src: Path, dst: Path) -> None:
     # that remains adjacent after that earlier diagnostic insertion.
     dto_queue = "\t\tqueue_work(system_bh_wq, &host->bh_work);\n"
     dto_marked_queue = (
-        "\t\teasystick_cmd53_bb_mark_dto();\n"
+        "\t\tcmd53_bb_mark_dto();\n"
         + dto_queue
     )
     dto_idx = text.find("static void dw_mci_dto_timer(")
@@ -233,12 +233,12 @@ def apply_dw_mmc(src: Path, dst: Path) -> None:
         "\tspin_lock(&host->lock);\n"
     )
     new_end = (
-        "\tbb_gen = easystick_cmd53_bb_mark_end_and_get_gen(mrq);\n"
+        "\tbb_gen = cmd53_bb_mark_end_and_get_gen(mrq);\n"
         "\tspin_unlock(&host->lock);\n"
         "\tmmc_request_done(prev_mmc, mrq);\n"
-        "\teasystick_cmd53_bb_mark_bb2_gen(bb_gen);\n"
+        "\tcmd53_bb_mark_bb2_gen(bb_gen);\n"
         "\tspin_lock(&host->lock);\n"
-        "\teasystick_cmd53_bb_mark_bb3_gen(bb_gen,\n"
+        "\tcmd53_bb_mark_bb3_gen(bb_gen,\n"
         "\t\t\t\t\t(u32)host->state,\n"
         "\t\t\t\t\t(u32)host->pending_events);\n"
     )
@@ -252,8 +252,8 @@ def apply_dw_mmc(src: Path, dst: Path) -> None:
     new_decl = (
         old_decl
         + "\tu32 bb_gen;\n"
-        + "\teasystick_cmd53_bb_mark_request_end_stage(\n"
-        + "\t\tmrq, &easystick_cmd53_bb_ptr()->stage_request_end_enter);\n"
+        + "\tcmd53_bb_mark_request_end_stage(\n"
+        + "\t\tmrq, &cmd53_bb_ptr()->stage_request_end_enter);\n"
     )
     if old_decl not in sub:
         raise SystemExit("request_end declaration anchor missing")
@@ -265,12 +265,12 @@ def apply_dw_mmc(src: Path, dst: Path) -> None:
     )
     new_next = (
         "\t\thost->state = STATE_SENDING_CMD;\n"
-        "\t\teasystick_cmd53_bb_mark_request_end_stage(\n"
-        "\t\t\tmrq, &easystick_cmd53_bb_ptr()->"
+        "\t\tcmd53_bb_mark_request_end_stage(\n"
+        "\t\t\tmrq, &cmd53_bb_ptr()->"
         "stage_request_end_before_next);\n"
         "\t\tdw_mci_start_request(host, slot);\n"
-        "\t\teasystick_cmd53_bb_mark_request_end_stage(\n"
-        "\t\t\tmrq, &easystick_cmd53_bb_ptr()->"
+        "\t\tcmd53_bb_mark_request_end_stage(\n"
+        "\t\t\tmrq, &cmd53_bb_ptr()->"
         "stage_request_end_after_next);\n"
     )
     if sub.count(old_next) != 1:
@@ -285,8 +285,8 @@ def apply_dw_mmc(src: Path, dst: Path) -> None:
     )
     new_idle = (
         old_idle
-        + "\t\teasystick_cmd53_bb_mark_request_end_stage(\n"
-        + "\t\t\tmrq, &easystick_cmd53_bb_ptr()->stage_request_end_idle);\n"
+        + "\t\tcmd53_bb_mark_request_end_stage(\n"
+        + "\t\t\tmrq, &cmd53_bb_ptr()->stage_request_end_idle);\n"
     )
     if sub.count(old_idle) != 1:
         raise SystemExit("request_end idle anchor count is not 1")
@@ -297,7 +297,7 @@ def apply_dw_mmc(src: Path, dst: Path) -> None:
         raise SystemExit("request_end unlock/done anchor count is not 1")
     replacement = new_end + "\n}"
     sub = sub.replace(old_end_with_brace, replacement, 1)
-    if "bb_gen = easystick_cmd53_bb_mark_end_and_get_gen(mrq);" not in sub:
+    if "bb_gen = cmd53_bb_mark_end_and_get_gen(mrq);" not in sub:
         raise SystemExit("request_end BB1 seal was not injected")
     text = text[:idx] + sub
 
@@ -307,7 +307,7 @@ def apply_dw_mmc(src: Path, dst: Path) -> None:
 
 def apply_core(src: Path, dst: Path) -> None:
     text = src.read_text(encoding="utf-8")
-    if "easystick_cmd53_bb_mark_bb4" in text:
+    if "cmd53_bb_mark_bb4" in text:
         raise SystemExit("core.c already patched")
     # Insert helpers before mmc_wait_for_req
     anchor = "void mmc_wait_for_req(struct mmc_host *host, struct mmc_request *mrq)\n"
@@ -330,7 +330,7 @@ def apply_core(src: Path, dst: Path) -> None:
         "\n"
         "\tif (!mrq->cap_cmd_during_tfr)\n"
         "\t\tmmc_wait_for_req_done(host, mrq);\n"
-        "\teasystick_cmd53_bb_mark_bb4(mrq);\n"
+        "\tcmd53_bb_mark_bb4(mrq);\n"
         "}\n"
     )
     if old not in text:
@@ -342,7 +342,7 @@ def apply_core(src: Path, dst: Path) -> None:
 
 def apply_sdio_io(src: Path, dst: Path) -> None:
     text = src.read_text(encoding="utf-8")
-    if "easystick_cmd53_bb_mark_bb5" in text:
+    if "cmd53_bb_mark_bb5" in text:
         raise SystemExit("sdio_io.c already patched")
     # Need barrier/WRITE_ONCE — sdio_io already includes mmc headers.
     # Insert a trimmed helper: reuse POST_ONLY but only bb5 call site needs
@@ -367,7 +367,7 @@ def apply_sdio_io(src: Path, dst: Path) -> None:
         "\tvoid *src, int count)\n"
         "{\n"
         "\tint ret = sdio_io_rw_ext_helper(func, 1, addr, 1, src, count);\n"
-        "\teasystick_cmd53_bb_mark_bb5(ret);\n"
+        "\tcmd53_bb_mark_bb5(ret);\n"
         "\treturn ret;\n"
         "}\n"
     )
@@ -380,7 +380,7 @@ def apply_sdio_io(src: Path, dst: Path) -> None:
 
 def apply_esp(src: Path, dst: Path) -> None:
     text = src.read_text(encoding="utf-8")
-    if "easystick_cmd53_bb_mark_bb6" in text:
+    if "cmd53_bb_mark_bb6" in text:
         raise SystemExit("esp_sdio_api.c already patched")
     # Insert after includes block — find first function
     # Use POST_ONLY_HELPER but strip mmc_request-dependent mark_bb4 if it
@@ -388,15 +388,15 @@ def apply_esp(src: Path, dst: Path) -> None:
     # Provide bb6-only helper.
     helper = POST_ONLY_HELPER
     # Remove mark_bb4 (needs struct mmc_request) to avoid incomplete type.
-    start = helper.find("static void easystick_cmd53_bb_mark_bb4")
-    end = helper.find("static void easystick_cmd53_bb_mark_bb5")
+    start = helper.find("static void cmd53_bb_mark_bb4")
+    end = helper.find("static void cmd53_bb_mark_bb5")
     if start < 0 or end < 0:
         raise SystemExit("POST_ONLY_HELPER shape unexpected")
     helper = helper[:start] + helper[end:]
 
     # Drop mark_bb5 too — only bb6 needed here.
-    start = helper.find("static void easystick_cmd53_bb_mark_bb5")
-    end = helper.find("static void easystick_cmd53_bb_mark_bb6")
+    start = helper.find("static void cmd53_bb_mark_bb5")
+    end = helper.find("static void cmd53_bb_mark_bb6")
     helper = helper[:start] + helper[end:]
 
     old = (
@@ -418,7 +418,7 @@ def apply_esp(src: Path, dst: Path) -> None:
         "\t\tret = esp_write_byte(context, reg, *data, is_lock_needed);\n"
         "\telse\n"
         "\t\tret = esp_write_multi_byte(context, reg, data, size, is_lock_needed);\n"
-        "\teasystick_cmd53_bb_mark_bb6(ret);\n"
+        "\tcmd53_bb_mark_bb6(ret);\n"
         "\treturn ret;\n"
         "}\n"
     )
@@ -454,7 +454,7 @@ def main() -> int:
         apply_esp(esp, t / "esp_sdio_api.c")
 
         p52 = (
-            "Subject: [PATCH] mmc: dw_mmc: EasyStick CMD53 retention BB (0052/0053 BB1-3)\n"
+            "Subject: [PATCH] mmc: dw_mmc: Stamp-P4 CMD53 retention BB (0052/0053 BB1-3)\n"
             "\n"
             "v6: FOCUS_ARG arm; BB1=end; BB2 post mmc_request_done; BB3 request_end; "
             "DMA/IRQ/bottom-half/request-end boundaries.\n"
@@ -463,7 +463,7 @@ def main() -> int:
             + run_diff(dw, t / "dw_mmc.c", "drivers/mmc/host/dw_mmc.c")
         )
         p53 = (
-            "Subject: [PATCH] mmc: EasyStick CMD53 retention BB post-done (0053 BB4-5)\n"
+            "Subject: [PATCH] mmc: Stamp-P4 CMD53 retention BB post-done (0053 BB4-5)\n"
             "\n"
             "BB4 after mmc_wait_for_req; BB5 after sdio_memcpy_toio. No printk.\n"
             "Placeholder PA 0xBBDEAD01u substituted by build-cmd53-bb.sh.\n"
@@ -481,13 +481,13 @@ def main() -> int:
 
         PATCH_DIR.mkdir(parents=True, exist_ok=True)
         ESP_PATCH_DIR.mkdir(parents=True, exist_ok=True)
-        (PATCH_DIR / "0052-easystick-dw-mmc-cmd53-retention-bb.patch").write_text(
+        (PATCH_DIR / "0052-dw-mmc-cmd53-retention-bb.patch").write_text(
             p52, encoding="utf-8", newline="\n"
         )
-        (PATCH_DIR / "0053-easystick-mmc-cmd53-post-bb.patch").write_text(
+        (PATCH_DIR / "0053-mmc-cmd53-post-bb.patch").write_text(
             p53, encoding="utf-8", newline="\n"
         )
-        (ESP_PATCH_DIR / "0026-easystick-cmd53-retention-bb6.patch").write_text(
+        (ESP_PATCH_DIR / "0026-cmd53-retention-bb6.patch").write_text(
             p26, encoding="utf-8", newline="\n"
         )
         print("wrote 0052, 0053, esp-hosted 0026")

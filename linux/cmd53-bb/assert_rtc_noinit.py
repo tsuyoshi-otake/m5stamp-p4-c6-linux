@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail-closed layout checks for easystick_cmd53_bb in boot-shim ELF/map.
+"""Fail-closed layout checks for cmd53_bb in boot-shim ELF/map.
 
 Expects nm -S output (addr size type name) so the real symbol size is used
 instead of a hand-picked BB_SIZE ceiling.
@@ -77,7 +77,7 @@ def main() -> int:
     nm_text = nm_path.read_text(encoding="utf-8", errors="replace")
     window = None
     try:
-        window, window_size = parse_nm_symbol(nm_text, "easystick_rtc_c")
+        window, window_size = parse_nm_symbol(nm_text, "rtc_c")
     except SystemExit:
         window = None
         window_size = 0
@@ -107,7 +107,7 @@ def main() -> int:
             )
         print(f"BEAT_NM pa=0x{beat:08x} size=0x{beat_size:x} ({beat_size})")
     else:
-        bb, bb_size = parse_nm_symbol(nm_text, "easystick_cmd53_bb")
+        bb, bb_size = parse_nm_symbol(nm_text, "cmd53_bb")
         print(f"CMD53_BB_NM pa=0x{bb:08x} size=0x{bb_size:x} ({bb_size})")
 
         if bb_size != BB_SIZE_EXACT:
@@ -119,7 +119,7 @@ def main() -> int:
 
         marker = marker_size = None
         if require_cmd52_marker:
-            marker, marker_size = parse_nm_symbol(nm_text, "easystick_cmd52_marker")
+            marker, marker_size = parse_nm_symbol(nm_text, "cmd52_marker")
             print(
                 f"CMD52_MARKER_NM pa=0x{marker:08x} "
                 f"size=0x{marker_size:x} ({marker_size})"
@@ -145,7 +145,7 @@ def main() -> int:
                 )
                 return 1
 
-        beat, beat_size = parse_nm_symbol(nm_text, "easystick_beat")
+        beat, beat_size = parse_nm_symbol(nm_text, "beat")
         print(f"BEAT_NM pa=0x{beat:08x} size=0x{beat_size:x} ({beat_size})")
         if beat_size != BEAT_SIZE_EXACT:
             print(

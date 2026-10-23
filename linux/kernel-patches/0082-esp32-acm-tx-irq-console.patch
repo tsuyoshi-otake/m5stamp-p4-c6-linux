@@ -1,4 +1,4 @@
-Subject: [PATCH] easystick: esp32 ACM: send the rest of xmit from the IRQ, commit console output per write (#42)
+Subject: [PATCH] stamp-p4: esp32 ACM: send the rest of xmit from the IRQ, commit console output per write (#42)
 
 The USB Serial/JTAG ACM port (ttyGS1) showed two faults while #5 wrote
 80-line blocks to it and flooded /dev/kmsg at the same time:

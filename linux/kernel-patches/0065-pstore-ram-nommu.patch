@@ -1,7 +1,7 @@
-Subject: [PATCH] easystick: pstore/ram on NOMMU ESP32-P4
+Subject: [PATCH] stamp-p4: pstore/ram on NOMMU ESP32-P4
 
 ramoops in RAM that pfn_valid() accepts goes through vmap(), which is
-BUG() on NOMMU: EASYSTICK_PSTORE=1 images died at boot with
+BUG() on NOMMU: PSTORE=1 images died at boot with
 "kernel BUG at mm/nommu.c:311" (#26).  RAM is identity mapped here, so
 use phys_to_virt() and skip vunmap().
 

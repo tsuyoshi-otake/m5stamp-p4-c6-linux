@@ -1,4 +1,4 @@
-Subject: [PATCH] easystick: commit the /boot image to flash without a reboot
+Subject: [PATCH] stamp-p4: commit the /boot image to flash without a reboot
 
 An edit to the /boot USB drive lived only in PSRAM until the next
 software reboot, when the boot shim wrote it to the inactive A/B slot.
@@ -6,8 +6,8 @@ Unplugging the board before that dropped the edit, so bootsync rebooted
 after every change.
 
 Do the shim's update from Linux instead.  Writing 1 to
-/sys/kernel/easystick/boot_commit takes the request that
-easystick-boot-commit staged in PSRAM, programs the inactive slot, checks
+/sys/kernel/board/boot_commit takes the request that
+boot-commit staged in PSRAM, programs the inactive slot, checks
 its CRC, then writes the other bootmeta sector with commit_word last, in
 the format the shim validates on every boot.  The active slot and its
 metadata are never erased.  On failure the request stays and the shim
@@ -37,12 +37,12 @@ valid, and after every 8 ms of calls sleeps for as long as they took.
  	    - lan966x-switch (LAN966X_SWITCH)
  
 +config ESP32P4_BOOTFLASH
-+	bool "ESP32-P4 EasyStick: commit the /boot image without a reboot"
++	bool "ESP32-P4 Stamp-P4: commit the /boot image without a reboot"
 +	depends on SOC_ESP32P4 && !MMU
 +	select CRC32
 +	help
-+	  Adds /sys/kernel/easystick/boot_commit.  Writing 1 to it writes
-+	  the /boot image staged in PSRAM by easystick-boot-commit to the
++	  Adds /sys/kernel/board/boot_commit.  Writing 1 to it writes
++	  the /boot image staged in PSRAM by boot-commit to the
 +	  inactive flash slot and switches the A/B metadata, the same
 +	  update the boot shim otherwise applies at the next reboot.
 +	  Reading it shows the slot the shim will boot.
@@ -64,10 +64,10 @@ valid, and after every 8 ms of calls sleeps for as long as they took.
 +/*
 + * Commit the /boot image that Linux staged in PSRAM to flash at once.
 + *
-+ * easystick-boot-commit copies a validated 256 KiB FAT image to
++ * boot-commit copies a validated 256 KiB FAT image to
 + * BOOT_IMAGE_PA and publishes a request at BOOT_REQUEST_PA.  The boot shim
 + * applies that request at the next normal reboot.  Writing "1" to
-+ * /sys/kernel/easystick/boot_commit does the same A/B update now, so an
++ * /sys/kernel/board/boot_commit does the same A/B update now, so an
 + * edit is durable without a reboot:
 + *
 + *   1. erase and program the sectors of the inactive slot that differ from
@@ -389,7 +389,7 @@ valid, and after every 8 ms of calls sleeps for as long as they took.
 +		if (!r && crc != want)
 +			r = -EIO;
 +		if (r) {
-+			pr_err("easystick-bootflash: slot %u write failed (%d); left for the next reboot\n",
++			pr_err("bootflash: slot %u write failed (%d); left for the next reboot\n",
 +			       inactive, r);
 +			return r;
 +		}
@@ -407,17 +407,17 @@ valid, and after every 8 ms of calls sleeps for as long as they took.
 +		other = sel == 0 ? 1 : 0;
 +		r = write_meta(other, &next);
 +		if (r) {
-+			pr_err("easystick-bootflash: bootmeta%d write failed (%d); left for the next reboot\n",
++			pr_err("bootflash: bootmeta%d write failed (%d); left for the next reboot\n",
 +			       other, r);
 +			return r;
 +		}
-+		pr_info("easystick-bootflash: boot update committed: generation=%u slot=%u crc=%08x sectors=%d/%u rom=%llums total=%llums\n",
++		pr_info("bootflash: boot update committed: generation=%u slot=%u crc=%08x sectors=%d/%u rom=%llums total=%llums\n",
 +			next.generation, next.slot, want, written,
 +			BOOT_IMAGE_BYTES / FLASH_SECTOR,
 +			div_u64(flash_total_ns, NSEC_PER_MSEC),
 +			div_u64(ktime_get_ns() - start, NSEC_PER_MSEC));
 +	} else {
-+		pr_info("easystick-bootflash: boot image already active (crc=%08x)\n", want);
++		pr_info("bootflash: boot image already active (crc=%08x)\n", want);
 +	}
 +	/* Only commit_word changes, as the shim does after its own commit. */
 +	if (req->image_crc32 == want)
@@ -468,14 +468,14 @@ valid, and after every 8 ms of calls sleeps for as long as they took.
 +	chip = *ROM_LEGACY_DATA;
 +	if (chip->chip_size < WRITABLE_END || chip->sector_size != FLASH_SECTOR ||
 +	    chip->page_size != FLASH_PAGE) {
-+		pr_warn("easystick-bootflash: unexpected ROM flash record (size=%#x sector=%#x page=%#x); disabled\n",
++		pr_warn("bootflash: unexpected ROM flash record (size=%#x sector=%#x page=%#x); disabled\n",
 +			chip->chip_size, chip->sector_size, chip->page_size);
 +		return 0;
 +	}
 +	sector_buf = kmalloc(FLASH_SECTOR, GFP_KERNEL);
 +	if (!sector_buf)
 +		return -ENOMEM;
-+	kobj = kobject_create_and_add("easystick", kernel_kobj);
++	kobj = kobject_create_and_add("stamp-p4", kernel_kobj);
 +	if (!kobj)
 +		return -ENOMEM;
 +	r = sysfs_create_file(kobj, &boot_commit_attr.attr);
@@ -483,7 +483,7 @@ valid, and after every 8 ms of calls sleeps for as long as they took.
 +		kobject_put(kobj);
 +		return r;
 +	}
-+	pr_info("easystick-bootflash: flash id %06x, /boot commits without a reboot\n",
++	pr_info("bootflash: flash id %06x, /boot commits without a reboot\n",
 +		chip->device_id);
 +	return 0;
 +}

@@ -1,5 +1,5 @@
-From: EasyStick <noreply@easystick.local>
-Subject: [PATCH] easystick: 0022-observe H2C ICMP Echo-Reply counters
+From: Stamp-P4 <noreply@stamp-p4.local>
+Subject: [PATCH] stamp-p4: 0022-observe H2C ICMP Echo-Reply counters
 
 Observe-only. Keep NG-1.0.6.0.1. No WIFI_PS_NONE, no TX retry, no
 send_task notify. Echo-Reply frames only; publish 1 Hz via slave
@@ -24,7 +24,7 @@ index 5a54d37..8da8ea0 100644
  volatile uint8_t ota_ongoing = 0;
  volatile uint8_t power_save_on = 0;
 +
-+/* EasyStick 0022-observe: H2C ICMP Echo-Reply path only. No PS_NONE, no
++/* Stamp-P4 0022-observe: H2C ICMP Echo-Reply path only. No PS_NONE, no
 + * TX retry, no send_task notify. Identity stays NG-1.0.6.0.1.
 + *
 + * Hot path: silent RAM counters. Publish: 1 Hz, 32 bytes at slave shared
