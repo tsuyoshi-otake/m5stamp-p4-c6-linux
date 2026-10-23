@@ -1,13 +1,21 @@
 #!/usr/bin/env python3
-"""#55 rename guard: 'easystick' may only survive in
+"""#55b rename guard: 'easystick' may only survive in
 
-- historical/vendor paths (dated test records, docs/, hardware drop,
-  README release notes), and
-- '#55 compat' regions (a line containing the marker starts a region,
-  '#55 compat end' closes it; a match on the marker line itself is
-  also allowed).
+- vendor/ (third-party submodules),
+- board/hardware/ (the carrier's design files),
+- the #55 rename record linux/tests/issue55-rename-2026-10-23.md
+  (it lists the old names by necessity),
+- '#55 compat' regions (one-release aliases; '#55 compat' starts a
+  region, '#55 compat end' closes it), and
+- '55b keep' regions (the README rename note and the v0.4.2
+  checksum/asset lines that quote real published file names;
+  '55b keep' starts a region, '55b keep end' closes it).
 
-Exits 1 and prints every offending line otherwise.
+A match on a marker line itself is allowed either way.  Lines naming
+this checker (its own invocation in build-m1.sh) are skipped.
+
+Scans the whole tree (git grep when a .git dir is present, walk
+otherwise).  Exits 1 and prints every offending line otherwise.
 """
 import os
 import re
@@ -15,15 +23,16 @@ import subprocess
 import sys
 
 ALLOWED_PATH = re.compile(
-    r"^(?:vendor/|docs/|board/hardware/|README|tests/.*-20\d\d-|"
-    r"linux/tests/.*-20\d\d-|linux/tests/check-no-easystick\.py$)")
+    r"^(?:vendor/|board/hardware/|"
+    r"linux/tests/issue55-rename-2026-10-23\.md$|"
+    r"linux/tests/check-old-names\.py$)")
 
-BEGIN = re.compile(r"#55 compat")
-END = re.compile(r"#55 compat end")
+BEGIN = re.compile(r"#55 compat|55b keep")
+END = re.compile(r"#55 compat end|55b keep end")
 
 
 def allowed_lines(path):
-    """Return the set of 1-based line numbers inside compat regions."""
+    """Return the set of 1-based line numbers inside keep regions."""
     ok = set()
     try:
         with open(path, encoding="utf-8", errors="replace") as f:
@@ -81,7 +90,7 @@ def main():
     for path, lineno, hit in collect_hits(root):
         if ALLOWED_PATH.search(path):
             continue
-        if "check-no-easystick" in hit:
+        if "check-old-names" in hit:
             continue
         if path not in cache:
             cache[path] = allowed_lines(os.path.join(root, path))
@@ -91,10 +100,10 @@ def main():
     for hit in bad:
         print(hit)
     if bad:
-        print(f"#55 check: {len(bad)} 'easystick' reference(s) outside the "
-              "allowlist (history paths or '#55 compat' regions)", file=sys.stderr)
+        print(f"#55b check: {len(bad)} 'easystick' reference(s) outside the "
+              "allowlist (exceptions or keep/compat regions)", file=sys.stderr)
         return 1
-    print("#55 check: no 'easystick' references outside the allowlist")
+    print("#55b check: no 'easystick' references outside the allowlist")
     return 0
 
 
