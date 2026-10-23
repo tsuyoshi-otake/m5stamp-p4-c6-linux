@@ -2267,6 +2267,9 @@ if $lab_profile; then
 	set_config_value "${br_output}/.config" BR2_PACKAGE_BUSYBOX_SU y
 	# awk, less, tar, wget, top, ... from a third BusyBox, loaded only when run.
 	set_config_value "${br_output}/.config" BR2_PACKAGE_BUSYBOX_TOOLS y
+	# udhcpc alone in a dedicated BusyBox so the lease-lifetime process
+	# keeps ~300 KB of pool that the full image would pin (#45).
+	set_config_value "${br_output}/.config" BR2_PACKAGE_BUSYBOX_UDHCPC y
 	# PR_EASYSTICK_SYSTEM wrapper so system scripts keep system-side
 	# NOMMU classification when a user starts them (#50 round 4).
 	set_config_value "${br_output}/.config" BR2_PACKAGE_EASYSTICK_SYS y
@@ -2455,7 +2458,8 @@ if $ssh_profile; then
 			"BR2_PACKAGE_EASYSTICK_RESPAWN=y" \
 			"BR2_PACKAGE_BUSYBOX_DAEMONS=y" \
 			"BR2_PACKAGE_BUSYBOX_SU=y" \
-			"BR2_PACKAGE_BUSYBOX_TOOLS=y"; do
+			"BR2_PACKAGE_BUSYBOX_TOOLS=y" \
+			"BR2_PACKAGE_BUSYBOX_UDHCPC=y"; do
 			grep -Fqx -- "${expected}" "${br_output}/.config" || {
 				echo "m3-lab config check failed: ${expected}" >&2
 				exit 1
@@ -2471,6 +2475,12 @@ if $ssh_profile; then
 				exit 1
 			}
 		done
+		# #45: udhcpc on its own image.  The link is relative
+		# (../bin/busybox-udhcpc), so match the target-name suffix.
+		[[ "$(readlink "${br_output}/target/sbin/udhcpc")" == *busybox-udhcpc ]] || {
+			echo "m3-lab check failed: /sbin/udhcpc does not point at busybox-udhcpc" >&2
+			exit 1
+		}
 		# /bin/su points at the small su-only BusyBox (#37).
 		[[ "$(readlink "${br_output}/target/bin/su")" == *busybox-su ]] || {
 			echo "m3-lab check failed: /bin/su does not point at busybox-su" >&2

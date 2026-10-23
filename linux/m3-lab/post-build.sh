@@ -114,6 +114,13 @@ if [ -x "${TARGET_DIR}/bin/busybox-daemons" ]; then
 	done
 fi
 
+# #45: udhcpc keeps a lease-lifetime process; it runs from its own minimal
+# BusyBox instead of the full image (a dedicated binary, not
+# busybox-daemons, so init/inetd/syslogd do not grow).
+if [ -x "${TARGET_DIR}/bin/busybox-udhcpc" ]; then
+	ln -sfn ../bin/busybox-udhcpc "${TARGET_DIR}/sbin/udhcpc"
+fi
+
 # EASYSTICK_LAB_TOOLS=0 (#32) builds without dbclient; drop the other
 # bring-up entry points with it.
 if [ -n "${BR2_CONFIG:-}" ] &&
