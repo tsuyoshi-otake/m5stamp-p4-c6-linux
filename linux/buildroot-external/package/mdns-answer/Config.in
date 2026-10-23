@@ -1,4 +1,4 @@
-config BR2_PACKAGE_MDNSD
+config BR2_PACKAGE_MDNS_ANSWER
 	bool "Stamp-P4 minimal mDNS responder"
 	help
 	  Answers mDNS A queries for <hostname>.local with the IPv4 address

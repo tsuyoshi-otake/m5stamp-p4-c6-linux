@@ -2262,7 +2262,7 @@ if $lab_profile; then
 	# Signed regulatory.db for country= in config.txt (#32).
 	set_config_value "${br_output}/.config" BR2_PACKAGE_WIRELESS_REGDB y
 	# <hostname>.local (#25); mdnsd/avahi need fork().
-	set_config_value "${br_output}/.config" BR2_PACKAGE_MDNSD y
+	set_config_value "${br_output}/.config" BR2_PACKAGE_MDNS_ANSWER y
 	# Respawn daemons without a resident BusyBox subshell each.
 	set_config_value "${br_output}/.config" BR2_PACKAGE_RESPAWN y
 	# init, inetd, syslogd and udhcpd from a minimal second BusyBox (#23).
@@ -2458,7 +2458,7 @@ if $ssh_profile; then
 		for expected in \
 			"BR2_PACKAGE_BOOT_COMMIT=y" \
 			"BR2_PACKAGE_WIRELESS_REGDB=y" \
-			"BR2_PACKAGE_MDNSD=y" \
+			"BR2_PACKAGE_MDNS_ANSWER=y" \
 			"BR2_PACKAGE_RESPAWN=y" \
 			"BR2_PACKAGE_BUSYBOX_DAEMONS=y" \
 			"BR2_PACKAGE_BUSYBOX_SU=y" \
