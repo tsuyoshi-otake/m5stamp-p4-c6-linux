@@ -1,0 +1,10 @@
+config BR2_PACKAGE_BUSYBOX_UDHCPC
+	bool "BusyBox build for udhcpc only"
+	depends on BR2_PACKAGE_BUSYBOX
+	help
+	  A dedicated minimal BusyBox carrying only the udhcpc applet.
+	  udhcpc stays resident for the lease lifetime, and on NOMMU each
+	  process holds a private copy of its binary's text, so a dedicated
+	  ~100 KB image replaces the ~500 KB full BusyBox the client used to
+	  occupy (#45).  Not merged into busybox-daemons so init, syslogd
+	  and inetd do not grow.
