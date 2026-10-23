@@ -15,10 +15,10 @@ Commands
   other    python3 (MicroPython)  hexdump xxd md5sum sha256sum date bc
 
 Autorun: main.py, main.sh or main on the USB drive runs as m5 at boot and
-again when you save a new version.  easystick-autorun status|log|stop|start
+again when you save a new version.  autorun status|log|stop|start
 
 Full list: busybox --list ; busybox-tools --list
 Not available: sudo, nano, curl, file (no MMU on this CPU).
 NOMMU: each process ~0.5 MB of a 10 MB pool; keep a few commands in flight.
 Transient "Allocation of length ... failed" means retry; see nommu_pool in
-/sys/kernel/easystick or easystick-info.
+/sys/kernel/board or sysinfo.

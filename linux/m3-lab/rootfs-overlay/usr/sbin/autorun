@@ -1,0 +1,47 @@
+#!/bin/sh
+# Control the program that runs from the USB drive (#34): main.py, main.sh or
+# main.  Works for m5 and root.  bootsync starts it at boot and restarts it
+# when the drive's copy changes; this command is for by-hand stops and starts.
+
+es_log() {
+	echo "$1"
+}
+
+. /usr/lib/board/autorun.sh
+
+usage() {
+	echo "Usage: autorun {status|start|stop|restart|log}" >&2
+	exit 1
+}
+
+case "${1:-status}" in
+	status)
+		if autorun_running; then
+			echo "running: pid $AUTORUN_RUNNING_PID"
+		else
+			echo "not running"
+		fi
+		[ -f "$AUTORUN_DIR/$AUTORUN_SETTINGS" ] &&
+			echo "settings: $(cat "$AUTORUN_DIR/$AUTORUN_SETTINGS")"
+		echo "program files: $AUTORUN_DIR"
+		echo "log: $AUTORUN_LOG (autorun log follows it)"
+		[ -s "$AUTORUN_LOG" ] && tail -n 5 "$AUTORUN_LOG"
+		;;
+	start)
+		autorun_start
+		autorun_running || echo "nothing started: no main.py, main.sh or main on the drive, or autorun=off"
+		;;
+	stop)
+		autorun_stop
+		;;
+	restart)
+		autorun_stop
+		autorun_start
+		;;
+	log)
+		exec tail -n 50 -f "$AUTORUN_LOG"
+		;;
+	*)
+		usage
+		;;
+esac

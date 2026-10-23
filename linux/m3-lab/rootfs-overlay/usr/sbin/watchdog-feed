@@ -1,0 +1,62 @@
+#!/bin/sh
+# Userland watchdog feeder (#32-6), enabled by watchdog=1 in config.txt.
+# The kernel feeds /dev/watchdog by itself until a process opens it, so a
+# hung userland was never reset.  Once this script holds the device, the
+# board resets 120 s (DTS timeout-sec) after it stops feeding: when it is no
+# longer scheduled, or when inetd (SSH) stays gone for MISS_LIMIT ticks.
+# SIGTERM writes the magic close so a clean stop leaves the kernel feeding
+# again; the hardware watchdog keeps running, so the kernel also takes over
+# when this script is killed outright.
+
+WDT_DEV=${BOARD_WDT_DEV:-/dev/watchdog}
+TICK_FIFO=${BOARD_WDT_TICK:-/run/.es-wdt-tick}
+PROC_ROOT=${PROC_ROOT:-/proc}
+TICK_S=${BOARD_WDT_TICK_S:-10}
+MISS_LIMIT=6
+
+log() {
+	echo "M3-lab: watchdog: $1"
+}
+
+# BusyBox in this image has no pidof; scan /proc with builtins only.
+running() {
+	for c in "$PROC_ROOT"/[0-9]*/comm; do
+		n=""
+		read -r n 2>/dev/null < "$c" || continue
+		[ "$n" = "$1" ] && return 0
+	done
+	return 1
+}
+
+# sleep is an exec on NOMMU; read -t on a FIFO waits in the shell (#29).
+tick() {
+	if [ -p "$TICK_FIFO" ]; then
+		read -r -t "$1" _ 0<> "$TICK_FIFO" 2>/dev/null || true
+	else
+		sleep "$1"
+	fi
+}
+
+[ -p "$TICK_FIFO" ] || mkfifo -m 600 "$TICK_FIFO" 2>/dev/null || true
+exec 3> "$WDT_DEV" || {
+	log "cannot open $WDT_DEV"
+	exit 1
+}
+trap 'printf V >&3; log "stopped"; exit 0' TERM INT
+log "feeding $WDT_DEV every ${TICK_S}s; reset if inetd is gone for $((TICK_S * MISS_LIMIT))s"
+
+miss=0
+while :; do
+	if running inetd; then
+		miss=0
+	else
+		miss=$((miss + 1))
+		[ "$miss" -eq 1 ] && log "inetd is not running"
+	fi
+	if [ "$miss" -lt "$MISS_LIMIT" ]; then
+		printf . >&3
+	elif [ "$miss" -eq "$MISS_LIMIT" ]; then
+		log "inetd gone for $((TICK_S * MISS_LIMIT))s; no longer feeding, the board will reset"
+	fi
+	tick "$TICK_S"
+done

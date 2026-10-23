@@ -1,0 +1,43 @@
+#!/bin/sh
+# One-shot status summary: version, uptime, memory, Wi-Fi, USB LUN, last crash.
+# Uses only commands present in the reduced BusyBox build.
+
+echo "== release =="
+cat /etc/build-info 2>/dev/null || echo "unknown"
+echo "kernel: $(uname -a)"
+
+echo "== uptime / load =="
+cat /proc/uptime /proc/loadavg 2>/dev/null
+
+echo "== memory (kB) =="
+grep -E '^(MemTotal|MemFree|MemAvailable):' /proc/meminfo 2>/dev/null
+
+echo "== nommu pool (bytes) =="
+# Read with builtins; the file is absent on kernels without patch 0076.
+if [ -r /sys/kernel/board/nommu_pool ]; then
+	while IFS= read -r line; do
+		echo "$line"
+	done < /sys/kernel/board/nommu_pool
+else
+	echo "nommu_pool: not available"
+fi
+
+echo "== wi-fi =="
+ifconfig wlan0 2>/dev/null | grep -E 'HWaddr|inet addr' || echo "wlan0: not present"
+iw dev wlan0 link 2>/dev/null | head -n 3
+[ -r /run/status.txt ] && cat /run/status.txt
+
+echo "== usb lun =="
+/usr/sbin/usb-lun state 2>/dev/null || echo "unavailable"
+
+echo "== recent kernel log =="
+dmesg 2>/dev/null | tail -n 15
+
+echo "== last crash =="
+# pstore records are root-only and absent in PSTORE=0 images.
+# The boot shim's CRASH_CAPSULE line is on the serial console.
+if [ -d /sys/fs/pstore ] && ls /sys/fs/pstore/* >/dev/null 2>&1; then
+	ls -l /sys/fs/pstore
+else
+	echo "no pstore record (or not root / not a pstore image)"
+fi

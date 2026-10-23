@@ -15,12 +15,12 @@
 # NOMMU reserve gate (#50 round 4): a restart started from the console or an
 # SSH session is marked "user" by the pool's ctty/dropbear ancestry rule, and
 # every helper it execs (udhcpc, ifconfig, wpa_*) inherits the mark and can be
-# gated.  Re-exec once through easystick-sys so the subtree is system work --
+# gated.  Re-exec once through run-system so the subtree is system work --
 # exec, not a child, so this ~0.7 MB shell does not stay resident through the
 # restart next to the marked copy.  One-shot via ES_SYSMARK; when the helper
 # is absent the script still runs unmarked.
-if [ -z "${ES_SYSMARK:-}" ] && [ -x /usr/sbin/easystick-sys ]; then
-	ES_SYSMARK=1 exec /usr/sbin/easystick-sys "$0" "$@"
+if [ -z "${ES_SYSMARK:-}" ] && [ -x /usr/sbin/run-system ]; then
+	ES_SYSMARK=1 exec /usr/sbin/run-system "$0" "$@"
 fi
 
 conf_get() {
@@ -77,15 +77,15 @@ proc_running() {
 # inetd did die (e.g. OOM) it is still restarted (#40).
 ssh_restart() {
 	proc_running inetd && return 0
-	[ -x /etc/init.d/S85easystick-ssh ] && /etc/init.d/S85easystick-ssh restart &
+	[ -x /etc/init.d/S85ssh ] && /etc/init.d/S85ssh restart &
 }
 
-# easystick-update-status is written so its "exit" returns to a sourcing
+# update-status is written so its "exit" returns to a sourcing
 # caller; sourcing keeps the update inside this shell instead of spending
 # another ~480 KB hush copy on it (#40).  Same shape as the udhcpc hook.
 net_status() {
-	[ -x /usr/sbin/easystick-update-status ] || return 0
-	. /usr/sbin/easystick-update-status
+	[ -x /usr/sbin/update-status ] || return 0
+	. /usr/sbin/update-status
 }
 
 conf_ssid() {
@@ -122,7 +122,7 @@ run_dhcp() {
 	return 1
 }
 
-# wpa_supplicant runs in the foreground under easystick-respawn, like udhcpd:
+# wpa_supplicant runs in the foreground under respawn, like udhcpd:
 # if it dies it is restarted.  A shell "while" loop would keep a private
 # ~500 KB BusyBox copy resident on NOMMU for each supervised daemon.
 WPA_SUP=/run/.es-wpa-sup
@@ -183,7 +183,7 @@ wpa_settled() {
 spawn_wpa() {
 	# The udhcpc status hook reads the SSID from the file in use.
 	echo "$CONF" > /run/.es-wpa-conf
-	easystick-respawn -d 5 -p "$WPA_PID" -- \
+	respawn -d 5 -p "$WPA_PID" -- \
 		wpa_supplicant -q -i wlan0 -c "$CONF" >/dev/null 2>&1 &
 	echo $! > "$WPA_SUP"
 }
@@ -192,8 +192,8 @@ start_wpa() {
 	stop_wpa
 	spawn_wpa
 	wpa_settled && return 0
-	echo "M3-lab: wpa_supplicant failed with $CONF; falling back to /etc/easystick/wpa_supplicant.conf"
-	CONF=/etc/easystick/wpa_supplicant.conf
+	echo "M3-lab: wpa_supplicant failed with $CONF; falling back to /etc/board/wpa_supplicant.conf"
+	CONF=/etc/board/wpa_supplicant.conf
 	stop_wpa
 	spawn_wpa
 	wpa_settled || echo "M3-lab: wpa_supplicant fallback failed"
@@ -301,14 +301,14 @@ config_wifi() {
 # boot and on a live apply: /boot, then /tmp, then the built-in defaults;
 # config_wifi may switch CONF to the generated /run/wpa_cfg.conf.
 select_conf() {
-	CONF=/etc/easystick/wpa_supplicant.conf
+	CONF=/etc/board/wpa_supplicant.conf
 	if [ -f /boot/wpa_supplicant.conf ]; then
 		CONF=/boot/wpa_supplicant.conf
 	elif [ -f /tmp/wpa_supplicant.conf ]; then
 		CONF=/tmp/wpa_supplicant.conf
 	fi
 
-	CFG=/etc/easystick/config.txt
+	CFG=/etc/board/config.txt
 	if [ -f /boot/config.txt ]; then
 		CFG=/boot/config.txt
 	elif [ -f /tmp/config.txt ]; then
@@ -330,7 +330,7 @@ sync_time() {
 	ntpd -n -q -p "${srv:-pool.ntp.org}" >/dev/null 2>&1 &
 }
 
-# udhcpd runs in the foreground under easystick-respawn (#29): it comes back
+# udhcpd runs in the foreground under respawn (#29): it comes back
 # if it dies, and -f keeps NOMMU udhcpd from re-execing itself as a daemon.
 UDHCPD_SUP=/run/.es-udhcpd-sup
 stop_udhcpd() {
@@ -368,8 +368,8 @@ start() {
 				;;
 		esac
 	fi
-	if [ -z "$WANT_MHZ" ] && [ -r /etc/easystick/sdio-clock-mhz ]; then
-		read -r WANT_MHZ < /etc/easystick/sdio-clock-mhz
+	if [ -z "$WANT_MHZ" ] && [ -r /etc/board/sdio-clock-mhz ]; then
+		read -r WANT_MHZ < /etc/board/sdio-clock-mhz
 	fi
 	WANT_MHZ="${WANT_MHZ:-5}"
 	case "$WANT_MHZ" in
@@ -419,7 +419,7 @@ start() {
 	echo > /proc/sys/kernel/modprobe 2>/dev/null || true
 
 	# S05 cached the initial configuration before exporting boot.img.  Runtime
-	# updates are staged by easystick-bootsync only after a host SCSI eject;
+	# updates are staged by bootsyncd only after a host SCSI eject;
 	# never inspect the backing image from a network reload while it is exported.
 
 	select_conf
@@ -467,7 +467,7 @@ start() {
 				if command -v udhcpd >/dev/null 2>&1; then
 					mkdir -p /tmp /var/lib/misc
 					touch /run/udhcpd.leases
-					easystick-respawn -- udhcpd -f -S /etc/udhcpd.conf >/dev/null 2>&1 &
+					respawn -- udhcpd -f -S /etc/udhcpd.conf >/dev/null 2>&1 &
 					echo $! > "$UDHCPD_SUP"
 					echo "M3-lab: udhcpd started on wlan0 (192.168.4.1)"
 				else
@@ -544,7 +544,7 @@ net_reload_seq() {
 # "still on the old network" rather than killing the daemon), then make
 # udhcpc release and renew the lease.  No 1.8 MB re-exec (#39).  Returns 1
 # whenever the HUP path cannot apply the change; the caller then runs the
-# full restart, which keeps the /etc/easystick/wpa_supplicant.conf fallback.
+# full restart, which keeps the /etc/board/wpa_supplicant.conf fallback.
 apply_wpa_hup() {
 	select_conf
 	# A SoftAP conf is rebuilt, not reloaded.
@@ -649,7 +649,7 @@ net_dispatch() {
 				# A deleted hostname= goes back to the boot name.
 				[ -n "$h" ] || read -r h < /etc/hostname 2>/dev/null || true
 				[ -n "$h" ] && hostname "$h" 2>/dev/null || true
-				# easystick-mdns answers with gethostname() per query,
+				# mdnsd answers with gethostname() per query,
 				# so the new name serves mDNS with no restart or HUP.
 				;;
 			country)

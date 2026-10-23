@@ -1,6 +1,6 @@
 Third-party software in this image
 
-  EasyStick scripts, configs and kernel patches    GPL-2.0-only
+  Stamp-P4 scripts, configs and kernel patches    GPL-2.0-only
   Boot shim                                        Apache-2.0 OR GPL-2.0-only
   Linux kernel and esp32_sdio.ko (ESP-Hosted NG)   GPL-2.0-only
   BusyBox                                          GPL-2.0-only
