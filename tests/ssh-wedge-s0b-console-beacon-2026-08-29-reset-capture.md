@@ -1,6 +1,6 @@
 # S0b re-shot: a WDT reset captured inside the same window as the beacon
 
-Date: 2026-08-29. Board: EasyStick Stamp-P4, Rev0.15 (M1), r4 image,
+Date: 2026-08-29. Board: Stamp-P4, Rev0.15 (M1), r4 image,
 `vendor/linux` at `acb7cf4c1184`. DUT: `10.255.10.161`. Host: COM10
 (USB-Serial/JTAG, VID:PID `303A:1001`).
 
@@ -97,10 +97,10 @@ From `s0b-analysis.json`:
   next non-blank line in the byte stream after `ESLIVE 756.74`. Nothing else
   — no panic dump, no other diagnostic line — was produced by the kernel in
   between.
-- `crash_capsule_state: "empty/invalid"` — the `easystick-boot: CRASH_CAPSULE
+- `crash_capsule_state: "empty/invalid"` — the `boot: CRASH_CAPSULE
   empty/invalid` line from the current boot-shim (see CLAUDE.md Section
   14.23) reports no captured crash context for this reset, despite the
-  ordering fix that made `easystick_capture_crash()` run before `pr_emerg`.
+  ordering fix that made `capture_crash()` run before `pr_emerg`.
 - The merged `event_order` places `last_beacon_tick` (extrapolated,
   `02:23:01.565Z`) strictly between `ssh:EXEC_SENT` (`02:22:51.069Z`,
   measured) and `ssh:EXIT_TIMEOUT` (`02:23:03.069Z`, measured): the beacon
@@ -195,7 +195,7 @@ here:**
 `assert_pretimeout_order.py` (Section 14.23's checker) proved the *software*
 capsule-before-`pr_emerg` ordering was correct in the build that produced this
 shot, yet the capsule was still empty. Re-reading `esp32p4_wdt_arm()` in
-`kernel-patches/0054-easystick-wdt-crash-capsule.patch` against every real
+`kernel-patches/0054-wdt-crash-capsule.patch` against every real
 `wdt_hal_config_stage()` call site in the vendored `esp-idf` tree (`int_wdt.c`,
 `task_wdt_impl_timergroup.c`, and every SoC's `rtc_wdt`/`clk.c` reset path —
 esp32, c2, c3, c5, c6, c61, h2, h21, h4, p4, s2, s3) found a second, wholly
@@ -219,14 +219,14 @@ pretimeout_ticks`, so stage 1's threshold was **smaller** than stage 0's. On
 hardware where every stage compares against the same counter, this means the
 hardware reset (stage 1) can fire before the counter ever reaches stage 0's
 threshold — the pretimeout interrupt, and therefore
-`easystick_capture_crash()`, may never run at all, independent of whether the
+`capture_crash()`, may never run at all, independent of whether the
 CPU is otherwise perfectly healthy. This reproduces the exact observed
 symptom (empty/invalid capsule on a genuine WDT reset) through a path the
 ordering fix cannot touch: a register-value error, not a runtime IRQ-masking
 state.
 
 **Fix applied** (2026-08-29, same day, this repository):
-`kernel-patches/0054-easystick-wdt-crash-capsule.patch` now writes
+`kernel-patches/0054-wdt-crash-capsule.patch` now writes
 `timeout_ticks` (the full, original absolute timeout — the natural
 `pretimeout_ticks + grace_ticks`) into `TIMG_WDTCONFIG3`, restoring stage 1's
 threshold to fire `grace_ticks` ticks after stage 0's interrupt, as intended.
@@ -276,16 +276,16 @@ uninterrupted, in one continuous serial session
 (`C:\Users\developer\tmp\p4-wdt-capsule-fix-20260829\wdt-positive-control-long-2026-08-29.log`):
 
 ```
-EASYSTICK_WDT CAPSULE_COMMIT seq=3983531461 reason=1
-EASYSTICK_WDT PRETIMEOUT
+BOARD_WDT CAPSULE_COMMIT seq=3983531461 reason=1
+BOARD_WDT PRETIMEOUT
 ESP-ROM:esp32p4-eco2-20240710
 ...
 rst:0x7 (HP_SYS_HP_WDT_RESET),boot:0xc (SPI_FAST_FLASH_BOOT)
 ...
 W (45) boot.esp32p4: CPU has been reset by WDT.
 ...
-easystick-boot: CRASH_CAPSULE VALID seq=3983531461 reason=1 captured_cpu=0 epc=0x483c8d78 ra=0x483c8d74 sp=0x48527ef0 gp=0x485af4d4 tp=0x48529480 status=0x00011880 cause=0xb8000015 badaddr=0x00000000 wdt0=0xb81f8000 wdt1=0x9c400000 wdt2=0x00015f90 int=0x00000004 stack_len=32
-easystick-boot: CRASH_CAPSULE FLASH_OK slot=5
+boot: CRASH_CAPSULE VALID seq=3983531461 reason=1 captured_cpu=0 epc=0x483c8d78 ra=0x483c8d74 sp=0x48527ef0 gp=0x485af4d4 tp=0x48529480 status=0x00011880 cause=0xb8000015 badaddr=0x00000000 wdt0=0xb81f8000 wdt1=0x9c400000 wdt2=0x00015f90 int=0x00000004 stack_len=32
+boot: CRASH_CAPSULE FLASH_OK slot=5
 ```
 
 This is a genuine hardware WDT reset (`HP_SYS_HP_WDT_RESET`, independently

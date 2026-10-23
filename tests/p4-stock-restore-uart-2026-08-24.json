@@ -8,6 +8,6 @@
   "reset_requested": true,
   "bytes": 8459,
   "sha256": "c61fa49ed5cfc48d2fd0e92cdae2c3b380d1ed9dfb2b7cfe038504d74a8ae0fa",
-  "file": "C:\\Codes\\tsuyoshi-otake\\easy-stick\\projects\\easystick-stamp-p4\\firmware\\tests\\p4-stock-restore-uart-2026-08-24.bin",
+  "file": "C:\\Codes\\tsuyoshi-otake\\easy-stick\\projects\\stamp-p4\\firmware\\tests\\p4-stock-restore-uart-2026-08-24.bin",
   "operation": "raw byte capture; no UART commands transmitted"
 }

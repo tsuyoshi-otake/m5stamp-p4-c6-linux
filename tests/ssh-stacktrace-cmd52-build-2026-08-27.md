@@ -6,20 +6,20 @@ Status: **P4 FLASHED — SSH command wedge reproduced with and without CMD52 pri
 
 This candidate adds the P4-only diagnostic path:
 
-- `EASYSTICK_STACKTRACE_DIAGNOSTICS=1`
+- `STACKTRACE_DIAGNOSTICS=1`
 - `CONFIG_STACKTRACE=y`
 - `CONFIG_KALLSYMS=y`
 - `CONFIG_KALLSYMS_ALL=y`
 - `CONFIG_DEBUG_INFO=y`
 - `CONFIG_DEBUG_INFO_DWARF4=y`
 - `CONFIG_FRAME_POINTER=y`
-- WDT pretimeout `dump_stack()` from `0056-easystick-wdt-stacktrace.patch`
+- WDT pretimeout `dump_stack()` from `0056-wdt-stacktrace.patch`
 - bounded CMD52 boundary records for `ESP_SLAVE_TOKEN_RDATA` from
-  `0029-easystick-sdio-cmd52-boundaries.patch`
+  `0029-sdio-cmd52-boundaries.patch`
 
 The image uses the existing P4 host-side path with
-`EASYSTICK_IDMAC_NONCOHERENT_RING=1`,
-`EASYSTICK_CMD53_BB_ALLOW_IDMAC_NC=1`, and `EASYSTICK_SDIO_FORCE_PIO=0`.
+`IDMAC_NONCOHERENT_RING=1`,
+`CMD53_BB_ALLOW_IDMAC_NC=1`, and `SDIO_FORCE_PIO=0`.
 No C6 image, C6 flash, C6 erase, or device reset was performed by this build.
 
 ## Build and verification
@@ -113,7 +113,7 @@ because this run did not reset during the capture window.
 
 Directory:
 
-`D:\Users\Developer\easystick-tmp-20260820\easystick-p4-stacktrace-cmd52-20260827\`
+`D:\Users\Developer\tmp-20260820\stamp-p4-stacktrace-cmd52-20260827\`
 
 | Artifact | SHA-256 |
 |---|---|
@@ -122,7 +122,7 @@ Directory:
 | `boot-shim.bin` | `1e5ed162b234be1c60408e70d91777ccf4c3b0e4219f56b80fa2fd0e0ecec608` |
 | `Image` | `c696eccf5aeb2ea520253f53d6a529f5c4c60ff429957dd058b59a3d35aa8c98` |
 | `rootfs.squashfs` | `b816bc9ae802e6602689a8cddedb48863d4d02b795f0f72a9caafc1d208be64d` |
-| `easystick-stamp-p4.dtb` | `7c3bd1e042d71aef80ebbeb37cfb402cabb400e3a41dc82b4a4b5d59a18eb163` |
+| `esp32p4-m5stamp-p4.dtb` | `7c3bd1e042d71aef80ebbeb37cfb402cabb400e3a41dc82b4a4b5d59a18eb163` |
 | `cmd53-bb-final-shot-manifest.json` | `1d88259fe3761307ff13b8e7acd53f6564d300eb52b635fb10f52432835495eb` |
 | `linux-built.config` | `841efcb9e5f468d388049354889cc5aae99bc4e8b0905de03cb65fd8cc729c6d` |
 | `vmlinux` | `dc8ca7a4d03f335313632e6e5eaa2c6939daffa484c755bd9b9ea6ea493c8e28` |
@@ -135,14 +135,14 @@ runtime attempt.
 
 ## `ES_CMD52` printk-disabled control
 
-The control image retained `EASYSTICK_STACKTRACE_DIAGNOSTICS=1`, WDT/stacktrace
+The control image retained `STACKTRACE_DIAGNOSTICS=1`, WDT/stacktrace
 configuration, retention BB 0052/0053/0054, DMA `NC=1`, SDIO 5 MHz,
-`EASYSTICK_ESPHOSTED_DISABLE_0010=1`, and all ledger settings from runtime2.
+`ESPHOSTED_DISABLE_0010=1`, and all ledger settings from runtime2.
 The only diagnostic-path change was:
 
 ```text
-EASYSTICK_ESPHOSTED_CMD52_TRACE=0
-0029-easystick-sdio-cmd52-boundaries.patch=absent
+ESPHOSTED_CMD52_TRACE=0
+0029-sdio-cmd52-boundaries.patch=absent
 ```
 
 - Build: **PASS**, exit code `0`; rootfs `3,076,096` bytes.
@@ -153,7 +153,7 @@ EASYSTICK_ESPHOSTED_CMD52_TRACE=0
 - Control DTB SHA-256:
   `7c3bd1e042d71aef80ebbeb37cfb402cabb400e3a41dc82b4a4b5d59a18eb163`
 - The control build output contains neither `0029` nor `ES_CMD52` /
-  `easystick_cmd52_trace` markers. The WDT attestation and final-shot
+  `cmd52_trace` markers. The WDT attestation and final-shot
   manifest gates both passed.
 - P4-only flash/write and verify: **PASS** on `COM10`; preserved stock
   readback SHA-256 remained
@@ -206,14 +206,14 @@ stacktrace during the capture window.
 
 Directory:
 
-`D:\Users\Developer\easystick-tmp-20260820\easystick-p4-stacktrace-cmd52-quiet-20260827\`
+`D:\Users\Developer\tmp-20260820\stamp-p4-stacktrace-cmd52-quiet-20260827\`
 
 | Artifact | SHA-256 |
 |---|---|
 | `boot-shim.bin` | `1e5ed162b234be1c60408e70d91777ccf4c3b0e4219f56b80fa2fd0e0ecec608` |
 | `Image` | `22e4e24f0672a76953c45920d2e66d4f6ebcb1d233e9222c5d7308e656c69fe0` |
 | `rootfs.squashfs` | `45aeb057365463e9a65eb54c76da22f8231417eade9b2cecd3b199a2689e05e4` |
-| `easystick-stamp-p4.dtb` | `7c3bd1e042d71aef80ebbeb37cfb402cabb400e3a41dc82b4a4b5d59a18eb163` |
+| `esp32p4-m5stamp-p4.dtb` | `7c3bd1e042d71aef80ebbeb37cfb402cabb400e3a41dc82b4a4b5d59a18eb163` |
 | `cmd53-bb-final-shot-manifest.json` | `e1bc6b83449343017bdc7d7f9093caa43340c2d4cdcc5db2da912107e2e22860` |
 | `linux-built.config` | `841efcb9e5f468d388049354889cc5aae99bc4e8b0905de03cb65fd8cc729c6d` |
 | `vmlinux` | `46b353f14e2466744a0a94de7183218ea166bd2386446b36d1eb5ebc7e491356` |
@@ -231,7 +231,7 @@ the same runtime conditions while adding no console observer:
 - M1/M2/M3/M4 words: `0x45534d31`, `0x45534d32`, `0x45534d33`,
   `0x45534d34`.
 - Runtime contract: `IDMAC_NONCOHERENT_RING=1`, explicit NC allow,
-  `SDIO_FORCE_PIO=0`, `EASYSTICK_ESPHOSTED_CMD52_TRACE=0`, and no TX/TCP/SSH
+  `SDIO_FORCE_PIO=0`, `ESPHOSTED_CMD52_TRACE=0`, and no TX/TCP/SSH
   ledgers.
 - Rootfs: `3,076,096` bytes; the 4 MiB rootfs-window gate passed.
 - WDT crash-capsule fail-closed attestation: **PASS**.
@@ -240,7 +240,7 @@ the same runtime conditions while adding no console observer:
   write was performed.
 
 Staged export:
-`C:\Users\developer\tmp\easystick-p4-cmd52-marker-nc1-20260827\`
+`C:\Users\developer\tmp\stamp-p4-cmd52-marker-nc1-20260827\`
 
 Key artifact hashes:
 
@@ -249,7 +249,7 @@ Key artifact hashes:
 | `boot-shim.bin` | `97f8883fccd9c310f1c7b8d4a3224cbb65f45a091adf58e8725b63844329dee7` |
 | `Image` | `b1a62b501086476b8fdfd607f13d126213f960432aca2176b785f6a0be735fac` |
 | `rootfs.squashfs` | `79633a683c55a22ec7636211c827770aae60bc2925ac612730e55859402b3184` |
-| `easystick-stamp-p4.dtb` | `7c3bd1e042d71aef80ebbeb37cfb402cabb400e3a41dc82b4a4b5d59a18eb163` |
+| `esp32p4-m5stamp-p4.dtb` | `7c3bd1e042d71aef80ebbeb37cfb402cabb400e3a41dc82b4a4b5d59a18eb163` |
 | `cmd53-bb-final-shot-manifest.json` | `578dde5037d0998848292f8a28b5c9a4248297ee813e229924b7b4f6b385dcb0` |
 
 The one-word design has a deliberate observability limit: M2 and M3 are
@@ -314,10 +314,10 @@ After the wedge, a controlled P4-only reset was used to retrieve retention:
 The recovery UART reported:
 
 ```text
-easystick-boot: CMD53_BB pa=0x50108080 reset_reason=11
-easystick-boot: CMD52_MARKER last=0x00000000
-easystick-boot: CMD53_BB empty/invalid ...
-easystick-boot: CRASH_CAPSULE empty/invalid
+boot: CMD53_BB pa=0x50108080 reset_reason=11
+boot: CMD52_MARKER last=0x00000000
+boot: CMD53_BB empty/invalid ...
+boot: CRASH_CAPSULE empty/invalid
 ```
 
 The candidate's rendered patch and compiled module were independently checked

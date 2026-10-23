@@ -38,7 +38,7 @@ was queried with the pinned toolchain. These commands do not erase or write
 flash:
 
 ```powershell
-$toolRoot = 'C:\Users\developer\tmp\easystick-p4-tools'
+$toolRoot = 'C:\Users\developer\tmp\stamp-p4-tools'
 & "$toolRoot\Scripts\python.exe" -m esptool --chip esp32p4 --port COM10 `
   --baud 115200 --before default_reset --after no_reset chip_id
 & "$toolRoot\Scripts\python.exe" -m esptool --chip esp32p4 --port COM10 `

@@ -2,9 +2,9 @@
 
 ## Scope and condition
 
-This shot tested the six-word non-console CMD52 marker on EasyStick Stamp-P4
+This shot tested the six-word non-console CMD52 marker on Stamp-P4
 `COM10`. The candidate was the NC=1 `m3-lab` image with build-time Wi-Fi
-provisioning, `EASYSTICK_ESPHOSTED_CMD52_MARKER=1`, and the semantically
+provisioning, `ESPHOSTED_CMD52_MARKER=1`, and the semantically
 correct `AFTER_46` placement. Only the P4 was flashed. The C6 image was not
 erased or written; the preserved 16 MiB stock readback remained
 `229459f251eaf6222f0c07968702d72a3818e520da1788ce465027d969020c24`.
@@ -29,7 +29,7 @@ operation was part of the runtime test.
 
 The raw captures and SSH event log are retained outside Git at:
 
-`C:\Users\developer\tmp\easystick-p4-cmd52-marker-positive-nc1-20260828\`
+`C:\Users\developer\tmp\stamp-p4-cmd52-marker-positive-nc1-20260828\`
 
 | Artifact | Bytes | SHA-256 |
 |---|---:|---|
@@ -61,7 +61,7 @@ M3-lab: starting password-enabled Dropbear on TCP/22
 The marker line in the first boot capture was stale pre-reset content:
 
 ```text
-easystick-boot: CMD52_MARKER magic=0x45534d34 armed=0x4ff16240 token_enter=0x00007b7c after_46=0x00007b7c before_47=0x00007e48 after_47=0x501081b8
+boot: CMD52_MARKER magic=0x45534d34 armed=0x4ff16240 token_enter=0x00007b7c after_46=0x00007b7c before_47=0x00007e48 after_47=0x501081b8
 ```
 
 It is not evidence for this shot. After waiting for Wi-Fi/Dropbear and
@@ -69,9 +69,9 @@ performing a controlled P4 reset without an SSH command, the next boot
 reported:
 
 ```text
-easystick-boot: CMD53_BB pa=0x50108080 reset_reason=11
-easystick-boot: CMD52_MARKER magic=0x45534d30 armed=0x45534d31 token_enter=0x45534d32 after_46=0x45534d33 before_47=0x45534d34 after_47=0x45534d35
-easystick-boot: CRASH_CAPSULE empty/invalid
+boot: CMD53_BB pa=0x50108080 reset_reason=11
+boot: CMD52_MARKER magic=0x45534d30 armed=0x45534d31 token_enter=0x45534d32 after_46=0x45534d33 before_47=0x45534d34 after_47=0x45534d35
+boot: CRASH_CAPSULE empty/invalid
 ```
 
 Rootfs mount, Wi-Fi association, static IPv4, and Dropbear startup were also
@@ -108,9 +108,9 @@ stdout, stderr, exit status, or EOF arrived and TCP/22 became unreachable.
 After the wedge, a controlled P4 reset recovered:
 
 ```text
-easystick-boot: CMD53_BB pa=0x50108080 reset_reason=11
-easystick-boot: CMD52_MARKER magic=0x00000000 armed=0x00000000 token_enter=0x00000000 after_46=0x00000000 before_47=0x00000000 after_47=0x00000000
-easystick-boot: CRASH_CAPSULE empty/invalid
+boot: CMD53_BB pa=0x50108080 reset_reason=11
+boot: CMD52_MARKER magic=0x00000000 armed=0x00000000 token_enter=0x00000000 after_46=0x00000000 before_47=0x00000000 after_47=0x00000000
+boot: CRASH_CAPSULE empty/invalid
 ```
 
 **Result: INCONCLUSIVE for the CMD52 fault boundary.** The all-zero recovery
@@ -141,9 +141,9 @@ the boot produced by Stage 2 recovery was allowed to reach Wi-Fi/Dropbear and
 was reset again without SSH. The next recovery reported:
 
 ```text
-easystick-boot: CMD53_BB pa=0x50108080 reset_reason=11
-easystick-boot: CMD52_MARKER magic=0x45534d30 armed=0x45534d31 token_enter=0x45534d32 after_46=0x45534d33 before_47=0x45534d34 after_47=0x45534d35
-easystick-boot: CRASH_CAPSULE empty/invalid
+boot: CMD53_BB pa=0x50108080 reset_reason=11
+boot: CMD52_MARKER magic=0x45534d30 armed=0x45534d31 token_enter=0x45534d32 after_46=0x45534d33 before_47=0x45534d34 after_47=0x45534d35
+boot: CRASH_CAPSULE empty/invalid
 ```
 
 Wi-Fi association, static IPv4, and Dropbear startup were present again.
@@ -182,9 +182,9 @@ set:
 
 ```text
 rst:0x17 (CHIP_USB_UART_RESET),boot:0xc (SPI_FAST_FLASH_BOOT)
-easystick-boot: CMD53_BB pa=0x50108080 reset_reason=11
-easystick-boot: CMD52_MARKER magic=0x45534d30 armed=0x45534d31 token_enter=0x45534d32 after_46=0x45534d33 before_47=0x45534d34 after_47=0x45534d35
-easystick-boot: CRASH_CAPSULE empty/invalid
+boot: CMD53_BB pa=0x50108080 reset_reason=11
+boot: CMD52_MARKER magic=0x45534d30 armed=0x45534d31 token_enter=0x45534d32 after_46=0x45534d33 before_47=0x45534d34 after_47=0x45534d35
+boot: CRASH_CAPSULE empty/invalid
 ```
 
 **Result: PASS for the passive-reset observation and repeated marker
@@ -214,7 +214,7 @@ BusyBox `devmem` could clear the four stage words and write back
 0x00000000
 0x00000000
 0x00000000
-EASYSTICK_CMD52_SHOT_ARMED
+CMD52_SHOT_ARMED
 ```
 
 The paired SSH shot reproduced the same wedge, and the passive UART collector
@@ -222,8 +222,8 @@ again captured zero bytes. After controlled reset, however, all six words were
 zero:
 
 ```text
-easystick-boot: CMD52_MARKER magic=0x00000000 armed=0x00000000 token_enter=0x00000000 after_46=0x00000000 before_47=0x00000000 after_47=0x00000000
-easystick-boot: CRASH_CAPSULE empty/invalid
+boot: CMD52_MARKER magic=0x00000000 armed=0x00000000 token_enter=0x00000000 after_46=0x00000000 before_47=0x00000000 after_47=0x00000000
+boot: CRASH_CAPSULE empty/invalid
 ```
 
 **Result: REJECTED as a shot-gate method.** The console readback proves only
@@ -298,7 +298,7 @@ They are retained for audit only and do not support a boundary claim.
 
 Follow-up artifacts are retained outside Git at:
 
-`C:\Users\developer\tmp\easystick-p4-cmd52-marker-shot-r4-20260828\`
+`C:\Users\developer\tmp\stamp-p4-cmd52-marker-shot-r4-20260828\`
 
 | Artifact | Bytes | SHA-256 |
 |---|---:|---|
@@ -316,7 +316,7 @@ The gate used only the root-writable kernel parameter:
 
 ```text
 printf 1 > /sys/module/esp32_sdio/parameters/cmd52_marker_shot
-EASYSTICK_SHOT_GATE_READBACK=1
+SHOT_GATE_READBACK=1
 ```
 
 The gate metadata records `reset_requested=false` and
@@ -343,9 +343,9 @@ or EOF arrived; TCP/22 became unreachable.
 After the wedge, the P4-only `capture-boot.ps1 -Reset` recovery reported:
 
 ```text
-easystick-boot: CMD53_BB pa=0x50108080 reset_reason=11
-easystick-boot: CMD52_MARKER magic=0x45534d30 armed=0x45534d31 token_enter=0x45534d32 after_46=0x45534d33 before_47=0x45534d34 after_47=0x45534d35
-easystick-boot: CRASH_CAPSULE empty/invalid
+boot: CMD53_BB pa=0x50108080 reset_reason=11
+boot: CMD52_MARKER magic=0x45534d30 armed=0x45534d31 token_enter=0x45534d32 after_46=0x45534d33 before_47=0x45534d34 after_47=0x45534d35
+boot: CRASH_CAPSULE empty/invalid
 ```
 
 The reset capture requested the P4-only HardReset-compatible RTS/DTR sequence,
@@ -358,12 +358,12 @@ record, which this document previously quoted around but did not show
 `df6cfe5bf0baaaaa67cbbee6d7fa6b9b4d4cef54b16fa6fd1e17875f8ed57cc7`):
 
 ```text
-easystick-boot: CMD53_BB VALID gen=89176 seq=15 cmd_arg=0x97ec0000 req=1 cmd_done=1 cmd_err=0 idmac=1 data_over=1 data_err=0 cto=0 dto=0 end=1 bb2=1 bb3=1 bb4=1 bb5=1 bb6=1 bb4_ret=0 bb5_ret=0 bb6_ret=0
-easystick-boot: CMD53_BB boundaries dma_in=1 dma_out=1 bh_in=1 data_in=1 data_out=1 irq_out=1
-easystick-boot: CMD53_BB request_end enter=1 before_next=0 after_next=0 idle=1
-easystick-boot: CMD53_BB data_st=0x50108094 pending_data=0x00000008
-easystick-boot: CMD53_BB idsts=0x00000101
-easystick-boot: CMD53_BB cmd_e=0 data_e=0 xfer=512
+boot: CMD53_BB VALID gen=89176 seq=15 cmd_arg=0x97ec0000 req=1 cmd_done=1 cmd_err=0 idmac=1 data_over=1 data_err=0 cto=0 dto=0 end=1 bb2=1 bb3=1 bb4=1 bb5=1 bb6=1 bb4_ret=0 bb5_ret=0 bb6_ret=0
+boot: CMD53_BB boundaries dma_in=1 dma_out=1 bh_in=1 data_in=1 data_out=1 irq_out=1
+boot: CMD53_BB request_end enter=1 before_next=0 after_next=0 idle=1
+boot: CMD53_BB data_st=0x50108094 pending_data=0x00000008
+boot: CMD53_BB idsts=0x00000101
+boot: CMD53_BB cmd_e=0 data_e=0 xfer=512
 ```
 
 This line is evidence that the SDIO/MMC transmit path was healthy at the

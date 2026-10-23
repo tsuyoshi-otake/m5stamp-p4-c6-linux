@@ -8,6 +8,6 @@
     "port_opens":  13,
     "first_byte_seconds":  2.116,
     "captured_utc":  "2026-08-27T12:54:43.3367851Z",
-    "python":  "D:\\Users\\Developer\\easystick-tmp-20260820\\easystick-p4-tools-481\\Scripts\\python.exe",
+    "python":  "D:\\Users\\Developer\\tmp-20260820\\stamp-p4-tools-481\\Scripts\\python.exe",
     "reset_strategy":  "esptool-HardReset-compatible-RTS-DTR"
 }

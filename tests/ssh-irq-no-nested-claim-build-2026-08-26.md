@@ -5,7 +5,7 @@ Status: **RUNTIME TESTED — P4-only flash PASS; SSH stability FAIL**
 ## Scope
 
 The candidate adds
-`0028-easystick-sdio-irq-no-nested-claim.patch` to the host-side
+`0028-sdio-irq-no-nested-claim.patch` to the host-side
 ESP-Hosted-NG series.  `esp_handle_isr()` is called while the MMC SDIO host is
 already claimed by the SDIO IRQ worker, so its four register accesses now use
 `LOCK_ALREADY_ACQUIRED`.  Non-IRQ callers, including the TX credit path, keep
@@ -45,9 +45,9 @@ prove that the IRQ callback's nested claim is the final cause.
 - Build interval: `2026-08-26T12:34:42Z` to `2026-08-26T12:52:23Z`
   (`17m41s`), exit code `0`.
 - Profile: `m3-lab`; boot-shim profile: `m2`.
-- `EASYSTICK_IDMAC_NONCOHERENT_RING=1` with
-  `EASYSTICK_CMD53_BB_ALLOW_IDMAC_NC=1`.
-- `EASYSTICK_SDIO_FORCE_PIO=0`.
+- `IDMAC_NONCOHERENT_RING=1` with
+  `CMD53_BB_ALLOW_IDMAC_NC=1`.
+- `SDIO_FORCE_PIO=0`.
 - Descriptor invalidation, RX descriptor diagnostic, TX/TCP/SSH ledgers,
   ESP-Hosted diagnostics, and CMD53 error provenance were all `0`.
 - The 0028 patch applied cleanly and `esp32_sdio.ko` compiled.
@@ -62,7 +62,7 @@ prove that the IRQ callback's nested claim is the final cause.
 
 Export directory:
 
-`D:\Users\Developer\easystick-tmp-20260820\easystick-p4-wdt-0054-ssh-capsule-20260825\irq-no-nested-claim-2026-08-26\`
+`D:\Users\Developer\tmp-20260820\stamp-p4-wdt-0054-ssh-capsule-20260825\irq-no-nested-claim-2026-08-26\`
 
 `SHA256SUMS.txt` verification: **23/23 PASS**.  The exported manifest was
 also verified against the exported copies.
@@ -71,10 +71,10 @@ also verified against the exported copies.
 |---|---|
 | `boot-shim.bin` | `1e5ed162b234be1c60408e70d91777ccf4c3b0e4219f56b80fa2fd0e0ecec608` |
 | `Image` | `1bfb4eab3cb9b492ad7ca9dda1c001f36ae8d9b21bd4ca0b5fe3c7e9d8b199ef` |
-| `easystick-stamp-p4.dtb` | `7c3bd1e042d71aef80ebbeb37cfb402cabb400e3a41dc82b4a4b5d59a18eb163` |
+| `esp32p4-m5stamp-p4.dtb` | `7c3bd1e042d71aef80ebbeb37cfb402cabb400e3a41dc82b4a4b5d59a18eb163` |
 | `rootfs.squashfs` | `00bc3d558372fd82b8f741d1d64e55a9c3f01d0c1263f4c9134e74e9d55a0ce1` |
 | `vmlinux` | `35728ff5727ec868b3df0e445085c66bd3d1cc72e7f3c5d145215445f47c2ec7` |
-| `rendered-patches/0054-easystick-wdt-crash-capsule.patch` | `3d8cd4dd6c8331810773d484976f27519620b765160a5ae1392dfe29f0663c5e` |
+| `rendered-patches/0054-wdt-crash-capsule.patch` | `3d8cd4dd6c8331810773d484976f27519620b765160a5ae1392dfe29f0663c5e` |
 
 ## Runtime result
 
@@ -90,7 +90,7 @@ bootloader readback that the script intentionally excludes from its post-write
 0x00010000  boot-shim.bin        verify OK
 0x00090000  Image                verify OK
 0x00810000  rootfs.squashfs      verify OK
-0x00f10000  easystick-stamp-p4.dtb verify OK
+0x00f10000  esp32p4-m5stamp-p4.dtb verify OK
 ```
 
 The UART-first capture was:

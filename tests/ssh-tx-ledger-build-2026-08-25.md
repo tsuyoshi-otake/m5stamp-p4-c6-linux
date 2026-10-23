@@ -11,14 +11,14 @@ recorded in
 ## Fixed build conditions
 
 - Profile: `m3-lab`
-- `EASYSTICK_SDIO_FORCE_PIO=0`
-- `EASYSTICK_IDMAC_NONCOHERENT_RING=1`
-- `EASYSTICK_ESPHOSTED_DISABLE_0010=1`
-- `EASYSTICK_ESPHOSTED_TX_LEDGER=1`
-- `EASYSTICK_ESPHOSTED_DIAGNOSTICS=0`
-- `EASYSTICK_SSH_LEDGER=0`
-- `EASYSTICK_DW_MMC_CMD53_ERR_PROV=0`
-- `EASYSTICK_CMD53_RETENTION_BB=0`
+- `SDIO_FORCE_PIO=0`
+- `IDMAC_NONCOHERENT_RING=1`
+- `ESPHOSTED_DISABLE_0010=1`
+- `ESPHOSTED_TX_LEDGER=1`
+- `ESPHOSTED_DIAGNOSTICS=0`
+- `SSH_LEDGER=0`
+- `DW_MMC_CMD53_ERR_PROV=0`
+- `CMD53_RETENTION_BB=0`
 
 The generated profile stamp and kernel configuration passed checks for the
 DMA/noncoherent settings, RV32 NOMMU, `CONFIG_FRAME_POINTER=y`,
@@ -26,7 +26,7 @@ DMA/noncoherent settings, RV32 NOMMU, `CONFIG_FRAME_POINTER=y`,
 
 ## Patch-series correction
 
-The first build exposed that `0023-easystick-sdio-tx-stage-ledger.patch`
+The first build exposed that `0023-sdio-tx-stage-ledger.patch`
 contained duplicate quiet-diagnostics and hexdump hunks owned by `0024` and
 `0025`. Those non-ledger hunks were removed from `0023`; a clean temporary
 source copy then accepted the complete selected series in order:
@@ -41,7 +41,7 @@ WDT, or PSRAM.
 
 Artifacts are retained outside Git at:
 
-`D:\Users\Developer\easystick-tmp-20260820\easystick-p4-m3-lab-dma-nc-asus-20260824\ssh-tx-ledger-2026-08-25\`
+`D:\Users\Developer\tmp-20260820\stamp-p4-m3-lab-dma-nc-asus-20260824\ssh-tx-ledger-2026-08-25\`
 
 | Artifact | Bytes | SHA-256 |
 | --- | ---: | --- |
@@ -50,7 +50,7 @@ Artifacts are retained outside Git at:
 | `boot-shim.bin` | 212,224 | `edef63700eda9df4b903674f4d5b1862f437ae850b6dd91328ddc8ba65e1abbc` |
 | `Image` | 6,576,968 | `ca528859796f1f01b724c685d702dcdcc812c393ba8d6ffcfa57b98f252f3009` |
 | `rootfs.squashfs` | 2,732,032 | `97e2354c17b156b5fcdef9dd77bcb58b611c7dd74832381543caf19175c044bf` |
-| `easystick-stamp-p4.dtb` | 3,372 | `7c3bd1e042d71aef80ebbeb37cfb402cabb400e3a41dc82b4a4b5d59a18eb163` |
+| `esp32p4-m5stamp-p4.dtb` | 3,372 | `7c3bd1e042d71aef80ebbeb37cfb402cabb400e3a41dc82b4a4b5d59a18eb163` |
 | `vmlinux` | 11,649,652 | `ba5e878e895bd99cc95644d4032dce53b368d8a301e842e5308c7bf475947b41` |
 | `System.map` | 1,055,083 | `ef29eb5b188228aaa01e8af120128bb6b630ff7ec6fb9ae066ffb9e60f4de85e` |
 | `linux.config.generated` | 58,081 | `9145936e9409b72962ef0373f0b8a73b4f954b5ac438561dbdebedf2fa68ce62` |
@@ -65,8 +65,8 @@ artifacts within their regions.
 The final SquashFS was extracted and verified to contain:
 
 - `etc/init.d/S40network`
-- `etc/init.d/S85easystick-ssh`
-- `etc/easystick/wpa_supplicant.conf`
+- `etc/init.d/S85ssh`
+- `etc/stamp-p4/wpa_supplicant.conf`
 
 The Wi-Fi configuration matched the supplied build environment. The resulting
 SquashFS mode for `wpa_supplicant.conf` was observed as `0644`, although the

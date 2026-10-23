@@ -13,7 +13,7 @@ may be written, to observe the boundary against the existing NG companion.
 
 ## Objective
 
-Use the same EasyStick Stamp-P4 and Stamp-AddOn C6 hardware with an
+Use the same Stamp-P4 and Stamp-AddOn C6 hardware with an
 independent Zephyr host implementation. Keep SSH, NTP, SMP, and Bluetooth
 outside this gate.
 
@@ -34,7 +34,7 @@ The working hypothesis is:
 | Zephyr host transport | `drivers/misc/esp_hosted_mcu/esp_hosted_mcu_sdio.c` |
 | Zephyr binding | `espressif,esp-hosted-mcu` as a child of an SDHC slot |
 | Matching C6 source | `espressif/esp-hosted-mcu`, external checkout revision `3f0d1076749afdb589f00c075d8dce895e3dd32d` |
-| Existing EasyStick C6 evidence | ESP-Hosted-NG `network_adapter.bin`, SHA-256 `2ac39933c84c7688fb5d251ffc01bd15e53b665a272b6053dedca448e40e1827` |
+| Existing Stamp-P4 C6 evidence | ESP-Hosted-NG `network_adapter.bin`, SHA-256 `2ac39933c84c7688fb5d251ffc01bd15e53b665a272b6053dedca448e40e1827` |
 
 The existing C6 artifact is ESP-Hosted-NG 1.0.6, while PR #114532 implements
 ESP-Hosted-MCU's protobuf/RPC protocol. The existing NG image is therefore a
@@ -52,10 +52,10 @@ stopped before any write because the nested ESP-IDF
 `components/esp_wifi/lib` checkout is not initialised. No C6 replacement image
 has been produced or written by this step.
 
-## EasyStick overlay design
+## Stamp-P4 overlay design
 
 The Function-EV board DTS is used only as a board-support base. It is not
-copied into this project. The EasyStick overlay will:
+copied into this project. The Stamp-P4 overlay will:
 
 - disable the Function-EV SDHC slot-0/SD-card node;
 - keep SDHC slot 1 in 4-bit mode;
@@ -70,13 +70,13 @@ copied into this project. The EasyStick overlay will:
 
 The overlay must retain the Function-EV v1.3/360 MHz target and USB
 Serial/JTAG console. No Function-EV SDIO pin or C6 reset value may remain
-silently active after the EasyStick overlay is applied.
+silently active after the Stamp-P4 overlay is applied.
 
 ## A/B and acceptance
 
 ### A — valid control run
 
-1. Build the Zephyr host at the pinned revision with the EasyStick overlay.
+1. Build the Zephyr host at the pinned revision with the Stamp-P4 overlay.
 2. Build a matching ESP-Hosted-MCU SDIO slave image for the C6.
 3. Preserve and verify the old NG image, then flash the matching C6 image
    through an independently verified ESP-Prog/UART-boot path.
@@ -93,7 +93,7 @@ silently active after the EasyStick overlay is applied.
   MCU driver; a protocol mismatch is expected.
 - A build with the Function-EV slot-1 GPIOs
   `CLK=18`, `CMD=19`, `D0=14..D3=17` is a pin-map negative control and must
-  not be flashed to the EasyStick.
+  not be flashed to the Stamp-P4.
 - A deliberate overlay corruption must be rejected by the DT/source
   verification before any flash command is allowed.
 
@@ -105,7 +105,7 @@ silently active after the EasyStick overlay is applied.
    revisions.
 3. Flash only the P4 host image with the explicit P4-only write gate and the
    preserved P4 stock readback available for recovery.
-4. Capture raw P4 UART output through the first `EASYSTICK_P1 STEP .. FAIL`
+4. Capture raw P4 UART output through the first `BOARD_P1 STEP .. FAIL`
    boundary.
 5. Run `verify-p1-ng-capture.py`. A passing result means that a contiguous
    transport prefix and a subsequent failure were observed; it is not full

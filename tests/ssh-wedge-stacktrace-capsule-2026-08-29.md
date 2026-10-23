@@ -17,7 +17,7 @@ The built image contains the watchdog pretimeout/capsule code and `dump_stack()`
 
 ## Build provenance and contract
 
-The r2 build used the existing resume tree `...\build-rerun`, the existing Docker volumes `easystick-p4-wdt-0054-capsule-build-fast-20260825`, `easystick-p4-wdt-0054-capsule-ccache-20260825`, and `easystick-p4-wdt-0054-capsule-dl-20260825`, and a direct serial `make -j1 ... all`. The final container state was `exited|0|false` (exit code, OOMKilled). The failed first tree `...\build` was not used by r2.
+The r2 build used the existing resume tree `...\build-rerun`, the existing Docker volumes `stamp-p4-wdt-0054-capsule-build-fast-20260825`, `stamp-p4-wdt-0054-capsule-ccache-20260825`, and `stamp-p4-wdt-0054-capsule-dl-20260825`, and a direct serial `make -j1 ... all`. The final container state was `exited|0|false` (exit code, OOMKilled). The failed first tree `...\build` was not used by r2.
 
 Source provenance:
 
@@ -29,7 +29,7 @@ Source provenance:
 - `vmlinux` SHA-256: `103128bcb224eaedd7f92c06578ec62326190bc80661ea79417b1cabab1c324e`.
 - The pretimeout-order gate passed with stacktrace enabled and a 30,000 ms grace-cap expectation. The resumed direct `make` bypassed the normal post-make attestation hook; the same source/order gates were run afterward and passed.
 
-The image has `CONFIG_ESP32P4_WDT=y`, `CONFIG_STACKTRACE=y`, `CONFIG_KALLSYMS=y`, `CONFIG_KALLSYMS_ALL=y`, `CONFIG_DEBUG_INFO=y`, DWARF4, and frame pointers. DTS watchdog timeout is 120 seconds. The attestation contains the expected watchdog markers, `easystick_capture_crash`, `dump_stack();`, and symbols `esp32p4_wdt_arm`, `esp32p4_wdt_pretimeout`, and `easystick_capture_crash`.
+The image has `CONFIG_ESP32P4_WDT=y`, `CONFIG_STACKTRACE=y`, `CONFIG_KALLSYMS=y`, `CONFIG_KALLSYMS_ALL=y`, `CONFIG_DEBUG_INFO=y`, DWARF4, and frame pointers. DTS watchdog timeout is 120 seconds. The attestation contains the expected watchdog markers, `capture_crash`, `dump_stack();`, and symbols `esp32p4_wdt_arm`, `esp32p4_wdt_pretimeout`, and `capture_crash`.
 
 The final-shot manifest was verified immediately before flashing: `shot_c_allowed=true`, product `m3-lab`, boot shim `m2`, CMD53 capsule PA `0x50108080u`, BB version 6, size 288 bytes, CMD52 marker enabled, and the intended noncoherent IDMAC-ring contract enabled. Its copied metadata and all selected evidence are covered by `SHA256SUMS.txt`.
 
@@ -84,10 +84,10 @@ Shot 2 captured 27,622 bytes from the single COM10 open; capture SHA-256 is `058
 ESP-ROM:esp32p4-eco2-20240710
 rst:0x7 (HP_SYS_HP_WDT_RESET),boot:0xc (SPI_FAST_FLASH_BOOT)
 ...
-easystick-boot: CRASH_CAPSULE empty/invalid
+boot: CRASH_CAPSULE empty/invalid
 ```
 
-The last beacon was immediately followed by the reset in the decoded UART stream (`lines_between_last_beacon_tick_and_reset=[]`; verdict `RESET_DURING_CAPTURE`). No `EASYSTICK_WDT PRETIMEOUT`, `EASYSTICK_WDT CAPSULE_COMMIT`, or `Call Trace:` occurred in the shot. After reset the board booted Linux again and re-associated Wi-Fi.
+The last beacon was immediately followed by the reset in the decoded UART stream (`lines_between_last_beacon_tick_and_reset=[]`; verdict `RESET_DURING_CAPTURE`). No `BOARD_WDT PRETIMEOUT`, `BOARD_WDT CAPSULE_COMMIT`, or `Call Trace:` occurred in the shot. After reset the board booted Linux again and re-associated Wi-Fi.
 
 Shot 1 was also a single-open capture, 27,573 bytes, SHA-256 `3e5a6930af89fe45b52b4a0c8e0bdd09f1dc61b446c8aed5e9cdae6c8a67d97a`, with the same reset/capsule outcome. The earlier pre-reset ROM-bootloader attempt is preserved as an unreachable control record and is not counted as a reproduction shot.
 

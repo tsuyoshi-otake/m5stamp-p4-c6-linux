@@ -4,7 +4,7 @@ Status: **ANALYSIS — current M3-lab DMA candidate plus TX-ledger follow-up; no
 
 ## Scope and fixed inputs
 
-- Target: EasyStick Stamp-P4, P4 `COM10`, `10.255.10.161`.
+- Target: Stamp-P4, P4 `COM10`, `10.255.10.161`.
 - C6: unchanged; no C6 write was performed.
 - Flash: the baseline capture below used the already-flashed DMA candidate and
   only reset P4. A later, separately gated P4-only observer flash is recorded
@@ -17,14 +17,14 @@ Status: **ANALYSIS — current M3-lab DMA candidate plus TX-ledger follow-up; no
 | --- | ---: | --- |
 | `Image` | 6,576,968 | `2fa6a8c9f8701903f1cf78cd37389687d61247a8dc04af444ff33522c2ca9194` |
 | `rootfs.squashfs` | 2,727,936 | `b71bb646032adc7f2f388e2bc18cc96a87610b01436cc6506de689f6cf3493ba` |
-| `easystick-stamp-p4.dtb` | 3,372 | `7c3bd1e042d71aef80ebbeb37cfb402cabb400e3a41dc82b4a4b5d59a18eb163` |
+| `esp32p4-m5stamp-p4.dtb` | 3,372 | `7c3bd1e042d71aef80ebbeb37cfb402cabb400e3a41dc82b4a4b5d59a18eb163` |
 | matching `vmlinux` | 11,649,652 | `bf91639eaf3b2e040e4fb890e92200aecf83d9ccc5b3d011aee373732b13947b` |
 | matching `System.map` | 1,055,083 | `ef29eb5b188228aaa01e8af120128bb6b630ff7ec6fb9ae066ffb9e60f4de85e` |
 | generated Linux config | 58,081 | `9145936e9409b72962ef0373f0b8a73b4f954b5ac438561dbdebedf2fa68ce62` |
 
 The matching symbol artifacts are retained outside Git at:
 
-`D:\Users\Developer\easystick-tmp-20260820\easystick-p4-m3-lab-dma-nc-asus-20260824\ssh-disconnect-analysis-2026-08-25\`
+`D:\Users\Developer\tmp-20260820\stamp-p4-m3-lab-dma-nc-asus-20260824\ssh-disconnect-analysis-2026-08-25\`
 
 The generated configuration has `CONFIG_FRAME_POINTER=y`, but
 `CONFIG_STACKTRACE` and `CONFIG_KALLSYMS` are disabled. The staged kernel
@@ -40,7 +40,7 @@ command**, and then closed the channel.
 
 Host-side timeline, retained outside Git:
 
-`D:\Users\Developer\easystick-tmp-20260820\easystick-p4-m3-lab-dma-nc-asus-20260824\ssh-disconnect-analysis-2026-08-25\ssh-channel-repro-2026-08-25.json`
+`D:\Users\Developer\tmp-20260820\stamp-p4-m3-lab-dma-nc-asus-20260824\ssh-disconnect-analysis-2026-08-25\ssh-channel-repro-2026-08-25.json`
 
 JSON bytes: 1,048  
 JSON SHA-256: `a1d6caa018465a8579e5aa186a1bf18ff6563d0bd1c83f6cf65b051c3206712c`
@@ -60,7 +60,7 @@ AFTER_CLOSE_PING=False
 The raw UART capture is:
 
 ```text
-D:\Users\Developer\easystick-tmp-20260820\easystick-p4-m3-lab-dma-nc-asus-20260824\uart-ssh-disconnect-analysis-2026-08-25.bin
+D:\Users\Developer\tmp-20260820\stamp-p4-m3-lab-dma-nc-asus-20260824\uart-ssh-disconnect-analysis-2026-08-25.bin
 bytes 15549
 SHA-256 dd7c1c08b05551fc65aaadd45a3a2bce8b1c5985a66bd2054aba023c66981ac6
 ```
@@ -112,16 +112,16 @@ If the exact failing stage is required, use one diagnostic image with the
 current DMA/noncoherent configuration unchanged and only the existing
 host-TX stage ledger enabled:
 
-- `EASYSTICK_SDIO_FORCE_PIO=0`
-- `EASYSTICK_IDMAC_NONCOHERENT_RING=1`
-- `EASYSTICK_ESPHOSTED_DISABLE_0010=1`
-- `EASYSTICK_ESPHOSTED_TX_LEDGER=1`
+- `SDIO_FORCE_PIO=0`
+- `IDMAC_NONCOHERENT_RING=1`
+- `ESPHOSTED_DISABLE_0010=1`
+- `ESPHOSTED_TX_LEDGER=1`
 - keep the quiet 0024/0025 console behavior
 - do not enable the Dropbear hot-path ledger in the first pass
 - no C6 image or C6 write
 
 The ledger in
-[`0023-easystick-sdio-tx-stage-ledger.README.md`](../linux/buildroot-external/package/esp-hosted-ng/0023-easystick-sdio-tx-stage-ledger.README.md)
+[`0023-sdio-tx-stage-ledger.README.md`](../linux/buildroot-external/package/esp-hosted-ng/0023-sdio-tx-stage-ledger.README.md)
 is observe-only and distinguishes `NETDEV_XMIT`, enqueue/dequeue, credit,
 `CMD53_ATTEMPT`, `CMD53_MEMCPY_ENTER`, `CMD53_MEMCPY_DONE`, and
 `CMD53_OK/ERR`. This is an analysis image, not an A/B behavior comparison.
