@@ -1,6 +1,6 @@
 # 0023-A: P4 host TX stage ledger (observe-only)
 
-Test-only markers for ESP-Hosted NG host TX on Stamp-P4 Stamp-P4.
+Test-only markers for ESP-Hosted NG host TX on Stamp-P4.
 
 ## Intent
 

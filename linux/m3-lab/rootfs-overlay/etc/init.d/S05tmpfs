@@ -289,8 +289,8 @@ start() {
 		fi
 		if [ ! -f /boot/config.txt ]; then
 			cat << 'EOF' > /boot/config.txt 2>/dev/null || true
-# Stamp-P4 Stamp-P4 Boot & Hardware Configuration
-# Device: M5Stamp ESP32-P4 + C6 SDIO (Stamp-P4 Stamp-P4)
+# Stamp-P4 Boot & Hardware Configuration
+# Device: M5Stamp ESP32-P4 + C6 SDIO (Stamp-P4)
 # hostname is applied at boot by S40network.
 hostname=stamp-p4
 # wifi_mode: ap or sta.  Leave unset to auto-detect from mode=2 in wpa_supplicant.conf.

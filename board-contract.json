@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "board": "Stamp-P4 Stamp-P4 carrier Rev0.15 WIP",
+  "board": "Stamp-P4 carrier Rev0.15 WIP",
   "status": "hardware_contract_only",
   "source_netlist": {
     "file": "netlist.rev0.15.json",

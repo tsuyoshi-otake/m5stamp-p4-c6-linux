@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 /*
- * Stamp-P4 Stamp-P4 M1 boot shim.
+ * Stamp-P4 M1 boot shim.
  *
  * The ESP-IDF app is deliberately small: validate a flat RV32 Image, copy
  * it and the project DTS into HEX PSRAM, map the read-only squashfs partition,

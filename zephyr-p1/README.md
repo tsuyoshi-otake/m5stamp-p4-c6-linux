@@ -1,4 +1,4 @@
-# Stamp-P4 Stamp-P4 Zephyr P1 control image
+# Stamp-P4 Zephyr P1 control image
 
 Status: **WIP — P1-NG negative-control image; not a manufacturing image**.
 

@@ -10,7 +10,7 @@ index 5cd7f318aef..a948d6692ac 100644
 +	bool "Enable Stamp-P4 P1 transport ladder"
 +	help
 +	  Enable the temporary, fail-closed transport evidence ladder used by the
-+	  Stamp-P4 Stamp-P4 P1 control image. It sends four 512-byte TEST_IF
++	  Stamp-P4 P1 control image. It sends four 512-byte TEST_IF
 +	  frames after SDIO setup and requires the configured coprocessor firmware
 +	  version before allowing the consumer driver to continue. Do not enable
 +	  this option in a production image.

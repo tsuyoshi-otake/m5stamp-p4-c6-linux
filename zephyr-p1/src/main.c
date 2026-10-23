@@ -1,5 +1,5 @@
 /*
- * Stamp-P4 Stamp-P4 P1 control application.
+ * Stamp-P4 P1 control application.
  *
  * P1 intentionally stops at the ESP-Hosted-MCU Wi-Fi path.  SSH, NTP, SMP,
  * and Bluetooth are not part of this image's acceptance claim.

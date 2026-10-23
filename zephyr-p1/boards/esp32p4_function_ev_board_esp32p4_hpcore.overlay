@@ -1,5 +1,5 @@
 /*
- * Stamp-P4 Stamp-P4 P1 overlay.
+ * Stamp-P4 P1 overlay.
  *
  * The Function-EV HP-core board support remains the base.  Only the
  * Stamp-P4 carrier wiring is changed here; this is not a copied board DTS.

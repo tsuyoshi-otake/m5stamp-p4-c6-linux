@@ -25,7 +25,7 @@ The region arrays lose their __initdata markers so the sysfs file can
 report them for the life of the kernel.  The pool also creates the
 shared /sys/kernel/board kobject at device_initcall; the bootflash
 driver's late_initcall now attaches its file there instead of making a
-duplicate "stamp-p4" sysfs directory.
+duplicate "board" sysfs directory.
 
 ---
 diff --git a/mm/nommu_userspace_pool.c b/mm/nommu_userspace_pool.c
@@ -101,7 +101,7 @@ diff --git a/mm/nommu_userspace_pool.c b/mm/nommu_userspace_pool.c
 + * the bootflash driver's late_initcall, which then hangs its file on the
 + * same kobject instead of creating a duplicate sysfs directory.
 + */
-+struct kobject *kobj;
++struct kobject *board_kobj;
 +
 +/*
 + * /sys/kernel/board/nommu_pool — one "key value" pair per line:
@@ -163,16 +163,19 @@ diff --git a/mm/nommu_userspace_pool.c b/mm/nommu_userspace_pool.c
 +	struct kobject *kobj;
 +	int r;
 +
-+	kobj = kobject_create_and_add("stamp-p4", kernel_kobj);
++	kobj = kobject_create_and_add("board", kernel_kobj);
 +	if (!kobj)
 +		return -ENOMEM;
-+	kobj = kobj;
++	board_kobj = kobj;
 +	r = sysfs_create_file(kobj, &nommu_pool_attr.attr);
 +	if (r) {
-+		kobj = NULL;
++		board_kobj = NULL;
 +		kobject_put(kobj);
 +		return r;
 +	}
++	/* #55 compat, remove after v0.5.x: keep the old sysfs path working. */
++	sysfs_create_link(kernel_kobj, kobj, "easystick");
++	/* #55 compat end */
 +	return 0;
 +}
 +device_initcall(nommu_pool_sysfs_init);
@@ -192,7 +195,7 @@ diff --git a/include/linux/nommu_userspace_pool.h b/include/linux/nommu_userspac
 + * device_initcall.  Other stamp-p4 sysfs users hang their files on it;
 + * NULL before that initcall or when the pool is not built in.
 + */
-+extern struct kobject *kobj;
++extern struct kobject *board_kobj;
 +
 +/*
   * Try to allocate a contiguous range of @size bytes (page-aligned by the
@@ -202,7 +205,7 @@ diff --git a/include/linux/nommu_userspace_pool.h b/include/linux/nommu_userspac
  
  #else /* !CONFIG_NOMMU_USERSPACE_POOL */
  
-+#define kobj ((struct kobject *)0)
++#define board_kobj ((struct kobject *)0)
 +
  static inline void *nommu_userspace_pool_alloc(size_t size)
  {
@@ -222,18 +225,18 @@ diff --git a/drivers/misc/esp32p4-bootflash.c b/drivers/misc/esp32p4-bootflash.c
  	sector_buf = kmalloc(FLASH_SECTOR, GFP_KERNEL);
  	if (!sector_buf)
  		return -ENOMEM;
--	kobj = kobject_create_and_add("stamp-p4", kernel_kobj);
+-	kobj = kobject_create_and_add("board", kernel_kobj);
 +	/* The NOMMU pool's device_initcall already made /sys/kernel/board;
 +	 * attach to it (or make it when the pool is not built in). */
-+	kobj = kobj;
++	kobj = board_kobj;
 +	if (!kobj)
-+		kobj = kobject_create_and_add("stamp-p4", kernel_kobj);
++		kobj = kobject_create_and_add("board", kernel_kobj);
  	if (!kobj)
  		return -ENOMEM;
  	r = sysfs_create_file(kobj, &boot_commit_attr.attr);
  	if (r) {
 -		kobject_put(kobj);
-+		if (!kobj)
++		if (!board_kobj)
 +			kobject_put(kobj);
  		return r;
  	}

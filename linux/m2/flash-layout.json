@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "status": "ready_for_flash",
-  "board": "Stamp-P4 Stamp-P4 carrier Rev0.15 WIP (M3-lab C68 SMP kernel profile)",
+  "board": "Stamp-P4 carrier Rev0.15 WIP (M3-lab C68 SMP kernel profile)",
   "base_layout": "../flash-layout.json",
   "flash_bytes": 16777216,
   "alignment_bytes": 4096,

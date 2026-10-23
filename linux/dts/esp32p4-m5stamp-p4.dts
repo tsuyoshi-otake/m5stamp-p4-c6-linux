@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Stamp-P4 Stamp-P4 Rev0.15 WIP — M1 minimal Linux board description.
+ * Stamp-P4 Rev0.15 WIP — M1 minimal Linux board description.
  *
  * The first bring-up uses one HP hart, UART0, the P4 CLIC/SYSTIMER pair, and
  * the read-only flash window populated by the ESP-IDF boot shim. The M2
@@ -18,7 +18,7 @@
 / {
 	#address-cells = <1>;
 	#size-cells = <1>;
-	model = "Stamp-P4 Stamp-P4 Rev0.15 (M1)";
+	model = "Stamp-P4 Rev0.15 (M1)";
 	compatible = "tsuyoshi-otake,stamp-p4", "espressif,esp32p4";
 
 	cpus {

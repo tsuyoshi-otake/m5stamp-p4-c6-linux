@@ -475,7 +475,7 @@ valid, and after every 8 ms of calls sleeps for as long as they took.
 +	sector_buf = kmalloc(FLASH_SECTOR, GFP_KERNEL);
 +	if (!sector_buf)
 +		return -ENOMEM;
-+	kobj = kobject_create_and_add("stamp-p4", kernel_kobj);
++	kobj = kobject_create_and_add("board", kernel_kobj);
 +	if (!kobj)
 +		return -ENOMEM;
 +	r = sysfs_create_file(kobj, &boot_commit_attr.attr);

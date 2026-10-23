@@ -24,7 +24,7 @@ for path in \
 	"${TARGET_DIR}/etc/init.d/S40network" \
 	"${TARGET_DIR}/etc/init.d/S45bootsync" \
 	"${TARGET_DIR}/etc/init.d/S85ssh" \
-	"${TARGET_DIR}/etc/init.d/S90watchdog-feed" \
+	"${TARGET_DIR}/etc/init.d/S90watchdog" \
 	"${TARGET_DIR}/usr/sbin/bootsyncd" \
 	"${TARGET_DIR}/usr/sbin/usb-lun" \
 	"${TARGET_DIR}/usr/sbin/watchdog-feed" \
@@ -42,7 +42,7 @@ chmod 0755 "${TARGET_DIR}/etc/init.d/S05tmpfs"
 chmod 0755 "${TARGET_DIR}/etc/init.d/S40network"
 chmod 0755 "${TARGET_DIR}/etc/init.d/S45bootsync"
 chmod 0755 "${TARGET_DIR}/etc/init.d/S85ssh"
-chmod 0755 "${TARGET_DIR}/etc/init.d/S90watchdog-feed"
+chmod 0755 "${TARGET_DIR}/etc/init.d/S90watchdog"
 chmod 0755 "${TARGET_DIR}/usr/sbin/bootsyncd"
 chmod 0755 "${TARGET_DIR}/usr/sbin/usb-lun"
 chmod 0755 "${TARGET_DIR}/usr/sbin/watchdog-feed"
@@ -197,8 +197,8 @@ make_boot_template() {
 	mkfs=$(command -v mkfs.vfat || command -v mkfs.fat || echo /sbin/mkfs.vfat)
 	stage=$(mktemp -d)
 	cat > "${stage}/config.txt" <<'EOF'
-# Stamp-P4 Stamp-P4 Boot & Hardware Configuration
-# Device: M5Stamp ESP32-P4 + C6 SDIO (Stamp-P4 Stamp-P4)
+# Stamp-P4 Boot & Hardware Configuration
+# Device: M5Stamp ESP32-P4 + C6 SDIO (Stamp-P4)
 # hostname is applied at boot by S40network.
 hostname=stamp-p4
 # wifi_mode: ap or sta.  Leave unset to auto-detect from mode=2 in wpa_supplicant.conf.
