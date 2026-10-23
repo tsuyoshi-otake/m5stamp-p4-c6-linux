@@ -2075,11 +2075,11 @@ profile_fail_closed_after_rootfs() {
 		}
 		local rootfs_bytes
 		rootfs_bytes=$(stat -c '%s' "$rootfs_image")
-		# physmap-core rounds the 7 MiB mtd-rom resource down to a 4 MiB
-		# map when no address GPIO window is present.  A larger SquashFS
-		# cannot be mounted even though it fits the flash partition.
-		(( rootfs_bytes <= 0x400000 )) || {
-			echo "stacktrace diagnostic gate failed: rootfs=${rootfs_bytes} exceeds 4 MiB physmap window" >&2
+		# physmap-core maps the mtd-rom resource at its exact reg size
+		# (0092); the window is the 7 MiB rootfs partition, so a
+		# SquashFS larger than that cannot be mounted.
+		(( rootfs_bytes <= 0x700000 )) || {
+			echo "stacktrace diagnostic gate failed: rootfs=${rootfs_bytes} exceeds 7 MiB physmap window" >&2
 			exit 1
 		}
 		echo "Stacktrace diagnostic rootfs window gate passed: ${rootfs_bytes} bytes"

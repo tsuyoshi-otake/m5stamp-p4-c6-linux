@@ -1,0 +1,37 @@
+mtd: physmap: use the exact reg size when there is no addr-gpio window
+
+physmap computes the map size as BIT(fls64(reg_size) - 1) plus the
+address-GPIO count, so a 7 MiB mtd-rom reg only exposes a 4 MiB
+mtdblock0 and a rootfs larger than 4 MiB cannot be mounted.
+
+The power-of-two rounding only matters for the addr-gpios windowing
+scheme, where win_order selects a small aperture that the GPIO lines
+slide across a larger chip.  With no addr-gpios the window is a plain
+linear mapping and the MTD can expose the resource size exactly, so a
+non-power-of-two partition keeps its whole length instead of being
+truncated to the next lower power of two.
+
+Signed-off-by: Devin <devin@cognition.ai>
+---
+ drivers/mtd/maps/physmap-core.c |   10 +++++++---
+ 1 file changed, 7 insertions(+), 4 deletions(-)
+
+--- a/drivers/mtd/maps/physmap-core.c
++++ b/drivers/mtd/maps/physmap-core.c
+@@ -513,9 +513,12 @@
+ 		if (!info->maps[i].phys)
+ 			info->maps[i].phys = res->start;
+ 
+-		info->win_order = fls64(resource_size(res)) - 1;
+-		info->maps[i].size = BIT(info->win_order +
+-					 (info->gpios ?
+-					  info->gpios->ndescs : 0));
++		/* win_order/BIT sizing only matters for the addr-gpios
++		 * aperture windowing; with no gpios expose the exact
++		 * resource size so a non-pow2 reg is not truncated. */
++		info->win_order = fls64(resource_size(res)) - 1;
++		info->maps[i].size = info->gpios
++			? BIT(info->win_order + info->gpios->ndescs)
++			: resource_size(res);
+ 
+ 		info->maps[i].map_priv_1 = (unsigned long)dev;
