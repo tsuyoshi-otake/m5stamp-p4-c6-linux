@@ -826,6 +826,10 @@ if [[ "${EASYSTICK_USER_SYSMARK:-0}" == "1" ]]; then
 	fi
 	patches+=(0091-easystick-nommu-user-sysmark.patch)
 fi
+# physmap sizes a non-pow2 mtd-rom reg down to the next lower power of
+# two only for the addr-gpios aperture; with no gpios map the resource
+# at its exact size or a >4 MiB rootfs cannot be mounted.
+patches+=(0092-easystick-physmap-exact-size.patch)
 # C67-L2-STAGE: observe-only SMP breadcrumbs in smpboot.c (no behaviour change).
 if [[ "${EASYSTICK_C67_SMP_STAGE:-0}" == "1" || "${EASYSTICK_C68_CLEAN_RELEASE:-0}" == "1" ]]; then
 	patches+=(0037-easystick-c67-l2-stage-smpboot.patch)
@@ -2075,11 +2079,11 @@ profile_fail_closed_after_rootfs() {
 		}
 		local rootfs_bytes
 		rootfs_bytes=$(stat -c '%s' "$rootfs_image")
-		# physmap-core rounds the 7 MiB mtd-rom resource down to a 4 MiB
-		# map when no address GPIO window is present.  A larger SquashFS
-		# cannot be mounted even though it fits the flash partition.
-		(( rootfs_bytes <= 0x400000 )) || {
-			echo "stacktrace diagnostic gate failed: rootfs=${rootfs_bytes} exceeds 4 MiB physmap window" >&2
+		# physmap-core maps the mtd-rom resource at its exact reg size
+		# (0092); the window is the 7 MiB rootfs partition, so a
+		# SquashFS larger than that cannot be mounted.
+		(( rootfs_bytes <= 0x700000 )) || {
+			echo "stacktrace diagnostic gate failed: rootfs=${rootfs_bytes} exceeds 7 MiB physmap window" >&2
 			exit 1
 		}
 		echo "Stacktrace diagnostic rootfs window gate passed: ${rootfs_bytes} bytes"
@@ -2267,6 +2271,9 @@ if $lab_profile; then
 	set_config_value "${br_output}/.config" BR2_PACKAGE_BUSYBOX_SU y
 	# awk, less, tar, wget, top, ... from a third BusyBox, loaded only when run.
 	set_config_value "${br_output}/.config" BR2_PACKAGE_BUSYBOX_TOOLS y
+	# udhcpc alone in a dedicated BusyBox so the lease-lifetime process
+	# keeps ~300 KB of pool that the full image would pin (#45).
+	set_config_value "${br_output}/.config" BR2_PACKAGE_BUSYBOX_UDHCPC y
 	# PR_EASYSTICK_SYSTEM wrapper so system scripts keep system-side
 	# NOMMU classification when a user starts them (#50 round 4).
 	set_config_value "${br_output}/.config" BR2_PACKAGE_EASYSTICK_SYS y
@@ -2455,7 +2462,8 @@ if $ssh_profile; then
 			"BR2_PACKAGE_EASYSTICK_RESPAWN=y" \
 			"BR2_PACKAGE_BUSYBOX_DAEMONS=y" \
 			"BR2_PACKAGE_BUSYBOX_SU=y" \
-			"BR2_PACKAGE_BUSYBOX_TOOLS=y"; do
+			"BR2_PACKAGE_BUSYBOX_TOOLS=y" \
+			"BR2_PACKAGE_BUSYBOX_UDHCPC=y"; do
 			grep -Fqx -- "${expected}" "${br_output}/.config" || {
 				echo "m3-lab config check failed: ${expected}" >&2
 				exit 1
@@ -2471,6 +2479,12 @@ if $ssh_profile; then
 				exit 1
 			}
 		done
+		# #45: udhcpc on its own image.  The link is relative
+		# (../bin/busybox-udhcpc), so match the target-name suffix.
+		[[ "$(readlink "${br_output}/target/sbin/udhcpc")" == *busybox-udhcpc ]] || {
+			echo "m3-lab check failed: /sbin/udhcpc does not point at busybox-udhcpc" >&2
+			exit 1
+		}
 		# /bin/su points at the small su-only BusyBox (#37).
 		[[ "$(readlink "${br_output}/target/bin/su")" == *busybox-su ]] || {
 			echo "m3-lab check failed: /bin/su does not point at busybox-su" >&2

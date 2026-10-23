@@ -61,7 +61,11 @@ def main() -> None:
     assert '"$patch_name" == 0072-easystick-esp32p4-bootflash.patch ||' in build
     # The everyday commands come from busybox-tools, not the main BusyBox.
     assert 'BR2_PACKAGE_BUSYBOX_TOOLS y' in build
-    assert '"BR2_PACKAGE_BUSYBOX_TOOLS=y"; do' in build
+    assert '"BR2_PACKAGE_BUSYBOX_TOOLS=y" \\' in build
+    # #45: udhcpc has a dedicated minimal BusyBox; it ends the expected list.
+    assert 'BR2_PACKAGE_BUSYBOX_UDHCPC y' in build
+    assert '"BR2_PACKAGE_BUSYBOX_UDHCPC=y"; do' in build
+    assert "*busybox-udhcpc ]] ||" in build
     assert "tools_bytes < 480 * 1024" in build
     tools_config = read(
         "linux/buildroot-external/package/busybox-tools/busybox-tools.config"

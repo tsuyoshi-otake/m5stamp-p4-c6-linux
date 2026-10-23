@@ -1,0 +1,33 @@
+Subject: [PATCH] physmap: map no-gpio mtd-rom at its exact resource size (#45)
+
+Upstream rounds the window down (not up) to BIT(fls64(size)-1) so the
+aperture is power-of-two sized; that rounding only exists for the
+addr-gpios windowing (physmap_addr_gpios_*).  With no addr-gpios the
+extra bit is never consumed, so a non-pow2 reg (the 7 MiB mtd-rom
+rootfs partition) loses its tail instead of gaining stale mapping.
+
+Keep win_order + BIT() sizing when info->gpios is present; otherwise
+take resource_size(res) verbatim.
+---
+ drivers/mtd/maps/physmap-core.c | 11 +++++++----
+ 1 file changed, 7 insertions(+), 4 deletions(-)
+
+--- a/drivers/mtd/maps/physmap-core.c
++++ b/drivers/mtd/maps/physmap-core.c
+@@ -522,10 +522,13 @@
+ 		if (!info->maps[i].phys)
+ 			info->maps[i].phys = res->start;
+
+-		info->win_order = fls64(resource_size(res)) - 1;
+-		info->maps[i].size = BIT(info->win_order +
+-					 (info->gpios ?
+-					  info->gpios->ndescs : 0));
++		if (info->gpios) {
++			info->win_order = fls64(resource_size(res)) - 1;
++			info->maps[i].size = BIT(info->win_order +
++						 info->gpios->ndescs);
++		} else {
++			info->maps[i].size = resource_size(res);
++		}
+
+ 		info->maps[i].map_priv_1 = (unsigned long)dev;

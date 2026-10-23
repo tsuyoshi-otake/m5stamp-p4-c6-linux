@@ -11,6 +11,7 @@ source "$BR2_EXTERNAL_EASYSTICK_STAMP_P4_PATH/package/easystick-sys/Config.in"
 source "$BR2_EXTERNAL_EASYSTICK_STAMP_P4_PATH/package/busybox-daemons/Config.in"
 source "$BR2_EXTERNAL_EASYSTICK_STAMP_P4_PATH/package/busybox-su/Config.in"
 source "$BR2_EXTERNAL_EASYSTICK_STAMP_P4_PATH/package/busybox-tools/Config.in"
+source "$BR2_EXTERNAL_EASYSTICK_STAMP_P4_PATH/package/busybox-udhcpc/Config.in"
 
 config BR2_PACKAGE_EASYSTICK_STAMP_P4_M1
 	bool "M1 minimal native Linux profile"

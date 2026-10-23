@@ -157,6 +157,11 @@ CONFIG_MKE2FS=y
 # CONFIG_SYSLOGD is not set
 # CONFIG_UDHCPD is not set
 
+# #45: udhcpc runs from busybox-udhcpc, a dedicated minimal BusyBox; drop it
+# from the full image so /sbin/udhcpc has a single owner and the resident
+# shells shrink by the applet's size too.
+# CONFIG_UDHCPC is not set
+
 # #37: su lives in busybox-su, a separate setuid binary; keep it out of this
 # one (close to the 512 KB allocation) so /bin/su has a single owner.
 # CONFIG_SU is not set
