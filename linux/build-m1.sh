@@ -2616,6 +2616,8 @@ PY
 fi
 
 profile_fail_closed_after_rootfs
+# #55: the tree must be free of the old name outside history/compat.
+python3 "${script_dir}/tests/check-no-easystick.py" "${firmware_root}"
 printf '%s\n' "$profile_identity" >"$profile_stamp"
 if [[ ${LEGAL_INFO:-0} == 1 ]]; then
 	rm -rf -- "${br_output}/legal-info"
