@@ -103,6 +103,7 @@ Every board gets its own credentials on first boot; no SSID or password is share
 
 ### 1. Download Release Package
 
+<!-- 55b keep -->
 > **Next release (on `main`, not yet published).** The names now describe what each part does,
 > and `easystick` is gone (#55): the hostname is `stamp-p4` (`stamp-p4.local`), the USB drive is
 > `STAMP_P4`, and the commands are `sysinfo`, `autorun`, `update-status`, `run-system`, `bootsyncd`,
@@ -114,6 +115,7 @@ Every board gets its own credentials on first boot; no SSID or password is share
 > udhcpc now runs from a small BusyBox of its own, which frees about 340 KB of the pool at idle (#45).
 > The flash steps below already use the new DTB name; the v0.4.2 zip still holds
 > `easystick-stamp-p4.dtb`.
+<!-- 55b keep end -->
 >
 > **v0.4.2** is built and published the same way as v0.2.2 to v0.4.1: the assets
 > are the CI build that was flashed and checked on hardware, and the tag run refuses
@@ -129,7 +131,7 @@ Every board gets its own credentials on first boot; no SSID or password is share
 >   `_exit(127)` without touching the parent's memory.
 > - The memory pool keeps a reserve for the system (#51, #50): best-fit
 >   allocation, a 1.2 MB / 2 MiB watermark for programs started by a user,
->   and `easystick-sys` for the network and watchdog scripts.  A network
+>   and `run-system` for the network and watchdog scripts.  A network
 >   restart that overlapped several SSH sessions gave 11 real out-of-memory
 >   failures in the system's own programs before, and none after.
 > - `linux/flash-candidate.ps1` leaves the boot slots alone by default; `-WriteBoot`
@@ -144,13 +146,13 @@ Every board gets its own credentials on first boot; no SSID or password is share
 >   not advance when the CPU reads it, so a programmed-I/O read of more than
 >   one 32-bit word returned its first word repeated.  Wi-Fi packets whose
 >   length leaves a 5–15 byte tail took that path (17–29 times in one
->   5 × 10 MB download run).  `0087` and `easystick,fifo-no-pop` in the DTS
+>   5 × 10 MB download run).  `0087` and `espressif,fifo-no-pop` in the DTS
 >   send those reads through the DMA engine with a bounce buffer
 >   (`dw_mmc.es_fifo_bounce=0` turns it off).  Throughput and latency did not
 >   change measurably.  Register reads stay on CMD52 (`0012`): 4-byte CMD53
 >   register reads misread the packet length under load.
 > - A network restart runs fewer programs (#40): `S40network`,
->   `easystick-update-status` and the udhcpc script use shell builtins and
+>   `update-status` and the udhcpc script use shell builtins and
 >   skip the SSH restart when inetd runs.  The sampled process peak during a
 >   restart did not drop measurably; #40 stays open.
 >
@@ -162,7 +164,7 @@ Every board gets its own credentials on first boot; no SSID or password is share
 >   `maxcpus=1` because CPU1 stopped taking interrupts a few seconds into boot;
 >   `0079`, `0080`, `0081` and a boot-shim fix that gives CPU1 the same PMA/PMP
 >   memory protection as CPU0 make it reliable.  A 1-CPU image still builds
->   with `EASYSTICK_C68_MAXCPUS=1`.  (`linux/tests/issue5-smp-2026-10-19.md`)
+>   with `C68_MAXCPUS=1`.  (`linux/tests/issue5-smp-2026-10-19.md`)
 > - BusyBox hush follows POSIX `set -e` (#41): a skipped `&&`/`||` list no
 >   longer switches it off for the rest of the script, a `while`/`until`
 >   condition or a `! pipe` that is false no longer ends the script, and on
@@ -196,7 +198,7 @@ Every board gets its own credentials on first boot; no SSID or password is share
 >   restarting the network (#39), `country=` included; a deleted
 >   `hostname=` goes back to the boot name, and a PSK fixed by a reload gets
 >   a DHCP lease.  The NOMMU process pool is shown in
->   `/sys/kernel/easystick/nommu_pool` (#40), a failed SSH key install
+>   `/sys/kernel/board/nommu_pool` (#40), a failed SSH key install
 >   fails closed, and the loopback interface comes up at boot.
 >
 > Records: `linux/tests/issue5-smp-2026-10-19.md`,
@@ -772,6 +774,7 @@ This compiles:
 
 ## SHA-256 Checksums (v0.4.2)
 
+<!-- 55b keep -->
 ```text
 Raw 16MB Monolithic Image:
 312bdef99fe844589e899e30f483578d7152d7e794b53bba25b638b4fc27bff4  m5stamp-p4-c6-linux-smp-v0.4.2-16mb.bin.gz
@@ -789,6 +792,7 @@ e1e6764cba9b3c5bda953237ba5915bc2eff08e2983e55f45598d91897e1a9d6  rootfs.squashf
 ac4209eef5644f93ab59f27a29b8ee6f2f57600e488b4cbc3b79a7239030d34d  easystick-stamp-p4.dtb
 7c77caa62525e0b0a382268ea03f292e3850f71e19a92f4edae6939c3b57d7eb  boot.img
 ```
+<!-- 55b keep end -->
 
 ---
 

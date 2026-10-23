@@ -58,7 +58,7 @@ or `wpa_supplicant.conf` has no `mode=2`, the board starts as a station instead.
 board falls back to the built-in AP configuration (SSID `m5`, passphrase
 `m5stamp-p4-c6`) and logs
 `wpa_supplicant failed with ...`. If DHCP fails the status is `DHCP_FAILED`.
-If the board never associates, `/run/easystick-status.txt` and the console
+If the board never associates, `/run/status.txt` and the console
 (`wlan0 did not associate (...)`) say `SSID_NOT_FOUND` when the network was not
 seen in any scan (wrong SSID, out of range, 5 GHz only) and `AUTH_FAILED` when
 it was seen but the connection failed (usually a wrong PSK).
@@ -79,7 +79,7 @@ Configuration edits are applied only after the host's safe-eject action.
 reboot: S40network then leaves all kernel messages on the console instead of
 lowering it to warnings. Expect slower Wi-Fi/SSH while it is on, and remove it
 afterwards. As root, `cat /run/messages.0 /run/messages`
-shows syslog (Dropbear logins, DHCP), capped at 64 KB, and `easystick-info` a
+shows syslog (Dropbear logins, DHCP), capped at 64 KB, and `sysinfo` a
 status summary.
 
 **Settings broke Wi-Fi or SSH.** Put an empty `factory-reset` file on the USB
@@ -91,7 +91,7 @@ in the `crashlog` partition. `reason=1` is a watchdog reset. Resolve `epc` and
 `ra` with the `System.map` of the exact kernel `Image` that is flashed.
 
 The capsule holds only registers. For the kernel log of the crashed boot,
-m3-lab images reserve pstore (ramoops) by default (`EASYSTICK_PSTORE=0` leaves
+m3-lab images reserve pstore (ramoops) by default (`PSTORE=0` leaves
 it out). It keeps an oops
 or panic and the console tail in 64 KB of reserved PSRAM; after the reset,
 as root, read `/sys/fs/pstore/` (`ES_PSTORE OK: N record(s)` on the console).

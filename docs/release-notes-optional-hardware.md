@@ -1,4 +1,4 @@
-# v0.2.1-smp addendum: optional EasyStick carrier
+# v0.2.1-smp addendum: optional Stamp-P4 carrier
 
 This documentation/hardware addendum accompanies the existing v0.2.1-smp
 release. It does not announce a new firmware build or change existing binary
@@ -6,9 +6,9 @@ checksums or the release tag.
 
 ## Optional hardware: easy USB mass-storage configuration
 
-The EasyStick Stamp-P4 Rev0.15 carrier is now documented as an **optional**
+The Stamp-P4 Rev0.15 carrier is now documented as an **optional**
 hardware companion. With the release firmware, its USB-A connection exposes
-the 256KB `EASYSTICK` configuration drive to a PC without separately wiring
+the 256KB `STAMP_P4` configuration drive to a PC without separately wiring
 the Stamp-P4's GPIO26/27 Full-Speed USB interface.
 
 - The carrier is not required for Linux boot, Wi-Fi, SSH, or the Stamp-P4
