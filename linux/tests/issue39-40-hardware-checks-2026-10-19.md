@@ -8,7 +8,7 @@ SSID, PSK, password or client address is quoted here.
 
 #39: a config.txt save applies only the keys that changed (`S40network apply
 KEY...`) instead of restarting the whole network.  #40: the NOMMU pool is
-visible in `/sys/kernel/easystick/nommu_pool`, and the network scripts fork
+visible in `/sys/kernel/board/nommu_pool`, and the network scripts fork
 less during a reload.
 
 ## Builds
@@ -29,7 +29,7 @@ are the same in builds b to e.  Build e partitions:
 fd3db5d2b8b4704604deea801be172ae78afbc9d20153ff9ce77bdce104be750  boot-shim.bin
 3a8e9446adf621db5dba05182c9503a25ad6961f4e39dac0de9fb8ff67499cf6  Image
 97eafd8c35766df416522df162303f8b506b7b6167784b69d19dad4e0acd93ec  rootfs.squashfs
-a12b18e1347ade36c499c79338ff7125bd4140bf56c64ecfedce8f93b4d3a852  easystick-stamp-p4.dtb
+a12b18e1347ade36c499c79338ff7125bd4140bf56c64ecfedce8f93b4d3a852  esp32p4-m5stamp-p4.dtb
 ac7a60875eabe0d0b6d023afcbd35f7d35181b2961f48e9108bf6f05b05f04be  boot.img
 ```
 
@@ -39,8 +39,8 @@ ac7a60875eabe0d0b6d023afcbd35f7d35181b2961f48e9108bf6f05b05f04be  boot.img
 
 | Check | Result |
 |---|---|
-| `/sys/kernel/easystick/nommu_pool` | total 10485760, used about 5.1–5.7 MB at idle, largest_free 4194304, alloc_fail 0, fallback 0, 2 regions (4 MiB + 6 MiB) |
-| `/run/easystick-status.txt` | carries the `pool_*` fields |
+| `/sys/kernel/board/nommu_pool` | total 10485760, used about 5.1–5.7 MB at idle, largest_free 4194304, alloc_fail 0, fallback 0, 2 regions (4 MiB + 6 MiB) |
+| `/run/status.txt` | carries the `pool_*` fields |
 | `/proc/sys/kernel/modprobe` | empty (builds c to e; build b still had the path, fixed in c8225d6) |
 | Peak user processes during a full network restart (niced 30 ms sampler) | 15, was 17 before.  The DHCP hook chain, `cat` and `sleep` no longer appear.  The 12-process target of #40 is **not** met for a full restart |
 

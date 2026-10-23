@@ -55,11 +55,11 @@ The same 0054 Image that writes a VALID capsule when feeds are stopped with IRQs
 
 Sticky generation tag, not a counter. `stage_request_end_*` hold the generation that last marked them. Dump prints 1 iff `stage == generation`. `begin()` does not clear old words.
 
-`enter=1 before_next=0 after_next=0 idle=1` means the last armed FOCUS_ARG (`0x97ec0000`) `dw_mci_request_end()` entered, skipped the queued-next arm, and took `STATE_IDLE`. That focused transfer left the host idle. It is not a live "host is idle right now" flag. Later non-FOCUS_ARG MRQs are invisible. So the wait that wedges the kernel is **not** a still-open focused CMD53/CMD52 completion. Candidates that still fit (IRQ-off + host idle + WDT-only) include IDMAC/cache complete-flag polls (`EASYSTICK_IDMAC_NONCOHERENT_RING=1`) and long `dw_mci_wait_while_busy` / reset polls. PIO A/B (`SDIO_FORCE_PIO=1`) remains the cheap cut if JTAG does not name the site.
+`enter=1 before_next=0 after_next=0 idle=1` means the last armed FOCUS_ARG (`0x97ec0000`) `dw_mci_request_end()` entered, skipped the queued-next arm, and took `STATE_IDLE`. That focused transfer left the host idle. It is not a live "host is idle right now" flag. Later non-FOCUS_ARG MRQs are invisible. So the wait that wedges the kernel is **not** a still-open focused CMD53/CMD52 completion. Candidates that still fit (IRQ-off + host idle + WDT-only) include IDMAC/cache complete-flag polls (`IDMAC_NONCOHERENT_RING=1`) and long `dw_mci_wait_while_busy` / reset polls. PIO A/B (`SDIO_FORCE_PIO=1`) remains the cheap cut if JTAG does not name the site.
 
 ## S0b ICMP "revival" is post-reset association
 
-Evidence: `C:\Users\developer\tmp\easystick-p4-s0b-console-beacon-20260829\`.
+Evidence: `C:\Users\developer\tmp\stamp-p4-s0b-console-beacon-20260829\`.
 
 | Event | UTC | Source |
 |---|---|---|
@@ -80,7 +80,7 @@ S0b build: 0054 was present (`wdt_stage0_irq_s: 90`, empty capsule). Same-day ad
 
 | mode | IRQs | expected 0054 Image |
 |---|---|---|
-| 1 | on | `INJECT` line, then PRETIMEOUT + CAPSULE_COMMIT + VALID, `epc` in `easystick_wdt_inject_spin`, `rst:0x7` |
+| 1 | on | `INJECT` line, then PRETIMEOUT + CAPSULE_COMMIT + VALID, `epc` in `wdt_inject_spin`, `rst:0x7` |
 | 2 | `local_irq_disable` | `INJECT` line, no PRETIMEOUT, no CAPSULE_COMMIT, capsule EMPTY, `rst:0x7` |
 
 Reset time is from **last feed**, not from a magic 163.7 s. The INJECT line prints `last_feed_age_jiffies`. If inject is at the same leftover as delay110 exec (~50–60 s after last keepalive), 0054 should land near inject+163.7 s and the no-0054 / grace leftover near inject+73.5 s. A match of mode 2 to the wedge signature (EMPTY, no PRETIMEOUT, same leftover) supports IRQ-off. A miss pushes toward hang (class 3).

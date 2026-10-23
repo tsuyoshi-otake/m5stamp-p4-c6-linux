@@ -11,7 +11,7 @@ is reachable, or that the P4 host can enumerate `wlan0`.
 - ESP-IDF: commit `2c211b236707889e8400c4dc5644dd5c4ee071e0e`
 - Target: ESP32-C6, SDIO slave transport
 - Build entry point: `linux/m2/build-c6.sh`
-- Output: external Docker volume `easystick-p4-c6-out`, not Git
+- Output: external Docker volume `stamp-p4-c6-out`, not Git
 
 The build staged the ESP-Hosted-NG C6 Wi-Fi library set and ROM patch in the
 disposable IDF checkout.  The stock IDF checkout is restored by the script's

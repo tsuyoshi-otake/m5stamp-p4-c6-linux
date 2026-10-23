@@ -159,7 +159,7 @@ The rbtree corruption was not a bug in `lib/rbtree.c`. Rather, memory structures
      ```
   2. Check if target event time is in the past and immediately return `-ETIME` so the timer subsystem can reschedule.
 
-### 4. `0062-easystick-esp32p4-usb-acm-tx-bounded-poll.patch` (Terminal & `vi` Freeze Resolution)
+### 4. `0062-esp32p4-usb-acm-tx-bounded-poll.patch` (Terminal & `vi` Freeze Resolution)
 - **Root Cause**:
   When full-screen terminal editors such as BusyBox `vi` initialize, they send escape sequences (`\033[6n` for Cursor Position Report / terminal dimensions).
   On the ESP32-P4's hardware USB-Serial/JTAG (`ttyGS1`), the transmit FIFO is limited to 64 bytes. In the baseline ACM driver, writing to a full TX FIFO polled without an upper bound or timed out indefinitely when the host USB endpoint buffer was backpressured. This caused the calling task (or console thread) to hang in kernel mode, leading to complete terminal lockup.
@@ -170,7 +170,7 @@ The rbtree corruption was not a bug in `lib/rbtree.c`. Rather, memory structures
 - **Root Cause**:
   Linux kernel cryptographically secure pseudo-random number generator (`CRNG`) requires 256 bits of entropy. On a read-only rootfs (`SquashFS`), `seedrng` could not credit and write its `seed.credit` file to `/var/lib/seedrng`, causing `getrandom()` system calls to block during early boot until ambient entropy accumulated.
 - **Fix**:
-  Ensure `/var/lib` is mounted as a writable RAM OverlayFS during early startup (`S05easystick-tmpfs`) before `seedrng` executes. This allows `seedrng` to immediately inject and save 256 bits of seed, completing `random: crng init done` before Dropbear SSH or userland applications start.
+  Ensure `/var/lib` is mounted as a writable RAM OverlayFS during early startup (`S05tmpfs`) before `seedrng` executes. This allows `seedrng` to immediately inject and save 256 bits of seed, completing `random: crng init done` before Dropbear SSH or userland applications start.
 
 ---
 
@@ -203,7 +203,7 @@ Following the integration of patches `0014`, `0015`, and `0016` into `linux/buil
 ### Test 3: Mixed Workload via Interactive Shell
 Multiple commands executed over an interactive shell session followed by clean `exit`:
 - `id`
-- `uname -a`: `Linux easystick-stamp-p4 6.18.35 #1 PREEMPT Fri Sep 4 06:15:32 UTC 2026 riscv32 GNU/Linux`
+- `uname -a`: `Linux stamp-p4 6.18.35 #1 PREEMPT Fri Sep 4 06:15:32 UTC 2026 riscv32 GNU/Linux`
 - `cat /proc/uptime`: `215.42 208.10`
 - `ls -la /`: clean filesystem traversal
 - Session closed with `exit`: zero errors, clean terminal disconnect.

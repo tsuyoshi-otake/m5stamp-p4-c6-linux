@@ -1,6 +1,6 @@
 # S0b: console-beacon separation of a global stall from a confined stall
 
-Date: 2026-08-28 (shot), analyzed 2026-08-29. Board: EasyStick Stamp-P4,
+Date: 2026-08-28 (shot), analyzed 2026-08-29. Board: Stamp-P4,
 Rev0.15 (M1), r4 image, `vendor/linux` at `acb7cf4c1184`. DUT: `10.255.10.161`.
 Host: COM10 (USB-Serial/JTAG, VID:PID `303A:1001`).
 

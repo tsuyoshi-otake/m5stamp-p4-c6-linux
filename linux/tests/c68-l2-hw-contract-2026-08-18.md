@@ -17,7 +17,7 @@ Do not describe C68 as “SMP達成” or “デュアルコア対応完了” b
 
 ## Artifact hashes for the L2-HW evidence
 
-From the 2026-08-18 RTS×20 run (`C:\Users\developer\tmp\easystick-m25-smp-20260817`):
+From the 2026-08-18 RTS×20 run (`C:\Users\developer\tmp\m25-smp-20260817`):
 
 | Artifact | SHA-256 |
 |---|---|
@@ -226,7 +226,7 @@ went deaf when DTR/RTS were forced low). The x20 serial constructor
 
 | Field | Value |
 |---|---|
-| File | `C:\Users\developer\tmp\easystick-m25-smp-20260817\c68-120s-l25-classify.bin` |
+| File | `C:\Users\developer\tmp\m25-smp-20260817\c68-120s-l25-classify.bin` |
 | Bytes | 4499 |
 | SHA-256 | `bc18c0772d87813b9dbc717d0016c19fc85b389a4642e6343f6f38593eeaa9f1` |
 | First byte | 0.793 s |
@@ -274,7 +274,7 @@ path as the L2-HW 120 s run.
 
 | Field | Value |
 |---|---|
-| File | `C:\Users\developer\tmp\easystick-m25-smp-20260817\c68-0037-120s.bin` |
+| File | `C:\Users\developer\tmp\m25-smp-20260817\c68-0037-120s.bin` |
 | Bytes | 4559 |
 | SHA-256 | `6952b6062e2ab1da5e7d9b1a33a856b43dea3e012582543ea06b59cf92934596` |
 | First byte | 0.771 s |
@@ -320,7 +320,7 @@ capture path.
 
 | Field | Value |
 |---|---|
-| File | `C:\Users\developer\tmp\easystick-m25-smp-20260817\c68-a-prime-20260819-120s.bin` |
+| File | `C:\Users\developer\tmp\m25-smp-20260817\c68-a-prime-20260819-120s.bin` |
 | Bytes | 15303 |
 | SHA-256 | `4faf08acdc9e954e396d3faa1ff623fc2dc8e0cdcedd64017b61ecf6ac0ccf5b` |
 | First byte | 0.792 s |
@@ -353,7 +353,7 @@ capture path.
 
 | Field | Value |
 |---|---|
-| File | `C:\Users\developer\tmp\easystick-m25-smp-20260817\c68-timer-20260819-120s.bin` |
+| File | `C:\Users\developer\tmp\m25-smp-20260817\c68-timer-20260819-120s.bin` |
 | Bytes | 3735 |
 | SHA-256 | `c551330da3308e6532b8ed95b097ebeb338504d21e760c035541b29853a94cbf` |
 | First byte | 0.774 s |
@@ -397,9 +397,9 @@ capture path. The C68 manifest included both the 0045 SYSTIMER lock and the
 
 | Field | Value |
 |---|---|
-| File | `C:\Users\developer\tmp\easystick-m25-smp-20260817\c68-context-observe-20260819-120s.bin` |
-| Text | `C:\Users\developer\tmp\easystick-m25-smp-20260817\c68-context-observe-20260819-120s.txt` |
-| JSON | `C:\Users\developer\tmp\easystick-m25-smp-20260817\c68-context-observe-20260819-120s.json` |
+| File | `C:\Users\developer\tmp\m25-smp-20260817\c68-context-observe-20260819-120s.bin` |
+| Text | `C:\Users\developer\tmp\m25-smp-20260817\c68-context-observe-20260819-120s.txt` |
+| JSON | `C:\Users\developer\tmp\m25-smp-20260817\c68-context-observe-20260819-120s.json` |
 | Bytes | 34516 |
 | SHA-256 | `45f947cb613a4b7cf1fc4628dc977dffe979f50f5be03522b8fe99734c4afe60` |
 | First byte | 0.784 s |
@@ -513,7 +513,7 @@ proof that 0046 fixes the underlying race, because its
 ## 120 s classification of the 0044 timer-observation quartet (2026-08-19)
 
 The 0043 CLIC peer-window experiment was absent. The selected kernel profile
-contained 0038, 0039, 0040, 0041, 0042 and 0044; `EASYSTICK_C68_TIMER_LOCK`
+contained 0038, 0039, 0040, 0041, 0042 and 0044; `C68_TIMER_LOCK`
 was `0`. The boot-shim, Image, LZ4 rootfs and DTB were flashed together and
 each was verified at `0x10000`, `0x90000`, `0x810000` and `0xf10000`.
 
@@ -525,9 +525,9 @@ The four staged input hashes were:
 - DTB: `675a04475b8671bcbbc01830c5927c1e5fd9c47f3382cb289a10a5e8b8519ee0`
 
 The flash-and-capture record is
-`C:\Users\developer\tmp\easystick-m25-smp-20260817\c68-0044-observe-20260819-120s.json`.
+`C:\Users\developer\tmp\m25-smp-20260817\c68-0044-observe-20260819-120s.json`.
 The raw capture is
-`C:\Users\developer\tmp\easystick-m25-smp-20260817\c68-0044-observe-20260819-120s.txt`;
+`C:\Users\developer\tmp\m25-smp-20260817\c68-0044-observe-20260819-120s.txt`;
 it is 34,628 bytes with SHA-256
 `a4b0185a471828c6164c56c9a79a6d6e64890c1cb95305cc32a3f7808c39a4b4`.
 The serial port opened once and the first byte arrived at 0.770 s.
@@ -584,7 +584,7 @@ diagnosis. The next control should retain the 0044 readbacks and enable the
 mount gate.
 
 The full Buildroot regeneration attempted for this profile stopped at the
-existing Dropbear patch `0002-easystick-ssh-postexec-markers.patch`:
+existing Dropbear patch `0002-ssh-postexec-markers.patch`:
 `src/packet.c` hunk 1 failed while hunks 2 and 3 applied. Consequently, the
 flashed rootfs is the previously Buildroot-generated LZ4 image with an
 SMP-compatible module, not a newly completed 0044-specific Buildroot
@@ -610,7 +610,7 @@ The 0045 manifest records the staged patch hash
 `b1e3444e098ff307c9f0021378fcef2195362ee0fbd0fdbb7732f0f7f9748b0b`.
 All four artifacts were flashed and verified at the same offsets as the
 0044 run. The capture record is
-`C:\Users\developer\tmp\easystick-m25-smp-20260817\c68-0045-observe-20260819-120s.json`;
+`C:\Users\developer\tmp\m25-smp-20260817\c68-0045-observe-20260819-120s.json`;
 the raw text is the same basename with `.txt`. It is 70,770 bytes with
 SHA-256
 `0cac6ca1e770aced79799c55dd6601b78940b07dab177171f55ded75a78bfa69`,
@@ -667,7 +667,7 @@ The staged input hashes were:
 - staged 0047: `d5f3c0e32a3f2d530cc5127c8f6af14c55edde7d41ea87dc6b3d09a11552f1af`
 
 The flash-and-capture record is
-`C:\Users\developer\tmp\easystick-m25-smp-20260817\c68-0045-0047-observe-20260819-120s.json`;
+`C:\Users\developer\tmp\m25-smp-20260817\c68-0045-0047-observe-20260819-120s.json`;
 the raw text is the same basename with `.txt`; the binary is the same
 basename with `.bin`. The capture is 38,531 bytes with SHA-256
 `96ebcf939c4b0efa9f9b43294fc29a9f7a18b1d6f61f09dcfef06a81b8f4d2cf`, one
@@ -726,7 +726,7 @@ flashed together at `0x10000`, `0x90000`, `0x810000`, and `0xf10000`.
 | staged 0049 | `c76c255b23b8959473ff7388930e4a830002041c830bb4f0efab9f7197915201` |
 
 The clean retry record is
-`C:\Users\developer\tmp\easystick-m25-smp-20260819\c68-0045-0047-l3-20260819-workqueue-pass-120s.json`;
+`C:\Users\developer\tmp\m25-smp-20260819\c68-0045-0047-l3-20260819-workqueue-pass-120s.json`;
 the raw UART capture has the same basename with `.txt` and `.bin`.
 The capture is 38,969 bytes with SHA-256
 `e7ed05f53354a02961d8c00f77d7a3c7fdd1bfb0e9ad15227e77a76d7dab1187`,
@@ -751,7 +751,7 @@ advance the project to manufacturing or merge SMP into the default UP image.
 
 An immediately preceding capture of the **same four artifact hashes** is
 preserved as
-`C:\Users\developer\tmp\easystick-m25-smp-20260819\c68-0045-0047-l3-20260819-workqueue-nohelper-120s.json`.
+`C:\Users\developer\tmp\m25-smp-20260819\c68-0045-0047-l3-20260819-workqueue-nohelper-120s.json`.
 That attempt had `command_sent=false`, three observed boots, CPU1-illegal,
 and WDT/Guru Meditation markers. The successful retry therefore proves a
 clean run, not repeatability of the startup race; repeat captures remain a
@@ -759,14 +759,14 @@ follow-up before any release-state change.
 
 The source and current generated rootfs audit found no legacy
 smoke-helper marker. One older pre-rename capture JSON under the external
-`easystick-m25-smp-20260817` evidence directory still contains the legacy
+`m25-smp-20260817` evidence directory still contains the legacy
 helper path; it is retained as historical evidence and is not an input to the
 current image.
 
 ## Next repeatability gate: C68 bounded process stress
 
 The next hardware experiment is a new C68 image selected with
-`EASYSTICK_C68_L3_SMOKE=1 EASYSTICK_C68_STRESS=1`. It adds the C68-only
+`C68_L3_SMOKE=1 C68_STRESS=1`. It adds the C68-only
 BusyBox `top` configuration and `/usr/sbin/m5stamp-smp-stress`; neither is
 present in the UP profile. The helper is bounded by an explicit
 `--seconds 90` argument inside the fixed 120 s UART capture window and
@@ -780,7 +780,7 @@ reports:
   at the end.
 
 The capture script now emits schema
-`easystick.c68-capture/v2`, ordered boot events, command-send timing,
+`c68-capture/v2`, ordered boot events, command-send timing,
 helper/top lines, and a conservative classification. A stress capture is
 not a PASS until the raw UART, capture JSON, and all four flash-input hashes
 are retained together. The first retained result is recorded below.
@@ -802,9 +802,9 @@ USB Serial/JTAG ACM console, `top`, and the stress helper enabled.
 | DTB | `675a04475b8671bcbbc01830c5927c1e5fd9c47f3382cb289a10a5e8b8519ee0` |
 
 The flash-and-capture record is
-`C:\Users\developer\tmp\easystick-m25-smp-20260817\c68-0045-0047-l3-stress-20260819-m1-isolated-v2-90helper-120s.json`;
+`C:\Users\developer\tmp\m25-smp-20260817\c68-0045-0047-l3-stress-20260819-m1-isolated-v2-90helper-120s.json`;
 the raw UART files use the same basename with `.txt` and `.bin`. The capture
-is schema `easystick.c68-capture/v2`, 62,351 bytes, SHA-256
+is schema `c68-capture/v2`, 62,351 bytes, SHA-256
 `6dc109d14ad7a708bdd1255bad2c3e6d3d7f5b4b923607e7c793f046a6903bfc`, one
 COM10 open, and first byte at 0.256 s. All four flash inputs passed
 `SHA_OK`, `FLASH_AND_VERIFY_OK` was observed, and the command was sent at
@@ -872,9 +872,9 @@ remain separate release gates.
 A third capture used the exact four flash-input hashes above after the
 Buildroot output volume had been removed and the inputs were preserved outside
 that disposable volume. The record is
-`C:\Users\developer\tmp\easystick-m25-smp-20260817\c68-0045-0047-l3-stress-20260819-m1-isolated-v2-r4-120s.json`;
+`C:\Users\developer\tmp\m25-smp-20260817\c68-0045-0047-l3-stress-20260819-m1-isolated-v2-r4-120s.json`;
 the raw UART files use the same basename with `.txt` and `.bin`. It is schema
-`easystick.c68-capture/v2`, 89,538 bytes with SHA-256
+`c68-capture/v2`, 89,538 bytes with SHA-256
 `a7b6e202ba50b9a54fde7d340c6eabc5b4ee43bfa1798e20058b755738109e67`, one
 COM10 open, and first byte at 0.262 s. All four inputs passed `SHA_OK`, and
 `FLASH_AND_VERIFY_OK` was observed.
@@ -912,7 +912,7 @@ four inputs:
 ### First capture
 
 The record is
-`C:\Users\developer\tmp\easystick-m25-smp-20260817\c68-0045-0047-l3-stress-20260819-m1-topcapfix-120s.json`;
+`C:\Users\developer\tmp\m25-smp-20260817\c68-0045-0047-l3-stress-20260819-m1-topcapfix-120s.json`;
 the raw UART files use the same basename with `.txt` and `.bin`. It contains
 62,331 bytes with SHA-256
 `ce315d0cac4d10c857a3b8c4e4a639d44d98cf58be84e474982a752abacb340c`, one
@@ -921,7 +921,7 @@ COM10 open, first byte at 0.261 s, and classification `helper-pass`.
 ### Repeat capture
 
 The second record is
-`C:\Users\developer\tmp\easystick-m25-smp-20260817\c68-0045-0047-l3-stress-20260819-m1-topcapfix-repeat2-120s.json`;
+`C:\Users\developer\tmp\m25-smp-20260817\c68-0045-0047-l3-stress-20260819-m1-topcapfix-repeat2-120s.json`;
 the raw UART files use the same basename with `.txt` and `.bin`. It contains
 63,781 bytes with SHA-256
 `ba961721fc61a65c13b434a071bbceff43d475e0cdde00cb7de982120c807382`, one
@@ -946,7 +946,7 @@ trap, RCU stall, soft lockup, panic, Guru Meditation, or WDT reset.
 ### Third capture
 
 The third record is
-`C:\Users\developer\tmp\easystick-m25-smp-20260817\c68-0045-0047-l3-stress-20260819-m1-topcapfix-repeat3-120s.json`;
+`C:\Users\developer\tmp\m25-smp-20260817\c68-0045-0047-l3-stress-20260819-m1-topcapfix-repeat3-120s.json`;
 the raw UART files use the same basename with `.txt` and `.bin`. It contains
 62,407 bytes with SHA-256
 `cec241494cfb8d8f2dda28259b73b2a1fe9afc577101b962263b7e3225984345`, one

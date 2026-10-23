@@ -5,18 +5,18 @@ Board: M5Stamp ESP32-P4 + C6 on COM10; only the P4 flash was written.
 ## Image
 
 Local m3-lab candidate from d4495e6 (`sdio_mhz=` in config.txt) built with
-`EASYSTICK_SDIO_MAX_KHZ=40000`, the DTS cap the repository now uses by
+`SDIO_MAX_KHZ=40000`, the DTS cap the repository now uses by
 default.  Its DTB (`a12b18e1…`) is byte-identical to the v0.2.2 DTB with
 only `max-frequency` changed from `<0x4c4b40>` to `<0x2625a00>`.
 
 | File | sha256 |
 |---|---|
-| `easystick-stamp-p4.dtb` | `a12b18e1347ade36c499c79338ff7125bd4140bf56c64ecfedce8f93b4d3a852` |
+| `esp32p4-m5stamp-p4.dtb` | `a12b18e1347ade36c499c79338ff7125bd4140bf56c64ecfedce8f93b4d3a852` |
 | `rootfs.squashfs` | `7d6014cd2b6f915d89b071b8a3af9bed35e14d3d6ca3ae959a6b5897d50248d3` |
 | `Image` | `96e48b33e75e27cd3692fcaf6951cf233981efc36b1fddbe7751b66bc4c813ba` |
 
 `sdio_mhz` was written into the boot FAT's `config.txt` on the board
-(loop-mount a copy of `/tmp/boot.img`, edit, `easystick-boot-commit`) and
+(loop-mount a copy of `/tmp/boot.img`, edit, `boot-commit`) and
 applied with `reboot`: `esp32_sdio` cannot be unloaded, so the rate is
 fixed for the boot.
 

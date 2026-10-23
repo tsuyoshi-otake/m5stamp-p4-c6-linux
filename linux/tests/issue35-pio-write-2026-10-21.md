@@ -271,7 +271,7 @@ deliver every writable byte exactly, verified by two independent
 read-back oracles, including a raw-PIO run with the write bounce
 disabled (rest12).  The write side never had the read side's
 FIFO-doesn't-pop defect; the `0088` write bounce is still carried as
-cheap insurance under the same `easystick,fifo-no-pop` DT flag
+cheap insurance under the same `espressif,fifo-no-pop` DT flag
 because the slave silently tolerates IDMAC for every size tested, and
 it removes the last PIO path from a FIFO whose pop behaviour is
 already known-broken on reads.  Every wedge seen during this work was

@@ -45,14 +45,14 @@ vendored `esp-hosted` working tree, destroyed by a forced submodule checkout.
 
 | | |
 |---|---|
-| File | `C:\Users\developer\tmp\easystick-p4-preflash-a0-20260812.bin` |
+| File | `C:\Users\developer\tmp\stamp-p4-preflash-a0-20260812.bin` |
 | Size | 16,777,216 bytes (full 16 MiB) |
 | SHA-256 | `4d00ad7367a1f68318f18c2596059277e67d4cb7ab75096509726c4eeea710f7` |
 | Taken | 2026-08-12 00:39:51 +0900, before any write |
 
 ### Step 2 — the preserved last-good set, re-verified
 
-`C:\Users\developer\tmp\easystick-p4-m3-lab-resetpin-20260810\`, used exactly
+`C:\Users\developer\tmp\stamp-p4-m3-lab-resetpin-20260810\`, used exactly
 as found. Nothing was rebuilt or regenerated.
 
 | Offset | File | Size | SHA-256 |
@@ -62,7 +62,7 @@ as found. Nothing was rebuilt or regenerated.
 | `0x10000` | `boot-shim.bin` | 212,112 | `3e90e8b01bf2f347d6fd68c6fd3f67409b79c33fee2043773b46543ce44df418` |
 | `0x90000` | `Image` | 6,497,284 | `6ee6e9844818f5fee8ed0fcf4ff1cf720caf0a99da7e443717eefad0fc59e53a` |
 | `0x810000` | `rootfs.squashfs` | 1,826,816 | `a615f3c99a0d9c54c421399dfdc4806ce6790b32f740ce62730e583481849538` |
-| `0xf10000` | `easystick-stamp-p4.dtb` | 2,858 | `a4284b333bfee614c6f41e7ed8566a910af7eca9916cff750a06c62fc439b0f7` |
+| `0xf10000` | `esp32p4-m5stamp-p4.dtb` | 2,858 | `a4284b333bfee614c6f41e7ed8566a910af7eca9916cff750a06c62fc439b0f7` |
 
 The rootfs hash matches the stated known last-good value exactly.
 
@@ -92,7 +92,7 @@ return with the earlycon head intact. The collector was invoked **without**
 
 | | |
 |---|---|
-| Log | `C:\Users\developer\tmp\easystick-p4-a0-lastgood-restore-20260812.log` |
+| Log | `C:\Users\developer\tmp\stamp-p4-a0-lastgood-restore-20260812.log` |
 | Size | 73,870 bytes |
 | SHA-256 | `01b702b5be51ccaed328296c63011cac28985fa3abf50ee639e121bac34fb55e` |
 | Captured | 2026-08-11T15:51:27Z, COM10 @ 115200, 90 s window |
@@ -135,7 +135,7 @@ Supporting observations in the same capture:
 
 ### Fidelity: this is the historical state, including its limits
 
-Compared against `easystick-p4-m3-cmd53regs-20260810.log`, the original #29 run:
+Compared against `stamp-p4-m3-cmd53regs-20260810.log`, the original #29 run:
 
 | | Historical #29 | A0 restore |
 |---|---|---|
@@ -285,7 +285,7 @@ the module binary that contained it was preserved inside the last-good rootfs.
 
 ## 6. The reconstruction
 
-`buildroot-external/package/esp-hosted-ng/0012-easystick-sdio-register-cmd52-access.patch`
+`buildroot-external/package/esp-hosted-ng/0012-sdio-register-cmd52-access.patch`
 — 2 hunks, +58/−8, 0 CR bytes, `patch -p1 --dry-run` reports `DRY-RUN OK`.
 
 `esp_read_reg` and `esp_write_reg` become explicit byte loops under one
@@ -389,7 +389,7 @@ read as corruption returning.
 ## 9. The 0012 A/B on the current stack
 
 The A/B §7 called the natural next step. One intentional functional change —
-`0012-easystick-sdio-register-cmd52-access.patch` — built into the **current**
+`0012-sdio-register-cmd52-access.patch` — built into the **current**
 source and patch series, with the 0010/0011 diagnostics and the current resetpin
 policy left exactly as they are. The C6 was not modified, reflashed or probed,
 and no second patch was stacked on 0012.
@@ -402,11 +402,11 @@ has not yet booted this image. Nothing below is a hardware claim.
 
 `build-m1.sh /src /out --profile m2` in the pinned container, exit 0.
 `M2 Buildroot build complete: /out/buildroot/images`.
-Log `C:\Users\developer\tmp\easystick-p4-cmd52-build-20260812.log`,
+Log `C:\Users\developer\tmp\stamp-p4-cmd52-build-20260812.log`,
 29,737 bytes, SHA-256 `05550c94462276a67cba536e80d0db7bee6461202b6185ec1d5d67a247c544c1`.
 
 The baseline it is measured against is the israck candidate
-(`easystick-p4-israck-candidate-20260811`), which is the same `--profile m2`
+(`stamp-p4-israck-candidate-20260811`), which is the same `--profile m2`
 build of the same series **without** 0012 — established by its rootfs matching
 byte for byte and by reading `/out/buildroot/.config`, not by trusting the
 directory name.
@@ -416,12 +416,12 @@ directory name.
 Eleven patches, in order, after `esp-hosted-ng-dirclean` discarded the package:
 
 ```
-0001-linux-6.18-netdev            0007-easystick-wifi-only-host-module
-0002-easystick-stamp-p4-sdio-defaults   0008-easystick-first-cmd53-tx-diagnostics
-0003-easystick-sdio-handshake-diagnostics  0009-easystick-sdio-rx-aggregate
-0005-easystick-sdio-drain-boot-packet  0010-easystick-sdio-boot-packet-len-poll
-0006-easystick-sdio-cmd53-diagnostics  0011-easystick-sdio-isr-acknowledge
-                                      0012-easystick-sdio-register-cmd52-access
+0001-linux-6.18-netdev            0007-wifi-only-host-module
+0002-stamp-p4-sdio-defaults   0008-first-cmd53-tx-diagnostics
+0003-sdio-handshake-diagnostics  0009-sdio-rx-aggregate
+0005-sdio-drain-boot-packet  0010-sdio-boot-packet-len-poll
+0006-sdio-cmd53-diagnostics  0011-sdio-isr-acknowledge
+                                      0012-sdio-register-cmd52-access
 ```
 
 Zero occurrences of `fuzz`, `FAILED`, `Reversed` or `malformed` in the whole log.
@@ -513,7 +513,7 @@ So #29 lacks both, as stated above.
 
 ### 9.5 Flashed artifacts
 
-`C:\Users\developer\tmp\easystick-p4-cmd52-candidate-20260812\`
+`C:\Users\developer\tmp\stamp-p4-cmd52-candidate-20260812\`
 
 | Offset | File | Size | SHA-256 |
 |---|---|---:|---|
@@ -522,7 +522,7 @@ So #29 lacks both, as stated above.
 | `0x10000` | `boot-shim.bin` | 212,112 | `9d1a25bd9b65df26681fdc782bb230aecb48895ada2de77cef2cdbc48855c353` |
 | `0x90000` | `Image` | 6,568,764 | `d52bb98aa60089cbff9c3c67345df2a4903e9c73e46f1d883663efc82b43d57d` |
 | `0x810000` | `rootfs.squashfs` | 1,822,720 | `e26c2c9a2e8276c3a2e569a4ca9e113559405a417e9f88a6ed5448d0e6a85123` |
-| `0xf10000` | `easystick-stamp-p4.dtb` | 3,084 | `0fb1f66abdc4dfd19d14c7543cb6acddeb99ee72f430f42cfce9218e7c19528d` |
+| `0xf10000` | `esp32p4-m5stamp-p4.dtb` | 3,084 | `0fb1f66abdc4dfd19d14c7543cb6acddeb99ee72f430f42cfce9218e7c19528d` |
 
 `bootloader.bin`, `partition-table.bin`, `boot-shim.bin` and the DTB are the
 israck files unchanged (the DTB byte-identical). `Image` has a different hash at
@@ -543,9 +543,9 @@ collateral, not nondeterminism in the SDIO path.
 ### 9.6 Recovery set, re-verified before the write
 
 All six preserved #29 regions in
-`C:\Users\developer\tmp\easystick-p4-m3-lab-resetpin-20260810\` match their §2
+`C:\Users\developer\tmp\stamp-p4-m3-lab-resetpin-20260810\` match their §2
 hashes exactly (rootfs `a615f3c99a0d…`), and
-`easystick-p4-preflash-a0-20260812.bin` is intact at 16,777,216 bytes /
+`stamp-p4-preflash-a0-20260812.bin` is intact at 16,777,216 bytes /
 `4d00ad7367a1…`.
 
 One planned extra restore point was **not** obtained. A fresh 16 MiB readback of
@@ -562,13 +562,13 @@ modified by either attempt.
 
 `flash-candidate.ps1 -AllowCandidateWrite`, gate output
 `C6 write: none (COM10 is the P4 module USB-C path)`; stock-readback gate
-satisfied by `easystick-p4-stock-20260809-esptool481-full-v2.bin`
+satisfied by `stamp-p4-stock-20260809-esptool481-full-v2.bin`
 (`229459f2…`, 16 MiB). All six regions `Hash of data verified` on write, and an
 independent `verify_flash` pass reports `-- verify OK (digest matched)` for the
 partition table, boot shim, `Image`, rootfs and DTB; `bootloader.bin` is covered
 by its write-side hash because esptool rewrites its header byte and digest while
 programming. Log
-`C:\Users\developer\tmp\easystick-p4-cmd52-flash-20260812.log`.
+`C:\Users\developer\tmp\stamp-p4-cmd52-flash-20260812.log`.
 
 ### 9.8 Cold boot and capture
 
@@ -588,7 +588,7 @@ ABSENCE CONFIRMED`, then `COM10 returned after 4.72s down`, `detector=absent`.
 an instrument defect diagnosed and fixed afterwards — §8.
 
 The classified capture is therefore a **later boot on the same flashed image**,
-not the instant of the cold cycle: `easystick-p4-cmd52-boot-20260812.log`,
+not the instant of the cold cycle: `stamp-p4-cmd52-boot-20260812.log`,
 10,174 bytes, `6731768a50f7bf450a76aea3053a111c00847435ab02bb28d5bc9fa1d8b78464`,
 `reset_requested: false`, `port_opens: 1`. It contains exactly one boot — one
 `legacy bootconsole … enabled`, one `keep_bootcon` cmdline, one real
@@ -726,7 +726,7 @@ That gap is now closed. The capture helper was repaired first (§8), then one
 genuine Type-C detach/reconnect was performed with the **flashed 0012 candidate
 unchanged and no flash write of any kind**.
 
-`C:\Users\developer\tmp\easystick-p4-coldboot-0012-repeat-20260812.log`
+`C:\Users\developer\tmp\stamp-p4-coldboot-0012-repeat-20260812.log`
 11,169 bytes, `7a2e86a99837b3bae79f313984f19e1adf43c2721d1df46e34440894d0c7a398`
 
 | Recorded quantity | Value |
@@ -783,17 +783,17 @@ Found before flashing, by measuring the build product instead of trusting the
 build's exit status.
 
 `build-m1.sh` selects the DMA arm by **omitting**
-`0008-easystick-dw-mmc-force-pio.patch` from the list it stages into
+`0008-dw-mmc-force-pio.patch` from the list it stages into
 `BR2_LINUX_KERNEL_PATCH`. Buildroot applies that list only when it *extracts* the
 kernel, and the tree was already extracted and patched by the previous PIO build.
-So `EASYSTICK_SDIO_FORCE_PIO=0` completed successfully, reported
+So `SDIO_FORCE_PIO=0` completed successfully, reported
 `M2 Buildroot build complete`, and produced a **PIO kernel**:
 
 ```
 >>> linux custom Updating kernel config with fixups     <- no "Patching" step
 /out/buildroot/build/linux-custom/drivers/mmc/host/dw_mmc.c:3138:
-        if (device_property_present(dev, "easystick,force-pio"))
-grep -c "easystick,force-pio" /out/buildroot/images/Image  ->  1
+        if (device_property_present(dev, "espressif,force-pio"))
+grep -c "espressif,force-pio" /out/buildroot/images/Image  ->  1
 ```
 
 Had that been flashed it would have compared PIO against PIO while labelling
@@ -806,8 +806,8 @@ the stamps and forces a re-extract.
   extract. **MUST NOT** treat a successful incremental build as evidence that the
   switch took effect; assert the switch's *effect* in the build product.
 - The assertion is cheap and belongs in the tool: the string
-  `easystick,force-pio` must appear in the built `Image` when
-  `EASYSTICK_SDIO_FORCE_PIO=1` and must be absent when `0`. That is a check
+  `espressif,force-pio` must appear in the built `Image` when
+  `SDIO_FORCE_PIO=1` and must be absent when `0`. That is a check
   against the artifact, not against the variable that requested it (root
   CLAUDE.md §14.16: a check that reads its threshold from the same place as the
   thing under test proves only self-consistency).
@@ -820,16 +820,16 @@ the stamps and forces a re-extract.
 | Check | Result |
 |---|---|
 | Kernel `Extracting` + `Patching` steps ran | yes; both absent in the bad build |
-| `easystick,force-pio` in extracted kernel source | **0** (was 1) |
-| `easystick,force-pio` in built `Image` | **0** (was 1) |
+| `espressif,force-pio` in extracted kernel source | **0** (was 1) |
+| `espressif,force-pio` in built `Image` | **0** (was 1) |
 | Kernel patch list delta vs PIO build | exactly one entry removed, 0008; 15 others identical |
 | esp-hosted-ng patches | all 11 applied, 0010/0011/0012 included, unchanged |
 | `esp32_sdio.ko` | `4ca296b8…` — **byte-identical** to the flashed 0012 module |
-| `easystick-stamp-p4.dtb` | `0fb1f66a…` — **byte-identical** to the flashed DTB |
+| `esp32p4-m5stamp-p4.dtb` | `0fb1f66a…` — **byte-identical** to the flashed DTB |
 | `rootfs.squashfs` content | 289 inodes both sides, **zero** differing files |
 | `Image` | `9455e686…` (was `d52bb98a…`), same size 6,568,764 |
 
-The DTS still contains `easystick,force-pio`; with 0008 absent the property is
+The DTS still contains `espressif,force-pio`; with 0008 absent the property is
 simply unread, which is why the DTB is byte-identical and why no DTS edit was
 needed. The `Image` delta was measured, not assumed: 64,837 differing bytes in
 10,305 runs, of which 2,202 two-byte runs carry an identical `+320` little-endian
@@ -846,13 +846,13 @@ Flashed artifacts, P4 only, C6 untouched:
 | `0x10000` | `boot-shim.bin` | `9d1a25bd…` | same |
 | `0x90000` | `Image` | `9455e686…` | **changed** |
 | `0x810000` | `rootfs.squashfs` | `e26c2c9a…` | same file, byte-for-byte |
-| `0xf10000` | `easystick-stamp-p4.dtb` | `0fb1f66a…` | same |
+| `0xf10000` | `esp32p4-m5stamp-p4.dtb` | `0fb1f66a…` | same |
 
 All five non-bootloader regions returned `verify OK (digest matched)`; the
 bootloader passed its write-side `Hash of data verified`. Recovery set intact and
 unchanged: stock `229459f2…`, pre-A0 `4d00ad73…`, israck `8eb22bff…`,
 wlan0-repro `e86fe758…`. The 0012 candidate remains staged on the host at
-`easystick-p4-cmd52-candidate-20260812\`, so the PIO arm can be restored by
+`stamp-p4-cmd52-candidate-20260812\`, so the PIO arm can be restored by
 reflashing one region.
 
 **The runtime proof of the DMA arm is `Using internal DMA controller` in the boot
@@ -871,7 +871,7 @@ COM10 was absent for only 4.07 s, below the pre-registered 4.5 s gate. It produc
 no capture file and is not classified. The accepted cycle then held COM10 absent
 for **9.42 s** and started the passive 90 s collector only after the port returned.
 
-`C:\Users\developer\tmp\easystick-p4-coldboot-dma-20260812.log`
+`C:\Users\developer\tmp\stamp-p4-coldboot-dma-20260812.log`
 17,116 bytes,
 `99a1379bfa656abcb507859529935484b44c15b2d92b7b4fbe73d741c81c9e8d`
 
@@ -972,7 +972,7 @@ detector saw COM10 detach at `2026-08-12T03:44:45.4835684Z`, return at
 `2026-08-12T03:44:50.6768250Z`, and therefore remain absent for **5.193 s**.
 Only after the return did the passive 90 s collector open the port.
 
-`C:\Users\developer\tmp\easystick-p4-coldboot-dma-repeat2-20260812.log`
+`C:\Users\developer\tmp\stamp-p4-coldboot-dma-repeat2-20260812.log`
 15,991 bytes,
 `66ca6d059f99f7d71fc15a8a015602cb245f9a7f558e9f1a4de7d7b503eb866d`
 
@@ -1017,15 +1017,15 @@ needed.
 ### 14.1 Clean-build and artifact gates
 
 `build-m1.sh` now accepts the opt-in staging control
-`EASYSTICK_ESPHOSTED_DISABLE_0010=1`. It removes only
-`0010-easystick-sdio-boot-packet-len-poll.patch` from the disposable
+`ESPHOSTED_DISABLE_0010=1`. It removes only
+`0010-sdio-boot-packet-len-poll.patch` from the disposable
 BR2_EXTERNAL copy after staging. The checked-in patch remains unchanged, so the
 default build remains unchanged. The experimental build also set
-`EASYSTICK_SDIO_FORCE_PIO=0` and used a brand-new empty output volume.
+`SDIO_FORCE_PIO=0` and used a brand-new empty output volume.
 
 Clean build log:
 
-`C:\Users\developer\tmp\easystick-p4-no0010-build-clean-20260812-r2.log`
+`C:\Users\developer\tmp\stamp-p4-no0010-build-clean-20260812-r2.log`
 5,715,280 bytes,
 `a3b3ee8054f452c7ce2d06ca0b356c19a664cf0a58a7e38ce1382c6c54ae46f2`
 
@@ -1039,7 +1039,7 @@ The gates passed:
   `rx_byte_count = 0; msleep(100); esp_process_new_packet_intr(...)` sequence.
   It retains 0011's `after_empty` instrumentation and 0012's byte-wise CMD52
   changes, while containing no `BOOT_POLL` or 300 ms bounded polling loop.
-- `easystick,force-pio` is absent from both the clean extracted kernel source
+- `espressif,force-pio` is absent from both the clean extracted kernel source
   and the clean-built `Image`.
 - The clean-built module is 136,092 bytes,
   `ec95d1397c1e9a3b8608f12fffffe4a60a294c08626ca75b7f9f7e71f9caca91`,
@@ -1065,13 +1065,13 @@ Final P4-only candidate:
 | `boot-shim.bin` | `9d1a25bd9b65df26681fdc782bb230aecb48895ada2de77cef2cdbc48855c353` | identical |
 | `Image` | `9455e686ad4a385fd960049b0804facdd7a73936ec666b4f3eae26edfe92c634` | identical |
 | `rootfs.squashfs` | `ee5dbec61385e8a63334b9755f257b142481903e6075cbefd9b03f37b8d3f016` | only `esp32_sdio.ko` differs |
-| `easystick-stamp-p4.dtb` | `0fb1f66abdc4dfd19d14c7543cb6acddeb99ee72f430f42cfce9218e7c19528d` | identical |
+| `esp32p4-m5stamp-p4.dtb` | `0fb1f66abdc4dfd19d14c7543cb6acddeb99ee72f430f42cfce9218e7c19528d` | identical |
 
 The P4 was flashed with esptool 4.8.1. Every region passed write-side hash
 verification, followed by independent digest verification for the partition
 table, shim, Image, rootfs and DTB. The C6 was not written. Flash log:
 
-`C:\Users\developer\tmp\easystick-p4-no0010-flash-20260812.log`,
+`C:\Users\developer\tmp\stamp-p4-no0010-flash-20260812.log`,
 `d5d78013ce2d8d615d4767f4ff841fc433533c7618bd173bc4c12aaa305f853f`
 
 ### 14.2 Strict-cold result
@@ -1080,7 +1080,7 @@ The detector saw COM10 detach at `2026-08-12T06:04:51.3762579Z`, return at
 `2026-08-12T06:04:59.3605280Z`, and remain absent for **7.984 s**. The passive
 collector then opened only after return.
 
-`C:\Users\developer\tmp\easystick-p4-coldboot-dma-no0010-20260812.log`
+`C:\Users\developer\tmp\stamp-p4-coldboot-dma-no0010-20260812.log`
 16,896 bytes,
 `d211beac941183b66853be5f707e695331a0308cf7fe3a505480ab7ea7a394ff`
 
@@ -1145,7 +1145,7 @@ COM10 detach at `2026-08-12T06:21:11.3638588Z`, return at
 `2026-08-12T06:21:19.1368964Z`, and remain absent for **7.773 s**. The passive
 90 s collector opened only after return.
 
-`C:\Users\developer\tmp\easystick-p4-coldboot-dma-no0010-repeat2-20260812.log`
+`C:\Users\developer\tmp\stamp-p4-coldboot-dma-no0010-repeat2-20260812.log`
 16,896 bytes,
 `d211beac941183b66853be5f707e695331a0308cf7fe3a505480ab7ea7a394ff`
 
@@ -1191,7 +1191,7 @@ every other variable unchanged.
 
 Exactly one patch was added after the reproducible §15 baseline:
 
-`0013-easystick-sdio-dma-rx-lifecycle-diagnostics.patch`, 8,351 bytes,
+`0013-sdio-dma-rx-lifecycle-diagnostics.patch`, 8,351 bytes,
 `3128ef9f28b15a55ff03b8fb233c26f3ddb0b8967b7fbc456f66cf60d6686370`
 
 It adds a fixed eight-record static ring. Each existing receive records the
@@ -1211,10 +1211,10 @@ per-transfer engine are therefore recorded honestly as `unavailable`, rather
 than inferred through a racy private-host cast. The runtime controller mode is
 still checked independently from the boot log.
 
-The build used `EASYSTICK_SDIO_FORCE_PIO=0` and
-`EASYSTICK_ESPHOSTED_DISABLE_0010=1` in a new empty output volume. Clean log:
+The build used `SDIO_FORCE_PIO=0` and
+`ESPHOSTED_DISABLE_0010=1` in a new empty output volume. Clean log:
 
-`C:\Users\developer\tmp\easystick-p4-rxtrace-build-clean-20260812.log`,
+`C:\Users\developer\tmp\stamp-p4-rxtrace-build-clean-20260812.log`,
 5,715,769 bytes,
 `ea9b6ad16b4ffaef046cb74c288f2920ff6ad067abf5121d6401b8838881e084`
 
@@ -1229,7 +1229,7 @@ The gates passed:
 - A recursive comparison against the clean §15 package tree found functional
   source changes only in `esp_cmd.c` and `sdio/esp_sdio.c`, exactly matching
   the 0013 hunks. Buildroot and Linux `.config` files are SHA-identical.
-- `easystick,force-pio` has zero hits in both the clean extracted kernel source
+- `espressif,force-pio` has zero hits in both the clean extracted kernel source
   and generated Image. The DTB is byte-identical to the fixed baseline.
 - The diagnostic module is 138,468 bytes, mode 0644, uid/gid 0:0,
   `8700443bc5f29172ee045cb05ff287fe13227ecd8b9334ed27b1e28053508da5`.
@@ -1248,12 +1248,12 @@ owner/group or symlink differences. The only file-content difference is
 | `boot-shim.bin` | 212,112 | `9d1a25bd9b65df26681fdc782bb230aecb48895ada2de77cef2cdbc48855c353` | identical |
 | `Image` | 6,568,764 | `9455e686ad4a385fd960049b0804facdd7a73936ec666b4f3eae26edfe92c634` | identical |
 | `rootfs.squashfs` | 1,822,720 | `88bd12d54e9b3194f71809f6af2913abafe72a20e20b66621cafa67d149b5885` | module only |
-| `easystick-stamp-p4.dtb` | 3,084 | `0fb1f66abdc4dfd19d14c7543cb6acddeb99ee72f430f42cfce9218e7c19528d` | identical |
+| `esp32p4-m5stamp-p4.dtb` | 3,084 | `0fb1f66abdc4dfd19d14c7543cb6acddeb99ee72f430f42cfce9218e7c19528d` | identical |
 
 The P4-only esptool 4.8.1 write and independent region verification passed.
 The C6 was not written. Flash log:
 
-`C:\Users\developer\tmp\easystick-p4-rxtrace-flash-20260812.log`,
+`C:\Users\developer\tmp\stamp-p4-rxtrace-flash-20260812.log`,
 14,173 bytes,
 `62ac6836ef3d2e4e9b07279527f5f244d8b8d6760f60997681ac1f92fffcdf81`
 
@@ -1264,7 +1264,7 @@ return at `2026-08-12T07:38:46.1656148Z`, and remain absent for **5.133 s**.
 The passive collector started 0.037 s after the detected return and ran for
 90 s without requesting reset or driving DTR/RTS.
 
-`C:\Users\developer\tmp\easystick-p4-coldboot-dma-rxtrace-20260812.log`,
+`C:\Users\developer\tmp\stamp-p4-coldboot-dma-rxtrace-20260812.log`,
 21,796 bytes,
 `a355caac6dfdd9d8af23563ff67b56021d8d631f4b53e95f8b62e814afe9ed8c`
 
@@ -1342,7 +1342,7 @@ The fixed baseline remains §16: internal DMA, ESP-Hosted 0010 omitted, 0005's
 100 ms delayed manual receive retained, and ESP-Hosted 0011/0012/0013 retained.
 Exactly one new kernel patch was added:
 
-`0011-easystick-dw-mmc-idmac-rx-diagnostics.patch`, 18,609 bytes,
+`0011-dw-mmc-idmac-rx-diagnostics.patch`, 18,609 bytes,
 `b3232a90cd2871370095ce15b039154264bf61bd0857d20d188831a5c46dab65`
 
 The patch adds an eight-record static ring to DW-MMC. For CMD53 reads it records
@@ -1365,10 +1365,10 @@ words. `checkpatch.pl --strict` reports zero errors, warnings and checks, and a
 warning-enabled RISC-V cross-compile of the patch-applied `dw_mmc.o` passed.
 
 The full M2 build used a new empty output volume with
-`EASYSTICK_SDIO_FORCE_PIO=0` and
-`EASYSTICK_ESPHOSTED_DISABLE_0010=1`:
+`SDIO_FORCE_PIO=0` and
+`ESPHOSTED_DISABLE_0010=1`:
 
-`C:\Users\developer\tmp\easystick-p4-idmactrace-build-clean-20260812.log`,
+`C:\Users\developer\tmp\stamp-p4-idmactrace-build-clean-20260812.log`,
 5,716,171 bytes,
 `87fe2490833e4a2de64addd85c3706607674b7ef07c5f5942a92b78bef91fb50`
 
@@ -1384,7 +1384,7 @@ The clean-build gates passed:
   §16; the module hash remains `8700443b...`.
 - Kernel `.config` and DTB are byte-identical to §16. Both extracted
   `dw_mmc.c`/`.h` files match the reviewed patch result byte-for-byte.
-  `easystick,force-pio` has zero hits in source and Image, while the Image
+  `espressif,force-pio` has zero hits in source and Image, while the Image
   contains both `cmd53_rx_trace` and `CMD53HOST seq=`.
 - The clean rebuild's rootfs was not substituted: the flash candidate reuses
   the exact currently-flashed §16 boot chain, rootfs, DTB and ESP-Hosted
@@ -1397,12 +1397,12 @@ The clean-build gates passed:
 | `boot-shim.bin` | 212,112 | `9d1a25bd9b65df26681fdc782bb230aecb48895ada2de77cef2cdbc48855c353` | identical |
 | `Image` | 6,576,956 | `67a175307c93fdb88fced80fef8ba56404a6409c00d9d0615d4c32f2edf6abbc` | **DW-MMC diagnostics only** |
 | `rootfs.squashfs` | 1,822,720 | `88bd12d54e9b3194f71809f6af2913abafe72a20e20b66621cafa67d149b5885` | identical |
-| `easystick-stamp-p4.dtb` | 3,084 | `0fb1f66abdc4dfd19d14c7543cb6acddeb99ee72f430f42cfce9218e7c19528d` | identical |
+| `esp32p4-m5stamp-p4.dtb` | 3,084 | `0fb1f66abdc4dfd19d14c7543cb6acddeb99ee72f430f42cfce9218e7c19528d` | identical |
 
 The P4-only esptool 4.8.1 write and independent verification passed. The C6 was
 not written. Flash log:
 
-`C:\Users\developer\tmp\easystick-p4-idmactrace-flash-20260812.log`,
+`C:\Users\developer\tmp\stamp-p4-idmactrace-flash-20260812.log`,
 13,562 bytes,
 `2100f99856fdebcec8982e652314859852ab318bd2e1204e9bf8d81baf922bfa`
 
@@ -1416,7 +1416,7 @@ image or source changed. The accepted 200 ms detector then saw COM10 detach at
 collector started on return and ran for 90 s without requesting reset or
 driving DTR/RTS.
 
-`C:\Users\developer\tmp\easystick-p4-coldboot-dma-idmactrace-20260812.log`,
+`C:\Users\developer\tmp\stamp-p4-coldboot-dma-idmactrace-20260812.log`,
 18,240 bytes,
 `486fd945f6a6c18c12d7d95ae349ae7bd3eabe3333ec021b71f214aa77b7176c`
 
@@ -1485,7 +1485,7 @@ type, mode, owner/group, timestamp or symlink changes. The sole metadata
 difference is `/etc/inittab` size, 98 to 124 bytes, and the sole content
 difference is that file. Composition log:
 
-`C:\Users\developer\tmp\easystick-p4-idmactrace-shell-rootfs-compose-20260812.log`,
+`C:\Users\developer\tmp\stamp-p4-idmactrace-shell-rootfs-compose-20260812.log`,
 5,714 bytes,
 `378a29e965c0dd4d9a906280d1e912fa088ac732c44146c3a9f9dc2a84421717`
 
@@ -1498,13 +1498,13 @@ The resulting candidate preserves five section 17.1 artifacts byte-for-byte:
 | `boot-shim.bin` | 212,112 | `9d1a25bd9b65df26681fdc782bb230aecb48895ada2de77cef2cdbc48855c353` | identical |
 | `Image` | 6,576,956 | `67a175307c93fdb88fced80fef8ba56404a6409c00d9d0615d4c32f2edf6abbc` | identical |
 | `rootfs.squashfs` | 1,822,720 | `c9d5e27237005a452ec45a52d2b838efc5ba84c672b832b2758b01f7ccbd5d01` | `inittab` only |
-| `easystick-stamp-p4.dtb` | 3,084 | `0fb1f66abdc4dfd19d14c7543cb6acddeb99ee72f430f42cfce9218e7c19528d` | identical |
+| `esp32p4-m5stamp-p4.dtb` | 3,084 | `0fb1f66abdc4dfd19d14c7543cb6acddeb99ee72f430f42cfce9218e7c19528d` | identical |
 
 The P4-only esptool 4.8.1 write and independent verification passed for all
 non-bootloader regions; every write-side hash also passed. The C6 was not
 written. Flash log:
 
-`C:\Users\developer\tmp\easystick-p4-idmactrace-shell-flash-20260812.log`,
+`C:\Users\developer\tmp\stamp-p4-idmactrace-shell-flash-20260812.log`,
 14,305 bytes,
 `6320f2efb67730c1e8afe5455c133907daccdb45011c0fc4dc92fa3bca89d48b`
 
@@ -1515,7 +1515,7 @@ return at `2026-08-12T09:30:05.5694122Z`, and remain absent for **13.721 s**.
 The passive collector started on return and ran for 90 s without requesting a
 reset or driving DTR/RTS.
 
-`C:\Users\developer\tmp\easystick-p4-coldboot-dma-idmactrace-shell-20260812.log`,
+`C:\Users\developer\tmp\stamp-p4-coldboot-dma-idmactrace-shell-20260812.log`,
 19,029 bytes,
 `70d083923fcb18f9589d9c07a5977e674ce714d91598837ecfb39cf63473bb62`
 
@@ -1541,7 +1541,7 @@ the waiting `askfirst` shell and the read-only
 SDIO command, reset, rescan, module operation or controller-register read was
 issued. Saved snapshot:
 
-`C:\Users\developer\tmp\easystick-p4-idmactrace-shell-sysfs-20260812.log`,
+`C:\Users\developer\tmp\stamp-p4-idmactrace-shell-sysfs-20260812.log`,
 2,381 bytes,
 `0c5f53c3c40cafc2a7a4774ad229a443ff7c9523f250cc071f9ff39d6ad7b0e6`
 
@@ -1608,13 +1608,13 @@ IDMAC: cached descriptor ring with manual cache sync
 Using internal DMA controller.
 ```
 
-(`C:\Users\developer\tmp\easystick-p4-coldboot-dma-idmactrace-shell-20260812.log`.)
+(`C:\Users\developer\tmp\stamp-p4-coldboot-dma-idmactrace-shell-20260812.log`.)
 
 The chain that produces it, read end to end:
 
 | Step | Source | Consequence here |
 |---|---|---|
-| `sdmmc1` has no `dma-coherent` property | `firmware/linux/dts/easystick-stamp-p4.dts` | `dev_is_dma_coherent()` false |
+| `sdmmc1` has no `dma-coherent` property | `firmware/linux/dts/esp32p4-m5stamp-p4.dts` | `dev_is_dma_coherent()` false |
 | `dma_direct_alloc()` non-coherent branch needs one of `ARCH_HAS_DMA_ALLOC`, `DMA_GLOBAL_POOL`, `ARCH_HAS_DMA_SET_UNCACHED`, `DMA_DIRECT_REMAP` | `vendor/linux/kernel/dma/direct.c` | none is available |
 | `RISCV_ISA_ZICBOM` `depends on MMU` and is what `select`s `DMA_DIRECT_REMAP` | `vendor/linux/arch/riscv/Kconfig` | excluded by `CONFIG_MMU=n` |
 | RISC-V defines no `ARCH_HAS_DMA_SET_UNCACHED` | `arch/riscv/` | no uncached aperture |
@@ -1692,7 +1692,7 @@ buffers.
 
 ### 18.6 The trace already shows completion with OWN still set
 
-Re-reading `easystick-p4-idmactrace-shell-sysfs-20260812.log` against the
+Re-reading `stamp-p4-idmactrace-shell-sysfs-20260812.log` against the
 0011 field order `own = own_before / own_after_poll / own_submit /
 own_dma_irq / own_finish`:
 
@@ -1777,7 +1777,7 @@ would see it. One controlled A/B separates the two.
 Not built and not flashed. This subsection is the specification only.
 
 **Baseline.** Unchanged §17.3 configuration: internal DMA,
-`EASYSTICK_SDIO_FORCE_PIO=0`, `EASYSTICK_ESPHOSTED_DISABLE_0010=1`, kernel
+`SDIO_FORCE_PIO=0`, `ESPHOSTED_DISABLE_0010=1`, kernel
 patch 0011 retained, ESP-Hosted series unchanged.
 
 **Variable.** Exactly one: a CPU-visibility operation on the descriptor's own
@@ -1832,7 +1832,7 @@ than assumed:
 
 | Overlay | Contains the line | Applies to |
 |---|---|---|
-| `buildroot-external/board/easystick-stamp-p4/rootfs-overlay/etc/inittab` | **added by `c893dfa`** | base overlay: m1, m2, and first in the list for m3/m3-lab |
+| `buildroot-external/board/stamp-p4/rootfs-overlay/etc/inittab` | **added by `c893dfa`** | base overlay: m1, m2, and first in the list for m3/m3-lab |
 | `m3/rootfs-overlay/etc/inittab` | pre-existing | m3, m3-lab |
 | `m3-lab/rootfs-overlay/etc/inittab` | pre-existing, with a lab-console comment | m3-lab |
 
@@ -1844,7 +1844,7 @@ carried the same line by their own earlier decision.
 
 Handling, per the constraint recorded with this investigation: the base-overlay
 line is for the isolated experiment environment only. It must be removed from
-`buildroot-external/board/easystick-stamp-p4/rootfs-overlay/etc/inittab` before
+`buildroot-external/board/stamp-p4/rootfs-overlay/etc/inittab` before
 Wi-Fi/SSH acceptance testing or integration into `main`; the pre-existing m3 /
 m3-lab occurrences are a separate decision and are not in scope here. Nothing
 was changed in this section.
@@ -1852,7 +1852,7 @@ was changed in this section.
 ## 19. Descriptor-coherency A/B: 0012 conditional descriptor invalidate
 
 Single-variable experiment against the §17.3/§17.4 no-0010 IDMAC-trace
-baseline. One switch was newly enabled, `EASYSTICK_IDMAC_DESC_INVALIDATE`;
+baseline. One switch was newly enabled, `IDMAC_DESC_INVALIDATE`;
 everything else — ESP-Hosted, C6 firmware, DTB, reset behaviour, SDIO timing,
 payload-buffer cache handling, PIO fallback, descriptor reset, the no-0010
 baseline and the 0011 diagnostics — is unchanged and was verified unchanged by
@@ -1860,7 +1860,7 @@ hash before flashing.
 
 ### 19.1 The change
 
-`0012-easystick-dw-mmc-idmac-desc-invalidate.patch`, 3606 bytes, SHA-256
+`0012-dw-mmc-idmac-desc-invalidate.patch`, 3606 bytes, SHA-256
 `716793e1663591ede5c737482bf0a4b988e925d06566209527f717b5e80b3681`, three
 hunks, `drivers/mmc/host/dw_mmc.c` only. checkpatch: 0 errors, 1 warning
 (missing commit description, as sibling `0010` also reports).
@@ -1904,18 +1904,18 @@ byte-comparable with §17.4.
 `0012` applied exactly twice in the clean build (linux-headers custom, linux
 custom), each touching only `dw_mmc.c`. The full-log scan for patch failure,
 reversal, rejection, fuzz and malformed-patch markers was empty.
-`0008-easystick-dw-mmc-force-pio` is absent from the applied series;
-`easystick,force-pio` has 0 hits in the source and 0 in the `Image`.
+`0008-dw-mmc-force-pio` is absent from the applied series;
+`espressif,force-pio` has 0 hits in the source and 0 in the `Image`.
 
 Byte-identity against the preserved §17.1 reference set, extracted to
-`C:\Users\developer\tmp\easystick-p4-ref-17-1-20260812\` before its build
+`C:\Users\developer\tmp\stamp-p4-ref-17-1-20260812\` before its build
 volume was retired:
 
 | Artifact | Result |
 |---|---|
 | `dw_mmc.h` | identical |
 | `.config` (`5169cacc…`) | identical |
-| `easystick-stamp-p4.dtb` (`0fb1f66a…`) | identical |
+| `esp32p4-m5stamp-p4.dtb` (`0fb1f66a…`) | identical |
 | `esp32_sdio.ko` (`8700443b…`) | identical |
 | ESP-Hosted applied sources | identical by content, 42 files, `diff -r` clean |
 | `dw_mmc.c` | `01644597…613038`, matches the reviewed post-0012 work file |
@@ -1932,7 +1932,7 @@ COM10 addressed the P4. 6/6 write-side `Hash of data verified`; 5/5
 rewrites its header). The C6 was not written; the DTB was rewritten with the
 byte-identical file. On-board, only `Image` changed, to
 `0cacf3805c8732cdab82324160bf3b74a8a8bc1fd2b1d7a0cc9df0da67319b60`.
-Log `easystick-p4-descinv-flash-20260812.log`, 14164 bytes,
+Log `stamp-p4-descinv-flash-20260812.log`, 14164 bytes,
 `16c24ea750b62aacb6078ab3b7e3d9b5fa33644e863503c322505c60cd90a838`.
 
 ### 19.3 Strict-cold evidence
@@ -2090,12 +2090,12 @@ own terms.
 ### 19.8 Housekeeping
 
 Disk guard, executed at the build boundary: 16.27 GiB free before; removed the
-superseded volume `easystick-p4-m2-no0010-idmactrace-20260812-out` after
+superseded volume `stamp-p4-m2-no0010-idmactrace-20260812-out` after
 extracting and hashing its 6.8 MB reference set; 5.42 GiB recovered; 21.69 GiB
 free after. Confirmed intact: the flashed §17.3 artifact set, the staged
 candidate, the stock recovery image `229459f2…020c24`, all raw serial logs,
 and the git dirty state. Preserved and reported rather than deleted:
-`easystick-p4-src-vol` (14 GB, mounted by the running build), the
+`stamp-p4-src-vol` (14 GB, mounted by the running build), the
 `espressif/idf` image (C6 build, out of scope), ccache, c6-out, and several
 unrelated trees of uncertain provenance. After preserving this section's
 diagnostic artifacts, 18 GiB free — above the ~12 GiB guard, so no further
@@ -2105,17 +2105,17 @@ Evidence files, all under `C:\Users\developer\tmp\`:
 
 | File | Bytes | SHA-256 |
 |---|---:|---|
-| `easystick-p4-descinv-flash-20260812.log` | 14164 | `16c24ea750b62aacb6078ab3b7e3d9b5fa33644e863503c322505c60cd90a838` |
-| `easystick-p4-descinv-strictcold-20260812.log` | 19080 | `4d9329570723c7f9e2411305b0fc226a1769d9232274e5687215f47f4b923d5d` |
-| `easystick-p4-descinv-strictcold-shell-20260812.log` | 6919 | `d36d6c56f4982ef2f93c71f730d94fc03b9d131ed253ae809a7e14f2db22b70a` |
+| `stamp-p4-descinv-flash-20260812.log` | 14164 | `16c24ea750b62aacb6078ab3b7e3d9b5fa33644e863503c322505c60cd90a838` |
+| `stamp-p4-descinv-strictcold-20260812.log` | 19080 | `4d9329570723c7f9e2411305b0fc226a1769d9232274e5687215f47f4b923d5d` |
+| `stamp-p4-descinv-strictcold-shell-20260812.log` | 6919 | `d36d6c56f4982ef2f93c71f730d94fc03b9d131ed253ae809a7e14f2db22b70a` |
 
 ## 20. Production IDMAC descriptor-ring fix (patch 0013)
 
-Experimental patch `0012-easystick-dw-mmc-idmac-desc-invalidate.patch` is
+Experimental patch `0012-dw-mmc-idmac-desc-invalidate.patch` is
 preserved unchanged as the §19 evidence artifact and is **not** promoted. This
 section covers a separately gated production patch,
-`0013-easystick-dw-mmc-idmac-noncoherent-ring.patch`, selected by
-`EASYSTICK_IDMAC_NONCOHERENT_RING=1`. `build-m1.sh` rejects the combination of
+`0013-dw-mmc-idmac-noncoherent-ring.patch`, selected by
+`IDMAC_NONCOHERENT_RING=1`. `build-m1.sh` rejects the combination of
 0012 and 0013 outright: both rewrite the same OWN polls, so they are mutually
 exclusive by construction rather than by convention.
 
@@ -2275,7 +2275,7 @@ kernel was genuinely re-extracted and re-patched.
 | 10 us / 100 ms poll cadence | 2 sites | 2 |
 | New boot string compiled into `Image` | present | `IDMAC: noncoherent descriptor ring with explicit ownership sync`; the old `cached descriptor ring with manual cache sync` is gone |
 | `linux.config` applied | `5169cacc…3adacb` | identical to §17.1 |
-| `easystick-stamp-p4.dtb` | `0fb1f66a…19528d` | identical to §17.1 |
+| `esp32p4-m5stamp-p4.dtb` | `0fb1f66a…19528d` | identical to §17.1 |
 | `esp32_sdio.ko` | `8700443b…508da5` | identical to §17.1, in both the build tree and the target tree |
 | `rootfs.squashfs` | §17.3 set | build output differs (it has no `ttyGS1` line), so the §17.3 rootfs already on the board is reused unchanged |
 | Changed flash region | `Image` only | `Image` `c8b2cf59…b61d8e`, 6,576,968 bytes |
@@ -2294,14 +2294,14 @@ module was built against.
 | Docker build image ID | `sha256:ffde1cf967412b9c349babe1100a148d2846d5fa68087275820b630881aee5c8` |
 | Image repo digest | none — built locally, so `:latest` is not a stable identifier and the ID above is authoritative |
 | Image created | 2026-08-11T00:19:36Z |
-| Output volume | `easystick-p4-m2-ring0013-20260812-out` |
-| Source volume | `easystick-p4-src-vol` |
+| Output volume | `stamp-p4-m2-ring0013-20260812-out` |
+| Source volume | `stamp-p4-src-vol` |
 | Linux commit | `acb7cf4c1184e27622be0faf89244d5001ed1e87` (v6.18.35) |
 | why2025 reference | `bd790395c14968a27c00f962c9cd08d66f39de24` |
 | 0013 patch SHA-256 | `cf39481791aa4c05b175a18a6811026cc257c8c0dadeaafb317dd2c4ac8dae99`, 17,056 bytes |
-| Environment switches | `EASYSTICK_ESPHOSTED_DISABLE_0010=1`, `EASYSTICK_IDMAC_NONCOHERENT_RING=1`, `EASYSTICK_SDIO_FORCE_PIO=0`, `EASYSTICK_CCACHE_DIR=/ccache` |
+| Environment switches | `ESPHOSTED_DISABLE_0010=1`, `IDMAC_NONCOHERENT_RING=1`, `SDIO_FORCE_PIO=0`, `CCACHE_DIR=/ccache` |
 | Build invocation | `build-m1.sh /src /out --profile m2` inside the pinned image |
-| Candidate directory | `C:\Users\developer\tmp\easystick-p4-ring0013-candidate-20260812\` |
+| Candidate directory | `C:\Users\developer\tmp\stamp-p4-ring0013-candidate-20260812\` |
 
 Candidate contents. Five of the six regions are byte-identical to what is
 already on the board, so `Image` is the sole experimental variable; they are
@@ -2314,10 +2314,10 @@ present only because the flasher writes and verifies the complete region map.
 | `partition-table.bin` | 3,072 | `580a0ca942e6746a768724ae7bbb486dee47a228ca46b477ee598ac45738e87f` | identical |
 | `boot-shim.bin` | 212,112 | `9d1a25bd9b65df26681fdc782bb230aecb48895ada2de77cef2cdbc48855c353` | identical |
 | `rootfs.squashfs` | 1,822,720 | `c9d5e27237005a452ec45a52d2b838efc5ba84c672b832b2758b01f7ccbd5d01` | identical (§17.3) |
-| `easystick-stamp-p4.dtb` | 3,084 | `0fb1f66abdc4dfd19d14c7543cb6acddeb99ee72f430f42cfce9218e7c19528d` | identical |
+| `esp32p4-m5stamp-p4.dtb` | 3,084 | `0fb1f66abdc4dfd19d14c7543cb6acddeb99ee72f430f42cfce9218e7c19528d` | identical |
 
 The C6 is not written. The §19 candidate set at
-`C:\Users\developer\tmp\easystick-p4-descinv-candidate-20260812\` is retained
+`C:\Users\developer\tmp\stamp-p4-descinv-candidate-20260812\` is retained
 unchanged as the rollback image.
 
 ### 20.7 Predicted trace, recorded before the run
@@ -2374,8 +2374,8 @@ Evidence files, all under `C:\Users\developer\tmp\`:
 
 | File | Bytes | SHA-256 |
 |---|---:|---|
-| `easystick-p4-ring0013-build-clean-20260812.log` (first build, gate-rejected) | 5,679,283 | `27b20049594459cabdd4c73441da4f0434512c664fc3d66ce94e8064c0a96d5d` |
-| `easystick-p4-ring0013-build2-20260812.log` (revised build, gated) | 143,519 | `1014dd214825b9b495b91e140afdbc84e513068c4e61de1a878d5f4a2de7a758` |
+| `stamp-p4-ring0013-build-clean-20260812.log` (first build, gate-rejected) | 5,679,283 | `27b20049594459cabdd4c73441da4f0434512c664fc3d66ce94e8064c0a96d5d` |
+| `stamp-p4-ring0013-build2-20260812.log` (revised build, gated) | 143,519 | `1014dd214825b9b495b91e140afdbc84e513068c4e61de1a878d5f4a2de7a758` |
 
 ### 20.10 Status
 
@@ -2416,9 +2416,9 @@ identified ESP32-P4 revision v1.3, MAC `e8:f6:0a:e2:5e:73`.
 | Source commit | `94c61528157707f940c244093ed553b2125d513a` (local, not pushed at flash time) |
 | `Image` SHA-256 | `c8b2cf59d339d084bd4b0d019d286c2c0f93aa3fb768c5240df7de6ed8b61d8e` |
 | P4 MAC | `e8:f6:0a:e2:5e:73` |
-| Preflight log | `easystick-p4-ring0013-preflight-20260813.log`, 756 B, `da6a12050fe935ffda5029f8d3eec6005190c37aca769b1440fa8a6905758e9b` |
-| Flash log | `easystick-p4-ring0013-flash-20260813.log`, 7,573 B, `79c770efc1f6f9e3d55e2a1007cd1a32bd83a04806041b2f383cd6335476e87e` |
-| Verify log | `easystick-p4-ring0013-verify-20260813.log`, 911 B, `e878c03d7af5748ce200b5142f2b08d94b06ff0a312966a19a9f3382240e6362` |
+| Preflight log | `stamp-p4-ring0013-preflight-20260813.log`, 756 B, `da6a12050fe935ffda5029f8d3eec6005190c37aca769b1440fa8a6905758e9b` |
+| Flash log | `stamp-p4-ring0013-flash-20260813.log`, 7,573 B, `79c770efc1f6f9e3d55e2a1007cd1a32bd83a04806041b2f383cd6335476e87e` |
+| Verify log | `stamp-p4-ring0013-verify-20260813.log`, 911 B, `e878c03d7af5748ce200b5142f2b08d94b06ff0a312966a19a9f3382240e6362` |
 
 Two tooling defects were found and are recorded because both are gates that
 looked healthy:
@@ -2566,9 +2566,9 @@ present. It is unexplained and out of scope here.
 
 | File | Bytes | SHA-256 |
 |---|---:|---|
-| `easystick-p4-ring0013-strictcold-20260813.log` | 19,058 | `7873c750aff32ed7796a030ab32edaaa4433529ee90b8678a262d621b897fa6a` |
-| `easystick-p4-ring0013-strictcold-20260813.json` | 382 | `4c2d35b39cbb1dd2919510885de7ad1303acbb84d6f6f7f74e5acbd17f8763d5` |
-| `easystick-p4-ring0013-strictcold-shell-20260813.log` | 6,896 | `dda7619148fe594be781aeb13e533a4a0e943591858984e6ad3d7d8562f993c7` |
+| `stamp-p4-ring0013-strictcold-20260813.log` | 19,058 | `7873c750aff32ed7796a030ab32edaaa4433529ee90b8678a262d621b897fa6a` |
+| `stamp-p4-ring0013-strictcold-20260813.json` | 382 | `4c2d35b39cbb1dd2919510885de7ad1303acbb84d6f6f7f74e5acbd17f8763d5` |
+| `stamp-p4-ring0013-strictcold-shell-20260813.log` | 6,896 | `dda7619148fe594be781aeb13e533a4a0e943591858984e6ad3d7d8562f993c7` |
 
 ### 21.8 Status
 
@@ -2806,9 +2806,9 @@ in §20.2.
 
 | File | Bytes | SHA-256 |
 |---|---:|---|
-| `easystick-p4-ring0013-strictcold-run2-20260813.log` | 19,056 | `55c46e86a8ee27bd9203d4674992ad4f49a26ce51be0dd034ea54ff88190633a` |
-| `easystick-p4-ring0013-strictcold-run2-20260813.json` | 382 | `905b7b2a7c19c92361b0b80681ee04a2bec9e23edee7ba26aba259620e4bbf3b` |
-| `easystick-p4-ring0013-strictcold-shell-run2-20260813.log` | 6,896 | `47025aec0fecbd774e98176d9982c82044342b79758a3180f9da032b8ed98f1c` |
+| `stamp-p4-ring0013-strictcold-run2-20260813.log` | 19,056 | `55c46e86a8ee27bd9203d4674992ad4f49a26ce51be0dd034ea54ff88190633a` |
+| `stamp-p4-ring0013-strictcold-run2-20260813.json` | 382 | `905b7b2a7c19c92361b0b80681ee04a2bec9e23edee7ba26aba259620e4bbf3b` |
+| `stamp-p4-ring0013-strictcold-shell-run2-20260813.log` | 6,896 | `47025aec0fecbd774e98176d9982c82044342b79758a3180f9da032b8ed98f1c` |
 
 Both serial captures contain CR bytes - 329 and 85 respectively - because they
 are raw console output and the device emits CRLF. Run 1's captures carry the
@@ -3035,9 +3035,9 @@ written to the console only and is not in the JSON.
 
 | File | Bytes | SHA-256 |
 |---|---:|---|
-| `easystick-p4-ring0013-strictcold-run3-20260813.log` | 19,056 | `dec75ea3166a4c8f8d161eb3fa8a01852afcb1207cdbcc641fe4f54d556b46ff` |
-| `easystick-p4-ring0013-strictcold-run3-20260813.json` | 382 | `f2ec5c72600880940c254f7e086f8d0051f37220b2d0af44bdc8aa98d529398f` |
-| `easystick-p4-ring0013-strictcold-shell-run3-20260813.log` | 6,896 | `942c6c086caffeb639ea8da75704295fcb2b3db114bec9b1a16f76a3d4a2a8e8` |
+| `stamp-p4-ring0013-strictcold-run3-20260813.log` | 19,056 | `dec75ea3166a4c8f8d161eb3fa8a01852afcb1207cdbcc641fe4f54d556b46ff` |
+| `stamp-p4-ring0013-strictcold-run3-20260813.json` | 382 | `f2ec5c72600880940c254f7e086f8d0051f37220b2d0af44bdc8aa98d529398f` |
+| `stamp-p4-ring0013-strictcold-shell-run3-20260813.log` | 6,896 | `942c6c086caffeb639ea8da75704295fcb2b3db114bec9b1a16f76a3d4a2a8e8` |
 
 CR counts 329 and 85 in the two serial captures, matching Runs 1 and 2 exactly;
 per §14.22 that is the expected content of a raw console log, not a line-ending
@@ -3106,7 +3106,7 @@ restarts at `desc_first = host->sg_cpu`.
 
 ### 24.2 The gate is CMD53 receive only
 
-A new patch `0014-easystick-dw-mmc-idmac-cmd53-rx-desc-bytes.patch`, applied on
+A new patch `0014-dw-mmc-idmac-cmd53-rx-desc-bytes.patch`, applied on
 top of an unchanged 0013.
 
 **Scope.** The cap applies to **CMD53 reads only**. TX descriptor chunking is
@@ -3115,9 +3115,9 @@ to every IDMAC transfer, which would have turned each 512-byte boot TX into 64
 descriptors across 16 cache lines - a second, larger, *unobserved* variable on
 an RX-only trace. One variable at a time; the parameter name says so.
 
-**Parameter.** `easystick_cmd53_rx_desc_bytes`, `module_param_named(..., uint,
+**Parameter.** `cmd53_rx_desc_bytes`, `module_param_named(..., uint,
 0444)`. `CONFIG_MMC_DW=y`, so it is addressed as
-`dw_mmc.easystick_cmd53_rx_desc_bytes=8` in `bootargs`.
+`dw_mmc.cmd53_rx_desc_bytes=8` in `bootargs`.
 
 `0444` is chosen deliberately, and it is not cosmetic:
 
@@ -3127,7 +3127,7 @@ an RX-only trace. One variable at a time; the parameter name says so.
   command line, which is the only place we set it.
 * `perm = 0` would be stricter still (`params.c:825` - no sysfs file at all),
   and is **worse for evidence**. `0444` publishes the effective value at
-  `/sys/module/dw_mmc/parameters/easystick_cmd53_rx_desc_bytes`, giving a
+  `/sys/module/dw_mmc/parameters/cmd53_rx_desc_bytes`, giving a
   reading of what the kernel *actually parsed*, independent of what we believe
   we flashed into the DTB. Requiring those two to agree is the §14.16 rule.
 
@@ -3194,8 +3194,8 @@ descriptor per chunk, pass 2 fills them. The effective cap is read **once** into
 a local at function entry:
 
 ```c
-unsigned int cap = (record && easystick_cmd53_rx_desc_bytes) ?
-                   easystick_cmd53_rx_desc_bytes : DW_MCI_DESC_DATA_LENGTH;
+unsigned int cap = (record && cmd53_rx_desc_bytes) ?
+                   cmd53_rx_desc_bytes : DW_MCI_DESC_DATA_LENGTH;
 ```
 
 so the pre-count, pass 1 and pass 2 cannot disagree about the chain they are
@@ -3210,7 +3210,7 @@ probe and add it to the trace record (`chunk=`) so the evidence states its own
 arm condition rather than relying on the operator's memory of what was flashed -
 a third independent statement alongside the DTB and the sysfs read.
 
-**Arming cost.** `bootargs` lives in `dts/easystick-stamp-p4.dts:69` and the DTB
+**Arming cost.** `bootargs` lives in `dts/esp32p4-m5stamp-p4.dts:69` and the DTB
 is its own 64 KiB flash region at `0xf10000`, separate from the kernel at
 `0x90000`. Control run and test runs share one `Image`, with only the 64 KiB DTB
 rewritten between them.
@@ -3659,7 +3659,7 @@ network stress.
 
 The build-script provenance gap from the 0014 patch commit is closed:
 `e5b48705138fb6fcdd322caf55b9c930cbfa7b24` wires
-`EASYSTICK_CMD53_RX_DESC_BYTES` and was the same `build-m1.sh` blob
+`CMD53_RX_DESC_BYTES` and was the same `build-m1.sh` blob
 (`fc2e421a9955f940b25ad3290e9486a0268b6371`) used for the completed clean
 build. The 0014 patch remains
 `6ccb218f5ede5cc10b934bc4bfefab3285da25a39bae5797027d453f325cc019`.
@@ -3706,7 +3706,7 @@ below therefore belongs to this cold boot, not to a later one.
 
 ### 25.3 Parameter and cmdline
 
-`/sys/module/dw_mmc/parameters/easystick_cmd53_rx_desc_bytes` = **0**.
+`/sys/module/dw_mmc/parameters/cmd53_rx_desc_bytes` = **0**.
 `/proc/cmdline` is the frozen no-diagnostic line
 (`earlycon=… idle=poll`) and does not name the parameter.
 
@@ -3740,13 +3740,13 @@ control-run criterion (§24.9).
 
 | File | Bytes | SHA-256 |
 |---|---:|---|
-| `easystick-p4-0014-control-prewrite-20260815.log` | 1744 | `1b458608eff638e75ea072a1e8f9af034417314c46555dab4f4a57b34d851407` |
-| `easystick-p4-0014-control-write-20260815.log` | 7219 | `23a700dc9847dd03d1a49c3cabef3a144f9bf3982a5aaae5a45a815784b4471b` |
-| `easystick-p4-0014-control-verify-20260815.log` | 1245 | `e3dd28d1bbbf2b53d4f739332dae182d6c088dfbe406e6e719d467aca17984f4` |
-| `easystick-p4-0014-control-strictcold-detector-20260815.txt` | 445 | `929b8ca4c03d68ac9d3a3a57fa982153e3c1e9153be7feb57bd3190ad335ba42` |
-| `easystick-p4-0014-control-strictcold-20260815.log` | 14673 | `cdfdbcf303c31ca1a1edb14eb31529ac4a87357a9daef721f54cd777f8f695c7` |
-| `easystick-p4-0014-control-strictcold-20260815.log.json` | 431 | `ed6d722f332725f214427ee96e733ab32f3c3b4e469207b388069c466c07bf6f` |
-| `easystick-p4-0014-control-strictcold-shell-20260815.log` | 6729 | `34abd846407f768cb5a345c172321beaef7820a485d359bc72e275895588f5fa` |
+| `stamp-p4-0014-control-prewrite-20260815.log` | 1744 | `1b458608eff638e75ea072a1e8f9af034417314c46555dab4f4a57b34d851407` |
+| `stamp-p4-0014-control-write-20260815.log` | 7219 | `23a700dc9847dd03d1a49c3cabef3a144f9bf3982a5aaae5a45a815784b4471b` |
+| `stamp-p4-0014-control-verify-20260815.log` | 1245 | `e3dd28d1bbbf2b53d4f739332dae182d6c088dfbe406e6e719d467aca17984f4` |
+| `stamp-p4-0014-control-strictcold-detector-20260815.txt` | 445 | `929b8ca4c03d68ac9d3a3a57fa982153e3c1e9153be7feb57bd3190ad335ba42` |
+| `stamp-p4-0014-control-strictcold-20260815.log` | 14673 | `cdfdbcf303c31ca1a1edb14eb31529ac4a87357a9daef721f54cd777f8f695c7` |
+| `stamp-p4-0014-control-strictcold-20260815.log.json` | 431 | `ed6d722f332725f214427ee96e733ab32f3c3b4e469207b388069c466c07bf6f` |
+| `stamp-p4-0014-control-strictcold-shell-20260815.log` | 6729 | `34abd846407f768cb5a345c172321beaef7820a485d359bc72e275895588f5fa` |
 
 All under `C:\Users\developer\tmp\`.
 
@@ -3762,7 +3762,7 @@ Image rewrite, no why2025 0015.
 The control DTB `0fb1f66a…19528d` was decompiled and recompiled with `dtc`
 from the 0014 host tools. A no-edit round-trip was byte-identical. The only
 source change was appending
-`dw_mmc.easystick_cmd53_rx_desc_bytes=16` to `/chosen/bootargs`.
+`dw_mmc.cmd53_rx_desc_bytes=16` to `/chosen/bootargs`.
 
 | Artifact | Bytes | SHA-256 |
 |---|---:|---|
@@ -3802,13 +3802,13 @@ false, listened 6 s, and saw **no boot banner**.
 ### 26.3 Three statements of the parameter disagreed
 
 `/proc/device-tree/chosen/bootargs` **does** contain
-`dw_mmc.easystick_cmd53_rx_desc_bytes=16`. That is the flashed DTB, and it
+`dw_mmc.cmd53_rx_desc_bytes=16`. That is the flashed DTB, and it
 is what the boot-shim passed in `a1`.
 
 `/proc/cmdline` is the frozen no-diagnostic line and does **not** name the
-parameter. `/sys/module/dw_mmc/parameters/easystick_cmd53_rx_desc_bytes` =
+parameter. `/sys/module/dw_mmc/parameters/cmd53_rx_desc_bytes` =
 **0**. Probe did not print
-`easystick_cmd53_rx_desc_bytes=16: CMD53 RX descriptor chunk diagnostic active`.
+`cmd53_rx_desc_bytes=16: CMD53 RX descriptor chunk diagnostic active`.
 
 The 0014 Image was built with `CONFIG_CMDLINE_FORCE=y` and
 `CONFIG_CMDLINE` equal to that frozen line. The kernel therefore ignores
@@ -3847,7 +3847,7 @@ read-only. After a manual `mount -t tmpfs tmpfs /tmp` (and `/run`),
 (CMD53 RX lengths 458/375/286). `iw dev wlan0 link` stayed `Not connected`
 for 45 s. `wpa_cli` is not on the image. No IPv4. SSH was not attempted.
 
-`S85easystick-ssh` is a second, independent blocker: `/usr/sbin/inetd` is a
+`S85ssh` is a second, independent blocker: `/usr/sbin/inetd` is a
 BusyBox symlink whose applet is not compiled in (`inetd: applet not found`).
 The script's `-x` test therefore passes and then the start fails. Even a
 later association would need a standalone `dropbear` invocation, not this
@@ -3868,22 +3868,22 @@ Image variable and needs its own review before flash.
 
 | File | Bytes | SHA-256 |
 |---|---:|---|
-| `easystick-p4-0014-cap16-prewrite-20260815.log` | 1747 | `186b6c4b93b13c9d01f9adbedb7cfc76f01c7affe6b99767acf5361faf4e3d26` |
-| `easystick-p4-0014-cap16-write-20260815.log` | 559 | `6f4a03f68778897ddd7818ccda9b70de88530f24edf0b76a23fc95cdf87c464a` |
-| `easystick-p4-0014-cap16-verify-20260815.log` | 1224 | `6edaceb4d388500cbdafe30f3671911a28606f02d337c76960600f54e68f80c4` |
-| `easystick-p4-0014-cap16-dtb-20260815/cap16.dtb` | 3124 | `36a7389a9f9bead1c4c9f10ca7f84e174a806e46c4848d966c46fe3e29b252b5` |
-| `easystick-p4-0014-cap16-dtb-20260815/cap16.decompiled.dts` | 3368 | `74759e85474d05f9d97dcd43308de42ae627cdb3c2ff869fe2e326964eac2fdf` |
-| `easystick-p4-0014-cap16-strictcold-detector-20260815.txt` | 468 | `81700d59bf4c99050874f666bdc91a437213357efa15edf8a8ac4ff1e58b20e6` |
-| `easystick-p4-0014-cap16-strictcold-20260815.log` | 17574 | `b6f6b897d36979fb8ea6e46632c23fc98d665c2583788ddc3940af9fa62f6926` |
-| `easystick-p4-0014-cap16-strictcold-20260815.log.json` | 431 | `46f0142f5c287a204cf81f8d8bbe41467c50e1ae5f706ad1d2eb02341c0e4039` |
-| `easystick-p4-0014-cap16-strictcold-shell-20260815.log` | 7594 | `4423a5fb099969361bf443e10fa7fe462794fba340e55bee3fc3665396541229` |
-| `easystick-p4-0014-cap16-ssh-20260815.log` | 770 | `a8eacd1c78220d53fd03ebd4a41c08a5360efd23e3b5d38b41b70a3fd4775d96` |
-| `easystick-p4-0014-cap16-net-ssh-shell-20260815.log` | 4947 | `e578cc084fc4b14b58be8710177db86ba10e83c849a1c6c101d5314dbfe82416` |
-| `easystick-p4-0014-cap16-net-ssh2-shell-20260815.log` | 34545 | `9d3e94adcf16b57f688fd80262fb9772716c244e8454d4736bdad543f1f3cf4c` |
-| `easystick-p4-0014-cap16-wpa-status-20260815.log` | 744 | `ee237aef6dd494ade38ddf944019ccb2df6b85d753e2ce9d79b3b4864096e49b` |
+| `stamp-p4-0014-cap16-prewrite-20260815.log` | 1747 | `186b6c4b93b13c9d01f9adbedb7cfc76f01c7affe6b99767acf5361faf4e3d26` |
+| `stamp-p4-0014-cap16-write-20260815.log` | 559 | `6f4a03f68778897ddd7818ccda9b70de88530f24edf0b76a23fc95cdf87c464a` |
+| `stamp-p4-0014-cap16-verify-20260815.log` | 1224 | `6edaceb4d388500cbdafe30f3671911a28606f02d337c76960600f54e68f80c4` |
+| `stamp-p4-0014-cap16-dtb-20260815/cap16.dtb` | 3124 | `36a7389a9f9bead1c4c9f10ca7f84e174a806e46c4848d966c46fe3e29b252b5` |
+| `stamp-p4-0014-cap16-dtb-20260815/cap16.decompiled.dts` | 3368 | `74759e85474d05f9d97dcd43308de42ae627cdb3c2ff869fe2e326964eac2fdf` |
+| `stamp-p4-0014-cap16-strictcold-detector-20260815.txt` | 468 | `81700d59bf4c99050874f666bdc91a437213357efa15edf8a8ac4ff1e58b20e6` |
+| `stamp-p4-0014-cap16-strictcold-20260815.log` | 17574 | `b6f6b897d36979fb8ea6e46632c23fc98d665c2583788ddc3940af9fa62f6926` |
+| `stamp-p4-0014-cap16-strictcold-20260815.log.json` | 431 | `46f0142f5c287a204cf81f8d8bbe41467c50e1ae5f706ad1d2eb02341c0e4039` |
+| `stamp-p4-0014-cap16-strictcold-shell-20260815.log` | 7594 | `4423a5fb099969361bf443e10fa7fe462794fba340e55bee3fc3665396541229` |
+| `stamp-p4-0014-cap16-ssh-20260815.log` | 770 | `a8eacd1c78220d53fd03ebd4a41c08a5360efd23e3b5d38b41b70a3fd4775d96` |
+| `stamp-p4-0014-cap16-net-ssh-shell-20260815.log` | 4947 | `e578cc084fc4b14b58be8710177db86ba10e83c849a1c6c101d5314dbfe82416` |
+| `stamp-p4-0014-cap16-net-ssh2-shell-20260815.log` | 34545 | `9d3e94adcf16b57f688fd80262fb9772716c244e8454d4736bdad543f1f3cf4c` |
+| `stamp-p4-0014-cap16-wpa-status-20260815.log` | 744 | `ee237aef6dd494ade38ddf944019ccb2df6b85d753e2ce9d79b3b4864096e49b` |
 
 All under `C:\Users\developer\tmp\` except the two DTB artifacts in
-`C:\Users\developer\tmp\easystick-p4-0014-cap16-dtb-20260815\`.
+`C:\Users\developer\tmp\stamp-p4-0014-cap16-dtb-20260815\`.
 
 ## 27. Cap=16 after honoring DTB bootargs
 
@@ -3937,9 +3937,9 @@ false and saw no boot banner.
 ### 27.3 Three statements of the parameter now agree
 
 `/proc/device-tree/chosen/bootargs`, `/proc/cmdline`, and
-`/sys/module/dw_mmc/parameters/easystick_cmd53_rx_desc_bytes` all carry
+`/sys/module/dw_mmc/parameters/cmd53_rx_desc_bytes` all carry
 **16**. Probe printed
-`easystick_cmd53_rx_desc_bytes=16: CMD53 RX descriptor chunk diagnostic active`.
+`cmd53_rx_desc_bytes=16: CMD53 RX descriptor chunk diagnostic active`.
 `chunk=` in every trace record is 16.
 
 ### 27.4 Descriptor-boundary classification
@@ -3982,15 +3982,15 @@ SSH was not attempted. This does not reopen the cap=16 gate.
 
 | File | Bytes | SHA-256 |
 |---|---:|---|
-| `easystick-p4-0014-cmdline-fallback-candidate-20260815/Image` | 6576968 | `75fe932477a967d8f02b5fe1812a724010acd8e377a3d98b89b952fe8def88d0` |
-| `easystick-p4-0014-fallback-prewrite-20260815.log` | 1726 | `0ad59a8919c1d12935f81ef5ff321393f9a4b458e767b84aaf4553586ef75471` |
-| `easystick-p4-0014-fallback-write-20260815.log` | 7219 | `0371d670300faeef72edbdd3bc9ed8268571c6d825321cea961fe695e64d2619` |
-| `easystick-p4-0014-fallback-verify-20260815.log` | 1233 | `e1fa5ac8d7d51b260e72f98150be99b8fd525ff140a06a7e207c9c91aca8d7bc` |
-| `easystick-p4-0014-fallback-strictcold-detector-20260815.txt` | 494 | `7857aceec1c7949a9a5d043e86028f29845fb73b885a87187bc6cef7f5bfe66d` |
-| `easystick-p4-0014-fallback-strictcold-20260815.log` | 18510 | `2e54789e731fb72dabdf26285830aade6d7441baf0491eaf751c746acf835728` |
-| `easystick-p4-0014-fallback-strictcold-20260815.log.json` | 226 | `bb04fd6cdbeb40b522409a3e4478a04cb92f9455e053f99ed7afb9ee34a51694` |
-| `easystick-p4-0014-fallback-strictcold-shell-20260815.log` | 48010 | `d517e19b8392079cda0f560b4eb423636b21f524070953c98d2cd6522f9da903` |
-| `easystick-p4-0014-fallback-ssh-20260815.log` | 434 | `e1280f90d6c496bf10a1bd59de8ff332185643d32ebda689d741779c5cf8f1e4` |
+| `stamp-p4-0014-cmdline-fallback-candidate-20260815/Image` | 6576968 | `75fe932477a967d8f02b5fe1812a724010acd8e377a3d98b89b952fe8def88d0` |
+| `stamp-p4-0014-fallback-prewrite-20260815.log` | 1726 | `0ad59a8919c1d12935f81ef5ff321393f9a4b458e767b84aaf4553586ef75471` |
+| `stamp-p4-0014-fallback-write-20260815.log` | 7219 | `0371d670300faeef72edbdd3bc9ed8268571c6d825321cea961fe695e64d2619` |
+| `stamp-p4-0014-fallback-verify-20260815.log` | 1233 | `e1fa5ac8d7d51b260e72f98150be99b8fd525ff140a06a7e207c9c91aca8d7bc` |
+| `stamp-p4-0014-fallback-strictcold-detector-20260815.txt` | 494 | `7857aceec1c7949a9a5d043e86028f29845fb73b885a87187bc6cef7f5bfe66d` |
+| `stamp-p4-0014-fallback-strictcold-20260815.log` | 18510 | `2e54789e731fb72dabdf26285830aade6d7441baf0491eaf751c746acf835728` |
+| `stamp-p4-0014-fallback-strictcold-20260815.log.json` | 226 | `bb04fd6cdbeb40b522409a3e4478a04cb92f9455e053f99ed7afb9ee34a51694` |
+| `stamp-p4-0014-fallback-strictcold-shell-20260815.log` | 48010 | `d517e19b8392079cda0f560b4eb423636b21f524070953c98d2cd6522f9da903` |
+| `stamp-p4-0014-fallback-ssh-20260815.log` | 434 | `e1280f90d6c496bf10a1bd59de8ff332185643d32ebda689d741779c5cf8f1e4` |
 
 All under `C:\Users\developer\tmp\`.
 
@@ -3999,7 +3999,7 @@ All under `C:\Users\developer\tmp\`.
 §24.8 step for cap=8. Same fallback 0014 Image as §27
 (`75fe932477a967d8f02b5fe1812a724010acd8e377a3d98b89b952fe8def88d0`).
 DTB-only rewrite at `0xf10000` to
-`easystick-p4-0014-cap8-dtb-20260815/cap8.dtb`
+`stamp-p4-0014-cap8-dtb-20260815/cap8.dtb`
 (`f3901be2d2fbfa05bd4affde2986bb47d396a21ddfb59d8c52c175ac69260ce7`,
 3124 B). Independent `verify_flash` of DTB and Image both matched. C6
 untouched.
@@ -4017,7 +4017,7 @@ untouched.
 ### 28.2 Three statements of the parameter agree
 
 `/proc/cmdline`, the probe line, and
-`/sys/module/dw_mmc/parameters/easystick_cmd53_rx_desc_bytes` all carry
+`/sys/module/dw_mmc/parameters/cmd53_rx_desc_bytes` all carry
 **8**. `chunk=` in every seq-1–4 record is 8.
 
 ### 28.3 Descriptor-boundary classification
@@ -4058,12 +4058,12 @@ work before that rootfs limit is the blocker.
 
 | File | Bytes | SHA-256 |
 |---|---:|---|
-| `easystick-p4-0014-cap8-dtb-20260815/cap8.dtb` | 3124 | `f3901be2d2fbfa05bd4affde2986bb47d396a21ddfb59d8c52c175ac69260ce7` |
-| `easystick-p4-wifi-cap8-write-20260815.log` | 559 | `f0d55ec2bcc5f5e43850c214dee195be9cfdc82547fad912d2777b0fe8af3098` |
-| `easystick-p4-wifi-cap8-verify-20260815.log` | 788 | `14bb1b3edb9202d1c8c182d5915b99e07edffc29e597e2341073f8d47131d45e` |
-| `easystick-p4-wifi-cap8-strictcold-detector-20260815.txt` | 121 | `bde91795d85416c320fe75834e3b1b5b336cbf2c81ba50df2e0f71f112af47eb` |
-| `easystick-p4-wifi-ssh-cap8-20260815.log` | 44131 | `7fc049a2982e9afb0676d28a17000a8d18e99de5af2ecd7ec5f732455ad6726f` |
-| `easystick-p4-wifi-ssh-cap8-4way-20260815.log` | 19290 | `56c9beb887e427fbb67d777211cbbc8519a1c0192bfd7566fade13973bad70f3` |
+| `stamp-p4-0014-cap8-dtb-20260815/cap8.dtb` | 3124 | `f3901be2d2fbfa05bd4affde2986bb47d396a21ddfb59d8c52c175ac69260ce7` |
+| `stamp-p4-wifi-cap8-write-20260815.log` | 559 | `f0d55ec2bcc5f5e43850c214dee195be9cfdc82547fad912d2777b0fe8af3098` |
+| `stamp-p4-wifi-cap8-verify-20260815.log` | 788 | `14bb1b3edb9202d1c8c182d5915b99e07edffc29e597e2341073f8d47131d45e` |
+| `stamp-p4-wifi-cap8-strictcold-detector-20260815.txt` | 121 | `bde91795d85416c320fe75834e3b1b5b336cbf2c81ba50df2e0f71f112af47eb` |
+| `stamp-p4-wifi-ssh-cap8-20260815.log` | 44131 | `7fc049a2982e9afb0676d28a17000a8d18e99de5af2ecd7ec5f732455ad6726f` |
+| `stamp-p4-wifi-ssh-cap8-4way-20260815.log` | 19290 | `56c9beb887e427fbb67d777211cbbc8519a1c0192bfd7566fade13973bad70f3` |
 
 All under `C:\Users\developer\tmp\`.
 
@@ -4133,10 +4133,10 @@ not used.
 
 | File | Role |
 |---|---|
-| `easystick-p4-wifi-gwping-0018-4way-ok-setip-late-20260816.log` | 0018 4-way; SET_IP late ACK; harness stopped before gw ping |
-| `easystick-p4-wifi-gwping-0018-noping-incomplete-arp-20260816.log` | 0018 4-way; no CMD53_TX after address; gw ARP incomplete |
-| `easystick-p4-wifi-gwping-0019-dut-gw-ok-20260816.log` | 0019 4-way; DUT gw ping OK |
-| `easystick-p4-wifi-ssh-0019-live-20260816.log` | inetd started; SSH TimeoutError |
+| `stamp-p4-wifi-gwping-0018-4way-ok-setip-late-20260816.log` | 0018 4-way; SET_IP late ACK; harness stopped before gw ping |
+| `stamp-p4-wifi-gwping-0018-noping-incomplete-arp-20260816.log` | 0018 4-way; no CMD53_TX after address; gw ARP incomplete |
+| `stamp-p4-wifi-gwping-0019-dut-gw-ok-20260816.log` | 0019 4-way; DUT gw ping OK |
+| `stamp-p4-wifi-ssh-0019-live-20260816.log` | inetd started; SSH TimeoutError |
 
 All under `C:\Users\developer\tmp\`. Issue #6 M2/M3 remain open:
 DHCP/DNS/NTP, reconnect soak, and key-authenticated SSH from a
@@ -4155,7 +4155,7 @@ fix before the next soak:
    `CLR_KNOWN & ~RX_NEW_PACKET` instead; when RAW==0 also sample
    `PACKET_LEN` and promote BIT 23 if it advanced past
    `context->rx_byte_count`. Order: INT_ST → INT_RAW → PACKET_LEN → ACK.
-2. **S85easystick-ssh** — do not require `wlan0` (or `ethsta0`) before
+2. **S85ssh** — do not require `wlan0` (or `ethsta0`) before
    starting inetd. Listen on `0.0.0.0:22` as soon as Dropbear's host
    key exists. `SSHSTART:0` is not listen proof; use `netstat -lnt` and
    `dbclient -y pi@127.0.0.1`. Root login stays disabled (`-w`).

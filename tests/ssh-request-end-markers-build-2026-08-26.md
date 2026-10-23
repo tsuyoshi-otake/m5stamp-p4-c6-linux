@@ -44,8 +44,8 @@ Result: **PASS**.
 - Build: `m3-lab`, boot-shim profile `m2`, exit code `0`.
 - Build interval: `2026-08-26T05:37:01Z` to `2026-08-26T05:55:46Z`
   (18m44s).
-- DMA reachability conditions: `EASYSTICK_IDMAC_NONCOHERENT_RING=1` with
-  `EASYSTICK_CMD53_BB_ALLOW_IDMAC_NC=1`.
+- DMA reachability conditions: `IDMAC_NONCOHERENT_RING=1` with
+  `CMD53_BB_ALLOW_IDMAC_NC=1`.
 - Other retention conditions: `FORCE_PIO=0`, descriptor invalidation `=0`,
   RX descriptor diagnostic `=0`, TX/TCP/SSH ledgers `=0`, diagnostics `=0`.
 - Retention PA: `0x50108080u`.
@@ -58,14 +58,14 @@ Result: **PASS**.
 - `final_shot_manifest.py verify --require-shot-c`: **PASS**.
 - Export `SHA256SUMS.txt`: all 23 entries: **PASS**.
 - Final manifest records version `6`, size `288`,
-  `EASYSTICK_IDMAC_NONCOHERENT_RING=1`, and `shot_c_allowed=true`. This is an
+  `IDMAC_NONCOHERENT_RING=1`, and `shot_c_allowed=true`. This is an
   artifact gate only; the image was not flashed.
 
 ## Key artifact hashes
 
 Export directory:
 
-`D:\Users\Developer\easystick-tmp-20260820\easystick-p4-wdt-0054-ssh-capsule-20260825\request-end-v6\`
+`D:\Users\Developer\tmp-20260820\stamp-p4-wdt-0054-ssh-capsule-20260825\request-end-v6\`
 
 | Artifact | SHA-256 |
 |---|---|
@@ -73,10 +73,10 @@ Export directory:
 | `Image` | `8a649741212ada6b0dfb089742ade276ac8036c2dc54593fadadcad462a98e65` |
 | `rootfs.squashfs` | `2e77e47b92579c4aece56019e15fff141fba2f10fd52422eb8663561f52f9c8d` |
 | `vmlinux` | `cfc715e5a526be08f30b3eb97d96d0b70ff6e84dcba3885b1d48a0f02a81978b` |
-| `rendered-patches/0052-easystick-dw-mmc-cmd53-retention-bb.patch` | `0377db1b5caffcb2a7123890cdb5465fa9f2ea9c57af9162a08f70c93843cd55` |
-| `rendered-patches/0053-easystick-mmc-cmd53-post-bb.patch` | `de13f92137881db059e3db2f50c737a696d74c4ebc9e0e41d07cab061711afbc` |
-| `rendered-patches/0054-easystick-wdt-crash-capsule.patch` | `3d8cd4dd6c8331810773d484976f27519620b765160a5ae1392dfe29f0663c5e` |
-| `rendered-patches/0026-easystick-cmd53-retention-bb6.patch` | `9ae73f1c5271c663ad8a4d88dae8b3cdeb45c6166d5a54e68977be43286952bb` |
+| `rendered-patches/0052-dw-mmc-cmd53-retention-bb.patch` | `0377db1b5caffcb2a7123890cdb5465fa9f2ea9c57af9162a08f70c93843cd55` |
+| `rendered-patches/0053-mmc-cmd53-post-bb.patch` | `de13f92137881db059e3db2f50c737a696d74c4ebc9e0e41d07cab061711afbc` |
+| `rendered-patches/0054-wdt-crash-capsule.patch` | `3d8cd4dd6c8331810773d484976f27519620b765160a5ae1392dfe29f0663c5e` |
+| `rendered-patches/0026-cmd53-retention-bb6.patch` | `9ae73f1c5271c663ad8a4d88dae8b3cdeb45c6166d5a54e68977be43286952bb` |
 
 ## Runtime status
 

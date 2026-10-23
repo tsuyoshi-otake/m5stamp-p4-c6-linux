@@ -11,21 +11,21 @@ C6 write was used.
 - Target P4: `COM10`, MAC `e8:f6:0a:e2:5e:73`
 - Target IPv4: `10.255.10.161`
 - Profile: `m3-lab`
-- `EASYSTICK_SDIO_FORCE_PIO=0`
-- `EASYSTICK_IDMAC_NONCOHERENT_RING=1`
-- `EASYSTICK_ESPHOSTED_DISABLE_0010=1`
-- `EASYSTICK_ESPHOSTED_TX_LEDGER=1`
-- `EASYSTICK_ESPHOSTED_DIAGNOSTICS=0`
-- `EASYSTICK_SSH_LEDGER=0`
-- `EASYSTICK_DW_MMC_CMD53_ERR_PROV=0`
-- `EASYSTICK_CMD53_RETENTION_BB=0`
+- `SDIO_FORCE_PIO=0`
+- `IDMAC_NONCOHERENT_RING=1`
+- `ESPHOSTED_DISABLE_0010=1`
+- `ESPHOSTED_TX_LEDGER=1`
+- `ESPHOSTED_DIAGNOSTICS=0`
+- `SSH_LEDGER=0`
+- `DW_MMC_CMD53_ERR_PROV=0`
+- `CMD53_RETENTION_BB=0`
 
 The candidate artifacts and complete build verification are recorded in
 [`ssh-tx-ledger-build-2026-08-25.md`](ssh-tx-ledger-build-2026-08-25.md).
 The preserved stock 16 MiB readback remained the flash recovery control:
 
 ```text
-C:\Users\developer\tmp\easystick-p4-stock-20260809-esptool481-full-v2.bin
+C:\Users\developer\tmp\stamp-p4-stock-20260809-esptool481-full-v2.bin
 bytes 16777216
 sha256 229459f251eaf6222f0c07968702d72a3818e520da1788ce465027d969020c24
 ```
