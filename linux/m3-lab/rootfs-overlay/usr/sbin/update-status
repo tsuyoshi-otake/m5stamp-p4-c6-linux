@@ -1,0 +1,128 @@
+#!/bin/sh
+# Stamp-P4 Network Status Updater
+# Usage: update-status <STATUS> [IP] [NETMASK] [GATEWAY] [SSID] [MODE]
+#
+# Run standalone or sourced ("set -- ...; . update-status", like the
+# udhcpc hook and S40network do).  Each "exit" is paired with "return", so a
+# sourcing caller is not killed; standalone runs exit the same way as before.
+
+STATUS="${1:-UNKNOWN}"
+IP="${2:-none}"
+NETMASK="${3:-none}"
+GATEWAY="${4:-none}"
+SSID="${5:-none}"
+MODE="${6:-sta}"
+
+RUNTIME_DIR="${RUNTIME_DIR:-/run}"
+STATUS_FILE="$RUNTIME_DIR/status.txt"
+STATUS_TMP="$RUNTIME_DIR/.status.$$"
+LAST_STATUS_FILE="$RUNTIME_DIR/.last_status"
+# #55 compat, remove after v0.5.x: mirror the old runtime status path.
+STATUS_FILE_COMPAT="$RUNTIME_DIR/easystick-status.txt"
+# #55 compat end
+
+# If IP is not provided or is none, try to read from wlan0 if status is not explicitly DISCONNECTED
+if [ "$IP" = "none" ] || [ -z "$IP" ]; then
+	if [ "$STATUS" = "CONNECTED" ] || [ "$STATUS" = "AP_ACTIVE" ]; then
+		# One exec, no pipeline: every pipeline stage is a ~480 KB
+		# BusyBox vfork+exec on NOMMU (#40).
+		_ifc=$(ifconfig wlan0 2>/dev/null)
+		case "$_ifc" in
+		*"inet addr:0.0.0.0"*) IP="none" ;;
+		*"inet addr:"*)
+			IP="${_ifc#*inet addr:}"
+			IP="${IP%% *}"
+			;;
+		*) IP="none" ;;
+		esac
+	fi
+fi
+
+# Get MAC address of wlan0
+MAC="unknown"
+if [ -r /sys/class/net/wlan0/address ]; then
+	read MAC < /sys/class/net/wlan0/address 2>/dev/null || MAC="unknown"
+fi
+
+# Get current system uptime
+UPTIME="0"
+if [ -r /proc/uptime ]; then
+	read UPTIME _ < /proc/uptime
+	UPTIME="${UPTIME%%.*}"
+fi
+
+# If SSID not provided, try to detect from wpa_supplicant.conf or iw
+if [ "$SSID" = "none" ] || [ -z "$SSID" ]; then
+	if [ -f /tmp/wpa_supplicant.conf ]; then
+		# Builtins only; "ssid=" at a word start, not scan_ssid=/bssid=.
+		while IFS= read -r line; do
+			case "$line" in
+				ssid=*|*[[:blank:]]ssid=*)
+					SSID="${line#*\"}"
+					SSID="${SSID%\"*}"
+					break
+					;;
+			esac
+		done < /tmp/wpa_supplicant.conf
+	fi
+	[ -z "$SSID" ] && SSID="none"
+fi
+
+# NOMMU pool headroom (#40): pool_used/pool_largest_free/pool_alloc_fail in
+# the status file.  Read with builtins; absent on kernels without patch 0076.
+POOL_USED=unknown
+POOL_LARGEST_FREE=unknown
+POOL_FAIL=unknown
+if [ -r /sys/kernel/board/nommu_pool ]; then
+	while IFS=" " read -r k v; do
+		case "$k" in
+			used) POOL_USED=$v ;;
+			largest_free) POOL_LARGEST_FREE=$v ;;
+			alloc_fail) POOL_FAIL=$v ;;
+		esac
+	done < /sys/kernel/board/nommu_pool
+fi
+
+# Check if status has actually changed compared to the runtime checkpoint.
+# (Avoids redundant writes, ensures zero extra I/O and zero unnecessary CPU load)
+STATUS_STR="${STATUS}|${IP}|${NETMASK}|${GATEWAY}|${SSID}|${MODE}|${POOL_USED}"
+LAST_STATUS=""
+if [ -f "$LAST_STATUS_FILE" ]; then
+	read LAST_STATUS < "$LAST_STATUS_FILE"
+fi
+if [ "$STATUS_STR" = "$LAST_STATUS" ] && [ -s "$STATUS_FILE" ]; then
+	return 0 2>/dev/null || exit 0
+fi
+
+SSH_CMD="ssh m5@${IP}"
+[ "$IP" = "none" ] && SSH_CMD="none"
+
+# printf is a shell builtin; "cat <<EOF" was one more 480 KB exec here (#40).
+if printf '%s\n' \
+	"# Stamp-P4 Network Status" \
+	"status=${STATUS}" \
+	"wifi_mode=${MODE}" \
+	"ssid=${SSID}" \
+	"ip_address=${IP}" \
+	"netmask=${NETMASK}" \
+	"gateway=${GATEWAY}" \
+	"mac_address=${MAC}" \
+	"ssh_command=${SSH_CMD}" \
+	"pool_used=${POOL_USED}" \
+	"pool_largest_free=${POOL_LARGEST_FREE}" \
+	"pool_alloc_fail=${POOL_FAIL}" \
+	"updated_at=uptime ${UPTIME}s" > "$STATUS_TMP"
+then
+	if mv -f "$STATUS_TMP" "$STATUS_FILE"; then
+		# #55 compat, remove after v0.5.x
+		ln -f "$STATUS_FILE" "$STATUS_FILE_COMPAT" 2>/dev/null ||
+			cp "$STATUS_FILE" "$STATUS_FILE_COMPAT" 2>/dev/null || true
+		# #55 compat end
+		echo "$STATUS_STR" > "$LAST_STATUS_FILE"
+		echo "[status] Runtime status updated: status=${STATUS} ip=${IP} ssid=${SSID}"
+		return 0 2>/dev/null || exit 0
+	fi
+fi
+rm -f "$STATUS_TMP"
+echo "[status] Failed to update runtime status" >&2
+return 1 2>/dev/null || exit 1

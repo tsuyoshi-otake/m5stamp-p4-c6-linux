@@ -1,19 +1,19 @@
-menu "EasyStick Stamp-P4 board options"
+menu "Stamp-P4 board options"
 
-source "$BR2_EXTERNAL_EASYSTICK_STAMP_P4_PATH/package/esp-hosted-ng/Config.in"
-source "$BR2_EXTERNAL_EASYSTICK_STAMP_P4_PATH/package/m5stamp-smp-smoke/Config.in"
-source "$BR2_EXTERNAL_EASYSTICK_STAMP_P4_PATH/package/m5stamp-smp-stress/Config.in"
-source "$BR2_EXTERNAL_EASYSTICK_STAMP_P4_PATH/package/micropython-nommu/Config.in"
-source "$BR2_EXTERNAL_EASYSTICK_STAMP_P4_PATH/package/easystick-boot-commit/Config.in"
-source "$BR2_EXTERNAL_EASYSTICK_STAMP_P4_PATH/package/easystick-mdns/Config.in"
-source "$BR2_EXTERNAL_EASYSTICK_STAMP_P4_PATH/package/easystick-respawn/Config.in"
-source "$BR2_EXTERNAL_EASYSTICK_STAMP_P4_PATH/package/easystick-sys/Config.in"
-source "$BR2_EXTERNAL_EASYSTICK_STAMP_P4_PATH/package/busybox-daemons/Config.in"
-source "$BR2_EXTERNAL_EASYSTICK_STAMP_P4_PATH/package/busybox-su/Config.in"
-source "$BR2_EXTERNAL_EASYSTICK_STAMP_P4_PATH/package/busybox-tools/Config.in"
-source "$BR2_EXTERNAL_EASYSTICK_STAMP_P4_PATH/package/busybox-udhcpc/Config.in"
+source "$BR2_EXTERNAL_STAMP_P4_PATH/package/esp-hosted-ng/Config.in"
+source "$BR2_EXTERNAL_STAMP_P4_PATH/package/m5stamp-smp-smoke/Config.in"
+source "$BR2_EXTERNAL_STAMP_P4_PATH/package/m5stamp-smp-stress/Config.in"
+source "$BR2_EXTERNAL_STAMP_P4_PATH/package/micropython-nommu/Config.in"
+source "$BR2_EXTERNAL_STAMP_P4_PATH/package/boot-commit/Config.in"
+source "$BR2_EXTERNAL_STAMP_P4_PATH/package/mdns-answer/Config.in"
+source "$BR2_EXTERNAL_STAMP_P4_PATH/package/respawn/Config.in"
+source "$BR2_EXTERNAL_STAMP_P4_PATH/package/run-system/Config.in"
+source "$BR2_EXTERNAL_STAMP_P4_PATH/package/busybox-daemons/Config.in"
+source "$BR2_EXTERNAL_STAMP_P4_PATH/package/busybox-su/Config.in"
+source "$BR2_EXTERNAL_STAMP_P4_PATH/package/busybox-tools/Config.in"
+source "$BR2_EXTERNAL_STAMP_P4_PATH/package/busybox-udhcpc/Config.in"
 
-config BR2_PACKAGE_EASYSTICK_STAMP_P4_M1
+config BR2_PACKAGE_STAMP_P4_M1
 	bool "M1 minimal native Linux profile"
 	default y
 	help
@@ -21,7 +21,7 @@ config BR2_PACKAGE_EASYSTICK_STAMP_P4_M1
 	  C6 SDIO, SSH, and USB gadget support are intentionally separate
 	  milestones and are not selected here.
 
-config BR2_PACKAGE_EASYSTICK_STAMP_P4_M2
+config BR2_PACKAGE_STAMP_P4_M2
 	bool "M2 C6 SDIO Wi-Fi profile"
 	select BR2_PACKAGE_ESP_HOSTED_NG
 	select BR2_PACKAGE_WPA_SUPPLICANT

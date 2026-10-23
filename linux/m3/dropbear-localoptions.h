@@ -1,5 +1,5 @@
 /*
- * EasyStick M3 Dropbear policy.
+ * Stamp-P4 M3 Dropbear policy.
  *
  * Password authentication is disabled at compile time.  The serial/CDC
  * first-boot flow may set a local console password for the p4 account, but

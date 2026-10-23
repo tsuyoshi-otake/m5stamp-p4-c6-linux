@@ -3,7 +3,7 @@
 ################################################################################
 
 M5STAMP_SMP_STRESS_SITE = \
-	$(BR2_EXTERNAL_EASYSTICK_STAMP_P4_PATH)/package/m5stamp-smp-stress/src
+	$(BR2_EXTERNAL_STAMP_P4_PATH)/package/m5stamp-smp-stress/src
 M5STAMP_SMP_STRESS_SITE_METHOD = local
 M5STAMP_SMP_STRESS_LICENSE = GPL-2.0-only
 

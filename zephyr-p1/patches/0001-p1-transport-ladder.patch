@@ -7,10 +7,10 @@ index 5cd7f318aef..a948d6692ac 100644
  	  up to one poll period.
  
 +config ESP_HOSTED_MCU_P1_TRANSPORT_TEST
-+	bool "Enable EasyStick P1 transport ladder"
++	bool "Enable Stamp-P4 P1 transport ladder"
 +	help
 +	  Enable the temporary, fail-closed transport evidence ladder used by the
-+	  EasyStick Stamp-P4 P1 control image. It sends four 512-byte TEST_IF
++	  Stamp-P4 P1 control image. It sends four 512-byte TEST_IF
 +	  frames after SDIO setup and requires the configured coprocessor firmware
 +	  version before allowing the consumer driver to continue. Do not enable
 +	  this option in a production image.
@@ -73,7 +73,7 @@ index 0c643426000..a53112518ff 100644
 +						    sizeof(payload));
 +
 +		if (ret != 0) {
-+			P1_MARK("EASYSTICK_P1 STEP 07 CMD53_REPEAT FAIL frame=%u errno=%d",
++			P1_MARK("P1 STEP 07 CMD53_REPEAT FAIL frame=%u errno=%d",
 +				frame + 1U, ret);
 +			return ret;
 +		}
@@ -85,7 +85,7 @@ index 0c643426000..a53112518ff 100644
 +		k_msleep(5);
 +	}
 +
-+	P1_MARK("EASYSTICK_P1 STEP 07 CMD53_REPEAT PASS frames=%u size=%u",
++	P1_MARK("P1 STEP 07 CMD53_REPEAT PASS frames=%u size=%u",
 +		P1_FRAME_COUNT, P1_FRAME_SIZE);
 +	return 0;
 +}
@@ -114,12 +114,12 @@ index 0c643426000..a53112518ff 100644
 +							  CONFIG_ESP_HOSTED_MCU_FW_VERSION_PATCH);
 +
 +	if (data->fw_version != expected) {
-+		P1_MARK("EASYSTICK_P1 STEP 08 ESP_HOSTED_INIT FAIL got=0x%06x expected=0x%06x",
++		P1_MARK("P1 STEP 08 ESP_HOSTED_INIT FAIL got=0x%06x expected=0x%06x",
 +			data->fw_version, expected);
 +		return -EPROTO;
 +	}
 +
-+	P1_MARK("EASYSTICK_P1 STEP 08 ESP_HOSTED_INIT PASS fw=%u.%u.%u",
++	P1_MARK("P1 STEP 08 ESP_HOSTED_INIT PASS fw=%u.%u.%u",
 +		ESP_HOSTED_MCU_FW_VERSION_MAJOR(data->fw_version),
 +		ESP_HOSTED_MCU_FW_VERSION_MINOR(data->fw_version),
 +		ESP_HOSTED_MCU_FW_VERSION_PATCH(data->fw_version));
@@ -167,7 +167,7 @@ index 0a4ba9bfaa5..a21067078f3 100644
  
  		if (ret != 0) {
 +#if defined(CONFIG_ESP_HOSTED_MCU_P1_TRANSPORT_TEST)
-+			P1_MARK("EASYSTICK_P1 CMD53 FAIL bytes=%u direction=%s errno=%d", chunk,
++			P1_MARK("P1 CMD53 FAIL bytes=%u direction=%s errno=%d", chunk,
 +				tx != NULL ? "TX" : "RX", ret);
 +#endif
  			return ret;
@@ -176,13 +176,13 @@ index 0a4ba9bfaa5..a21067078f3 100644
 +#if defined(CONFIG_ESP_HOSTED_MCU_P1_TRANSPORT_TEST)
 +		if (chunk < ESP_SLC_BLOCK_SIZE && !data->p1_small_cmd53_seen) {
 +			data->p1_small_cmd53_seen = true;
-+			P1_MARK("EASYSTICK_P1 STEP 05 CMD53_SMALL PASS bytes=%u direction=%s",
++			P1_MARK("P1 STEP 05 CMD53_SMALL PASS bytes=%u direction=%s",
 +				chunk, tx != NULL ? "TX" : "RX");
 +		}
 +		if (chunk == ESP_SLC_BLOCK_SIZE) {
 +			data->p1_512_cmd53_count++;
 +			if (data->p1_512_cmd53_count == 1U) {
-+				P1_MARK("EASYSTICK_P1 STEP 06 CMD53_512 PASS bytes=%u direction=%s",
++				P1_MARK("P1 STEP 06 CMD53_512 PASS bytes=%u direction=%s",
 +					chunk, tx != NULL ? "TX" : "RX");
 +			}
 +		}
@@ -196,7 +196,7 @@ index 0a4ba9bfaa5..a21067078f3 100644
  	}
  
 +#if defined(CONFIG_ESP_HOSTED_MCU_P1_TRANSPORT_TEST)
-+	P1_MARK("EASYSTICK_P1 STEP 01 C6_RESET BEGIN physical_gpio=42 active=high");
++	P1_MARK("P1 STEP 01 C6_RESET BEGIN physical_gpio=42 active=high");
 +#endif
  	/*
  	 * A reset line is the reliable way to restart the coprocessor, but it is
@@ -206,7 +206,7 @@ index 0a4ba9bfaa5..a21067078f3 100644
  	if (sdio->reset_gpio.port != NULL) {
  		if (!gpio_is_ready_dt(&sdio->reset_gpio)) {
 +#if defined(CONFIG_ESP_HOSTED_MCU_P1_TRANSPORT_TEST)
-+			P1_MARK("EASYSTICK_P1 STEP 01 C6_RESET FAIL gpio_not_ready");
++			P1_MARK("P1 STEP 01 C6_RESET FAIL gpio_not_ready");
 +#endif
  			LOG_ERR("reset GPIO not ready");
  			return -ENODEV;
@@ -214,7 +214,7 @@ index 0a4ba9bfaa5..a21067078f3 100644
  
  		if (gpio_pin_configure_dt(&sdio->reset_gpio, GPIO_OUTPUT_ACTIVE)) {
 +#if defined(CONFIG_ESP_HOSTED_MCU_P1_TRANSPORT_TEST)
-+			P1_MARK("EASYSTICK_P1 STEP 01 C6_RESET FAIL configure");
++			P1_MARK("P1 STEP 01 C6_RESET FAIL configure");
 +#endif
  			return -EIO;
  		}
@@ -224,11 +224,11 @@ index 0a4ba9bfaa5..a21067078f3 100644
  		k_msleep(CONFIG_ESP_HOSTED_MCU_RESET_PULSE_MS);
  		gpio_pin_set_dt(&sdio->reset_gpio, 1);
 +#if defined(CONFIG_ESP_HOSTED_MCU_P1_TRANSPORT_TEST)
-+		P1_MARK("EASYSTICK_P1 STEP 01 C6_RESET PASS");
++		P1_MARK("P1 STEP 01 C6_RESET PASS");
 +#endif
 +	} else {
 +#if defined(CONFIG_ESP_HOSTED_MCU_P1_TRANSPORT_TEST)
-+		P1_MARK("EASYSTICK_P1 STEP 01 C6_RESET FAIL reset_gpio_missing");
++		P1_MARK("P1 STEP 01 C6_RESET FAIL reset_gpio_missing");
 +#endif
 +		return -ENODEV;
  	}
@@ -239,13 +239,13 @@ index 0a4ba9bfaa5..a21067078f3 100644
  		ret = sd_init(sdio->sdhc_dev, &data->card);
  		if (ret == 0) {
 +#if defined(CONFIG_ESP_HOSTED_MCU_P1_TRANSPORT_TEST)
-+			P1_MARK("EASYSTICK_P1 STEP 02 SDIO_ENUMERATE PASS");
++			P1_MARK("P1 STEP 02 SDIO_ENUMERATE PASS");
 +#endif
  			break;
  		}
  		if (sys_timepoint_expired(ready_end)) {
 +#if defined(CONFIG_ESP_HOSTED_MCU_P1_TRANSPORT_TEST)
-+			P1_MARK("EASYSTICK_P1 STEP 02 SDIO_ENUMERATE FAIL errno=%d", ret);
++			P1_MARK("P1 STEP 02 SDIO_ENUMERATE FAIL errno=%d", ret);
 +#endif
  			LOG_ERR("SDIO enumeration failed (%d)", ret);
  			return ret;
@@ -255,7 +255,7 @@ index 0a4ba9bfaa5..a21067078f3 100644
  		return ret;
  	}
 +#if defined(CONFIG_ESP_HOSTED_MCU_P1_TRANSPORT_TEST)
-+	P1_MARK("EASYSTICK_P1 STEP 03 FUNC1_ENABLE PASS");
++	P1_MARK("P1 STEP 03 FUNC1_ENABLE PASS");
 +#endif
  
  	ret = sdio_set_block_size(&data->func1, ESP_SLC_BLOCK_SIZE);
@@ -264,7 +264,7 @@ index 0a4ba9bfaa5..a21067078f3 100644
  		return ret;
  	}
 +#if defined(CONFIG_ESP_HOSTED_MCU_P1_TRANSPORT_TEST)
-+	P1_MARK("EASYSTICK_P1 STEP 04 CMD52 PASS addr=0x%03x value=0x%02x",
++	P1_MARK("P1 STEP 04 CMD52 PASS addr=0x%03x value=0x%02x",
 +		ESP_SLC_HOST_TO_CP_INT, ESP_SLC_OPEN_DATA_PATH);
 +#endif
  

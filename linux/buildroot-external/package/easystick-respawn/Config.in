@@ -1,5 +1,0 @@
-config BR2_PACKAGE_EASYSTICK_RESPAWN
-	bool "EasyStick daemon respawn helper"
-	help
-	  Restarts a daemon whenever it exits.  Replaces shell respawn
-	  loops, which on NOMMU each cost a full private copy of BusyBox.

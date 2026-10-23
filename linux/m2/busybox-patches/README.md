@@ -58,8 +58,8 @@ counting `while` loop, and exited after `! true`.
   without `set -e` (see the comment at its top): every step handles its own
   failure, and a command that fails for want of memory must not stop a reload
   after wpa_supplicant was stopped.
-* `S05easystick-tmpfs`, `S85easystick-ssh`, `easystick-firstboot` (m3) and
-  `easystick-sdio-diag` keep `set -e`, and the patch does not change what
+* `S05tmpfs`, `S85ssh`, `firstboot` (m3) and
+  `sdio-diag` keep `set -e`, and the patch does not change what
   they do: their loops run inside `$(...)` or as `cmd || …`, where `set -e`
   is off either way, and where a leak could happen it came at the end of a
   block or before commands that are exempt anyway.
@@ -105,9 +105,9 @@ Checked on x86 builds of the board's BusyBox configuration with
 
 ### Effect on the image's scripts
 
-`S05easystick-tmpfs` (with the `credentials.sh` and `autorun.sh` it
-sources), `S85easystick-ssh`, `S10easystick-config`, `easystick-firstboot`
-and `easystick-sdio-diag` keep `set -e`, and the patch does not change what
+`S05tmpfs` (with the `credentials.sh` and `autorun.sh` it
+sources), `S85ssh`, `S10config`, `firstboot`
+and `sdio-diag` keep `set -e`, and the patch does not change what
 they do. Their `$(…)` and `( … )` run one command, or a pipe whose status
 is its last command's either way, or `cmd || …`, or run where `set -e` is
 off (an `if` condition or `cmd || true`). None uses `set -x` or `pipefail`.

@@ -92,7 +92,7 @@ static bool tsens_oracle_fail(const char *stage)
 	return false;
 }
 
-bool easystick_tsens_oracle_run(void)
+bool tsens_oracle_run(void)
 {
 	uint32_t efuse_raw;
 	int delta_t;

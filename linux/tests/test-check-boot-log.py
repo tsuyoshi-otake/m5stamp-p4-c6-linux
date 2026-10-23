@@ -12,7 +12,7 @@ spec = importlib.util.spec_from_file_location("check_boot_log", HERE / "check-bo
 cbl = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(cbl)
 
-GOOD = b"""easystick-boot: CRASH_CAPSULE empty/invalid\r
+GOOD = b"""boot: CRASH_CAPSULE empty/invalid\r
 [    0.000000] Linux version 6.18.35 (builder@x) #1 SMP\r
 [    9.120000] esp32_sdio: loading out-of-tree module taints kernel.\r
 M3-lab: wlan0 appeared\r
@@ -66,13 +66,13 @@ rc, out = run(capsule, "--after-reboot")
 expect(rc == 1 and "FAIL: no crash capsule after reboot" in out,
        f"capsule after reboot is caught\n{out}")
 
-prot = b"easystick-boot: C68 CPU1 PMA/PMP diff=%s\r\n"
+prot = b"boot: C68 CPU1 PMA/PMP diff=%s\r\n"
 rc, out = run(prot % b"00000000" + GOOD)
 expect(rc == 0, f"CPU1 with CPU0's PMA/PMP passes\n{out}")
 rc, out = run(prot % b"20000000" + GOOD)
 expect(rc == 1 and "FAIL: no CPU1 protection mismatch" in out,
        f"a CPU1 PMA/PMP mismatch is caught\n{out}")
-waiting = b"I (3163) easystick-boot: C68 CPU1 WAITING; CPU0 -> Linux\r\n"
+waiting = b"I (3163) boot: C68 CPU1 WAITING; CPU0 -> Linux\r\n"
 rc, out = run(prot % b"00000000" + waiting + GOOD)
 expect(rc == 0 and "PASS: CPU1 protection reported" in out,
        f"a parked CPU1 with its PMA/PMP line passes\n{out}")

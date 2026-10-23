@@ -1,0 +1,38 @@
+Subject: [PATCH] stamp-p4: esp32 ACM: take the port lock for TX in the IRQ handler (#5)
+
+The USB Serial/JTAG IRQ handler fills the TX FIFO from the xmit kfifo
+without the port lock, while start_tx() does the same under it.  On one
+CPU the two never overlap, because the lock is taken with interrupts
+off.  With maxcpus=2 the handler on one CPU and start_tx() on the other
+can both run kfifo_get(): each sends the same byte and each increments
+out, so a byte goes out twice, the next one is skipped, and out can
+pass in.  kfifo_len() is then about 4G, and the port keeps sending its
+whole 4 KiB buffer (old console output and NULs) at full USB speed.
+Four of the first eight maxcpus=2 boots with 0079 did this, at about
+850 KB/s until the capture ended.  In three of them the last line before
+the replay already shows the doubled and missing bytes, such as
+"GOTGCTL==xx00990000" (the real value is 0x00090000).
+
+rxint() already takes the lock; take it in txint() too.  esp32_uart.c
+already takes it around txint() in its IRQ handler (0001).
+
+---
+--- a/drivers/tty/serial/esp32_acm.c
++++ b/drivers/tty/serial/esp32_acm.c
+@@ -177,7 +177,16 @@
+ 
+ static void esp32s3_acm_txint(struct uart_port *port)
+ {
++	unsigned long flags;
++
++	/*
++	 * start_tx() runs under the port lock; without it here, the two
++	 * can drain the xmit kfifo at once on SMP and push its out index
++	 * past in, so the whole buffer is sent again and again.
++	 */
++	spin_lock_irqsave(&port->lock, flags);
+ 	esp32s3_acm_transmit_buffer(port);
++	spin_unlock_irqrestore(&port->lock, flags);
+ }
+ 
+ static irqreturn_t esp32s3_acm_int(int irq, void *dev_id)

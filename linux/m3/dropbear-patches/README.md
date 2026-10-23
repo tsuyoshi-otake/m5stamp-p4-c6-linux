@@ -4,12 +4,12 @@ Buildroot global patches for Dropbear **2026.91**, staged into
 `BR2_GLOBAL_PATCH_DIR/dropbear/` for every SSH profile (`m3` and `m3-lab`).
 They are numbered after the m3-lab ledger series
 (`../../m3-lab/dropbear-patches/0001`–`0004`, applied only with
-`EASYSTICK_SSH_LEDGER=1`) and apply with or without it.
+`SSH_LEDGER=1`) and apply with or without it.
 
 | Patch | Fixes |
 | --- | --- |
-| `0010-easystick-vfork-child-shared-memory.patch` | A command run over SSH ended with `Bad packet length` / `Connection corrupted` instead of its exit status. |
-| `0011-easystick-wtmp-rotate.patch` | `/var/log/wtmp` grew without limit on the 2 MB `/tmp` ramdisk. |
+| `0010-vfork-child-shared-memory.patch` | A command run over SSH ended with `Bad packet length` / `Connection corrupted` instead of its exit status. |
+| `0011-wtmp-rotate.patch` | `/var/log/wtmp` grew without limit on the 2 MB `/tmp` ramdisk. |
 
 ## 0010: the vfork() child rewrote the server's memory
 

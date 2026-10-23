@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""nommu-mem-harness.py - #50 measurement harness for the easystick NOMMU pool.
+"""nommu-mem-harness.py - #50 measurement harness for the stamp-p4 NOMMU pool.
 
 Runs on the build host (Windows or Linux). Drives the board over the serial
 console for every measurement command (zero extra pool footprint) and uses
@@ -104,7 +104,7 @@ def kv(text):
 # drains the whole seq_file on the first call and discards past the newline.
 # Holding the fd with `exec 3<` and issuing sequential `read <&3` advances
 # line by line (verified on the board).
-BUILTIN_POOL = ('exec 3< /sys/kernel/easystick/nommu_pool; '
+BUILTIN_POOL = ('exec 3< /sys/kernel/board/nommu_pool; '
                 'read a <&3; read b <&3; read c <&3; read d <&3; read e <&3; '
                 'read f <&3; read g <&3; read h <&3; exec 3<&-; '
                 'echo "$a"; echo "$b"; echo "$c"; echo "$d"; '
@@ -129,7 +129,7 @@ def pool_stats(b):
     d = _kv_ints(b.send(BUILTIN_POOL, 6))
     if d:
         return {str(k): str(v) for k, v in d.items()}
-    return kv(b.send('cat /sys/kernel/easystick/nommu_pool'))
+    return kv(b.send('cat /sys/kernel/board/nommu_pool'))
 
 
 def meminfo(b):
@@ -190,7 +190,7 @@ def classify_pids(b, pids):
     out = {}
     if not pids:
         return out
-    # Field 7 after the comm ')' is task->flags; PF_EASYSTICK_SYSTEM
+    # Field 7 after the comm ')' is task->flags; PF_SYSTEM_WORK
     # (0x40000000, #50 R4) wins over ancestry.  Leaf-only: the flag is
     # fork-inherited, and a per-connection dropbear deliberately clears it,
     # so an ancestor's flag must not re-mark that child.
@@ -246,7 +246,7 @@ def print_attrib(tally, title, cls=None):
             ext_n += n
     print('\nsystem-side: %d   user-side: %d   exited-before-read: %d\n'
           % (sys_n, usr_n, ext_n))
-    print('sides resolved by /proc ancestry plus PF_EASYSTICK_SYSTEM '
+    print('sides resolved by /proc ancestry plus PF_SYSTEM_WORK '
           '(flag => system; else ttyGS1 ctty or dropbear ancestor => user; '
           'init chain => system)\n')
 
@@ -548,7 +548,7 @@ def net_up(b):
 def scenario_a(b, host, n, key, loopback=False, trigger='user'):
     # trigger='user' (console ancestry, the R3 scenario) vs 'system': the
     # restart request goes through /run/.es-netreq, which init-ancestry
-    # easystick-bootsync picks up -- the same classification a real
+    # bootsyncd picks up -- the same classification a real
     # config-import apply gets, and no flash writes (#50 round 4).
     if trigger == 'system':
         def fire():
@@ -640,7 +640,7 @@ USED_SAMPLER = [
     '}',
     'n=0',
     'while [ $n -lt 650 ]; do',
-    'exec 3< /sys/kernel/easystick/nommu_pool',
+    'exec 3< /sys/kernel/board/nommu_pool',
     'read a <&3',
     'read b <&3',
     'read c <&3',
@@ -693,7 +693,7 @@ def scenario_syspeak(b, regions):
     slow for the restart peak -- so two builtin-only samplers run on the
     board instead: phase A polls `used`/`largest_free` at ~10 Hz through one
     restart; phase B sweeps per-pid pool bytes through a second restart and
-    tags each pid's PF_EASYSTICK_SYSTEM flag.  A flagged pid absent from the
+    tags each pid's PF_SYSTEM_WORK flag.  A flagged pid absent from the
     settled baseline (or grown since) is transient demand the reserve must
     hold free for; unflagged transients (this sampler's own shell) are
     reported separately."""
@@ -940,10 +940,10 @@ def main():
                     help='scenario A restart origin: console shell (user '
                          'ancestry) or bootsync netreq file (init ancestry)')
     ap.add_argument('--rcontig', type=int, default=None,
-                    help='write /sys/kernel/easystick/user_reserve_contig '
+                    help='write /sys/kernel/board/user_reserve_contig '
                          '(bytes) before the scenarios (0090 images only)')
     ap.add_argument('--rtotal', type=int, default=None,
-                    help='write /sys/kernel/easystick/user_reserve_total '
+                    help='write /sys/kernel/board/user_reserve_total '
                          '(bytes) before the scenarios (0090 images only)')
     a = ap.parse_args()
 
@@ -965,17 +965,17 @@ def main():
     time.sleep(3)
 
     if a.rcontig is not None:
-        r = b.send('echo %d > /sys/kernel/easystick/user_reserve_contig '
+        r = b.send('echo %d > /sys/kernel/board/user_reserve_contig '
                    '2>/dev/null; read v < '
-                   '/sys/kernel/easystick/user_reserve_contig; echo RC=$v'
+                   '/sys/kernel/board/user_reserve_contig; echo RC=$v'
                    % a.rcontig, 6)
         m = re.search(r'RC=(\d+)', r)
         print('user_reserve_contig := %s\n'
               % (m.group(1) if m else 'UNSUPPORTED'))
     if a.rtotal is not None:
-        r = b.send('echo %d > /sys/kernel/easystick/user_reserve_total '
+        r = b.send('echo %d > /sys/kernel/board/user_reserve_total '
                    '2>/dev/null; read v < '
-                   '/sys/kernel/easystick/user_reserve_total; echo RT=$v'
+                   '/sys/kernel/board/user_reserve_total; echo RT=$v'
                    % a.rtotal, 6)
         m = re.search(r'RT=(\d+)', r)
         print('user_reserve_total := %s\n'

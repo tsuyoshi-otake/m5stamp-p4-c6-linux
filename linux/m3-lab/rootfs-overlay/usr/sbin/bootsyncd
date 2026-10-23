@@ -1,0 +1,428 @@
+#!/bin/sh
+# Import the USB drive (boot.img) and save it to flash, without an eject or a
+# reboot.  While the host owns the LUN, a change is imported once the host
+# has not written for SETTLE_SECONDS.  A SCSI eject (the empty LUN file
+# attribute) imports at once.  This daemon never forces an eject.
+
+BOOT_IMG="/tmp/boot.img"
+LUN_CTL="/usr/sbin/usb-lun"
+BOOT_COMMIT="/usr/sbin/boot-commit"
+MNT_POINT="/run/mnt_snap"
+# Snapshots and staged files carry credentials and the Wi-Fi PSK (#11).
+umask 077
+
+log() {
+	echo "[bootsync] $1"
+}
+es_log() {
+	log "$1"
+}
+
+# apply_password, apply_root_password, install_keys and install_root_keys,
+# shared with S05tmpfs.
+. /usr/lib/board/credentials.sh
+# The drive's main.py/main.sh/main (#34).
+. /usr/lib/board/autorun.sh
+
+boot_hash() {
+	HASH=""
+	[ -f "$1" ] || return 1
+	line=$(md5sum "$1" 2>/dev/null) || return 1
+	HASH=${line%% *}
+	[ -n "$HASH" ]
+}
+
+file_changed() {
+	[ ! -f "$2" ] && return 0
+	boot_hash "$1" || return 0
+	left=$HASH
+	boot_hash "$2" || return 0
+	[ "$left" != "$HASH" ]
+}
+
+# The 1 s poll used to exec $LUN_CTL, a shell script; on this NOMMU bFLT system
+# every exec copies the whole BusyBox image (#15, #23).  Read the LUN file
+# attribute with the shell builtin instead and use $LUN_CTL only when the
+# attribute cannot be located (it also reports why).
+LUN_FILE=""
+find_lun_file() {
+	LUN_FILE=""
+	n=0
+	for c in "${RUN_SYSTEM_CLASS_UDC_ROOT:-/sys/class/udc}"/*/device/udc/*/gadget/lun*/file; do
+		[ -f "$c" ] || continue
+		LUN_FILE=$c
+		n=$((n + 1))
+	done
+	[ "$n" -eq 1 ] || LUN_FILE=""
+}
+
+lun_state() {
+	[ -n "$LUN_FILE" ] && [ -f "$LUN_FILE" ] || find_lun_file
+	if [ -z "$LUN_FILE" ]; then
+		LUN_STATE=$($LUN_CTL state 2>/dev/null) || LUN_STATE="error"
+		return
+	fi
+	b=""
+	read -r b < "$LUN_FILE" 2>/dev/null || true
+	case "$b" in
+		"") LUN_STATE="device-owned" ;;
+		"$BOOT_IMG") LUN_STATE="host-owned" ;;
+		*) LUN_STATE="error" ;;
+	esac
+}
+
+# config.txt diffing (#39): normalise both files the way S40network's
+# conf_get reads them -- UTF-8 BOM on line 1, CRs, leading blanks, comments
+# and blank lines dropped, blanks around "=" collapsed -- into key=value
+# lines.  autorun* keys are left out of NET_KEYS; the program restart is
+# handled separately.  One sed per file; the comparison is shell builtins
+# only, because every external command is a ~480 KB exec on this NOMMU board.
+cfg_norm() {
+	bom=$(printf '\357\273\277')
+	cr=$(printf '\r')
+	sed -n -e "1s/^$bom//" -e "s/$cr\$//" \
+		-e "s/^[[:blank:]]*//" \
+		-e "/^#/d" -e "/^$/d" -e "/=/!d" \
+		-e "s/[[:blank:]]*=[[:blank:]]*/=/" \
+		-e "/^autorun[^=]*=/d" \
+		-e p "$1" > "$2" 2>/dev/null
+}
+
+# CHANGED_KEYS = the config.txt keys whose effective value differs between
+# $1 (new) and $2 (old).  The first occurrence of a key wins, matching
+# conf_get's early "q".  Returns 0 when anything changed; "full" when there
+# is no baseline to diff against.
+net_changed_keys() {
+	CHANGED_KEYS=""
+	[ -f "$2" ] || { CHANGED_KEYS=full; return 0; }
+	NORM_NEW=/run/.bootsync-cfg-new
+	NORM_OLD=/run/.bootsync-cfg-old
+	if ! cfg_norm "$1" "$NORM_NEW" || ! cfg_norm "$2" "$NORM_OLD"; then
+		rm -f "$NORM_NEW" "$NORM_OLD"
+		CHANGED_KEYS=full
+		return 0
+	fi
+	seen=""
+	while IFS= read -r l || [ -n "$l" ]; do
+		k=${l%%=*}
+		case " $seen " in *" $k "*) continue ;; esac
+		seen="$seen$k "
+		v=${l#*=}
+		nv=""
+		found=0
+		while IFS= read -r nl || [ -n "$nl" ]; do
+			case "$nl" in
+				"$k="*) nv=${nl#*=}; found=1; break ;;
+			esac
+		done < "$NORM_NEW"
+		if [ "$found" -eq 0 ] || [ "$nv" != "$v" ]; then
+			CHANGED_KEYS="$CHANGED_KEYS $k"
+		fi
+	done < "$NORM_OLD"
+	while IFS= read -r nl || [ -n "$nl" ]; do
+		k=${nl%%=*}
+		case " $seen " in *" $k "*) continue ;; esac
+		seen="$seen$k "
+		CHANGED_KEYS="$CHANGED_KEYS $k"
+	done < "$NORM_NEW"
+	rm -f "$NORM_NEW" "$NORM_OLD"
+	[ -n "$CHANGED_KEYS" ]
+}
+
+FLASH_HASH_FILE="/run/.boot-flash-md5"
+
+# The host's writes change boot.img's mtime.  SEEN_REF carries the mtime of
+# the image last looked at (S05 sets it before the LUN is attached), and both
+# the test and touch are shell builtins, so the 1 s poll execs nothing.
+# test -nt compares whole seconds: a write in the same second as SEEN_REF is
+# not seen, but the import waits SETTLE_SECONDS after that second anyway.
+SEEN_REF="/run/.bootsync-seen"
+SETTLE_SECONDS=3
+
+# auto_reboot=no in config.txt: when the kernel cannot write flash, keep the
+# staged image in PSRAM until a manual reboot instead of rebooting to save it.
+auto_reboot_enabled() {
+	[ -f /tmp/config.txt ] || return 0
+	while IFS= read -r l || [ -n "$l" ]; do
+		case "$l" in
+			auto_reboot=no|auto_reboot=no[!A-Za-z0-9_]*) return 1 ;;
+		esac
+	done < /tmp/config.txt
+	return 0
+}
+
+reattach() {
+	if ! $LUN_CTL reattach >/dev/null 2>&1; then
+		log "ERROR: could not reattach boot.img; USB storage remains unavailable"
+		return 1
+	fi
+	log "USB storage reattached"
+}
+
+# After an eject the image goes back to the host; an import made while the
+# host owns the LUN never took it away.
+release() {
+	[ "$IMPORT_MODE" = eject ] || return 0
+	reattach
+}
+
+# sleep is not a NOFORK applet, so `sleep 1` is a vfork+exec every tick (#29).
+# read -t on a FIFO that nobody writes waits in the shell itself.
+TICK_FIFO=/run/.bootsync-tick
+tick() {
+	if [ -p "$TICK_FIFO" ]; then
+		read -r -t "$1" _ 0<> "$TICK_FIFO" 2>/dev/null || true
+	else
+		sleep "$1"
+	fi
+}
+
+# Flash-free network request path (#50 round 4): a root-owned file asks for an
+# S40network run under this daemon's init ancestry -- the same classification
+# a real config-import apply gets -- without touching boot.img or flash.
+# /run is root-only; verbs are whitelisted, anything else is ignored + logged.
+NETREQ=/run/.es-netreq
+netreq_check() {
+	[ -f "$NETREQ" ] || return 0
+	req=""
+	read -r req < "$NETREQ" 2>/dev/null || true
+	rm -f "$NETREQ"
+	case "$req" in
+		apply*) ;;
+		reload*|restart*) req="restart" ;;
+		start*|stop*) ;;
+		*) log "network request: ignoring unknown verb '$req'"; return 0 ;;
+	esac
+	log "network request: $req"
+	( umask 022; exec /etc/init.d/S40network $req ) >/dev/null 2>&1 &
+}
+
+# Validate a snapshot of the drive, save it to flash and apply what changed.
+# Returns 1 when the snapshot was not imported.
+import_snapshot() {
+	SNAP_IMG="/run/boot-snap.$$"
+	STAGE="/run/.bootsync-stage.$$"
+	rm -rf "$SNAP_IMG" "$STAGE"
+
+	if ! cp -f "$BOOT_IMG" "$SNAP_IMG" 2>/dev/null; then
+		log "ERROR: snapshot copy failed"
+		release
+		return 1
+	fi
+	lun_state
+	if [ "$IMPORT_MODE" = eject ] && [ "$LUN_STATE" != "device-owned" ]; then
+		log "ERROR: ownership changed during snapshot"
+		rm -f "$SNAP_IMG"
+		return 1
+	fi
+	if [ "$IMPORT_MODE" = settle ] && [ "$BOOT_IMG" -nt "$SEEN_REF" ]; then
+		# The host wrote again while the snapshot was taken.
+		rm -f "$SNAP_IMG"
+		return 1
+	fi
+
+	IMG_SIZE=$(wc -c < "$SNAP_IMG" 2>/dev/null || echo 0)
+	if [ "$IMG_SIZE" -ne 262144 ]; then
+		log "ERROR: rejected boot image size=$IMG_SIZE (expected 262144)"
+		rm -f "$SNAP_IMG"
+		release
+		return 1
+	fi
+	if ! boot_hash "$SNAP_IMG"; then
+		log "ERROR: could not hash snapshot"
+		rm -f "$SNAP_IMG"
+		release
+		return 1
+	fi
+	NEW_HASH=$HASH
+	FLASH_HASH=""
+	[ -f "$FLASH_HASH_FILE" ] && read -r FLASH_HASH < "$FLASH_HASH_FILE"
+	if [ "$NEW_HASH" = "$FLASH_HASH" ]; then
+		log "Drive unchanged since it was last saved"
+		rm -f "$SNAP_IMG"
+		release
+		return 0
+	fi
+
+	if ! mount -t vfat -o ro,loop "$SNAP_IMG" "$MNT_POINT" 2>/dev/null; then
+		log "ERROR: rejected invalid FAT snapshot"
+		rm -f "$SNAP_IMG"
+		release
+		return 1
+	fi
+
+	VALID=1
+	mkdir -p "$STAGE"
+	for name in wpa_supplicant.conf config.txt credentials.txt authorized_keys root_authorized_keys; do
+		path="$MNT_POINT/$name"
+		[ ! -e "$path" ] && continue
+		size=$(wc -c < "$path" 2>/dev/null || echo 65537)
+		if [ ! -f "$path" ] || [ "$size" -le 0 ] || [ "$size" -gt 65536 ]; then
+			log "ERROR: rejected $name size=$size"
+			VALID=0
+		elif ! cp -f "$path" "$STAGE/$name"; then
+			VALID=0
+		fi
+	done
+	RESET=0
+	{ [ -e "$MNT_POINT/factory-reset" ] || [ -e "$MNT_POINT/factory-reset.txt" ]; } && RESET=1
+	# A program that cannot be copied keeps the running one; the rest of
+	# the drive is still saved.
+	if ! autorun_stage "$MNT_POINT"; then
+		log "ERROR: could not copy the autorun program; the running one is kept"
+		rm -rf "$AUTORUN_NEW"
+	fi
+	if ! umount "$MNT_POINT" 2>/dev/null; then
+		log "ERROR: snapshot unmount failed"
+		VALID=0
+	fi
+	if [ "$VALID" -ne 1 ]; then
+		rm -rf "$SNAP_IMG" "$STAGE" "$AUTORUN_NEW"
+		release
+		return 1
+	fi
+
+	# The helper copies and verifies the exact snapshot in PSRAM and asks the
+	# kernel to write it to the inactive A/B slot (exit 0).  Exit 2: the kernel
+	# could not, and boot-shim writes it at the next normal reboot.
+	rc=0
+	"$BOOT_COMMIT" "$SNAP_IMG" || rc=$?
+	case "$rc" in
+		0)
+			log "Saved to flash hash=$NEW_HASH"
+			echo "$NEW_HASH" > "$FLASH_HASH_FILE"
+			;;
+		2) log "Staged for the next reboot hash=$NEW_HASH (the kernel could not write flash)" ;;
+		*)
+			log "ERROR: durable boot-image staging failed; the drive is not saved"
+			rm -rf "$SNAP_IMG" "$STAGE" "$AUTORUN_NEW"
+			release
+			return 1
+			;;
+	esac
+	rm -f "$SNAP_IMG"
+
+	# Publish the new config only after it is saved, so a failed save leaves
+	# /tmp untouched and a retry still sees the change.  NET_KEYS collects
+	# the changed settings for S40network apply; a file that could not be
+	# published stays old in /tmp and diffs again at the next save.
+	NET_KEYS=""
+	for name in wpa_supplicant.conf config.txt; do
+		if [ -f "$STAGE/$name" ] && file_changed "$STAGE/$name" "/tmp/$name"; then
+			keys=""
+			if [ "$name" = config.txt ]; then
+				net_changed_keys "$STAGE/$name" "/tmp/$name" &&
+					keys=$CHANGED_KEYS
+			else
+				keys=" wpa_supplicant.conf"
+			fi
+			mv -f "$STAGE/$name" "/tmp/$name" || continue
+			NET_KEYS="$NET_KEYS$keys"
+		fi
+	done
+	if [ -f "$STAGE/credentials.txt" ] &&
+		file_changed "$STAGE/credentials.txt" /tmp/credentials.txt; then
+		cred_ok=1
+		apply_password "$STAGE/credentials.txt" || cred_ok=0
+		apply_root_password "$STAGE/credentials.txt" || cred_ok=0
+		# Publish only when both applies reported success: a failed one
+		# (e.g. an exec that ENOMEM'd) keeps the old file in /tmp, so the
+		# next save sees the diff and retries (#40).
+		if [ "$cred_ok" -eq 1 ]; then
+			mv -f "$STAGE/credentials.txt" /tmp/credentials.txt
+		else
+			log "ERROR: credentials apply failed; old credentials.txt kept for a retry on the next save"
+		fi
+	fi
+	if [ -f "$STAGE/authorized_keys" ]; then
+		install_keys "$STAGE/authorized_keys"
+	else
+		revoke_keys m5 /home/m5 authorized_keys
+	fi
+	if [ -f "$STAGE/root_authorized_keys" ]; then
+		install_root_keys "$STAGE/root_authorized_keys"
+	else
+		revoke_keys root /root root_authorized_keys
+	fi
+	rm -rf "$STAGE"
+
+	release
+	if [ "$RESET" -eq 1 ]; then
+		# The reset runs in S05 at boot: restart into it.
+		log "factory-reset on the drive; rebooting to reset"
+		tick 2
+		reboot
+		while true; do tick 60; done
+	fi
+	if [ "$rc" -eq 2 ] && auto_reboot_enabled; then
+		# A staged image survives only a software reboot.
+		log "Rebooting to commit the image to flash (auto_reboot=no in config.txt turns this off)"
+		tick 2
+		reboot
+		while true; do tick 60; done
+	fi
+	if [ -n "$NET_KEYS" ]; then
+		log "Configuration changed:$NET_KEYS; applying"
+		# umask 022: udhcpc writes resolv.conf, which m5 must read.
+		# apply serialises inside S40network: overlapping saves queue into
+		# /run/.netapply.pending instead of running two reloads (#39).
+		( umask 022; exec /etc/init.d/S40network apply $NET_KEYS ) >/dev/null 2>&1 &
+	fi
+	# Restarts the program only when it or its autorun= settings changed.
+	autorun_apply
+	return 0
+}
+
+mkdir -p "$MNT_POINT"
+[ -p "$TICK_FIFO" ] || mkfifo -m 600 "$TICK_FIFO" 2>/dev/null || true
+while [ ! -f "$BOOT_IMG" ] || [ ! -x "$LUN_CTL" ]; do
+	tick 2
+done
+[ -f "$SEEN_REF" ] || touch -r "$BOOT_IMG" "$SEEN_REF"
+# At boot S05 staged the drive's program; the init scripts are done now.  A
+# respawned bootsync finds nothing staged and leaves the program alone.
+autorun_apply
+
+LAST_STATE=""
+PENDING=0
+QUIET=0
+LOG_TICKS=0
+log "Daemon started; drive changes are saved ${SETTLE_SECONDS} s after the host stops writing"
+
+while true; do
+	tick 1
+	netreq_check
+	LOG_TICKS=$((LOG_TICKS + 1))
+	if [ "$LOG_TICKS" -ge 30 ]; then
+		LOG_TICKS=0
+		autorun_trim_log
+	fi
+	lun_state
+	if [ "$LUN_STATE" != "$LAST_STATE" ]; then
+		log "ownership=$LUN_STATE"
+		LAST_STATE=$LUN_STATE
+	fi
+	case "$LUN_STATE" in
+		device-owned)
+			IMPORT_MODE=eject
+			;;
+		host-owned)
+			if [ "$BOOT_IMG" -nt "$SEEN_REF" ]; then
+				touch -r "$BOOT_IMG" "$SEEN_REF"
+				PENDING=1
+				QUIET=0
+				continue
+			fi
+			[ "$PENDING" -eq 1 ] || continue
+			QUIET=$((QUIET + 1))
+			[ "$QUIET" -ge "$SETTLE_SECONDS" ] || continue
+			IMPORT_MODE=settle
+			;;
+		*)
+			continue
+			;;
+	esac
+	PENDING=0
+	import_snapshot && [ "$IMPORT_MODE" = eject ] && LAST_STATE="host-owned"
+	[ "$IMPORT_MODE" = settle ] || touch -r "$BOOT_IMG" "$SEEN_REF"
+done

@@ -9,19 +9,19 @@ import time
 from pathlib import Path
 
 
-PYTHON = r"C:\Users\developer\tmp\easystick-p4-tools-481\Scripts\python.exe"
+PYTHON = r"C:\Users\developer\tmp\p4-tools-481\Scripts\python.exe"
 ESPTOOL = [PYTHON, "-m", "esptool"]
 PORT = "COM10"
 CAPTURE_PROFILE = os.environ.get(
-    "EASYSTICK_CAPTURE_PROFILE", "c68-0044-observe-20260819"
+    "CAPTURE_PROFILE", "c68-0044-observe-20260819"
 )
 CAPTURE_ROOT = Path(
     os.environ.get(
-        "EASYSTICK_CAPTURE_ROOT",
-        r"C:\Users\developer\tmp\easystick-m25-smp-20260817",
+        "CAPTURE_ROOT",
+        r"C:\Users\developer\tmp\m25-smp-20260817",
     )
 )
-CAPTURE_COMMAND = os.environ.get("EASYSTICK_CAPTURE_COMMAND", "").strip()
+CAPTURE_COMMAND = os.environ.get("CAPTURE_COMMAND", "").strip()
 if "-stress-" in CAPTURE_PROFILE:
     if not CAPTURE_COMMAND:
         # Leave enough of the fixed 120 s capture window for the helper to
@@ -49,7 +49,7 @@ OUT_TXT = OUT_BIN.with_suffix(".txt")
 OUT_JSON = OUT_BIN.with_suffix(".json")
 WINDOW_SECONDS = 120.0
 SERIAL_START_DELAY_SECONDS = float(
-    os.environ.get("EASYSTICK_CAPTURE_SERIAL_START_DELAY", "0.05")
+    os.environ.get("CAPTURE_SERIAL_START_DELAY", "0.05")
 )
 
 EXPECTED_BY_PROFILE = {
@@ -57,25 +57,25 @@ EXPECTED_BY_PROFILE = {
         "boot-shim.bin": "c7ec1d122f6d067945402e006188996c88ca9f14fa550061e619b59f695110d7",
         "Image": "c6605d41c6b129a79a0654f1aa38798bc4d2fc5b9c064f7a6c93cedea925d7f5",
         "rootfs.squashfs": "424a59d74286ef3cb7ab557169277b8361e589c7ef673aec74e193296dce67b6",
-        "easystick-stamp-p4.dtb": "675a04475b8671bcbbc01830c5927c1e5fd9c47f3382cb289a10a5e8b8519ee0",
+        "esp32p4-m5stamp-p4.dtb": "675a04475b8671bcbbc01830c5927c1e5fd9c47f3382cb289a10a5e8b8519ee0",
     },
     "c68-0045-observe-20260819": {
         "boot-shim.bin": "c7ec1d122f6d067945402e006188996c88ca9f14fa550061e619b59f695110d7",
         "Image": "0df2840668ac358fa12b443bdb13c7d1a7af497f8bacb654c24e82824ccd47ed",
         "rootfs.squashfs": "424a59d74286ef3cb7ab557169277b8361e589c7ef673aec74e193296dce67b6",
-        "easystick-stamp-p4.dtb": "675a04475b8671bcbbc01830c5927c1e5fd9c47f3382cb289a10a5e8b8519ee0",
+        "esp32p4-m5stamp-p4.dtb": "675a04475b8671bcbbc01830c5927c1e5fd9c47f3382cb289a10a5e8b8519ee0",
     },
     "c68-0045-0047-observe-20260819": {
         "boot-shim.bin": "c7ec1d122f6d067945402e006188996c88ca9f14fa550061e619b59f695110d7",
         "Image": "6bee6c79b9f9e5cd03a5dc39ef2ba0931063739a7e25d6c1c4ace6d09dd95bc6",
         "rootfs.squashfs": "424a59d74286ef3cb7ab557169277b8361e589c7ef673aec74e193296dce67b6",
-        "easystick-stamp-p4.dtb": "675a04475b8671bcbbc01830c5927c1e5fd9c47f3382cb289a10a5e8b8519ee0",
+        "esp32p4-m5stamp-p4.dtb": "675a04475b8671bcbbc01830c5927c1e5fd9c47f3382cb289a10a5e8b8519ee0",
     },
     "c68-0045-0047-l3-20260819": {
         "boot-shim.bin": "c7ec1d122f6d067945402e006188996c88ca9f14fa550061e619b59f695110d7",
         "Image": "21541b5f4b89441658d7133f02904c988a896cb56c44eebc272f6ad33167a24d",
         "rootfs.squashfs": "0c96e2d14b51a90a4e414326098895bca41272c12040b9ce550075d350e5c557",
-        "easystick-stamp-p4.dtb": "675a04475b8671bcbbc01830c5927c1e5fd9c47f3382cb289a10a5e8b8519ee0",
+        "esp32p4-m5stamp-p4.dtb": "675a04475b8671bcbbc01830c5927c1e5fd9c47f3382cb289a10a5e8b8519ee0",
     },
 }
 
@@ -83,24 +83,24 @@ EXPECTED_BY_PROFILE = {
 def expected_hashes_for_profile() -> dict[str, str]:
     if CAPTURE_PROFILE in EXPECTED_BY_PROFILE:
         return EXPECTED_BY_PROFILE[CAPTURE_PROFILE]
-    override = os.environ.get("EASYSTICK_EXPECTED_HASHES_JSON", "").strip()
+    override = os.environ.get("EXPECTED_HASHES_JSON", "").strip()
     if not override:
         raise SystemExit(
-            "unknown capture profile; provide EASYSTICK_EXPECTED_HASHES_JSON"
+            "unknown capture profile; provide EXPECTED_HASHES_JSON"
         )
     try:
         hashes = json.loads(override)
     except json.JSONDecodeError as error:
-        raise SystemExit(f"invalid EASYSTICK_EXPECTED_HASHES_JSON: {error}")
-    required = {"boot-shim.bin", "Image", "rootfs.squashfs", "easystick-stamp-p4.dtb"}
+        raise SystemExit(f"invalid EXPECTED_HASHES_JSON: {error}")
+    required = {"boot-shim.bin", "Image", "rootfs.squashfs", "esp32p4-m5stamp-p4.dtb"}
     if not isinstance(hashes, dict) or set(hashes) != required:
         raise SystemExit(
-            "EASYSTICK_EXPECTED_HASHES_JSON must contain exactly "
-            "boot-shim.bin, Image, rootfs.squashfs, easystick-stamp-p4.dtb"
+            "EXPECTED_HASHES_JSON must contain exactly "
+            "boot-shim.bin, Image, rootfs.squashfs, esp32p4-m5stamp-p4.dtb"
         )
     normalized = {str(name): str(value).lower() for name, value in hashes.items()}
     if any(not re.fullmatch(r"[0-9a-f]{64}", value) for value in normalized.values()):
-        raise SystemExit("EASYSTICK_EXPECTED_HASHES_JSON contains a non-SHA256 value")
+        raise SystemExit("EXPECTED_HASHES_JSON contains a non-SHA256 value")
     return normalized
 
 
@@ -404,14 +404,14 @@ def flash_and_verify(hashes: dict[str, str]) -> None:
         "0x810000",
         str(TRIPLE / "rootfs.squashfs"),
         "0xf10000",
-        str(TRIPLE / "easystick-stamp-p4.dtb"),
+        str(TRIPLE / "esp32p4-m5stamp-p4.dtb"),
         check=True,
     )
     for offset, name in (
         ("0x10000", "boot-shim.bin"),
         ("0x90000", "Image"),
         ("0x810000", "rootfs.squashfs"),
-        ("0xf10000", "easystick-stamp-p4.dtb"),
+        ("0xf10000", "esp32p4-m5stamp-p4.dtb"),
     ):
         esptool(
             *common,
@@ -550,7 +550,7 @@ def capture(hashes: dict[str, str]) -> None:
     stress_summaries = extract_stress_summaries(text)
     top_blocks = extract_top_blocks(text)
     tsens_required = (
-        os.environ.get("EASYSTICK_CAPTURE_TSENS", "0") == "1"
+        os.environ.get("CAPTURE_TSENS", "0") == "1"
         or "-tsens-" in CAPTURE_PROFILE
     )
     tsens_validation_errors = (
@@ -573,7 +573,7 @@ def capture(hashes: dict[str, str]) -> None:
     }:
         classification = "tsens-fail"
     capture_manifest = {
-        "schema": "easystick.c68-capture/v2",
+        "schema": "stamp-p4.c68-capture/v2",
         "profile": CAPTURE_PROFILE,
         "port": PORT,
         "seconds": WINDOW_SECONDS,
@@ -620,7 +620,7 @@ def capture(hashes: dict[str, str]) -> None:
             "boot-shim.bin": hashes["boot-shim.bin"],
             "Image": hashes["Image"],
             "rootfs.squashfs": hashes["rootfs.squashfs"],
-            "dtb": hashes["easystick-stamp-p4.dtb"],
+            "dtb": hashes["esp32p4-m5stamp-p4.dtb"],
             "offsets": {
                 "boot-shim.bin": "0x10000",
                 "Image": "0x90000",

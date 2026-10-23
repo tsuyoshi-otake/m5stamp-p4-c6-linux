@@ -1,0 +1,43 @@
+#!/bin/sh
+# Stamp-P4 udhcpc hook to update status.txt on IP assignment or renewal
+# NOMMU-safe: zero subshells, zero pipes to prevent vfork issues in ash
+#
+# default.script sources this file (#40): $1 is its ACTION argument, and
+# update-status is in turn sourced via "set -- ..." rather than
+# exec'ed, so the whole chain stays in one shell.  Do not "exit" here.
+
+ACTION="$1"
+
+case "$ACTION" in
+	bound|renew)
+		# S40network records the config wpa_supplicant runs with:
+		# credentials from config.txt use /run/wpa_cfg.conf.
+		_conf=/tmp/wpa_supplicant.conf
+		_c=""
+		read -r _c < /run/.es-wpa-conf 2>/dev/null || true
+		[ -n "$_c" ] && _conf=$_c
+		_ssid="none"
+		if [ -f "$_conf" ]; then
+			while IFS= read -r line; do
+				# ssid= only, not scan_ssid= or bssid=
+				case "$line" in
+					ssid=*|*[[:blank:]]ssid=*)
+						_ssid="${line#*\"}"
+						_ssid="${_ssid%\"*}"
+						break
+						;;
+				esac
+			done < "$_conf"
+		fi
+		if [ -x /usr/sbin/update-status ]; then
+			set -- "CONNECTED" "$ip" "$subnet" "$router" "$_ssid" "sta"
+			. /usr/sbin/update-status
+		fi
+		;;
+	deconfig|leasefail)
+		if [ -x /usr/sbin/update-status ]; then
+			set -- "DISCONNECTED" "none" "none" "none" "none" "sta"
+			. /usr/sbin/update-status
+		fi
+		;;
+esac

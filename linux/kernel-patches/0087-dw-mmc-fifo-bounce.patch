@@ -1,0 +1,275 @@
+Subject: [PATCH] mmc: dw_mmc: bounce multi-word PIO reads through IDMAC (#35)
+
+The ESP32-P4 SDMMC BUFFIFO does not pop on CPU reads: with
+dw_mmc.fiford_mode=5, STATUS.FCNT is unchanged across every
+mci_fifo_readl(), so a PIO read of more than one 32-bit word returns
+its first word repeated.  IDMAC transfers are correct.
+
+In production this hits esp-hosted RX packet tails: when the packet
+length mod 512 is 1..15, esp_sdio.c reads the tail with a 4..16 byte
+CMD53, which is below the 16-byte DMA threshold and goes PIO.
+
+With `espressif,fifo-no-pop` in the DT (or dw_mmc.es_fifo_bounce=1 at
+boot), a read of 5..1024 bytes that dw_mci_pre_dma_transfer() would
+send to PIO is retried through IDMAC into an aligned 1 KiB bounce
+buffer and copied back into the caller's sg on a clean completion.
+The CMD53 byte count on the wire is unchanged; only the bounce
+capacity is padded to a word.  Single-word reads stay on PIO (they
+are correct).  A multi-word PIO transfer that still happens on such a
+host logs a rate-limited "#35:" warning with a running total.
+
+es_fifo_bounce: -1 follows the DT (default), 0 off, 1 on.
+
+---
+--- a/drivers/mmc/host/dw_mmc.h
++++ b/drivers/mmc/host/dw_mmc.h
+@@ -291,6 +291,16 @@
+ 	u8			part_buf_start;
+ 	u8			part_buf_count;
+ 	u32			fifo_rd_idx;
++
++	/* #35: P4 FIFO never pops on CPU reads; see dw_mmc.c. */
++	u8			fifo_nopop;
++	u8			pio_rd_bounce;
++	void			*pio_bounce;
++	struct scatterlist	pio_bounce_sgl;
++	struct scatterlist	*pio_orig_sg;
++	unsigned int		pio_orig_sg_len;
++	u32			pio_bounced;
++	u32			pio_rd_corrupt;
+ 	union {
+ 		u16		part_buf16;
+ 		u32		part_buf32;
+--- a/drivers/mmc/host/dw_mmc.c
++++ b/drivers/mmc/host/dw_mmc.c
+@@ -95,6 +95,10 @@
+ /* Each descriptor can transfer up to 4KB of data in chained mode */
+ #define DW_MCI_DESC_DATA_LENGTH	0x1000
+ 
++/* Max byte-mode CMD53 count (512) padded to a word, plus headroom for a
++ * single unaligned block-mode read. */
++#define DW_MCI_PIO_BOUNCE_BYTES	1024
++
+ static struct dw_mci_cmd53_trace_record *
+ dw_mci_cmd53_trace_active(struct dw_mci *host)
+ {
+@@ -1245,6 +1249,18 @@
+ module_param_named(es_dma_threshold, dw_mmc_es_dma_threshold, int, 0644);
+ MODULE_PARM_DESC(es_dma_threshold, "#35: DMA threshold override (-1=default)");
+ 
++/*
++ * Stamp-P4 #35: es_fifo_bounce selects the IDMAC bounce workaround for
++ * PIO reads on the P4, whose BUFFIFO register does not pop on CPU reads
++ * (a multi-word CPU read returns its first word repeated).  -1 follows
++ * the DT property `espressif,fifo-no-pop`, 0 disables the workaround,
++ * 1 forces it on for hosts without the property.
++ */
++static int dw_mmc_es_fifo_bounce = -1;
++module_param_named(es_fifo_bounce, dw_mmc_es_fifo_bounce, int, 0644);
++MODULE_PARM_DESC(es_fifo_bounce,
++		 "#35: IDMAC bounce for multi-word PIO reads (-1=DT, 0=off, 1=on)");
++
+ static int dw_mci_pre_dma_transfer(struct dw_mci *host,
+ 				   struct mmc_data *data,
+ 				   int cookie)
+@@ -1259,18 +1275,25 @@
+ 	 * We don't do DMA on "complex" transfers, i.e. with
+ 	 * non-word-aligned buffers or lengths. Also, we don't bother
+ 	 * with all the DMA setup overhead for short transfers.
+-	 */
+-	if (data->blocks * data->blksz <
+-	    (dw_mmc_es_dma_threshold >= 0 ? (u32)dw_mmc_es_dma_threshold :
+-	     host->dma_threshold))
+-		return -EINVAL;
+-
+-	if (data->blksz & 3)
+-		return -EINVAL;
++	 *
++	 * The sg list created by dw_mci_es_pio_bounce_read() is aligned by
++	 * construction and intentionally skips these checks: the byte count
++	 * on the wire (blksz * blocks) may not be word-aligned even though
++	 * the bounce buffer the IDMAC writes into is padded to a word.
++	 */
++	if (data->sg != &host->pio_bounce_sgl) {
++		if (data->blocks * data->blksz <
++		    (dw_mmc_es_dma_threshold >= 0 ?
++		     (u32)dw_mmc_es_dma_threshold : host->dma_threshold))
++			return -EINVAL;
+ 
+-	for_each_sg(data->sg, sg, data->sg_len, i) {
+-		if (sg->offset & 3 || sg->length & 3)
++		if (data->blksz & 3)
+ 			return -EINVAL;
++
++		for_each_sg(data->sg, sg, data->sg_len, i) {
++			if (sg->offset & 3 || sg->length & 3)
++				return -EINVAL;
++		}
+ 	}
+ 
+ 	sg_len = dma_map_sg(host->dev,
+@@ -1512,6 +1535,68 @@
+ 	return 0;
+ }
+ 
++/*
++ * Stamp-P4 #35: retry a PIO-bound read through the IDMAC using an
++ * aligned bounce buffer.  The P4 BUFFIFO does not pop on CPU reads, so
++ * dw_mci_pull_data() reads the same first word len/4 times; routing the
++ * transfer through DMA makes the silicon do the FIFO work that works.
++ *
++ * On success data->sg is left pointing at the bounce sg so post_req's
++ * dma_unmap_sg balances the map made inside dw_mci_submit_data_dma; the
++ * original sg is stashed in host->pio_orig_sg and dw_mci_data_complete()
++ * copies the bounce back into it.  mmc_data is caller-local, so nothing
++ * outside this request observes the swap.
++ */
++static int dw_mci_es_pio_bounce_read(struct dw_mci *host,
++				     struct mmc_data *data)
++{
++	struct scatterlist *orig_sg = data->sg;
++	unsigned int len = data->blksz * data->blocks;
++	int orig_sg_len = data->sg_len;
++	int ret;
++
++	if (!(data->flags & MMC_DATA_READ))
++		return -EINVAL;
++	if (dw_mmc_es_fifo_bounce <= 0) {
++		if (dw_mmc_es_fifo_bounce == 0 || !host->fifo_nopop)
++			return -EINVAL;
++	}
++	if (!host->pio_bounce || len <= 4 || len > DW_MCI_PIO_BOUNCE_BYTES)
++		return -EINVAL;
++
++	/* One word more than needed so odd byte counts stay inside it. */
++	sg_init_one(&host->pio_bounce_sgl, host->pio_bounce,
++		    ALIGN(len, 4));
++	data->sg = &host->pio_bounce_sgl;
++	data->sg_len = 1;
++
++	ret = dw_mci_submit_data_dma(host, data);
++	if (ret) {
++		/* start can fail after the bounce sg was mapped (e.g. IDMAC
++		 * OWN-bit timeout); post_req would then unmap whatever
++		 * data->sg points at, so unmap the bounce and mark the data
++		 * unmapped before restoring the original list.
++		 */
++		if (data->host_cookie != COOKIE_UNMAPPED) {
++			dma_unmap_sg(host->dev, data->sg, data->sg_len,
++				     mmc_get_dma_dir(data));
++			data->host_cookie = COOKIE_UNMAPPED;
++		}
++		data->sg = orig_sg;
++		data->sg_len = orig_sg_len;
++		return ret;
++	}
++
++	host->pio_orig_sg = orig_sg;
++	host->pio_orig_sg_len = orig_sg_len;
++	host->pio_rd_bounce = 1;
++	if (!host->pio_bounced++)
++		dev_info(host->dev,
++			 "#35: first multi-word PIO read bounced to IDMAC (%u bytes)\n",
++			 len);
++	return 0;
++}
++
+ static void dw_mci_submit_data(struct dw_mci *host, struct mmc_data *data)
+ {
+ 	unsigned long irqflags;
+@@ -1522,6 +1607,7 @@
+ 
+ 	WARN_ON(host->data);
+ 	host->sg = NULL;
++	host->pio_rd_bounce = 0;
+ 	host->data = data;
+ 
+ 	if (data->flags & MMC_DATA_READ)
+@@ -1532,6 +1618,19 @@
+ 	dw_mci_ctrl_thld(host, data);
+ 
+ 	if (dw_mci_submit_data_dma(host, data)) {
++		/* Stamp-P4 #35: on the P4 a multi-word CPU FIFO read returns
++		 * the first word repeated; bounce reads through IDMAC instead.
++		 */
++		if (!dw_mci_es_pio_bounce_read(host, data))
++			return;
++		if (host->fifo_nopop &&
++		    data->blksz * data->blocks > 4)
++			dev_warn_ratelimited(host->dev,
++				"#35: %s PIO transfer of %u bytes on a FIFO that does not pop (total %u)\n",
++				(data->flags & MMC_DATA_READ) ? "read" : "write",
++				data->blksz * data->blocks,
++				++host->pio_rd_corrupt);
++
+ 		if (host->data->flags & MMC_DATA_READ)
+ 			flags |= SG_MITER_TO_SG;
+ 		else
+@@ -2281,6 +2380,12 @@
+ static int dw_mci_data_complete(struct dw_mci *host, struct mmc_data *data)
+ {
+ 	u32 status = host->data_status;
++	bool bounced = host->pio_rd_bounce;
++
++	/* #35: the IDMAC transfer (if any) has finished, so the bounce state
++	 * can be released; the copy happens only on a clean read below.
++	 */
++	host->pio_rd_bounce = 0;
+ 
+ 	if (status & DW_MCI_DATA_ERROR_FLAGS) {
+ 		if (status & SDMMC_INT_DRTO) {
+@@ -2324,6 +2429,11 @@
+ 	} else {
+ 		data->bytes_xfered = data->blocks * data->blksz;
+ 		data->error = 0;
++		if (bounced)
++			sg_copy_from_buffer(host->pio_orig_sg,
++					    host->pio_orig_sg_len,
++					    host->pio_bounce,
++					    data->bytes_xfered);
+ 	}
+ 	dw_mci_cmd53_trace_finish(host, data);
+ 
+@@ -3622,6 +3732,26 @@
+ 		goto no_dma;
+ 	}
+ 
++	/*
++	 * Stamp-P4 #35: bounce buffer for multi-word reads that the DMA
++	 * gates would send to the (non-popping) PIO FIFO.  Plain kzalloc +
++	 * dma_map_sg is deliberate: on this NOMMU target dmam_alloc_coherent
++	 * is unavailable and every production transfer already goes through
++	 * dma_map_sg, so the bounce takes the same proven path.
++	 */
++	if (host->fifo_nopop || dw_mmc_es_fifo_bounce > 0) {
++		host->pio_bounce = devm_kzalloc(host->dev,
++						DW_MCI_PIO_BOUNCE_BYTES,
++						GFP_KERNEL);
++		if (host->pio_bounce)
++			dev_info(host->dev,
++				 "IDMAC bounce buffer for PIO reads allocated (%u bytes)\n",
++				 DW_MCI_PIO_BOUNCE_BYTES);
++		else
++			dev_warn(host->dev,
++				 "#35: no bounce buffer; multi-word PIO reads stay corrupt\n");
++	}
++
+ 	return;
+ 
+ no_dma:
+@@ -3792,6 +3922,15 @@
+ 	device_property_read_u32(dev, "snps,slot-id", &host->slot_id);
+ 	host->sdio_irq = host->slot_id;
+ 
++	/*
++	 * Stamp-P4 #35: the ESP32-P4 SDMMC BUFFIFO register never advances
++	 * its read pointer on CPU reads, so any PIO read longer than one
++	 * word returns the first word repeated.  Opt the host into the
++	 * IDMAC bounce-buffer workaround; see dw_mci_es_pio_bounce_read().
++	 */
++	if (device_property_present(dev, "espressif,fifo-no-pop"))
++		host->fifo_nopop = 1;
++
+ 	if (device_property_present(dev, "fifo-watermark-aligned"))
+ 		host->wm_aligned = true;
+ 

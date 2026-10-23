@@ -1,0 +1,27 @@
+Subject: [PATCH] stamp-p4: best-fit allocation for the NOMMU user pool (#51)
+
+The vendor pool (0010/0070) keeps gen_pool's default first-fit, so
+exec-sized blocks (0.5-1.8 MB) and small heap/stack allocs interleave in
+the same regions: five SSH sessions push used to 97% with largest_free at
+196 KB and alloc_fail climbing (#40, #49).
+
+gen_pool_best_fit picks the smallest free block that holds each request,
+leaving large contiguous spans available for the next exec image.  A/B
+measurement lives in linux/tests/issue50-51-memory-2026-10-21.md.
+
+---
+diff --git a/mm/nommu_userspace_pool.c b/mm/nommu_userspace_pool.c
+--- a/mm/nommu_userspace_pool.c
++++ b/mm/nommu_userspace_pool.c
+@@ -88,6 +88,11 @@
+ 		pr_err("gen_pool_create failed\n");
+ 		return -ENOMEM;
+ 	}
++
++	/* #51: keep large free spans for exec images (default was
++	 * first-fit).  A/B numbers in linux/tests/. */
++	gen_pool_set_algo(user_pool, gen_pool_best_fit, NULL);
++	pr_info("user pool allocation algorithm: best-fit\n");
+ 
+ 	/*
+ 	 * Reserved-memory regions registered via RESERVEDMEM_OF_DECLARE

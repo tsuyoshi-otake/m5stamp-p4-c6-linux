@@ -1,0 +1,120 @@
+Subject: [PATCH] stamp-p4: esp32p4 deaf-CPU1 watchdog restart (#5)
+
+Mitigation for the #5 latch, applied only for C68 diagnostic builds
+(C68_DEAF_RESET=1, requires the C68 SMP series): a latched
+boot becomes one bounded retry instead of an indefinite hang.
+
+esp32p4_deaf_reset_tick() is called from each CPU's own SYSTIMER
+interrupt and keeps a per-CPU jiffies stamp.  CPU1's stamp freezes the
+moment it stops taking interrupts; CPU0's tick notices a stamp older
+than 3 s, prints ES5_RESET once, and calls emergency_restart().
+drivers/watchdog/esp32p4_wdt.c registers esp32p4_wdt_restart at
+priority 128, so the call reaches the MWDT reset path; panic() is only a
+belt-and-braces backstop.
+
+The 3 s threshold is deliberately the last of the #5 detectors so the
+evidence always gets out first: 0068's ES_DEAF/ES_DEAF0 fires at 1 s +
+200 ms, 0077's ES5_WATCH ring dump at 2 s, then this restart at 3 s.
+With pstore (0065, default on m3-lab) the console tail survives the
+reset into /sys/fs/pstore.
+
+---
+--- a/drivers/clocksource/timer-esp32p4-systimer.c	2026-10-19 15:51:54.764879200 +0900
++++ b/drivers/clocksource/timer-esp32p4-systimer.c	2026-10-19 15:56:50.800713000 +0900
+@@ -28,6 +28,9 @@
+ 
+ #define ESP32P4_TIMER_CPUS	2
+ 
++/* #5 mitigation (0078): CPU0 watchdog for a deaf CPU1 */
++void esp32p4_deaf_reset_tick(unsigned int cpu);
++
+ /* SYSTIMER register byte offsets (struct size = 0x100). */
+ #define ST_CONF			0x00
+ #define ST_UNIT0_OP		0x04
+@@ -208,6 +211,8 @@
+ 	if (cpu == ESP32P4_TIMER_CPUS)
+ 		return IRQ_NONE;
+ 
++	esp32p4_deaf_reset_tick(cpu);
++
+ 	/*
+ 	 * The CLIC INTMTX route is present in both banks, but only the owning
+ 	 * CPU enables this per-CPU parent IRQ. Clear the matching global target
+--- a/arch/riscv/kernel/Makefile	2026-10-19 15:51:54.575627000 +0900
++++ b/arch/riscv/kernel/Makefile	2026-10-19 15:56:50.811234100 +0900
+@@ -89,6 +89,7 @@
+ obj-$(CONFIG_SMP)		+= cpu_ops.o
+ 
+ obj-$(CONFIG_RISCV_BOOT_SPINWAIT) += cpu_ops_spinwait.o
++obj-$(CONFIG_SOC_ESP32P4)	+= esp32p4_deaf_reset.o
+ obj-$(CONFIG_MODULES)		+= module.o
+ obj-$(CONFIG_MODULE_SECTIONS)	+= module-sections.o
+ 
+diff --git a/arch/riscv/kernel/esp32p4_deaf_reset.c b/arch/riscv/kernel/esp32p4_deaf_reset.c
+new file mode 100644
+--- /dev/null
++++ b/arch/riscv/kernel/esp32p4_deaf_reset.c
+@@ -0,0 +1,63 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * #5 mitigation (diagnostic builds): CPU0 watchdog for a deaf CPU1.
++ *
++ * The CPU1 CLIC acceptance latch (issue #5, see the ES_DEAF captures of
++ * patch 0068 and the ES_TRAP/ES_IRQ/ES_MRET rings of patch 0077) has no
++ * known software recovery: pending+enabled+above-threshold interrupts
++ * are simply never taken again while CPU1 keeps running.  Left alone
++ * the board either sits silent for minutes or eventually trips the MWDT.
++ *
++ * This hook is called from each CPU's own SYSTIMER interrupt.  CPU1's
++ * stamp stops the moment it goes deaf; CPU0's tick sees the stale stamp,
++ * reports it once, and takes the chip down through emergency_restart().
++ * drivers/watchdog/esp32p4_wdt.c registers esp32p4_wdt_restart at
++ * priority 128, so this reaches the MWDT reset path; panic() is only a
++ * belt-and-braces backstop.  With pstore (0065) the console record of
++ * the stall -- and the ES_DEAF / ES5_WATCH dumps if those diagnostics
++ * are enabled -- survives the reset and is readable under
++ * /sys/fs/pstore on the next boot.
++ *
++ * The 3 s threshold is deliberately the last of the #5 detectors so the
++ * evidence dump always wins the race: 0068's ES_DEAF/ES_DEAF0 fires at
++ * 1 s + 200 ms, 0077's ES5_WATCH at 2 s, then this restart at 3 s.  All
++ * are far above the longest legitimate CPU1 tick gap on this
++ * PREEMPT_NONE kernel (cache-sync lock, st_lock, IRQ-off exit paths are
++ * orders of magnitude shorter).
++ */
++
++#include <linux/cpumask.h>
++#include <linux/jiffies.h>
++#include <linux/kernel.h>
++#include <linux/printk.h>
++#include <linux/reboot.h>
++#include <linux/smp.h>
++#include <linux/types.h>
++
++#define ES_DEAF_RESET_STALENESS	(3 * HZ)
++
++static unsigned long es_reset_jif[NR_CPUS];
++static int es_reset_fired;
++
++void esp32p4_deaf_reset_tick(unsigned int cpu);
++void esp32p4_deaf_reset_tick(unsigned int cpu)
++{
++	unsigned long last, now = jiffies;
++
++	if (cpu >= NR_CPUS)
++		return;
++	WRITE_ONCE(es_reset_jif[cpu], now);
++	if (cpu != 0 || num_online_cpus() < 2 || !cpu_online(1) ||
++	    es_reset_fired)
++		return;
++
++	last = READ_ONCE(es_reset_jif[1]);
++	if (!last || time_before(now, last + ES_DEAF_RESET_STALENESS))
++		return;
++
++	es_reset_fired = 1;
++	pr_emerg("ES5_RESET cpu1 silent: last_tick_jif=%lu now=%lu -- restarting via MWDT\n",
++		 last, now);
++	emergency_restart();
++	panic("esp32p4: CPU1 stopped taking interrupts (#5)");
++}

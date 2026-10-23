@@ -5,8 +5,8 @@
 set -u
 
 repo_root=$(cd -- "$(dirname -- "$0")/../.." && pwd)
-bootsync="$repo_root/linux/m3-lab/rootfs-overlay/usr/sbin/easystick-bootsync"
-work=${TMPDIR:-/tmp}/easystick-cfgdiff-test.$$
+bootsync="$repo_root/linux/m3-lab/rootfs-overlay/usr/sbin/bootsyncd"
+work=${TMPDIR:-/tmp}/cfgdiff-test.$$
 trap 'rm -rf -- "$work"' EXIT HUP INT TERM
 mkdir -p "$work"
 
@@ -30,7 +30,7 @@ check() { # name, expected CHANGED_KEYS ("" = no change)
 }
 
 cat > "$work/old.txt" <<'EOF'
-hostname=easystick
+hostname=stamp-p4
 wifi_ssid=Net
 wifi_psk=secret123
 ssh_password_auth=no
@@ -40,22 +40,22 @@ EOF
 cp "$work/old.txt" "$work/new.txt"
 check "identical" ""
 
-printf 'hostname=easystick\nwifi_ssid=Net\nwifi_psk=secret123\nssh_password_auth=no\nautorun=main2.py\n' > "$work/new.txt"
+printf 'hostname=stamp-p4\nwifi_ssid=Net\nwifi_psk=secret123\nssh_password_auth=no\nautorun=main2.py\n' > "$work/new.txt"
 check "autorun-only change" ""
 
-printf 'hostname=easystick\nwifi_ssid=Net\nwifi_psk=secret123\nssh_password_auth=yes\nautorun=main.py\n' > "$work/new.txt"
+printf 'hostname=stamp-p4\nwifi_ssid=Net\nwifi_psk=secret123\nssh_password_auth=yes\nautorun=main.py\n' > "$work/new.txt"
 check "boot-only key" " ssh_password_auth"
 
-printf '\xef\xbb\xbf# comment\r\nhostname = easystick\r\nwifi_ssid = Other\nwifi_psk=secret123\n\nssh_password_auth=no\nautorun=main.py\n' > "$work/new.txt"
+printf '\xef\xbb\xbf# comment\r\nhostname = stamp-p4\r\nwifi_ssid = Other\nwifi_psk=secret123\n\nssh_password_auth=no\nautorun=main.py\n' > "$work/new.txt"
 check "BOM+CRLF+comment+spaces ssid change" " wifi_ssid"
 
-# conf_get keeps trailing blanks in the value, so "easystick " counts as a
+# conf_get keeps trailing blanks in the value, so "stamp-p4 " counts as a
 # change; the diff is faithful to that.
-printf 'hostname=easystick \nwifi_ssid=Net\nwifi_psk=secret123\nssh_password_auth=no\nautorun=main.py\n' > "$work/new.txt"
+printf 'hostname=stamp-p4 \nwifi_ssid=Net\nwifi_psk=secret123\nssh_password_auth=no\nautorun=main.py\n' > "$work/new.txt"
 check "trailing blank is a value change" " hostname"
-printf 'hostname=easystick\nwifi_ssid=Net\nwifi_psk=secret123\nssh_password_auth=no\nautorun=main.py\n' > "$work/new.txt"
+printf 'hostname=stamp-p4\nwifi_ssid=Net\nwifi_psk=secret123\nssh_password_auth=no\nautorun=main.py\n' > "$work/new.txt"
 
-printf 'hostname=easystick\nwifi_ssid=Net\nwifi_psk=secret123\nssh_password_auth=no\nautorun=main.py\nwifi_mode=ap\n' > "$work/new.txt"
+printf 'hostname=stamp-p4\nwifi_ssid=Net\nwifi_psk=secret123\nssh_password_auth=no\nautorun=main.py\nwifi_mode=ap\n' > "$work/new.txt"
 check "added wifi_mode" " wifi_mode"
 
 printf 'hostname=first\nhostname=second\nwifi_ssid=Net\n' > "$work/old.txt"

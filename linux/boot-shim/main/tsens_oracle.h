@@ -10,4 +10,4 @@
  * caller must treat false as fatal: a value is not useful as a reference
  * unless the analog DAC write/readback and the sensor sample both succeed.
  */
-bool easystick_tsens_oracle_run(void);
+bool tsens_oracle_run(void);

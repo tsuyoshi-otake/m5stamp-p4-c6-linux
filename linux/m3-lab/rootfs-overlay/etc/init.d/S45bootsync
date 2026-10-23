@@ -1,14 +1,14 @@
 #!/bin/sh
-# easystick-bootsync is supervised by init (::respawn: in /etc/inittab, #29),
+# bootsyncd is supervised by init (::respawn: in /etc/inittab, #29),
 # so it comes back if it dies.  This script only stops/restarts it; init
 # starts a new instance after the old one exits.
 
 case "${1:-start}" in
 	start)
-		echo "easystick-bootsync is started by init (inittab respawn)"
+		echo "bootsyncd is started by init (inittab respawn)"
 		;;
 	stop|restart)
-		killall easystick-bootsync 2>/dev/null || true
+		killall bootsyncd 2>/dev/null || true
 		;;
 	*)
 		echo "Usage: $0 {start|stop|restart}" >&2

@@ -12,17 +12,17 @@ from pathlib import Path
 
 
 MARKERS = (
-    ("01", "C6_RESET", re.compile(r"EASYSTICK_P1 STEP 01 C6_RESET PASS")),
-    ("02", "SDIO_ENUMERATE", re.compile(r"EASYSTICK_P1 STEP 02 SDIO_ENUMERATE PASS")),
-    ("03", "FUNC1_ENABLE", re.compile(r"EASYSTICK_P1 STEP 03 FUNC1_ENABLE PASS")),
-    ("04", "CMD52", re.compile(r"EASYSTICK_P1 STEP 04 CMD52 PASS")),
-    ("05", "CMD53_SMALL", re.compile(r"EASYSTICK_P1 STEP 05 CMD53_SMALL PASS")),
-    ("06", "CMD53_512", re.compile(r"EASYSTICK_P1 STEP 06 CMD53_512 PASS")),
-    ("07", "CMD53_REPEAT", re.compile(r"EASYSTICK_P1 STEP 07 CMD53_REPEAT PASS")),
-    ("08", "ESP_HOSTED_INIT", re.compile(r"EASYSTICK_P1 STEP 08 ESP_HOSTED_INIT PASS")),
-    ("09", "WIFI_SCAN", re.compile(r"EASYSTICK_P1 STEP 09 WIFI_SCAN PASS")),
-    ("10", "ASSOCIATION", re.compile(r"EASYSTICK_P1 STEP 10 ASSOCIATION PASS")),
-    ("11", "PING", re.compile(r"EASYSTICK_P1 STEP 11 PING PASS")),
+    ("01", "C6_RESET", re.compile(r"P1 STEP 01 C6_RESET PASS")),
+    ("02", "SDIO_ENUMERATE", re.compile(r"P1 STEP 02 SDIO_ENUMERATE PASS")),
+    ("03", "FUNC1_ENABLE", re.compile(r"P1 STEP 03 FUNC1_ENABLE PASS")),
+    ("04", "CMD52", re.compile(r"P1 STEP 04 CMD52 PASS")),
+    ("05", "CMD53_SMALL", re.compile(r"P1 STEP 05 CMD53_SMALL PASS")),
+    ("06", "CMD53_512", re.compile(r"P1 STEP 06 CMD53_512 PASS")),
+    ("07", "CMD53_REPEAT", re.compile(r"P1 STEP 07 CMD53_REPEAT PASS")),
+    ("08", "ESP_HOSTED_INIT", re.compile(r"P1 STEP 08 ESP_HOSTED_INIT PASS")),
+    ("09", "WIFI_SCAN", re.compile(r"P1 STEP 09 WIFI_SCAN PASS")),
+    ("10", "ASSOCIATION", re.compile(r"P1 STEP 10 ASSOCIATION PASS")),
+    ("11", "PING", re.compile(r"P1 STEP 11 PING PASS")),
 )
 
 
@@ -57,7 +57,7 @@ def main() -> int:
         )
         previous = match.start()
 
-    error_matches = re.findall(r"EASYSTICK_P1 [^\r\n]*\bFAIL\b", text)
+    error_matches = re.findall(r"P1 [^\r\n]*\bFAIL\b", text)
     if error_matches:
         failures.append(f"unclassified P1 failure markers present: {len(error_matches)}")
 

@@ -2,16 +2,16 @@
 
 This directory is the C68-CLEAN-RELEASE profile.  `build-c68.sh` and the
 release workflow build with it, and since #5 it boots both CPUs
-(`maxcpus=2`); `EASYSTICK_C68_MAXCPUS=1` keeps CPU1 parked.
+(`maxcpus=2`); `C68_MAXCPUS=1` keeps CPU1 parked.
 
 - Default `linux.config` stays `CONFIG_SMP=n`; this profile appends
   `linux.config.fragment`.
-- Default `dts/easystick-stamp-p4.dts` stays `cpu@0` only; this profile
+- Default `dts/esp32p4-m5stamp-p4.dts` stays `cpu@0` only; this profile
   inserts `cpu1.dts.inc` and `ipi.dts.inc`.
-- Two CPUs rely on 0079 (`EASYSTICK_C68_IRQ_LEVEL0`, default 1), which
+- Two CPUs rely on 0079 (`C68_IRQ_LEVEL0`, default 1), which
   stops a CPU from going deaf to interrupts, and on 0080, which locks the
   ttyGS1 transmit path.  Both apply to every build, as does 0081
-  (`EASYSTICK_C68_EXPT_CLEAR`, default 1), which keeps a user fault from
+  (`C68_EXPT_CLEAR`, default 1), which keeps a user fault from
   locking a core up.  `IRQ_LEVEL0=0` with two CPUs brings the CPU1 latch
   back; see `../tests/issue5-smp-2026-10-19.md`.
 - The boot-shim copies CPU0's PMA and PMP CSRs to CPU1 at the start of
@@ -35,7 +35,7 @@ release workflow build with it, and since #5 it boots both CPUs
   raise the rest of the path the same way.
 - Enter with `linux/build-c68.sh` (boot-shim nm → render 0038/0039 →
   stage 0040/0041/0042 → `build-m1.sh`).
-- Do not set `EASYSTICK_KERNEL_PATCH_OVERRIDE_DIR` to the kernel patch stage.
+- Do not set `KERNEL_PATCH_OVERRIDE_DIR` to the kernel patch stage.
 - 0037 on this profile includes COMPLETE / STARTUP / UP_RETURN observe
   markers. They belong only on an Image produced by `build-c68.sh`.
 - 0040 extends the ESP32-P4 CLIC mapping to both HP-core interrupt-matrix
@@ -51,12 +51,12 @@ release workflow build with it, and since #5 it boots both CPUs
   CPU1, with separate CLIC parent IRQs and CPU-starting clockevent setup.
   The A' timer gate is that CPU1 receives a real per-hart clockevent before
   entering its idle loop; a CPU0-only clockevent is not sufficient for RCU.
-- Set `EASYSTICK_C68_L3_SMOKE=1` to include the renamed
+- Set `C68_L3_SMOKE=1` to include the renamed
   `/usr/sbin/m5stamp-smp-smoke` helper, the C68-only BusyBox `top`
   fragment, and the USB Serial/JTAG ACM-backed `ttyGS1` askfirst shell used
   by the COM10 capture. These additions are staged outside the repository
   and are never applied to the UP profile.
-- Set `EASYSTICK_C68_STRESS=1` together with `EASYSTICK_C68_L3_SMOKE=1` to
+- Set `C68_STRESS=1` together with `C68_L3_SMOKE=1` to
   add `/usr/sbin/m5stamp-smp-stress`. The bounded helper exercises
   CPU1-affine work, fork/exec, allocation/free, repeated bidirectional IPI
   smoke calls, and non-interactive `top` snapshots. The standard capture

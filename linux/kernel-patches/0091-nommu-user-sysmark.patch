@@ -1,0 +1,103 @@
+Subject: [PATCH] stamp-p4: PR_SET_SYSTEM_WORK task mark + reserve-gate override (#51 round 4)
+
+0090's ancestry test marks console/SSH-launched work "user", which also
+catches system scripts a user happens to start: `S40network restart` from
+the console or an SSH session marks the whole restart subtree (udhcpc,
+ifconfig, route, default.script) user, so the reserve gate throttles
+system maintenance work and denied allocations that buddy cannot serve
+become real ENOMEMs (measured: 51/21 on the reserve arms).
+
+PR_SET_SYSTEM_WORK gives such scripts an explicit override: set once by
+root via prctl(), the per-task flag wins over the ctty/ancestor test and
+-- because it lives in task_struct->flags -- it survives exec and is
+inherited by fork (copy_flags() only strips
+PF_SUPERPRIV|PF_WQ_WORKER|PF_IDLE|PF_NO_SETAFFINITY).  A tiny
+`run-system CMD...` wrapper does prctl+exec, so shell scripts opt in
+with a one-line re-exec at the top.
+
+arg2=1 marks, arg2=0 clears the mark (the task then classifies by
+ancestry again) -- both directions are allowed so a wrapped helper can
+still run user-side children if it ever needs to; clearing never
+escalates anything since the mark only widens pool access for the task
+that has it.  CAP_SYS_ADMIN is required, so only root can move itself
+out of the user class.
+
+The flag is also visible in /proc/<pid>/stat field 9 (flags), so the
+measurement harness attributes flag-marked processes to the system side
+without name lists.
+
+Applies on top of 0090 (the classification hunk targets
+nommu_task_is_user).  Staged only with NOMMU_USER_RESERVE=1 and
+NOMMU_SYSTEM_MARK=1; kernels built without it return EINVAL from
+the prctl and run-system execs the target anyway, so the wrapped
+scripts keep working unchanged.
+---
+diff --git a/include/linux/sched.h b/include/linux/sched.h
+--- a/include/linux/sched.h
++++ b/include/linux/sched.h
+@@ -1815,5 +1815,5 @@
+ #define PF_BLOCK_TS		0x20000000	/* plug has ts that needs updating */
+-#define PF__HOLE__40000000	0x40000000
++#define PF_SYSTEM_WORK	0x40000000	/* #51: ancestry overrides to the system side of the pool gate */
+ #define PF_SUSPEND_TASK		0x80000000      /* This thread called freeze_processes() and should not be frozen */
+ 
+ /*
+diff --git a/include/uapi/linux/prctl.h b/include/uapi/linux/prctl.h
+--- a/include/uapi/linux/prctl.h
++++ b/include/uapi/linux/prctl.h
+@@ -415,4 +415,7 @@
+ # define PR_CFI_DISABLE		_BITUL(1)
+ # define PR_CFI_LOCK		_BITUL(2)
+ 
++/* #51: mark/unmark the calling task as system for the NOMMU user pool */
++#define PR_SET_SYSTEM_WORK	0x45535459	/* 'ESTY' */
++
+ #endif /* _LINUX_PRCTL_H */
+diff --git a/kernel/sys.c b/kernel/sys.c
+--- a/kernel/sys.c
++++ b/kernel/sys.c
+@@ -2907,6 +2907,17 @@
+ 		if (arg3 & PR_CFI_LOCK && !(arg3 & PR_CFI_DISABLE))
+ 			error = arch_prctl_lock_branch_landing_pad_state(me);
+ 		break;
++	case PR_SET_SYSTEM_WORK:
++		if (arg3 || arg4 || arg5)
++			return -EINVAL;
++		/* Only root may move a task across the pool-gate boundary. */
++		if (!capable(CAP_SYS_ADMIN))
++			return -EPERM;
++		if (arg2)
++			me->flags |= PF_SYSTEM_WORK;
++		else
++			me->flags &= ~PF_SYSTEM_WORK;
++		break;
+ 	default:
+ 		trace_task_prctl_unknown(option, arg2, arg3, arg4, arg5);
+ 		error = -EINVAL;
+diff --git a/mm/nommu_userspace_pool.c b/mm/nommu_userspace_pool.c
+--- a/mm/nommu_userspace_pool.c
++++ b/mm/nommu_userspace_pool.c
+@@ -81,6 +81,13 @@
+  * itself, * helpers, the boot sync) sit outside both trees
+  * and stay unmarked.  The PF_KTHREAD guard also keeps get_current_tty
+  * away from sighand-less kernel threads.
++ *
++ * PF_SYSTEM_WORK wins over both tests: scripts that spawn system
++ * work (S40network & friends, started by a user on the console or over
++ * SSH) drop the inherited user mark via prctl(PR_SET_SYSTEM_WORK)
++ * before forking children, so a user-requested restart cannot drain
++ * the reserve and its transient helpers cannot be denied into real
++ * ENOMEMs.  The flag survives exec and inherits through fork.
+  */
+ static bool nommu_task_is_user(void)
+ {
+@@ -91,6 +98,9 @@
+ 	if (current->flags & PF_KTHREAD)
+ 		return false;
+ 
++	if (current->flags & PF_SYSTEM_WORK)
++		return false;
++
+ 	tty = get_current_tty();
+ 	if (tty) {
+ 		bool on_console = !strcmp(tty->name, "ttyGS1");

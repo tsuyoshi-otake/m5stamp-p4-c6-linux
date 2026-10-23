@@ -1,0 +1,169 @@
+Subject: [PATCH] stamp-p4: esp32p4 CLIC routing for SMP
+
+Each hart has its own CLIC at 0x20801000, but mask/unmask/set_type wrote
+the CLIC of whichever CPU ran them, and map configured ATTR/CTL only on
+the mapping CPU while routing every source into both matrix banks.  With
+maxcpus=2 a driver that enabled its IRQ on CPU1 (USB gadget, esp32_sdio
+modprobe) set IE in CPU1's CLIC with no ATTR/CTL there, and CPU0 never
+saw it; the board then stalled or hit an IDF panic on Core 1 (#5).
+
+Deliver shared IRQs to CPU0 only: configure and enable the slot once in
+CPU0's CLIC at map time and mask/unmask by switching the CPU0 matrix route,
+which any CPU can write.  Per-CPU IRQs (IPI, SYSTIMER) keep using the
+local hart's CLIC and route only that hart's bank.
+
+---
+diff --git a/drivers/irqchip/irq-esp32p4-clic.c b/drivers/irqchip/irq-esp32p4-clic.c
+--- a/drivers/irqchip/irq-esp32p4-clic.c
++++ b/drivers/irqchip/irq-esp32p4-clic.c
+@@ -24,6 +24,7 @@
+ #include <linux/io.h>
+ #include <linux/of_address.h>
+ #include <linux/of_irq.h>
++#include <linux/smp.h>
+ 
+ #define CLIC_NUM_IRQS     240
+ #define CLIC_INTIP_OFF      0
+@@ -34,6 +35,8 @@
+ #define CLIC_INTATTR_MMODE_LEVEL 0xC0U
+ #define CLIC_INTATTR_MMODE_EDGE  0xC2U
+ #define CLIC_INTCTL_MAX          0xFFU
++/* INTMTX reset value: the source drives no CLIC slot. */
++#define CLIC_INTMTX_UNROUTED     0
+ 
+ static void __iomem *clic_base;
+ static void __iomem *clic_intmtx_base[2];
+@@ -44,14 +47,57 @@
+ struct irq_domain *esp32p4_clic_domain;
+ EXPORT_SYMBOL_GPL(esp32p4_clic_domain);
+ 
++/*
++ * Each hart has its own CLIC at the same address, but the interrupt matrix
++ * has one bank per hart at distinct addresses.  A shared (non-per-CPU) IRQ is
++ * delivered to CPU0 only: its CLIC slot is configured and enabled once on
++ * CPU0, and mask/unmask switch the CPU0 matrix route, which any CPU can
++ * write.  Writing IE in the local CLIC, as before, left a driver that
++ * enabled its IRQ on CPU1 with an unconfigured slot there and none on CPU0
++ * (#5).  Per-CPU IRQs (IPI, SYSTIMER) are enabled on their own hart and use
++ * that hart's CLIC and matrix bank.
++ */
++static void clic_route(unsigned int cpu, irq_hw_number_t hwirq, u32 slot)
++{
++	if (cpu < ARRAY_SIZE(clic_intmtx_base) && clic_intmtx_base[cpu] &&
++	    clic_intmtx_source[hwirq]) {
++		writel(slot, clic_intmtx_base[cpu] + clic_intmtx_source[hwirq] * 4);
++		/* Post the write before the caller relies on the new route. */
++		readl(clic_intmtx_base[cpu] + clic_intmtx_source[hwirq] * 4);
++	}
++}
++
++static void clic_local_setup(irq_hw_number_t hwirq, u8 ie)
++{
++	u8 attr = clic_trig_edge[hwirq] ? CLIC_INTATTR_MMODE_EDGE :
++					  CLIC_INTATTR_MMODE_LEVEL;
++
++	writeb(attr,            clic_base + hwirq * 4 + CLIC_INTATTR_OFF);
++	writeb(CLIC_INTCTL_MAX, clic_base + hwirq * 4 + CLIC_INTCTL_OFF);
++	writeb(ie,              clic_base + hwirq * 4 + CLIC_INTIE_OFF);
++}
++
++static void clic_cpu0_setup(void *info)
++{
++	clic_local_setup((irq_hw_number_t)(unsigned long)info, 1);
++}
++
+ static void clic_irq_mask(struct irq_data *d)
+ {
+-	writeb(0, clic_base + d->hwirq * 4 + CLIC_INTIE_OFF);
++	if (irqd_is_per_cpu(d))
++		writeb(0, clic_base + d->hwirq * 4 + CLIC_INTIE_OFF);
++	else
++		clic_route(0, d->hwirq, CLIC_INTMTX_UNROUTED);
+ }
+ 
+ static void clic_irq_unmask(struct irq_data *d)
+ {
+-	writeb(1, clic_base + d->hwirq * 4 + CLIC_INTIE_OFF);
++	if (irqd_is_per_cpu(d)) {
++		clic_route(smp_processor_id(), d->hwirq, d->hwirq);
++		clic_local_setup(d->hwirq, 1);
++	} else {
++		clic_route(0, d->hwirq, d->hwirq);
++	}
+ }
+ 
+ static void clic_irq_ack(struct irq_data *d)
+@@ -72,6 +118,7 @@
+ static int clic_irq_set_type(struct irq_data *d, unsigned int type)
+ {
+ 	u8 attr;
++	u8 was_edge = clic_trig_edge[d->hwirq];
+ 
+ 	switch (type) {
+ 	case IRQ_TYPE_EDGE_RISING:
+@@ -85,7 +132,16 @@
+ 		clic_trig_edge[d->hwirq] = 0;
+ 		break;
+ 	}
+-	writeb(attr, clic_base + d->hwirq * 4 + CLIC_INTATTR_OFF);
++	/*
++	 * A shared IRQ's slot lives in CPU0's CLIC (see clic_route()).  This
++	 * runs under the descriptor lock with interrupts off, so CPU1 cannot
++	 * ask CPU0 to reprogram it; map already wrote the DT trigger there.
++	 */
++	if (irqd_is_per_cpu(d) || smp_processor_id() == 0)
++		writeb(attr, clic_base + d->hwirq * 4 + CLIC_INTATTR_OFF);
++	else if (clic_trig_edge[d->hwirq] != was_edge)
++		pr_warn_once("hwirq %lu: trigger change on CPU%d not applied\n",
++			     d->hwirq, smp_processor_id());
+ 	return 0;
+ }
+ 
+@@ -100,33 +156,26 @@
+ static int clic_domain_map(struct irq_domain *d, unsigned int irq,
+ 			    irq_hw_number_t hwirq)
+ {
+-	int cpu;
+-	u8 attr;
+ 	irq_flow_handler_t handler;
++	int cpu;
+ 
+ 	/*
+-	 * ESP32-P4 has one interrupt-matrix register bank per HP hart.
+-	 * Keep both banks in agreement so a per-CPU CLIC IRQ can be enabled
+-	 * on either hart. The second bank is optional for the single-core
+-	 * baseline and is supplied by the C68 DTS.
++	 * Leave the source unrouted in both matrix banks until unmask picks
++	 * the hart (see clic_route()).  The slot is configured and enabled in
++	 * CPU0's CLIC now; per-CPU users configure their own hart on unmask.
+ 	 */
+-	if (clic_intmtx_source[hwirq]) {
+-		for (cpu = 0; cpu < ARRAY_SIZE(clic_intmtx_base); cpu++)
+-			if (clic_intmtx_base[cpu])
+-				writel(hwirq, clic_intmtx_base[cpu] +
+-				       clic_intmtx_source[hwirq] * 4);
+-	}
++	for (cpu = 0; cpu < ARRAY_SIZE(clic_intmtx_base); cpu++)
++		clic_route(cpu, hwirq, CLIC_INTMTX_UNROUTED);
+ 
+-	if (clic_trig_edge[hwirq]) {
+-		attr = CLIC_INTATTR_MMODE_EDGE;
+-		handler = handle_edge_irq;
+-	} else {
+-		attr = CLIC_INTATTR_MMODE_LEVEL;
+-		handler = handle_level_irq;
+-	}
++	handler = clic_trig_edge[hwirq] ? handle_edge_irq : handle_level_irq;
+ 
+-	writeb(attr,             clic_base + hwirq * 4 + CLIC_INTATTR_OFF);
+-	writeb(CLIC_INTCTL_MAX,  clic_base + hwirq * 4 + CLIC_INTCTL_OFF);
++	cpu = get_cpu();
++	if (cpu == 0)
++		clic_cpu0_setup((void *)(unsigned long)hwirq);
++	put_cpu();
++	if (cpu != 0)
++		smp_call_function_single(0, clic_cpu0_setup,
++					 (void *)(unsigned long)hwirq, 1);
+ 
+ 	irq_domain_set_info(d, irq, hwirq, &esp32p4_clic_chip, NULL,
+ 			    handler, NULL, NULL);

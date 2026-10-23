@@ -1,0 +1,490 @@
+Subject: [PATCH] stamp-p4: commit the /boot image to flash without a reboot
+
+An edit to the /boot USB drive lived only in PSRAM until the next
+software reboot, when the boot shim wrote it to the inactive A/B slot.
+Unplugging the board before that dropped the edit, so bootsync rebooted
+after every change.
+
+Do the shim's update from Linux instead.  Writing 1 to
+/sys/kernel/board/boot_commit takes the request that
+boot-commit staged in PSRAM, programs the inactive slot, checks
+its CRC, then writes the other bootmeta sector with commit_word last, in
+the format the shim validates on every boot.  The active slot and its
+metadata are never erased.  On failure the request stays and the shim
+retries it at the next reboot.
+
+Flash is written through the ESP32-P4 ROM esp_rom_spiflash routines on
+SPI1.  Linux and its programs run from PSRAM, which has its own MSPI
+controller, and the rootfs is the only thing read from flash.  Each ROM
+call runs under stop_machine(): CPU0 makes it with interrupts off while
+any other CPU spins with interrupts off, so nothing reads flash meanwhile
+and a 2-CPU build commits without a reboot as well.  A 4 KiB erase takes
+about 18 ms.
+
+Nothing else runs during a ROM call, not even the SDIO interrupts that
+carry Wi-Fi.  Made back to back, the ~1,350 calls of a commit delayed
+ping replies by up to 0.9 s and lost some (#43).  So the commit skips
+the slot sectors that already hold the image (an edit changes a few
+sectors, and the inactive slot holds the generation before the active
+one), reads the older record's slot only when the newer one is not
+valid, and after every 8 ms of calls sleeps for as long as they took.
+
+---
+--- a/drivers/misc/Kconfig
++++ b/drivers/misc/Kconfig
+@@ -644,6 +644,17 @@
+ 	    - lan966x-miim (MDIO_MSCC_MIIM)
+ 	    - lan966x-switch (LAN966X_SWITCH)
+ 
++config ESP32P4_BOOTFLASH
++	bool "ESP32-P4 Stamp-P4: commit the /boot image without a reboot"
++	depends on SOC_ESP32P4 && !MMU
++	select CRC32
++	help
++	  Adds /sys/kernel/board/boot_commit.  Writing 1 to it writes
++	  the /boot image staged in PSRAM by boot-commit to the
++	  inactive flash slot and switches the A/B metadata, the same
++	  update the boot shim otherwise applies at the next reboot.
++	  Reading it shows the slot the shim will boot.
++
+ source "drivers/misc/c2port/Kconfig"
+ source "drivers/misc/eeprom/Kconfig"
+ source "drivers/misc/cb710/Kconfig"
+--- a/drivers/misc/Makefile
++++ b/drivers/misc/Makefile
+@@ -75,3 +75,4 @@
+ obj-y				+= keba/
+ obj-y				+= amd-sbi/
+ obj-$(CONFIG_MISC_RP1)		+= rp1/
++obj-$(CONFIG_ESP32P4_BOOTFLASH)	+= esp32p4-bootflash.o
+--- /dev/null
++++ b/drivers/misc/esp32p4-bootflash.c
+@@ -0,0 +1,428 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Commit the /boot image that Linux staged in PSRAM to flash at once.
++ *
++ * boot-commit copies a validated 256 KiB FAT image to
++ * BOOT_IMAGE_PA and publishes a request at BOOT_REQUEST_PA.  The boot shim
++ * applies that request at the next normal reboot.  Writing "1" to
++ * /sys/kernel/board/boot_commit does the same A/B update now, so an
++ * edit is durable without a reboot:
++ *
++ *   1. erase and program the sectors of the inactive slot that differ from
++ *      the image, read the slot back and check the CRC;
++ *   2. erase the other bootmeta sector, program the record with commit_word
++ *      last, and read it back;
++ *   3. clear the request.
++ *
++ * The active slot and its metadata sector are never erased, so power loss at
++ * any point leaves a bootable image.  On failure the request stays, and the
++ * shim retries it at the next reboot.  The on-flash format matches
++ * boot-shim/main/boot_ab.h, which the shim checks on every boot.
++ *
++ * Flash is written with the ROM's esp_rom_spiflash routines through SPI1.
++ * The kernel and user programs run from PSRAM, which has its own MSPI
++ * controller; the only flash reads at run time are the rootfs through the
++ * mtd-rom cache window.  Each ROM call runs under stop_machine(): CPU0 makes
++ * it with interrupts off while any other CPU spins with interrupts off, so
++ * no CPU reads flash meanwhile (a 4 KiB erase takes about 18 ms).
++ *
++ * Nothing else runs during a ROM call, not even the SDIO interrupts that
++ * carry the network, so a commit keeps the calls few and spaced out.  Slot
++ * sectors that already hold the image are left alone, and once the calls
++ * have held the CPUs for FLASH_BURST_US the commit sleeps for as long.
++ */
++#include <linux/crc32.h>
++#include <linux/delay.h>
++#include <linux/init.h>
++#include <linux/kernel.h>
++#include <linux/kobject.h>
++#include <linux/ktime.h>
++#include <linux/mutex.h>
++#include <linux/of.h>
++#include <linux/slab.h>
++#include <linux/stop_machine.h>
++#include <linux/sysfs.h>
++
++#define BOOT_IMAGE_BYTES	0x40000u
++#define BOOT_IMAGE_PA		0x499c0000UL
++#define BOOT_REQUEST_PA		0x499bf000UL
++#define BOOT_REQUEST_MAGIC	0x45534243u	/* "ESBC" */
++#define BOOT_REQUEST_VERSION	1u
++#define BOOT_REQUEST_COMMIT	0x434f4d4du	/* "COMM" */
++#define BOOT_META_MAGIC		0x4553424du	/* "ESBM" */
++#define BOOT_META_VERSION	1u
++#define BOOT_META_COMMIT	0x434d4954u	/* "CMIT" */
++
++/* linux/flash-layout.json: boot, boot_alt, bootmeta0, bootmeta1 */
++static const u32 slot_base[2] = { 0xf40000, 0xf80000 };
++static const u32 meta_base[2] = { 0xfc0000, 0xfc1000 };
++#define WRITABLE_START		0xf40000u
++#define WRITABLE_END		0xfc2000u
++#define FLASH_SECTOR		0x1000u
++#define FLASH_PAGE		0x100u
++
++/*
++ * ROM call time after which the commit sleeps for as long, so the rest of
++ * the board runs at least half of the time.  Back to back, the ~1,350 calls
++ * of a commit held the CPUs for nearly all of its 1.9 s, and ping replies
++ * took up to 0.9 s (#43).
++ */
++#define FLASH_BURST_US		8000
++
++struct boot_update_request {
++	u32 magic;
++	u32 version;
++	u32 image_bytes;
++	u32 image_crc32;
++	u32 commit_word;
++} __packed;
++
++struct boot_metadata {
++	u32 magic;
++	u32 version;
++	u32 generation;
++	u32 slot;
++	u32 image_bytes;
++	u32 image_crc32;
++	u32 record_crc32;
++	u32 commit_word;
++} __packed;
++
++/* ESP32-P4 ROM (components/esp_rom/esp32p4/ld/esp32p4.rom.ld) */
++struct rom_spiflash_chip {
++	u32 device_id;
++	u32 chip_size;
++	u32 block_size;
++	u32 sector_size;
++	u32 page_size;
++	u32 status_mask;
++};
++typedef int (*rom_erase_sector_fn)(u32 sector);
++typedef int (*rom_write_fn)(u32 addr, const u32 *src, s32 len);
++typedef int (*rom_read_fn)(u32 addr, u32 *dst, s32 len);
++#define rom_erase_sector	((rom_erase_sector_fn)0x4fc0014cUL)
++#define rom_write		((rom_write_fn)0x4fc00154UL)
++#define rom_read		((rom_read_fn)0x4fc00158UL)
++#define ROM_LEGACY_DATA		((struct rom_spiflash_chip *const *)0x4ff3ffe8UL)
++
++static DEFINE_MUTEX(bootflash_lock);
++static u8 *sector_buf;
++static u64 flash_busy_ns;	/* ROM call time since the last sleep */
++static u64 flash_total_ns;	/* ROM call time of this commit */
++
++static u32 ieee_crc32(const void *p, size_t n)
++{
++	return ~crc32_le(~0u, p, n);
++}
++
++static bool writable(u32 addr, u32 len)
++{
++	return addr >= WRITABLE_START && addr + len <= WRITABLE_END;
++}
++
++enum flash_op_kind { FLASH_OP_READ, FLASH_OP_ERASE, FLASH_OP_PROGRAM };
++
++struct flash_op {
++	enum flash_op_kind kind;
++	u32 addr;
++	void *buf;
++	u32 len;
++};
++
++/* Runs on CPU0 under stop_machine(), with interrupts off on every CPU. */
++static int flash_op_fn(void *data)
++{
++	const struct flash_op *op = data;
++
++	switch (op->kind) {
++	case FLASH_OP_READ:
++		return rom_read(op->addr, op->buf, op->len);
++	case FLASH_OP_ERASE:
++		return rom_erase_sector(op->addr / FLASH_SECTOR);
++	default:
++		return rom_write(op->addr, op->buf, op->len);
++	}
++}
++
++/*
++ * Another CPU could read the rootfs from flash while SPI1 erases or programs
++ * it, so every other CPU spins with interrupts off while CPU0 makes the call.
++ * Once the calls have taken FLASH_BURST_US, sleep for as long as they took.
++ * Callers hold bootflash_lock.
++ */
++static int flash_op_run(enum flash_op_kind kind, u32 addr, void *buf, u32 len)
++{
++	struct flash_op op = { .kind = kind, .addr = addr, .buf = buf, .len = len };
++	u64 start = ktime_get_ns(), took;
++	int r;
++
++	r = stop_machine(flash_op_fn, &op, NULL) ? -EIO : 0;
++	took = ktime_get_ns() - start;
++	flash_total_ns += took;
++	flash_busy_ns += took;
++	if (flash_busy_ns >= FLASH_BURST_US * NSEC_PER_USEC) {
++		fsleep(div_u64(flash_busy_ns, NSEC_PER_USEC));
++		flash_busy_ns = 0;
++	}
++	return r;
++}
++
++static int flash_read(u32 addr, void *dst, u32 len)
++{
++	return flash_op_run(FLASH_OP_READ, addr, dst, len);
++}
++
++static int flash_erase_sector(u32 addr)
++{
++	if (!writable(addr, FLASH_SECTOR) || addr % FLASH_SECTOR)
++		return -EINVAL;
++	return flash_op_run(FLASH_OP_ERASE, addr, NULL, 0);
++}
++
++/* Programs at most one page; @len is a multiple of 4. */
++static int flash_program(u32 addr, const void *src, u32 len)
++{
++	if (!writable(addr, len) || len % 4 ||
++	    addr / FLASH_PAGE != (addr + len - 1) / FLASH_PAGE)
++		return -EINVAL;
++	return flash_op_run(FLASH_OP_PROGRAM, addr, (void *)src, len);
++}
++
++static int slot_crc32(u32 base, u32 *crc_out)
++{
++	u32 crc = ~0u, off;
++	int r;
++
++	for (off = 0; off < BOOT_IMAGE_BYTES; off += FLASH_SECTOR) {
++		r = flash_read(base + off, sector_buf, FLASH_SECTOR);
++		if (r)
++			return r;
++		crc = crc32_le(crc, sector_buf, FLASH_SECTOR);
++	}
++	*crc_out = ~crc;
++	return 0;
++}
++
++/* Reads bootmeta sector @i; true when the record itself is well formed. */
++static bool meta_read(int i, struct boot_metadata *m)
++{
++	if (flash_read(meta_base[i], m, sizeof(*m)))
++		return false;
++	return m->magic == BOOT_META_MAGIC && m->version == BOOT_META_VERSION &&
++	       m->commit_word == BOOT_META_COMMIT && m->slot <= 1 &&
++	       m->image_bytes == BOOT_IMAGE_BYTES &&
++	       m->record_crc32 == ieee_crc32(m, offsetof(struct boot_metadata,
++							 record_crc32));
++}
++
++/* A well-formed record is valid while its slot still has its image CRC. */
++static bool slot_matches(const struct boot_metadata *m)
++{
++	u32 crc;
++
++	return !slot_crc32(slot_base[m->slot], &crc) && crc == m->image_crc32;
++}
++
++/*
++ * The shim's choice: the valid record with the newer generation, else slot 0.
++ * The newer record is checked first, so the other slot is read only when the
++ * newer one is not valid.
++ */
++static int select_meta(struct boot_metadata rec[2])
++{
++	bool ok[2] = { meta_read(0, &rec[0]), meta_read(1, &rec[1]) };
++	int i = (ok[0] && (!ok[1] ||
++			   (s32)(rec[0].generation - rec[1].generation) > 0)) ? 0 : 1;
++
++	if (ok[i] && slot_matches(&rec[i]))
++		return i;
++	i = 1 - i;
++	if (ok[i] && slot_matches(&rec[i]))
++		return i;
++	return -1;
++}
++
++/*
++ * Erase and program the sectors that differ from @src.  The inactive slot
++ * usually holds the generation before the active one, and an edit changes
++ * a few sectors of the FAT image.  Returns the number of sectors written,
++ * or a negative errno.
++ */
++static int write_slot(u32 base, const u8 *src)
++{
++	u32 off, p;
++	int r, n = 0;
++
++	for (off = 0; off < BOOT_IMAGE_BYTES; off += FLASH_SECTOR) {
++		r = flash_read(base + off, sector_buf, FLASH_SECTOR);
++		if (r)
++			return r;
++		if (!memcmp(sector_buf, src + off, FLASH_SECTOR))
++			continue;
++		r = flash_erase_sector(base + off);
++		for (p = 0; !r && p < FLASH_SECTOR; p += FLASH_PAGE)
++			r = flash_program(base + off + p, src + off + p, FLASH_PAGE);
++		if (r)
++			return r;
++		n++;
++	}
++	return n;
++}
++
++static int write_meta(int i, const struct boot_metadata *m)
++{
++	const u32 commit_off = offsetof(struct boot_metadata, commit_word);
++	struct boot_metadata readback;
++	int r;
++
++	r = flash_erase_sector(meta_base[i]);
++	if (!r)
++		r = flash_program(meta_base[i], m, commit_off);
++	/* The only transition that makes this sector bootable is last. */
++	if (!r)
++		r = flash_program(meta_base[i] + commit_off, &m->commit_word,
++				  sizeof(m->commit_word));
++	if (!r)
++		r = flash_read(meta_base[i], &readback, sizeof(readback));
++	if (!r && memcmp(&readback, m, sizeof(readback)))
++		r = -EIO;
++	return r;
++}
++
++static int boot_commit(void)
++{
++	volatile struct boot_update_request *req =
++		(volatile struct boot_update_request *)BOOT_REQUEST_PA;
++	const u8 *image = (const u8 *)BOOT_IMAGE_PA;
++	struct boot_metadata rec[2], next;
++	u32 want, crc, active, inactive;
++	int sel, other, written, r;
++	u64 start;
++
++	if (req->magic != BOOT_REQUEST_MAGIC ||
++	    req->version != BOOT_REQUEST_VERSION ||
++	    req->image_bytes != BOOT_IMAGE_BYTES ||
++	    req->commit_word != BOOT_REQUEST_COMMIT)
++		return -ENOENT;
++	want = req->image_crc32;
++	if (ieee_crc32(image, BOOT_IMAGE_BYTES) != want)
++		return -EBADMSG;
++
++	start = ktime_get_ns();
++	flash_total_ns = 0;
++	sel = select_meta(rec);
++	active = sel >= 0 ? rec[sel].slot : 0;
++	/* select_meta() has just checked the selected slot against its CRC. */
++	if (sel >= 0) {
++		crc = rec[sel].image_crc32;
++	} else {
++		r = slot_crc32(slot_base[active], &crc);
++		if (r)
++			return r;
++	}
++	if (crc != want) {
++		inactive = 1 - active;
++		written = write_slot(slot_base[inactive], image);
++		r = written < 0 ? written : slot_crc32(slot_base[inactive], &crc);
++		if (!r && crc != want)
++			r = -EIO;
++		if (r) {
++			pr_err("bootflash: slot %u write failed (%d); left for the next reboot\n",
++			       inactive, r);
++			return r;
++		}
++		next = (struct boot_metadata) {
++			.magic = BOOT_META_MAGIC,
++			.version = BOOT_META_VERSION,
++			.generation = sel >= 0 ? rec[sel].generation + 1 : 1,
++			.slot = inactive,
++			.image_bytes = BOOT_IMAGE_BYTES,
++			.image_crc32 = want,
++			.commit_word = BOOT_META_COMMIT,
++		};
++		next.record_crc32 = ieee_crc32(&next, offsetof(struct boot_metadata,
++							       record_crc32));
++		other = sel == 0 ? 1 : 0;
++		r = write_meta(other, &next);
++		if (r) {
++			pr_err("bootflash: bootmeta%d write failed (%d); left for the next reboot\n",
++			       other, r);
++			return r;
++		}
++		pr_info("bootflash: boot update committed: generation=%u slot=%u crc=%08x sectors=%d/%u rom=%llums total=%llums\n",
++			next.generation, next.slot, want, written,
++			BOOT_IMAGE_BYTES / FLASH_SECTOR,
++			div_u64(flash_total_ns, NSEC_PER_MSEC),
++			div_u64(ktime_get_ns() - start, NSEC_PER_MSEC));
++	} else {
++		pr_info("bootflash: boot image already active (crc=%08x)\n", want);
++	}
++	/* Only commit_word changes, as the shim does after its own commit. */
++	if (req->image_crc32 == want)
++		req->commit_word = 0;
++	return 0;
++}
++
++static ssize_t boot_commit_store(struct kobject *kobj, struct kobj_attribute *attr,
++				 const char *buf, size_t count)
++{
++	int r;
++
++	if (!sysfs_streq(buf, "1"))
++		return -EINVAL;
++	mutex_lock(&bootflash_lock);
++	r = boot_commit();
++	mutex_unlock(&bootflash_lock);
++	return r ? r : count;
++}
++
++/* "slot=N generation=G crc=C", or "slot=0 legacy" without valid metadata. */
++static ssize_t boot_commit_show(struct kobject *kobj, struct kobj_attribute *attr,
++				char *buf)
++{
++	struct boot_metadata rec[2];
++	int sel;
++
++	mutex_lock(&bootflash_lock);
++	sel = select_meta(rec);
++	mutex_unlock(&bootflash_lock);
++	if (sel < 0)
++		return sysfs_emit(buf, "slot=0 legacy\n");
++	return sysfs_emit(buf, "slot=%u generation=%u crc=%08x\n", rec[sel].slot,
++			  rec[sel].generation, rec[sel].image_crc32);
++}
++
++static struct kobj_attribute boot_commit_attr = __ATTR_RW_MODE(boot_commit, 0600);
++
++static int __init esp32p4_bootflash_init(void)
++{
++	const struct rom_spiflash_chip *chip;
++	struct kobject *kobj;
++	int r;
++
++	if (!of_machine_is_compatible("espressif,esp32p4"))
++		return 0;
++	/* The ROM routines use the chip record the bootloader filled in. */
++	chip = *ROM_LEGACY_DATA;
++	if (chip->chip_size < WRITABLE_END || chip->sector_size != FLASH_SECTOR ||
++	    chip->page_size != FLASH_PAGE) {
++		pr_warn("bootflash: unexpected ROM flash record (size=%#x sector=%#x page=%#x); disabled\n",
++			chip->chip_size, chip->sector_size, chip->page_size);
++		return 0;
++	}
++	sector_buf = kmalloc(FLASH_SECTOR, GFP_KERNEL);
++	if (!sector_buf)
++		return -ENOMEM;
++	kobj = kobject_create_and_add("board", kernel_kobj);
++	if (!kobj)
++		return -ENOMEM;
++	r = sysfs_create_file(kobj, &boot_commit_attr.attr);
++	if (r) {
++		kobject_put(kobj);
++		return r;
++	}
++	pr_info("bootflash: flash id %06x, /boot commits without a reboot\n",
++		chip->device_id);
++	return 0;
++}
++late_initcall(esp32p4_bootflash_init);

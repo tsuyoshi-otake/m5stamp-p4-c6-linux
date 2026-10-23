@@ -34,7 +34,7 @@ profile forces the generic DW-MMC driver to PIO where supported.
   checkout.  It is built out-of-tree and installed as `esp32_sdio.ko`.
 * An M2-only boot-shim path (`boot-shim/main/m2_sdmmc.c`) that clocks the
   controller, pulses C6 reset GPIO42, and routes Slot 1 through the GPIO
-  matrix.  It is selected only when `EASYSTICK_BOOT_PROFILE=m2` is set while
+  matrix.  It is selected only when `BOOT_PROFILE=m2` is set while
   building the ESP-IDF shim; the M1 shim remains unchanged.
 * ESP32-C6 `network_adapter` slave firmware built from the same locked
   ESP-Hosted-NG revision and ESP-IDF 5.5.3.  `build-c6.sh` creates this image
@@ -57,7 +57,7 @@ from the locked submodule rather than vendored into this repository. Use
 For a temporary first-board SSH smoke test, use `build-m1.sh --profile
 m3-lab`. That profile layers Dropbear/BusyBox `inetd` on M2 and intentionally
 ships the Raspberry-Pi-style `pi`/`raspberry` lab credential. Set
-`EASYSTICK_WIFI_SSID` and `EASYSTICK_WIFI_PSK` in the build container to
+`WIFI_SSID` and `WIFI_PSK` in the build container to
 generate a private Wi-Fi file in the external output. The production key-only
 profile remains under `../m3/`.
 
@@ -96,7 +96,7 @@ failures** that cross several layers.
 WHY2025 Linux is invaluable as a proof that native ESP32-P4 NOMMU Linux can
 boot, but its author marks it as a proof of concept that is not
 upstream-ready and not battle-tested
-([why2025-linux](https://git.hubp.de/mrbreaker/why2025-linux)). EasyStick
+([why2025-linux](https://git.hubp.de/mrbreaker/why2025-linux)). Stamp-P4
 further changes the C6 path from that SPI-oriented reference to **GPIO42–48
 SDIO**.
 
@@ -113,7 +113,7 @@ What does **not** exist as a finished reference is the full chain used here:
 ```text
 ESP32-P4
   → native RV32 NOMMU Linux
-  → EasyStick P4 SD/MMC Linux host path
+  → Stamp-P4 P4 SD/MMC Linux host path
   → ESP-Hosted-NG Linux host
   → SDIO
   → ESP32-C6

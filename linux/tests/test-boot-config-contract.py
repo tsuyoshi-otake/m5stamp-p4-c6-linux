@@ -15,22 +15,22 @@ def read(relative: str) -> str:
 def main() -> None:
     readme = read("README.md")
     bootsync = read(
-        "linux/m3-lab/rootfs-overlay/usr/sbin/easystick-bootsync"
+        "linux/m3-lab/rootfs-overlay/usr/sbin/bootsyncd"
     )
     updater = read(
-        "linux/m3-lab/rootfs-overlay/usr/sbin/easystick-update-status"
+        "linux/m3-lab/rootfs-overlay/usr/sbin/update-status"
     )
     network = read("linux/m3-lab/rootfs-overlay/etc/init.d/S40network")
-    lun = read("linux/m3-lab/rootfs-overlay/usr/sbin/easystick-usb-lun")
+    lun = read("linux/m3-lab/rootfs-overlay/usr/sbin/usb-lun")
     shim = read("linux/boot-shim/main/main.c")
     shim_contract = read("linux/boot-shim/main/boot_ab.h")
     commit_helper = read(
-        "linux/buildroot-external/package/easystick-boot-commit/src/"
-        "easystick-boot-commit.c"
+        "linux/buildroot-external/package/boot-commit/src/"
+        "boot-commit.c"
     )
     fragment = read("linux/m3-lab/kernel.config.fragment")
 
-    s05 = read("linux/m3-lab/rootfs-overlay/etc/init.d/S05easystick-tmpfs")
+    s05 = read("linux/m3-lab/rootfs-overlay/etc/init.d/S05tmpfs")
     build = read("linux/build-m1.sh")
 
     assert "Reboot Persistence" not in readme
@@ -41,7 +41,7 @@ def main() -> None:
 
     assert "\t\tdevice-owned)\n\t\t\tIMPORT_MODE=eject\n" in bootsync
     assert "mount -t vfat -o ro,loop" in bootsync
-    assert 'BOOT_COMMIT="/usr/sbin/easystick-boot-commit"' in bootsync
+    assert 'BOOT_COMMIT="/usr/sbin/boot-commit"' in bootsync
     assert '"$BOOT_COMMIT" "$SNAP_IMG"' in bootsync
     assert "forced_eject" not in bootsync
     # An edit is saved once the host stops writing, without an eject: the
@@ -55,10 +55,10 @@ def main() -> None:
     assert 'if [ "$rc" -eq 2 ] && auto_reboot_enabled; then' in bootsync
     assert "\n\t\treboot\n" in bootsync
     assert "/run/.boot-flash-md5" in s05
-    assert '"/sys/kernel/easystick/boot_commit"' in commit_helper
+    assert '"/sys/kernel/board/boot_commit"' in commit_helper
     assert "#define EXIT_STAGED_ONLY             2" in commit_helper
-    assert "patches+=(0072-easystick-esp32p4-bootflash.patch)" in build
-    assert '"$patch_name" == 0072-easystick-esp32p4-bootflash.patch ||' in build
+    assert "patches+=(0072-esp32p4-bootflash.patch)" in build
+    assert '"$patch_name" == 0072-esp32p4-bootflash.patch ||' in build
     # The everyday commands come from busybox-tools, not the main BusyBox.
     assert 'BR2_PACKAGE_BUSYBOX_TOOLS y' in build
     assert '"BR2_PACKAGE_BUSYBOX_TOOLS=y" \\' in build
@@ -75,10 +75,10 @@ def main() -> None:
     assert "# CONFIG_SHELL_ASH is not set" in tools_config
     # Pico-style autorun (#34): S05 stages the drive's program, bootsync
     # starts it and restarts it only when the copy changed, always as m5.
-    autorun = read("linux/m3-lab/rootfs-overlay/usr/lib/easystick/autorun.sh")
+    autorun = read("linux/m3-lab/rootfs-overlay/usr/lib/board/autorun.sh")
     assert "CONFIG_CHPST=y\n" in tools_config
-    assert ". /usr/lib/easystick/autorun.sh" in bootsync
-    assert ". /usr/lib/easystick/autorun.sh" in s05
+    assert ". /usr/lib/board/autorun.sh" in bootsync
+    assert ". /usr/lib/board/autorun.sh" in s05
     assert "if autorun_stage /boot; then" in s05
     assert 'if ! autorun_stage "$MNT_POINT"; then' in bootsync
     assert bootsync.count("autorun_apply") == 2
@@ -95,7 +95,7 @@ def main() -> None:
     # The main BusyBox find has no -type; a failed find hashed nothing, so
     # every program looked the same and a saved change never restarted it.
     assert "find -type" not in autorun and " -type " not in autorun
-    assert "/usr/sbin/easystick-autorun" in read("linux/m3-lab/post-build.sh")
+    assert "/usr/sbin/autorun" in read("linux/m3-lab/post-build.sh")
     # main.py needs time, socket, json, ...: the "minimal" MicroPython had
     # only os and sys.  The bigger build must still fit the 512 KB block.
     mpy = read("linux/buildroot-external/package/micropython-nommu/micropython-nommu.mk")
@@ -116,7 +116,7 @@ def main() -> None:
     motd = read("linux/m3-lab/rootfs-overlay/etc/motd")
     assert "No eject or reboot is needed" in motd
     assert "busybox-tools --list" in motd
-    assert "easystick-autorun status" in motd
+    assert "autorun status" in motd
     assert "### 5. Autorun from the USB drive (Pico-style)" in readme
     assert max(len(line) for line in motd.splitlines()) <= 78
     # A reused Buildroot output must not keep a stale boot-commit helper.
@@ -124,8 +124,8 @@ def main() -> None:
     assert '"${pkg_name}-dirclean"' in build
     assert "CONFIG_ESP32P4_BOOTFLASH=y" in read("linux/linux.config")
     # Password and keys are applied live by bootsync and at boot by S05.
-    assert ". /usr/lib/easystick/credentials.sh" in bootsync
-    assert ". /usr/lib/easystick/credentials.sh" in s05
+    assert ". /usr/lib/board/credentials.sh" in bootsync
+    assert ". /usr/lib/board/credentials.sh" in s05
 
     # #37: root over SSH is key-only (-g kept, -w gone); a setuid su-only
     # BusyBox and root_password= cover su.  The image shadow stays locked.
@@ -133,7 +133,7 @@ def main() -> None:
     assert "dropbear -i -g -r" in inetd
     assert " -w " not in inetd
     credentials = read(
-        "linux/m3-lab/rootfs-overlay/usr/lib/easystick/credentials.sh"
+        "linux/m3-lab/rootfs-overlay/usr/lib/board/credentials.sh"
     )
     assert "install_root_keys" in credentials
     assert "chmod 700" in credentials and "chmod 600" in credentials
@@ -181,7 +181,7 @@ def main() -> None:
     for opt in ("FEATURE_UTMP", "FEATURE_WTMP", "WHO", "W", "USERS", "LAST"):
         assert f"CONFIG_{opt}=y\n" in tools_config, opt
     assert "usr/bin/who usr/bin/w usr/bin/users usr/bin/last; do" in build
-    wtmp_patch = read("linux/m3/dropbear-patches/0011-easystick-wtmp-rotate.patch")
+    wtmp_patch = read("linux/m3/dropbear-patches/0011-wtmp-rotate.patch")
     assert "+#define WTMPX_ROTATE_SIZE (32 * 1024)" in wtmp_patch
     assert "+\t(void)flock(fd, LOCK_EX);\n+\twtmpx_rotate(fd);" in wtmp_patch
     assert '+\tif ((out = open(WTMPX_FILE ".1", O_WRONLY|O_TRUNC, 0)) < 0) {' in wtmp_patch
@@ -248,15 +248,15 @@ def main() -> None:
     assert '"${hook}" "$ACTION"' not in udhcpc_script
     udhcpc_hook = read(
         "linux/m3-lab/rootfs-overlay/usr/share/udhcpc/default.script.d/"
-        "01easystick-status"
+        "01status"
     )
-    assert ". /usr/sbin/easystick-update-status" in udhcpc_hook
+    assert ". /usr/sbin/update-status" in udhcpc_hook
     assert "exit 0" not in udhcpc_hook
     assert "cat $TMPFILE" not in udhcpc_script
-    # #40: /sys/kernel/easystick/nommu_pool comes from a new patch in the
+    # #40: /sys/kernel/board/nommu_pool comes from a new patch in the
     # series; the status tools read it with builtins and tolerate absence.
     pool_patch = read(
-        "linux/kernel-patches/0076-easystick-nommu-pool-sysfs.patch"
+        "linux/kernel-patches/0076-nommu-pool-sysfs.patch"
     )
     for needle in (
         "nommu_pool",
@@ -264,13 +264,13 @@ def main() -> None:
         "largest_free",
         "alloc_fail",
         "fallback",
-        "easystick_kobj",
+        "kobj",
         "device_initcall",
     ):
         assert needle in pool_patch, needle
-    assert "patches+=(0076-easystick-nommu-pool-sysfs.patch)" in build
-    info = read("linux/m3-lab/rootfs-overlay/usr/sbin/easystick-info")
-    assert "/sys/kernel/easystick/nommu_pool" in info
+    assert "patches+=(0076-nommu-pool-sysfs.patch)" in build
+    info = read("linux/m3-lab/rootfs-overlay/usr/sbin/sysinfo")
+    assert "/sys/kernel/board/nommu_pool" in info
     assert "pool_used=" in updater and "pool_largest_free=" in updater
     assert "pool_alloc_fail=" in updater
     # #40: a failed credentials/keys apply reports 1 so bootsync keeps the
@@ -300,19 +300,19 @@ def main() -> None:
         return int(match.group(1), 0)
 
     shared = (
-        ("BOOT_UPDATE_REQUEST_PA", "EASYSTICK_PSRAM_REQUEST_PHYS"),
-        ("BOOT_IMAGE_BYTES", "EASYSTICK_IMAGE_BYTES"),
-        ("BOOT_REQUEST_MAGIC", "EASYSTICK_REQUEST_MAGIC"),
-        ("BOOT_REQUEST_VERSION", "EASYSTICK_REQUEST_VERSION"),
-        ("BOOT_REQUEST_COMMIT", "EASYSTICK_REQUEST_COMMIT"),
+        ("BOOT_UPDATE_REQUEST_PA", "PSRAM_REQUEST_PHYS"),
+        ("BOOT_IMAGE_BYTES", "IMAGE_BYTES"),
+        ("BOOT_REQUEST_MAGIC", "REQUEST_MAGIC"),
+        ("BOOT_REQUEST_VERSION", "REQUEST_VERSION"),
+        ("BOOT_REQUEST_COMMIT", "REQUEST_COMMIT"),
     )
     for firmware_name, linux_name in shared:
         assert define(shim_contract, firmware_name) == define(commit_helper, linux_name)
     assert "#define BOOT_LOAD_PA 0x499c0000u" in shim
-    assert define(commit_helper, "EASYSTICK_PSRAM_IMAGE_PHYS") == 0x499C0000
+    assert define(commit_helper, "PSRAM_IMAGE_PHYS") == 0x499C0000
     assert "sizeof(struct boot_update_request) == 20" in shim
-    assert "sizeof(struct easystick_commit_request) == 20" in commit_helper
-    assert "request->commit = EASYSTICK_REQUEST_COMMIT" in commit_helper
+    assert "sizeof(struct commit_request) == 20" in commit_helper
+    assert "request->commit = REQUEST_COMMIT" in commit_helper
     assert "write_boot_metadata" in shim
     assert "esp_partition_erase_range(slots[inactive_slot]" in shim
     assert "partition_crc32(slots[inactive_slot]" in shim
@@ -321,7 +321,7 @@ def main() -> None:
     bootflash = "\n".join(
         line[1:]
         for line in read(
-            "linux/kernel-patches/0072-easystick-esp32p4-bootflash.patch"
+            "linux/kernel-patches/0072-esp32p4-bootflash.patch"
         ).splitlines()
         if line.startswith("+")
     )

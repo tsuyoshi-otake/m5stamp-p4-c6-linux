@@ -1,0 +1,133 @@
+#!/bin/sh
+
+# BusyBox ash in the RV32 NOMMU image does not implement `set -u`.
+set -e
+
+# NOMMU reserve gate (#50 round 4): a user-started restart must not leave
+# inetd/dropbear "user"-marked or their allocations can be gated.  Re-exec
+# once through run-system; ES_SYSMARK stops loops, and exec leaves no
+# second shell resident next to the marked copy.  Per-connection handlers
+# still clear the mark via the inetd.conf wrapper.
+if [ -z "${ES_SYSMARK:-}" ] && [ -x /usr/sbin/run-system ]; then
+	ES_SYSMARK=1 exec /usr/sbin/run-system "$0" "$@"
+fi
+
+# Observe-only hostkey markers (no key material / fingerprint / base64).
+es_hk() {
+	printf '%s\n' "$1"
+}
+
+# BusyBox in this image has no pidof; scan /proc instead.
+inetd_running() {
+	for c in /proc/[0-9]*/comm; do
+		# read is a builtin: $(cat) would fork a ~500 KB BusyBox per process.
+		n=""
+		read -r n 2>/dev/null < "$c" || continue
+		[ "$n" = "inetd" ] && return 0
+	done
+	return 1
+}
+
+# ssh_password_auth=no in config.txt switches Dropbear to keys only (#25), but
+# only when S05 installed at least one key: a typo must not lock out SSH.
+password_auth_off() {
+	cr=$(printf '\r')
+	v=$(sed -e "s/$cr\$//" /tmp/config.txt 2>/dev/null |
+		sed -n 's/^[ 	]*ssh_password_auth[ 	]*=[ 	]*//p' | head -n1 | tr -d ' ')
+	[ "$v" = "no" ] || return 1
+	if [ ! -s /home/m5/.ssh/authorized_keys ]; then
+		printf '%s\n' "M3-lab: ssh_password_auth=no ignored: no authorized_keys installed"
+		return 1
+	fi
+	return 0
+}
+
+LOCK=/run/.es-ssh.lock
+
+start() {
+	# start and the backgrounded restart from S40network may overlap; serialize.
+	if ! mkdir "$LOCK" 2>/dev/null; then
+		return 0
+	fi
+	rc=0
+	start_locked || rc=$?
+	rmdir "$LOCK" 2>/dev/null || true
+	return $rc
+}
+
+start_locked() {
+	if [ ! -x /usr/sbin/inetd ]; then
+		es_hk "ES_HOSTKEY INETD_MISSING"
+		echo "M3-lab: inetd is missing; SSH remains disabled"
+		return 1
+	fi
+
+	KEY=/run/dropbear_ed25519_host_key
+
+	# Regenerate Ed25519 host key every boot.  Do not use dropbear -R per
+	# connection (that would rotate the key on every accept).
+	if [ ! -s "$KEY" ]; then
+		# BusyBox wc may print leading spaces; strip them.
+		es_hk "ES_HOSTKEY GEN_BEGIN"
+		umask 077
+		TMPKEY="$KEY.$$"
+		rm -f "$TMPKEY"
+		if ! dropbearkey -t ed25519 -f "$TMPKEY" >/dev/null 2>&1; then
+			rm -f "$TMPKEY"
+			es_hk "ES_HOSTKEY GEN_FAIL"
+			return 1
+		fi
+		mv -f "$TMPKEY" "$KEY"
+		es_hk "ES_HOSTKEY GEN_OK"
+
+		if [ ! -s "$KEY" ]; then
+			es_hk "ES_HOSTKEY NONEMPTY_FAIL"
+			return 1
+		fi
+		chmod 600 "$KEY" 2>/dev/null || true
+	fi
+	es_hk "ES_HOSTKEY NONEMPTY_OK"
+
+	# Ensure devpts permissions and free high-order buddy pages for SSH sessions
+	mount -o remount,gid=5,mode=620,ptmxmode=0666 /dev/pts 2>/dev/null || true
+	echo 3 > /proc/sys/vm/drop_caches 2>/dev/null || true
+
+	# inetd listens on 0.0.0.0:22.  Do not gate on a network interface name:
+	# this port's STA iface has been wlan0, upstream esp-hosted may use
+	# ethsta0, and either may appear after this script runs.
+	if ! inetd_running; then
+		es_hk "ES_HOSTKEY INETD_START"
+		INETD_CONF=/etc/inetd.conf
+		if password_auth_off; then
+			sed 's| -u /usr/sbin/dropbear |&-s |' /etc/inetd.conf > /run/inetd.conf
+			INETD_CONF=/run/inetd.conf
+			printf '%s\n' "M3-lab: starting key-only Dropbear on TCP/22 (ssh_password_auth=no)"
+		else
+			printf '%s\n' "M3-lab: starting password-enabled Dropbear on TCP/22"
+		fi
+		# Respawn inetd if it is ever killed (e.g. by the OOM killer).
+		respawn -- /usr/sbin/inetd -f -R 10 "$INETD_CONF" &
+		echo $! > /run/.es-inetd-sup
+	else
+		es_hk "ES_HOSTKEY INETD_ALREADY"
+		printf '%s\n' "M3-lab: inetd already running"
+	fi
+}
+
+restart() {
+	if ! inetd_running; then
+		start
+	fi
+}
+
+case "${1:-start}" in
+	start) start ;;
+	restart|reload) restart ;;
+	stop)
+		s=""
+		read -r s 2>/dev/null < /run/.es-inetd-sup || true
+		[ -n "$s" ] && kill "$s" 2>/dev/null || true
+		rm -f /run/.es-inetd-sup
+		killall inetd 2>/dev/null || true ;;
+	*) echo "Usage: $0 {start|stop|restart|reload}" >&2; exit 1 ;;
+esac

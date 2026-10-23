@@ -66,7 +66,7 @@ $artifacts = @(
 	@{ Address = "0x10000"; Name = "boot-shim.bin"; Max = 0x80000 },
 	@{ Address = "0x90000"; Name = "Image"; Max = 0x780000 },
 	@{ Address = "0x810000"; Name = "rootfs.squashfs"; Max = 0x700000 },
-	@{ Address = "0xf10000"; Name = "easystick-stamp-p4.dtb"; Max = 0x10000 }
+	@{ Address = "0xf10000"; Name = "esp32p4-m5stamp-p4.dtb"; Max = 0x10000 }
 )
 if ($WriteBoot) {
 	$artifacts += @{ Address = "0xf40000"; Name = "boot.img"; Max = 0x40000 }

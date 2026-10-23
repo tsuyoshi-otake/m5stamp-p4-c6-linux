@@ -8,7 +8,7 @@ Usage: build-c6.sh <external-source-root|--vendor> <output-directory>
 Builds the locked ESP-Hosted-NG ESP32-C6 network_adapter slave image for
 SDIO. IDF_PATH must point at the locked ESP-IDF checkout (or be passed by the
 container wrapper). This command never invokes esptool or writes the C6.
-Set EASYSTICK_C6_BT=0 to build without the BLE controller.
+Set C6_BT=0 to build without the BLE controller.
 EOF
 }
 
@@ -80,23 +80,23 @@ rm -rf -- "$staged_project/build"
 find "$staged_project" -type f \( -name '*.c' -o -name '*.h' -o -name '*.txt' -o -name '*.md' \) \
 	-exec sed -i 's/\r$//' {} +
 
-# EASYSTICK_C6_BT=0 builds the C6 without its BLE controller (#32): Linux
+# C6_BT=0 builds the C6 without its BLE controller (#32): Linux
 # never creates an HCI device, so BLE only costs C6 RAM and power.  The
 # default keeps the upstream configuration, i.e. the validated image.
-case "${EASYSTICK_C6_BT:-1}" in
+case "${C6_BT:-1}" in
 	1) ;;
-	0) printf '\n# EasyStick: EASYSTICK_C6_BT=0\n# CONFIG_BT_ENABLED is not set\n' \
+	0) printf '\n# Stamp-P4: C6_BT=0\n# CONFIG_BT_ENABLED is not set\n' \
 		>>"$staged_project/sdkconfig.defaults.esp32c6" ;;
-	*) echo "EASYSTICK_C6_BT must be 0 or 1" >&2; exit 2 ;;
+	*) echo "C6_BT must be 0 or 1" >&2; exit 2 ;;
 esac
 
-# EasyStick C6-only patches (never mutate the locked submodule tree).
+# Stamp-P4 C6-only patches (never mutate the locked submodule tree).
 patch_dir="${script_dir}/c6-patches"
 manifest="${output}/C6_PATCH_MANIFEST.txt"
 {
 	echo "source_project=${project_dir}"
 	echo "staged_project=${staged_project}"
-	[[ "${EASYSTICK_C6_BT:-1}" == 1 ]] || echo "c6_bt=0"
+	[[ "${C6_BT:-1}" == 1 ]] || echo "c6_bt=0"
 	echo "patch_dir=${patch_dir}"
 } >"$manifest"
 shopt -s nullglob
@@ -146,9 +146,9 @@ if grep -Eq '^#define CONFIG_ESP_SPI_HOST_INTERFACE 1$' "${output}/build/config/
 	echo "C6 build unexpectedly selected SPI transport" >&2
 	exit 1
 fi
-if [[ "${EASYSTICK_C6_BT:-1}" == 0 ]] &&
+if [[ "${C6_BT:-1}" == 0 ]] &&
    grep -Eq '^#define CONFIG_BT_ENABLED 1$' "${output}/build/config/sdkconfig.h"; then
-	echo "C6 build kept Bluetooth despite EASYSTICK_C6_BT=0" >&2
+	echo "C6 build kept Bluetooth despite C6_BT=0" >&2
 	exit 1
 fi
 

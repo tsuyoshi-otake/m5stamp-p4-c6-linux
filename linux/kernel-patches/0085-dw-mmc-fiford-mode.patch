@@ -1,0 +1,136 @@
+Subject: [PATCH] mmc: dw_mmc: fiford_mode debug knob for #35 (default off)
+
+On this board every PIO read of more than one 32-bit word returns the
+first FIFO word for every mci_fifo_readl(host->fifo_reg), whether the
+scatterlist is aligned or not; IDMAC transfers return correct data.
+That makes the pull/bounce paths innocent and points at the P4's
+BUFFIFO read semantics: peek-window vs pop-port, clock-domain pop
+latency, or bus read coalescing.
+
+fiford_mode selects the FIFO read strategy used by the PIO pull path
+(pull_data32, the variant HCON selects on this host).  Default 0 is
+exactly upstream behavior.  Set it at runtime through
+/sys/module/dw_mmc/parameters/fiford_mode or on the command line as
+dw_mmc.fiford_mode=N, so one image can A/B every hypothesis:
+
+  1  window: read fifo_reg + 4*i  (peek-window hypothesis)
+  2  pop port + udelay(1) between reads (clock-domain pop latency)
+  3  ordered readl() + rmb()      (bus read coalescing)
+  4  discard-then-read            (first read primes the pop)
+  5  pop port, pr_info each word with STATUS.FCNT before/after
+     (proves the path is taken and whether a CPU read pops)
+
+fifo_rd_idx is reset in dw_mci_submit_data() next to part_buf_* so
+each transfer starts at window index 0.  Only pull_data32 is
+instrumented: HCON reports 32-bit host width on this board, so that
+is the variant every PIO transfer takes.
+
+---
+--- a/drivers/mmc/host/dw_mmc.c
++++ b/drivers/mmc/host/dw_mmc.c
+@@ -1530,6 +1530,7 @@
+ 		host->sg = data->sg;
+ 		host->part_buf_start = 0;
+ 		host->part_buf_count = 0;
++		host->fifo_rd_idx = 0;
+ 
+ 		mci_writel(host, RINTSTS, SDMMC_INT_TXDR | SDMMC_INT_RXDR);
+ 
+@@ -2775,6 +2776,64 @@
+ 	}
+ }
+ 
++/* Stamp-P4 #35 debug (opt-in, default 0): P4 BUFFIFO pop behavior.
++ *
++ * On this board every PIO read of more than one 32-bit word returns
++ * the first FIFO word for every mci_fifo_readl(), whether the sg is
++ * aligned or not; IDMAC transfers are correct.  The hypotheses are
++ * (a) the BUFFIFO register is a peek window or does not pop on CPU
++ * reads, (b) the pop advances on the card-clock domain so back-to-back
++ * reads see the same head, (c) the bus coalesces repeated raw loads.
++ * Select a strategy at runtime with
++ * /sys/module/dw_mmc/parameters/fiford_mode or dw_mmc.fiford_mode= on
++ * the command line so one image tests all of them:
++ *
++ *   0  upstream: __raw_readl(fifo_reg) pop port (default)
++ *   1  window: read fifo_reg + 4*i (peek-window hypothesis)
++ *   2  pop port + udelay(1) between reads (clock-domain latency)
++ *   3  ordered readl() + rmb() (read-coalescing test)
++ *   4  discard-then-read (first read primes the pop)
++ *   5  pop port, log each word with STATUS.FCNT before/after
++ */
++static int dw_mmc_fiford_mode;
++module_param_named(fiford_mode, dw_mmc_fiford_mode, int, 0644);
++MODULE_PARM_DESC(fiford_mode,
++		 "#35 debug: PIO fifo read strategy (0=upstream)");
++
++static inline u32 dw_mci_es_fifo_readl(struct dw_mci *host)
++{
++	u32 v;
++
++	switch (dw_mmc_fiford_mode) {
++	case 1:
++		v = mci_fifo_readl(host->fifo_reg + host->fifo_rd_idx * 4);
++		host->fifo_rd_idx++;
++		return v;
++	case 2:
++		v = mci_fifo_readl(host->fifo_reg);
++		udelay(1);
++		return v;
++	case 3:
++		v = readl(host->fifo_reg);
++		rmb();
++		return v;
++	case 4:
++		mci_fifo_readl(host->fifo_reg);
++		return mci_fifo_readl(host->fifo_reg);
++	case 5: {
++		u32 s0 = mci_readl(host, STATUS);
++
++		v = mci_fifo_readl(host->fifo_reg);
++		pr_info("ES_FIFORD i=%u v=%08x fcnt %u->%u\n",
++			host->fifo_rd_idx++, v, SDMMC_GET_FCNT(s0),
++			SDMMC_GET_FCNT(mci_readl(host, STATUS)));
++		return v;
++	}
++	default:
++		return mci_fifo_readl(host->fifo_reg);
++	}
++}
++
+ static void dw_mci_pull_data32(struct dw_mci *host, void *buf, int cnt)
+ {
+ #ifndef CONFIG_HAVE_EFFICIENT_UNALIGNED_ACCESS
+@@ -2787,7 +2846,7 @@
+ 			int i;
+ 
+ 			for (i = 0; i < items; ++i)
+-				aligned_buf[i] = mci_fifo_readl(host->fifo_reg);
++				aligned_buf[i] = dw_mci_es_fifo_readl(host);
+ 			/* memcpy from aligned buffer into output buffer */
+ 			memcpy(buf, aligned_buf, len);
+ 			buf += len;
+@@ -2799,11 +2858,11 @@
+ 		u32 *pdata = buf;
+ 
+ 		for (; cnt >= 4; cnt -= 4)
+-			*pdata++ = mci_fifo_readl(host->fifo_reg);
++			*pdata++ = dw_mci_es_fifo_readl(host);
+ 		buf = pdata;
+ 	}
+ 	if (cnt) {
+-		host->part_buf32 = mci_fifo_readl(host->fifo_reg);
++		host->part_buf32 = dw_mci_es_fifo_readl(host);
+ 		dw_mci_pull_final_bytes(host, buf, cnt);
+ 	}
+ }
+--- a/drivers/mmc/host/dw_mmc.h
++++ b/drivers/mmc/host/dw_mmc.h
+@@ -290,6 +290,7 @@
+ 	int			data_shift;
+ 	u8			part_buf_start;
+ 	u8			part_buf_count;
++	u32			fifo_rd_idx;
+ 	union {
+ 		u16		part_buf16;
+ 		u32		part_buf32;

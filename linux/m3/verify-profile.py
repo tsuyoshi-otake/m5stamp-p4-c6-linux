@@ -39,18 +39,18 @@ def main() -> int:
     require(inetd, "dropbear -i -w -s -r", "inetd key-only/root-disabled command")
 
     users = read("users.txt")
-    require(users, "p4 -1 p4 -1 ! /config/easystick/p4 /bin/sh", "locked p4 account")
+    require(users, "p4 -1 p4 -1 ! /config/stamp-p4/p4 /bin/sh", "locked p4 account")
 
     setup = read("initial-setup.md")
     require(setup, "USB-C", "USB-C initial-setup path")
     require(setup, "USB-A", "USB-A initial-setup path")
-    require(setup, "/usr/sbin/easystick-firstboot", "first-boot command")
+    require(setup, "/usr/sbin/firstboot", "first-boot command")
     require(setup, "universal `pi`/`raspberry`", "no universal Raspberry Pi credential")
 
     for relative in (
-        "rootfs-overlay/etc/init.d/S10easystick-config",
-        "rootfs-overlay/etc/init.d/S85easystick-ssh",
-        "rootfs-overlay/usr/sbin/easystick-firstboot",
+        "rootfs-overlay/etc/init.d/S10config",
+        "rootfs-overlay/etc/init.d/S85ssh",
+        "rootfs-overlay/usr/sbin/firstboot",
     ):
         if not (ROOT / relative).is_file():
             raise SystemExit(f"FAIL: missing runtime file {relative}")

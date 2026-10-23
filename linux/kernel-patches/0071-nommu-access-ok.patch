@@ -1,0 +1,110 @@
+Subject: [PATCH] stamp-p4: reject user pointers outside user memory on NOMMU
+
+`vi` with no file name froze the board until the watchdog reset it.
+BusyBox vi calls open(NULL), and the same happens with write(1, NULL, 4)
+or any syscall given a bad pointer.  NOMMU riscv uses the asm-generic
+accessors: copy_from_user() is a plain memcpy() with no exception-table
+entry, and the generic __access_ok() accepts every address, so the kernel
+loads from address 0 itself.  The access fault in memcpy() is not
+recovered (pstore showed an illegal-instruction oops at a non-text
+address, or nothing at all).  A user-mode load from address 0 is fine: it
+gets SIGSEGV.
+
+User memory is the PSRAM that Linux manages, [phys_ram_base,
+high_memory), plus the mtd-rom flash window: NOMMU mmap() of a file on
+the ROM returns a pointer into it, and BusyBox insmod passes such a
+pointer to init_module().  physmap records that window, and
+__access_ok() accepts a range only when it starts in one of the two.
+Everything else fails with -EFAULT before the kernel touches it.
+
+Only the start of the range is checked.  strncpy_from_user() and
+strnlen_user() ask access_ok() for their whole limit (PATH_MAX, or
+MAX_ARG_STRLEN for execve) and stop at the NUL, and the top NOMMU pool
+ends at high_memory, so an end check would fail short strings there.
+
+---
+--- a/arch/riscv/include/asm/uaccess.h
++++ b/arch/riscv/include/asm/uaccess.h
+@@ -488,6 +488,41 @@
+ 		goto label;
+ 
+ #else /* CONFIG_MMU */
++#ifdef CONFIG_SOC_ESP32P4
++/*
++ * NOMMU uses the asm-generic accessors: copy_from_user() and friends are a
++ * plain memcpy() with no exception-table fixup, and the generic
++ * __access_ok() accepts every address.  A bad user pointer therefore makes
++ * the kernel itself load from it.  On this SoC a load from address 0 takes
++ * an access fault in M-mode that the kernel does not recover from (open(NULL)
++ * from BusyBox vi froze the board until the watchdog reset it), and a
++ * pointer into the peripheral window reads or writes device registers.
++ *
++ * User memory is the PSRAM that Linux manages, plus the memory-mapped flash
++ * of the mtd-rom device, which NOMMU mmap() hands out directly (BusyBox
++ * insmod maps the .ko there).  Accept a range that starts in one of them.
++ * Only the start is checked: strncpy_from_user() and strnlen_user() ask
++ * for their whole limit (up to MAX_ARG_STRLEN) and stop at the NUL, so an
++ * end check would reject short strings near the top of PSRAM.
++ */
++extern void *high_memory;
++extern unsigned long esp32p4_user_rom_start, esp32p4_user_rom_end;
++
++#define __access_ok __access_ok
++static inline int __access_ok(const void __user *ptr, unsigned long size)
++{
++	unsigned long addr = (unsigned long)ptr;
++
++	if (!size)
++		return 1;
++	if (addr + size - 1 < addr)
++		return 0;
++	if (addr >= (unsigned long)phys_ram_base &&
++	    addr < (unsigned long)high_memory)
++		return 1;
++	return addr >= esp32p4_user_rom_start && addr < esp32p4_user_rom_end;
++}
++#endif /* CONFIG_SOC_ESP32P4 */
+ #include <asm-generic/uaccess.h>
+ #endif /* CONFIG_MMU */
+ #endif /* _ASM_RISCV_UACCESS_H */
+--- a/arch/riscv/mm/init.c
++++ b/arch/riscv/mm/init.c
+@@ -62,6 +62,14 @@
+ phys_addr_t phys_ram_base __ro_after_init;
+ EXPORT_SYMBOL(phys_ram_base);
+ 
++#if defined(CONFIG_SOC_ESP32P4) && !defined(CONFIG_MMU)
++/* The mtd-rom flash window, for __access_ok(); set by physmap. */
++unsigned long esp32p4_user_rom_start;
++unsigned long esp32p4_user_rom_end;
++EXPORT_SYMBOL(esp32p4_user_rom_start);
++EXPORT_SYMBOL(esp32p4_user_rom_end);
++#endif
++
+ #ifdef CONFIG_SPARSEMEM_VMEMMAP
+ #define VMEMMAP_ADDR_ALIGN	max(1ULL << SECTION_SIZE_BITS, \
+ 				    PFN_PHYS(MAX_FOLIO_VMEMMAP_ALIGN / \
+--- a/drivers/mtd/maps/physmap-core.c
+@@ -41,6 +41,7 @@
+ #include <linux/of.h>
+ #include <linux/pm_runtime.h>
+ #include <linux/gpio/consumer.h>
++#include <linux/uaccess.h>
+ 
+ #include "physmap-gemini.h"
+ #include "physmap-ixp4xx.h"
+@@ -511,6 +512,14 @@
+ 
+ 		dev_notice(&dev->dev, "physmap platform flash device: %pR\n",
+ 			   res);
++#if defined(CONFIG_SOC_ESP32P4) && !defined(CONFIG_MMU)
++		/* NOMMU mmap() of the ROM returns pointers into this window. */
++		if (!esp32p4_user_rom_end) {
++			esp32p4_user_rom_start = (unsigned long)info->maps[i].virt;
++			esp32p4_user_rom_end = esp32p4_user_rom_start +
++					       resource_size(res);
++		}
++#endif
+ 
+ 		if (!info->maps[i].name)
+ 			info->maps[i].name = dev_name(&dev->dev);

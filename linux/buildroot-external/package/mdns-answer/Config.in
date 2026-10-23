@@ -1,0 +1,6 @@
+config BR2_PACKAGE_MDNS_ANSWER
+	bool "Stamp-P4 minimal mDNS responder"
+	help
+	  Answers mDNS A queries for <hostname>.local with the IPv4 address
+	  of wlan0.  No service discovery.  Unlike mdnsd and avahi it does
+	  not fork, so it runs on NOMMU.

@@ -1,0 +1,47 @@
+From: Stamp-P4 maintainers <noreply@example.invalid>
+Subject: [PATCH] char/mem: keep /dev/mem mmap working on NOMMU under
+ mmap_prepare
+
+Linux 7.2 converted /dev/mem to f_op->mmap_prepare, which ends with
+mmap_action_remap_full().  The NOMMU mmap_action backend (mm/util.c)
+rejects every action but MMAP_NOTHING with WARN_ONCE and -EINVAL, so
+every /dev/mem mmap on NOMMU now fails (devmem, boot-shim PSRAM
+staging, ES_DWC2_STATUS all EINVAL).
+
+With NOMMU_MAP_DIRECT, get_unmapped_area_mem() already places the VMA
+at the physical address, so no remap is needed.  Skip the action on
+NOMMU and do what the NOMMU remap_pfn_range() did instead: verify the
+direct placement and set the I/O VMA flags that the compat path
+copies back into the VMA.
+
+No upstream fix exists as of 7.2.11 (checked torvalds/master).
+
+---
+diff --git a/drivers/char/mem.c b/drivers/char/mem.c
+index 63253d1de5d7..a2fca41f4558 100644
+--- a/drivers/char/mem.c
++++ b/drivers/char/mem.c
+@@ -355,9 +355,23 @@
+ 
+ 	desc->vm_ops = &mmap_mem_ops;
+ 
++#ifndef CONFIG_MMU
++	/*
++	 * NOMMU's mmap_action machinery rejects everything but
++	 * MMAP_NOTHING, so we must not request a remap here.  None is
++	 * needed: with NOMMU_MAP_DIRECT, get_unmapped_area_mem() already
++	 * placed the VMA at the physical address.  Do what the NOMMU
++	 * remap_pfn_range() used to do instead.
++	 */
++	if (desc->start != (unsigned long)offset)
++		return -EINVAL;
++	vma_desc_set_flags(desc, VMA_IO_BIT, VMA_PFNMAP_BIT,
++			 VMA_DONTEXPAND_BIT, VMA_DONTDUMP_BIT);
++#else
+ 	/* Remap-pfn-range will mark the range with the I/O flag. */
+ 	mmap_action_remap_full(desc, desc->pgoff);
+ 	desc->action.error_override = -EAGAIN;
++#endif
+ 
+ 	return 0;
+ }

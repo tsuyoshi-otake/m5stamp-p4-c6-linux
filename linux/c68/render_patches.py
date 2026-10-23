@@ -8,8 +8,8 @@ from pathlib import Path
 import sys
 
 PATCHES = (
-    "0038-easystick-c68-clean-release-spinwait.patch",
-    "0039-easystick-c68-clean-release-smpboot.patch",
+    "0038-c68-clean-release-spinwait.patch",
+    "0039-c68-clean-release-smpboot.patch",
 )
 
 

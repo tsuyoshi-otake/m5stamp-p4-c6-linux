@@ -22,10 +22,10 @@ STEPS = {
     8: "ESP_HOSTED_INIT",
 }
 STEP_MARKER = re.compile(
-    r"EASYSTICK_P1 STEP (?P<number>0[1-8]) "
+    r"P1 STEP (?P<number>0[1-8]) "
     r"(?P<name>[A-Z0-9_]+) (?P<state>PASS|FAIL)\b"
 )
-ANY_FAILURE = re.compile(r"EASYSTICK_P1 [^\r\n]*\bFAIL\b")
+ANY_FAILURE = re.compile(r"P1 [^\r\n]*\bFAIL\b")
 
 
 def main() -> int:

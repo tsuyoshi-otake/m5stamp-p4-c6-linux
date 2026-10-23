@@ -16,7 +16,7 @@
 #include "esp_log.h"
 #include "esp_rom_sys.h"
 
-static const char *TAG = "easystick-m2-sdio";
+static const char *TAG = "m2-sdio";
 
 #define HP_SYS_CLKRST_BASE 0x500e6000u
 #define HP_SOC_CLK_CTRL1 (HP_SYS_CLKRST_BASE + 0x18u)
@@ -163,7 +163,7 @@ static void enable_sdmmc_clock(void)
 	clear_set_bits(HP_PERI_CLK_CTRL02, SDIO_EDGE_CFG_UPDATE, 0);
 }
 
-void easystick_m2_sdmmc_init(void)
+void m2_sdmmc_init(void)
 {
 	enable_sdmmc_clock();
 

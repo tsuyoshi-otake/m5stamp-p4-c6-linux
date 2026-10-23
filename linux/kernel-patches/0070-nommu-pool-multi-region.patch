@@ -1,0 +1,101 @@
+Subject: [PATCH] stamp-p4: accept more than one nommu user pool region
+
+The vendor pool (0010-mm-nommu-userspace-pool) takes one reserved-memory
+region and ignores the rest.  On the Stamp-P4 the 6 MB pool at 0x49a00000
+ends at the top of PSRAM and cannot grow down past the boot-shim's fixed
+pages at 0x499af000-0x49a00000, while the resident daemons alone take
+5.8 MB of it.  Every later exec then needs a 512 KB (BusyBox), 1 MB
+(Dropbear) or 2 MB (wpa_supplicant) contiguous block from the fragmented
+buddy heap and fails with ENOMEM although megabytes are free (#23).
+
+Accept up to four regions and add each as a gen_pool chunk, so the DTS can
+place a second region below those pages.
+
+---
+diff --git a/mm/nommu_userspace_pool.c b/mm/nommu_userspace_pool.c
+--- a/mm/nommu_userspace_pool.c
++++ b/mm/nommu_userspace_pool.c
+@@ -35,8 +35,11 @@
+  * needs the slab allocator, which is not yet available when reserved
+  * memory regions are first parsed.
+  */
+-static phys_addr_t pool_phys __initdata;
+-static size_t pool_size __initdata;
++#define NOMMU_POOL_MAX_REGIONS 4
++
++static phys_addr_t pool_phys[NOMMU_POOL_MAX_REGIONS] __initdata;
++static size_t pool_size[NOMMU_POOL_MAX_REGIONS] __initdata;
++static int pool_count __initdata;
+ 
+ void *nommu_userspace_pool_alloc(size_t size)
+ {
+@@ -59,9 +62,9 @@
+ static int __init nommu_userspace_pool_init(void)
+ {
+ 	void *va;
+-	int ret;
++	int i, ret;
+ 
+-	if (!pool_size)
++	if (!pool_count)
+ 		return 0;
+ 
+ 	user_pool = gen_pool_create(PAGE_SHIFT, NUMA_NO_NODE);
+@@ -78,19 +81,22 @@
+ 	 * no ioremap is needed and the memory is cached, matching how
+ 	 * userspace expects to see its text/data.
+ 	 */
+-	va = phys_to_virt(pool_phys);
++	for (i = 0; i < pool_count; i++) {
++		va = phys_to_virt(pool_phys[i]);
+ 
+-	ret = gen_pool_add_virt(user_pool, (unsigned long)va, pool_phys,
+-				pool_size, NUMA_NO_NODE);
+-	if (ret) {
+-		pr_err("gen_pool_add_virt failed: %d\n", ret);
+-		gen_pool_destroy(user_pool);
+-		user_pool = NULL;
+-		return ret;
+-	}
++		ret = gen_pool_add_virt(user_pool, (unsigned long)va,
++					pool_phys[i], pool_size[i],
++					NUMA_NO_NODE);
++		if (ret) {
++			pr_err("gen_pool_add_virt failed: %d\n", ret);
++			gen_pool_destroy(user_pool);
++			user_pool = NULL;
++			return ret;
++		}
+ 
+-	pr_info("%zu KiB at %pa serves NOMMU user mmap allocations\n",
+-		pool_size / SZ_1K, &pool_phys);
++		pr_info("%zu KiB at %pa serves NOMMU user mmap allocations\n",
++			pool_size[i] / SZ_1K, &pool_phys[i]);
++	}
+ 	return 0;
+ }
+ core_initcall(nommu_userspace_pool_init);
+@@ -98,16 +104,17 @@
+ static int __init nommu_userspace_pool_rmem(unsigned long fdt_node,
+ 					    struct reserved_mem *rmem)
+ {
+-	if (pool_size) {
+-		pr_warn("multiple pool regions declared; ignoring %pa\n",
+-			&rmem->base);
++	if (pool_count == NOMMU_POOL_MAX_REGIONS) {
++		pr_warn("more than %d pool regions declared; ignoring %pa\n",
++			NOMMU_POOL_MAX_REGIONS, &rmem->base);
+ 		return -EINVAL;
+ 	}
+ 
+-	pool_phys = rmem->base;
+-	pool_size = rmem->size;
++	pool_phys[pool_count] = rmem->base;
++	pool_size[pool_count] = rmem->size;
++	pool_count++;
+ 	pr_info("reserved %zu KiB at %pa for user mmap allocations\n",
+-		pool_size / SZ_1K, &pool_phys);
++		(size_t)(rmem->size / SZ_1K), &rmem->base);
+ 	return 0;
+ }
+ 

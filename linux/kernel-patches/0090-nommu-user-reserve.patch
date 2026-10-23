@@ -1,0 +1,350 @@
+Subject: [PATCH] stamp-p4: user-allocation reserve for the NOMMU user pool (#51)
+
+One pool, no fixed split.  Allocations from tasks classified "user"
+succeed only while a system reserve survives the request: afterwards a
+single contiguous free block of at least user_reserve_contig bytes and
+a free total of at least user_reserve_total bytes must remain.
+Unmarked allocations are never gated, so SSH/console session growth
+cannot starve daemon and init-script allocations out of the pool
+(#40, #49 showed five sessions pushing used to 97%).
+
+"user" is resolved at alloc time, which makes fork/exec inheritance
+free instead of needing a flag plus exec hooks: a task is user when
+its controlling tty is ttyGS1 (the askfirst console shell and every
+command it runs) or when its own comm or any ancestor's comm is
+"dropbear" (inetd spawns "dropbear -i" per session and that process
+stays in the session's parent chain for its lifetime).  System tasks
+-- wpa_supplicant, udhcpc/udhcpd, inetd itself, * helpers,
+the boot sync scripts -- sit outside both trees and stay unmarked.
+
+/sys/kernel/board gains user_reserve_contig and user_reserve_total
+(read/write, decimal bytes; defaults 1200 KiB and 2 MiB; writing 0/0
+disables the gate) plus read-only counters user_denied (alloc refused
+for a marked task) and system_alloc_fail (pool failed an unmarked
+alloc).  The same four values are appended to the aggregated
+nommu_pool key/value file.
+
+Staged only when NOMMU_USER_RESERVE=1; applies with or without
+0089 (best-fit), since the reserve/best-fit combination is one of the
+measured arms.  The >=128K high-region routing from the #51 sketch is
+left out: gen_pool's algo hook picks within a chunk, not across the
+two regions, so that routing is not cheap.
+---
+diff --git a/mm/nommu_userspace_pool.c b/mm/nommu_userspace_pool.c
+--- a/mm/nommu_userspace_pool.c
++++ b/mm/nommu_userspace_pool.c
+@@ -24,14 +24,18 @@
+ #include <linux/init.h>
+ #include <linux/io.h>
+ #include <linux/kobject.h>
++#include <linux/kstrtox.h>
+ #include <linux/mm.h>
+ #include <linux/nommu_userspace_pool.h>
+ #include <linux/of_reserved_mem.h>
+ #include <linux/printk.h>
+ #include <linux/rculist.h>
+ #include <linux/rcupdate.h>
++#include <linux/sched.h>
+ #include <linux/sizes.h>
++#include <linux/string.h>
+ #include <linux/sysfs.h>
++#include <linux/tty.h>
+ 
+ static struct gen_pool *user_pool;
+ 
+@@ -52,19 +56,160 @@
+ static atomic_long_t pool_alloc_fail;
+ static atomic_long_t pool_fallback;
+ 
++/* #51: reserve-gate counters and knobs (bytes). */
++static atomic_long_t pool_user_denied;	/* marked-task alloc refused */
++static atomic_long_t pool_system_fail;	/* pool missed an unmarked alloc */
++
++static unsigned long user_reserve_contig = 1200 * SZ_1K;
++static unsigned long user_reserve_total = 2 * SZ_1M;
++
++/*
++ * "user" classification for the #51 reserve model.  A task counts as
++ * user when
++ *
++ *  - its controlling tty is ttyGS1: the askfirst console shell gets
++ *    ttyGS1 as ctty and every command it runs inherits it across fork
++ *    and exec, or
++ *  - its own comm or any ancestor's comm is "dropbear": on this target
++ *    Dropbear runs only as the inetd-spawned "dropbear -i" session
++ *    process, which stays in the session's parent chain for its whole
++ *    lifetime, so everything the session forks/execs keeps the mark.
++ *    The session dropbear's own image load matches too -- exec sets
++ *    the new comm before binfmt_flat maps the file.
++ *
++ * System tasks (init scripts, wpa_supplicant, udhcpc/udhcpd, inetd
++ * itself, * helpers, the boot sync) sit outside both trees
++ * and stay unmarked.  The PF_KTHREAD guard also keeps get_current_tty
++ * away from sighand-less kernel threads.
++ */
++static bool nommu_task_is_user(void)
++{
++	struct task_struct *p, *next;
++	struct tty_struct *tty;
++	char comm[TASK_COMM_LEN];
++
++	if (current->flags & PF_KTHREAD)
++		return false;
++
++	tty = get_current_tty();
++	if (tty) {
++		bool on_console = !strcmp(tty->name, "ttyGS1");
++
++		tty_kref_put(tty);
++		if (on_console)
++			return true;
++	}
++
++	rcu_read_lock();
++	p = current;
++	for (;;) {
++		get_task_comm(comm, p);
++		if (!strcmp(comm, "dropbear")) {
++			rcu_read_unlock();
++			return true;
++		}
++		next = rcu_dereference(p->real_parent);
++		if (next == p)	/* init_task is its own parent */
++			break;
++		p = next;
++	}
++	rcu_read_unlock();
++	return false;
++}
++
++/*
++ * One snapshot of the pool: total free bytes and the two largest free
++ * runs over all chunks.  Same bitmap walk as nommu_pool_show, plus a
++ * runner-up so nommu_reserve_ok can tell whether carving a request
++ * out of the largest run still leaves a reserve-sized block elsewhere.
++ */
++static void nommu_pool_free_runs(unsigned long *availp,
++				 unsigned long *firstp, unsigned long *secondp)
++{
++	struct gen_pool_chunk *chunk;
++	unsigned long avail = 0, first = 0, second = 0;
++	unsigned long order = user_pool->min_alloc_order;
++	unsigned long nbits, s, e;
++
++	rcu_read_lock();
++	list_for_each_entry_rcu(chunk, &user_pool->chunks, next_chunk) {
++		avail += atomic_long_read(&chunk->avail);
++		nbits = (chunk->end_addr - chunk->start_addr + 1) >> order;
++		s = 0;
++		while (s < nbits) {
++			s = find_next_zero_bit(chunk->bits, nbits, s);
++			if (s >= nbits)
++				break;
++			e = find_next_bit(chunk->bits, nbits, s);
++			if (e - s > first) {
++				second = first;
++				first = e - s;
++			} else if (e - s > second) {
++				second = e - s;
++			}
++			s = e;
++		}
++	}
++	rcu_read_unlock();
++
++	*availp = avail;
++	*firstp = first << order;
++	*secondp = second << order;
++}
++
++/*
++ * The #51 reserve gate, applied to "user" allocations only.  A user
++ * alloc may proceed only when it leaves the system reserve behind:
++ *
++ *  - total free afterwards >= user_reserve_total, and
++ *  - one contiguous free block of >= user_reserve_contig survives.
++ *
++ * gen_pool satisfies a request out of a single free run, so the block
++ * that survives is either a run the alloc never touched (a second run
++ * already >= reserve_contig) or the remainder of the run it used
++ * (largest run >= reserve_contig + size).  The snapshot runs outside
++ * the pool lock, so a concurrent alloc can move the watermarks
++ * slightly; the reserve is a heuristic gate, not an accounting
++ * invariant.
++ */
++static bool nommu_reserve_ok(size_t size)
++{
++	unsigned long avail, first, second;
++	unsigned long rcontig = READ_ONCE(user_reserve_contig);
++	unsigned long rtotal = READ_ONCE(user_reserve_total);
++
++	nommu_pool_free_runs(&avail, &first, &second);
++
++	/* avail - size >= rtotal, written wrap-free */
++	if (avail < rtotal || avail - rtotal < size)
++		return false;
++	return second >= rcontig ||
++		(first >= rcontig && first - rcontig >= size);
++}
++
+ void *nommu_userspace_pool_alloc(size_t size)
+ {
+ 	unsigned long va;
++	bool user;
+ 
+ 	if (!user_pool || !size) {
+ 		atomic_long_inc(&pool_fallback);
+ 		return NULL;
+ 	}
+ 
++	user = nommu_task_is_user();
++	if (user && !nommu_reserve_ok(size)) {
++		atomic_long_inc(&pool_user_denied);
++		atomic_long_inc(&pool_fallback);
++		return NULL;
++	}
++
+ 	va = gen_pool_alloc(user_pool, size);
+ 	if (!va) {
+ 		atomic_long_inc(&pool_alloc_fail);
+ 		atomic_long_inc(&pool_fallback);
++		if (!user)
++			atomic_long_inc(&pool_system_fail);
+ 	}
+ 	return (void *)va; /* 0 → NULL on failure, which is what we want */
+ }
+@@ -158,10 +303,12 @@
+  * /sys/kernel/board/nommu_pool — one "key value" pair per line:
+  * total, used and largest_free in bytes, the cumulative alloc_fail
+  * (pool present but could not satisfy the allocation) and fallback
+- * (times mmap fell back to the buddy allocator) counters, and one
+- * "regionN phys size" line per declared reserved-memory region.
+- * largest_free walks the chunk bitmaps at read time under the pool's
+- * RCU read lock; nothing walks on the allocation path.
++ * (times mmap fell back to the buddy allocator) counters, the #51
++ * user_denied / system_alloc_fail counters and the two user_reserve_*
++ * watermarks, and one "regionN phys size" line per declared
++ * reserved-memory region.  largest_free walks the chunk bitmaps at
++ * read time under the pool's RCU read lock; the #51 reserve gate
++ * walks the same bitmaps on the user-allocation path.
+  */
+ static ssize_t nommu_pool_show(struct kobject *kobj,
+ 			       struct kobj_attribute *attr, char *buf)
+@@ -198,10 +345,18 @@
+ 	}
+ 	len = sysfs_emit(buf,
+ 			 "total %lu\nused %lu\nlargest_free %lu\n"
+-			 "alloc_fail %ld\nfallback %ld\nregions %d\n",
++			 "alloc_fail %ld\nfallback %ld\n"
++			 "user_denied %ld\nsystem_alloc_fail %ld\n"
++			 "user_reserve_contig %lu\nuser_reserve_total %lu\n"
++			 "regions %d\n",
+ 			 total, total - avail, best << order,
+ 			 atomic_long_read(&pool_alloc_fail),
+-			 atomic_long_read(&pool_fallback), pool_count);
++			 atomic_long_read(&pool_fallback),
++			 atomic_long_read(&pool_user_denied),
++			 atomic_long_read(&pool_system_fail),
++			 READ_ONCE(user_reserve_contig),
++			 READ_ONCE(user_reserve_total),
++			 pool_count);
+ 	for (i = 0; i < pool_count; i++)
+ 		len += sysfs_emit_at(buf, len, "region%d %pa %zu\n",
+ 				     i, &pool_phys[i], pool_size[i]);
+@@ -209,6 +364,83 @@
+ }
+ static struct kobj_attribute nommu_pool_attr = __ATTR_RO(nommu_pool);
+ 
++/*
++ * #51 reserve knobs (read/write, decimal bytes) and counters
++ * (read-only), alongside nommu_pool under /sys/kernel/board/.
++ * The same values are also emitted inside nommu_pool so a single
++ * read still shows the whole pool state.
++ */
++static ssize_t user_reserve_contig_show(struct kobject *kobj,
++					struct kobj_attribute *attr, char *buf)
++{
++	return sysfs_emit(buf, "%lu\n", READ_ONCE(user_reserve_contig));
++}
++
++static ssize_t user_reserve_contig_store(struct kobject *kobj,
++					 struct kobj_attribute *attr,
++					 const char *buf, size_t count)
++{
++	unsigned long v;
++	int r;
++
++	r = kstrtoul(buf, 10, &v);
++	if (r)
++		return r;
++	WRITE_ONCE(user_reserve_contig, v);
++	return count;
++}
++static struct kobj_attribute user_reserve_contig_attr =
++	__ATTR_RW(user_reserve_contig);
++
++static ssize_t user_reserve_total_show(struct kobject *kobj,
++				       struct kobj_attribute *attr, char *buf)
++{
++	return sysfs_emit(buf, "%lu\n", READ_ONCE(user_reserve_total));
++}
++
++static ssize_t user_reserve_total_store(struct kobject *kobj,
++					struct kobj_attribute *attr,
++					const char *buf, size_t count)
++{
++	unsigned long v;
++	int r;
++
++	r = kstrtoul(buf, 10, &v);
++	if (r)
++		return r;
++	WRITE_ONCE(user_reserve_total, v);
++	return count;
++}
++static struct kobj_attribute user_reserve_total_attr =
++	__ATTR_RW(user_reserve_total);
++
++static ssize_t user_denied_show(struct kobject *kobj,
++				struct kobj_attribute *attr, char *buf)
++{
++	return sysfs_emit(buf, "%ld\n", atomic_long_read(&pool_user_denied));
++}
++static struct kobj_attribute user_denied_attr = __ATTR_RO(user_denied);
++
++static ssize_t system_alloc_fail_show(struct kobject *kobj,
++				      struct kobj_attribute *attr, char *buf)
++{
++	return sysfs_emit(buf, "%ld\n", atomic_long_read(&pool_system_fail));
++}
++static struct kobj_attribute system_alloc_fail_attr =
++	__ATTR_RO(system_alloc_fail);
++
++static struct attribute *nommu_reserve_attrs[] = {
++	&user_reserve_contig_attr.attr,
++	&user_reserve_total_attr.attr,
++	&user_denied_attr.attr,
++	&system_alloc_fail_attr.attr,
++	NULL,
++};
++
++static const struct attribute_group nommu_reserve_group = {
++	.attrs = nommu_reserve_attrs,
++};
++
+ static int __init nommu_pool_sysfs_init(void)
+ {
+ 	struct kobject *kobj;
+@@ -224,9 +456,12 @@
+ 		kobject_put(kobj);
+ 		return r;
+ 	}
++	r = sysfs_create_group(kobj, &nommu_reserve_group);
++	if (r)
++		pr_warn("user-reserve sysfs group not created: %d\n", r);
+ 	/* #55 compat, remove after v0.5.x: keep the old sysfs path working. */
+ 	sysfs_create_link(kernel_kobj, kobj, "easystick");
+ 	/* #55 compat end */
+ 	return 0;
+ }
+ device_initcall(nommu_pool_sysfs_init);

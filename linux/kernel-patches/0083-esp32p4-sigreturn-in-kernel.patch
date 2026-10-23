@@ -1,0 +1,36 @@
+Subject: [PATCH] stamp-p4: riscv: esp32p4: return from signal handlers through the kernel's sigreturn code (#44)
+
+Without an MMU there is no vDSO, so setup_rt_frame() copies the two
+instructions that call rt_sigreturn (li a7, __NR_rt_sigreturn; ecall) into
+the signal frame and makes them visible to instruction fetch with
+flush_icache_range().  That is flush_icache_all(), which with more than
+one CPU online sends an IPI to every other CPU and waits for it
+(arch/riscv/mm/cacheflush.c).  With both CPUs online, a program that
+returned from a SIGSEGV handler 20,000 times (40,000 faults) took 2.69 s
+on CPU0 and 2.50 s on CPU1, against 1.49 s on the 1-CPU build.
+
+User code runs in M-mode on this SoC (0031), and the kernel image is in
+the same PSRAM window (0x48000000) that user programs run from, so a
+handler can return through the kernel's own copy, __user_rt_sigreturn in
+.rodata.  Point ra there: no copy and no flush.  The frame keeps its
+sigreturn_code slot, so its layout does not change.
+
+---
+--- a/arch/riscv/kernel/signal.c
++++ b/arch/riscv/kernel/signal.c
+@@ -463,6 +463,15 @@
+ 	if (is_shstk_enabled(current))
+ 		regs->t0 = regs->ra;
+ 
++#elif defined(CONFIG_SOC_ESP32P4)
++	/*
++	 * User code runs in M-mode here and can run the kernel's own copy of
++	 * the two instructions.  Copying them to the stack needs
++	 * flush_icache_range(), which is flush_icache_all(): with two CPUs
++	 * online, an IPI to the other one and a wait for it, which made a
++	 * handled signal on two CPUs almost twice as slow as on one.
++	 */
++	regs->ra = (unsigned long)__user_rt_sigreturn;
+ #else
+ 	/*
+ 	 * For the nommu case we don't have a VDSO.  Instead we push two

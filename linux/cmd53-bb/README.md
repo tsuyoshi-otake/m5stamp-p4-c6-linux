@@ -9,7 +9,7 @@
 5. Generation-tagged stages; dump prints `NA` for stale payload fields.
 6. **FOCUS_ARG** `0x97ec0000` only (Boot B hang CMD53: write/0x1f600/512).
 7. Wrapper **forces** DMA/quiet: `FORCE_PIO=0`, IDMAC A/B=0, ledgers=0.
-   Reachability may set `EASYSTICK_CMD53_BB_ALLOW_IDMAC_NC=1` + NC=1.
+   Reachability may set `CMD53_BB_ALLOW_IDMAC_NC=1` + NC=1.
 8. Retention builds always `linux-dirclean`; profile identity includes PA +
    rendered-0052/0053 SHA.
 9. Flash only with `cmd53-bb-final-shot-manifest.json` where
@@ -75,8 +75,8 @@ behavior.
 ## CMD52 six-word positive-control marker
 
 The stacktrace/CMD52 quiet control can be followed by a candidate with
-`EASYSTICK_ESPHOSTED_CMD52_MARKER=1` and
-`EASYSTICK_ESPHOSTED_CMD52_TRACE=0`. The candidate keeps the 0012 byte-wise
+`ESPHOSTED_CMD52_MARKER=1` and
+`ESPHOSTED_CMD52_TRACE=0`. The candidate keeps the 0012 byte-wise
 register path and adds six independent `u32` words at `BB_PA + 0x120`,
 immediately after the fixed v6 record:
 
@@ -93,7 +93,7 @@ The Linux arm runs before `sdio_register_driver()`, so a reset performed
 before SSH can prove that the Linux store reaches the intended retention
 address and survives reset. The boot-shim clears all six words after dumping
 them. `assert_rtc_noinit.py --require-cmd52-marker` fails unless the symbol is
-exactly `easystick_cmd53_bb + 0x120` and is six words (24 bytes). The
+exactly `cmd53_bb + 0x120` and is six words (24 bytes). The
 ESP-Hosted patch is rendered from that same nm-derived PA; an unrendered
 `BBDEAD` placeholder is rejected.
 
@@ -141,26 +141,26 @@ root-console `/dev/mem` attempt was rejected for exactly that reason.
 
 # Quiet CMD52 six-word positive-control candidate: first render marker PA.
 # build-cmd53-bb.sh --shim-only intentionally keeps its canonical NC=0 contract.
-EASYSTICK_ESPHOSTED_CMD52_MARKER=1 \
-EASYSTICK_ESPHOSTED_CMD52_TRACE=0 \
-EASYSTICK_STACKTRACE_DIAGNOSTICS=1 \
+ESPHOSTED_CMD52_MARKER=1 \
+ESPHOSTED_CMD52_TRACE=0 \
+STACKTRACE_DIAGNOSTICS=1 \
   ./build-cmd53-bb.sh --vendor /out --profile m3-lab --shim-only
 
 # Then build the same NC=1 host condition as runtime2/quiet-control.
-EASYSTICK_CMD53_RETENTION_BB=1 \
-EASYSTICK_CMD53_BB_ALLOW_IDMAC_NC=1 \
-EASYSTICK_SDIO_FORCE_PIO=0 \
-EASYSTICK_IDMAC_DESC_INVALIDATE=0 \
-EASYSTICK_IDMAC_NONCOHERENT_RING=1 \
-EASYSTICK_CMD53_RX_DESC_BYTES=0 \
-EASYSTICK_ESPHOSTED_DISABLE_0010=1 \
-EASYSTICK_ESPHOSTED_CMD52_MARKER=1 \
-EASYSTICK_ESPHOSTED_CMD52_TRACE=0 \
-EASYSTICK_STACKTRACE_DIAGNOSTICS=1 \
-EASYSTICK_CMD53_BB_SKIP_BR_CLEAN=1 \
-EASYSTICK_KERNEL_PATCH_OVERRIDE_DIR=/out/cmd53-bb-rendered-patches \
-EASYSTICK_CMD53_BB_PA="$(tr -d '\r\n' </out/cmd53-bb.pa)" \
-EASYSTICK_CMD53_BB_ESPHOSTED_MARKER_PATCH=/out/cmd53-bb-rendered-patches/0030-easystick-sdio-cmd52-retention-marker.patch \
+CMD53_RETENTION_BB=1 \
+CMD53_BB_ALLOW_IDMAC_NC=1 \
+SDIO_FORCE_PIO=0 \
+IDMAC_DESC_INVALIDATE=0 \
+IDMAC_NONCOHERENT_RING=1 \
+CMD53_RX_DESC_BYTES=0 \
+ESPHOSTED_DISABLE_0010=1 \
+ESPHOSTED_CMD52_MARKER=1 \
+ESPHOSTED_CMD52_TRACE=0 \
+STACKTRACE_DIAGNOSTICS=1 \
+CMD53_BB_SKIP_BR_CLEAN=1 \
+KERNEL_PATCH_OVERRIDE_DIR=/out/cmd53-bb-rendered-patches \
+CMD53_BB_PA="$(tr -d '\r\n' </out/cmd53-bb.pa)" \
+CMD53_BB_ESPHOSTED_MARKER_PATCH=/out/cmd53-bb-rendered-patches/0030-sdio-cmd52-retention-marker.patch \
   ./build-m1.sh --vendor /out --profile m3-lab
 
 python3 cmd53-bb/final_shot_manifest.py verify \
@@ -187,7 +187,7 @@ requires fixing the marker path first; it is not an M1 boundary claim.
 
 ## Stacktrace/CMD52 diagnostic image
 
-Set `EASYSTICK_STACKTRACE_DIAGNOSTICS=1` on the separate `build-m1.sh` call
+Set `STACKTRACE_DIAGNOSTICS=1` on the separate `build-m1.sh` call
 after the `--shim-only` preparation. This keeps the v6 retention layout,
 enables `CONFIG_STACKTRACE`, `CONFIG_KALLSYMS`, `CONFIG_KALLSYMS_ALL`,
 DWARF4, and frame pointers, and adds the P4-only WDT pretimeout

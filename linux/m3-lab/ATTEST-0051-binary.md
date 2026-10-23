@@ -26,7 +26,7 @@ Both Images are 6576968 bytes. Shot B Image was produced by applying the
 | Shot Image lacks superseded 0010 `CMD53 error: arg=` string | PASS (count=0) |
 | Baseline Image lacks observer string | PASS (`ES_MMC` count=0) |
 | Baseline Image retains 0010 string | PASS (count=1) |
-| `build-m1.sh`: `EASYSTICK_DW_MMC_CMD53_ERR_PROV=1` appends only `0051` | PASS (opt-in block; default 0) |
+| `build-m1.sh`: `DW_MMC_CMD53_ERR_PROV=1` appends only `0051` | PASS (opt-in block; default 0) |
 | `build-m1.sh`: flag=0 → 0051 not in patch list | PASS (conditional `if`) |
 | flag=1 vs 0: other DW-MMC patch selection unchanged in script | PASS (0051 is additive; does not alter 0008–0014 gates) |
 

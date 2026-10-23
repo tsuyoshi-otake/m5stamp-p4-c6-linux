@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "status": "candidate_not_for_flash",
-  "board": "EasyStick Stamp-P4 carrier Rev0.15 WIP",
+  "board": "Stamp-P4 carrier Rev0.15 WIP",
   "board_contract": "../board-contract.json",
   "flash_bytes": 16777216,
   "alignment_bytes": 4096,

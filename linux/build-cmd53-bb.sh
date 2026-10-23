@@ -12,30 +12,30 @@ Usage: build-cmd53-bb.sh <external-source-root|--vendor> <build-output> \
 
 Maps product profile → boot-shim profile:
   m1              → boot-shim m1
-  m2|m3|m3-lab    → boot-shim m2  (EASYSTICK_M2_SDIO / C6 path)
+  m2|m3|m3-lab    → boot-shim m2  (M2_SDIO / C6 path)
 
 --smp selects the existing C68 Linux SMP handoff and boot-shim profile while
 keeping --profile as the network/SSH product profile.  It renders the C68
 nm-dependent patches into the same generated override directory as 0052/0053.
 
 When idf.py is missing, uses Docker image espressif/idf:v5.5.3 (override with
-EASYSTICK_IDF_DOCKER_IMAGE) if EASYSTICK_IDF_DOCKER=1 (default).
+IDF_DOCKER_IMAGE) if IDF_DOCKER=1 (default).
 
 --shim-only stops after boot-shim + nm + rendered 0052 (no build-m1). Use for
 retention/torn selftests that only need the shim flashed.
 
 DMA/quiet contract is FORCED (ambient env ignored):
-  EASYSTICK_SDIO_FORCE_PIO=0
-  EASYSTICK_IDMAC_DESC_INVALIDATE=0
-  EASYSTICK_IDMAC_NONCOHERENT_RING=0
-  EASYSTICK_CMD53_RX_DESC_BYTES=0
+  SDIO_FORCE_PIO=0
+  IDMAC_DESC_INVALIDATE=0
+  IDMAC_NONCOHERENT_RING=0
+  CMD53_RX_DESC_BYTES=0
   TX/TCP/SSH ledgers + diagnostics + 0051 = 0
 
 After build-m1 returns, writes cmd53-bb-final-shot-manifest.json.
 Shot C is allowed only when selftest=false and selftest_torn=false.
 Flash gate: python3 cmd53-bb/final_shot_manifest.py verify --manifest ... --require-shot-c
 
-Set EASYSTICK_ESPHOSTED_CMD52_MARKER=1 to build the P4-only CMD52 marker
+Set ESPHOSTED_CMD52_MARKER=1 to build the P4-only CMD52 marker
 positive-control candidate.  The same flag adds six adjacent RTC_NOINIT words
 to the boot-shim and renders their PA from that boot-shim's nm output.
 EOF
@@ -108,9 +108,9 @@ patch_src="${script_dir}/kernel-patches"
 bb_dir="${script_dir}/cmd53-bb"
 rendered="${output}/cmd53-bb-rendered-patches"
 shim_out="${output}/boot-shim-cmd53-bb"
-elf="${shim_out}/build/easystick_stamp_p4_boot_shim.elf"
-bin="${shim_out}/build/easystick_stamp_p4_boot_shim.bin"
-map_file="${shim_out}/build/easystick_stamp_p4_boot_shim.map"
+elf="${shim_out}/build/stamp_p4_boot_shim.elf"
+bin="${shim_out}/build/stamp_p4_boot_shim.bin"
+map_file="${shim_out}/build/stamp_p4_boot_shim.map"
 br_images="${output}/buildroot/images"
 
 command -v sha256sum >/dev/null || {
@@ -120,13 +120,13 @@ command -v sha256sum >/dev/null || {
 
 # Git-Bash on this host often resolves python3 to the Windows Store stub (exit 49).
 pick_python() {
-	if [[ -n "${EASYSTICK_PYTHON:-}" && -x "${EASYSTICK_PYTHON}" ]]; then
-		echo "$EASYSTICK_PYTHON"
+	if [[ -n "${PYTHON:-}" && -x "${PYTHON}" ]]; then
+		echo "$PYTHON"
 		return
 	fi
 	local c
 	for c in \
-		"/d/Users/Developer/easystick-tmp-20260820/easystick-p4-tools-481/Scripts/python.exe" \
+		"/d/Users/Developer/tmp-20260820/p4-tools-481/Scripts/python.exe" \
 		"/c/Users/developer/AppData/Local/Programs/Python/Python312/python.exe" \
 		"python3" "python"; do
 		if command -v "$c" >/dev/null 2>&1 || [[ -x "$c" ]]; then
@@ -142,10 +142,10 @@ pick_python() {
 PYTHON=$(pick_python)
 echo "CMD53_BB: PYTHON=$PYTHON"
 
-IDF_DOCKER_IMAGE="${EASYSTICK_IDF_DOCKER_IMAGE:-espressif/idf:v5.5.3}"
+IDF_DOCKER_IMAGE="${IDF_DOCKER_IMAGE:-espressif/idf:v5.5.3}"
 use_idf_docker=0
 if ! command -v idf.py >/dev/null || ! command -v riscv32-esp-elf-nm >/dev/null; then
-	if [[ "${EASYSTICK_IDF_DOCKER:-1}" == "1" ]] && command -v docker >/dev/null &&
+	if [[ "${IDF_DOCKER:-1}" == "1" ]] && command -v docker >/dev/null &&
 		docker image inspect "$IDF_DOCKER_IMAGE" >/dev/null 2>&1; then
 		use_idf_docker=1
 		echo "CMD53_BB: host IDF tools missing; using Docker $IDF_DOCKER_IMAGE for boot-shim"
@@ -179,11 +179,11 @@ build_boot_shim() {
 		MSYS_NO_PATHCONV=1 docker run --rm \
 			-v "${host_linux}:/src/linux:ro" \
 			-v "${host_out}:/out" \
-			-e EASYSTICK_CMD53_RETENTION_BB \
-			-e EASYSTICK_CMD52_MARKER \
-			-e EASYSTICK_C68_CLEAN_RELEASE \
-			-e EASYSTICK_CMD53_BB_SELFTEST \
-			-e EASYSTICK_CMD53_BB_SELFTEST_TORN \
+			-e CMD53_RETENTION_BB \
+			-e CMD52_MARKER \
+			-e C68_CLEAN_RELEASE \
+			-e CMD53_BB_SELFTEST \
+			-e CMD53_BB_SELFTEST_TORN \
 			-e SHIM_PROFILE="$profile" \
 			"$IDF_DOCKER_IMAGE" bash -lc '
 set -euo pipefail
@@ -194,13 +194,13 @@ if [[ "$SHIM_PROFILE" == c68 ]]; then
 	tar -C /src/linux/boot-shim \
 		--exclude=sdkconfig --exclude=sdkconfig.old --exclude=build \
 		-cf - . | tar -C /work/boot-shim -xf -
-	export EASYSTICK_C68_CLEAN_RELEASE=1
+	export C68_CLEAN_RELEASE=1
 else
 	cp -a /src/linux/boot-shim /work/boot-shim
 fi
 cp -a /src/linux/cmd53-bb /work/cmd53-bb
 export IDF_TARGET=esp32p4
-export EASYSTICK_BOOT_PROFILE="$SHIM_PROFILE"
+export BOOT_PROFILE="$SHIM_PROFILE"
 export SDKCONFIG=/out/sdkconfig
 if [[ "$SHIM_PROFILE" == m2 || "$SHIM_PROFILE" == c68 ]]; then
 	export SDKCONFIG_DEFAULTS="/work/boot-shim/sdkconfig.defaults;/work/boot-shim/sdkconfig-m2.defaults"
@@ -209,7 +209,7 @@ else
 fi
 rm -f /out/sdkconfig /out/sdkconfig.old
 idf.py -B /out/build -C /work/boot-shim reconfigure build
-for artifact in bootloader/bootloader.bin partition_table/partition-table.bin easystick_stamp_p4_boot_shim.bin; do
+for artifact in bootloader/bootloader.bin partition_table/partition-table.bin stamp_p4_boot_shim.bin; do
 	[[ -s "/out/build/${artifact}" ]] || { echo "missing $artifact" >&2; exit 1; }
 done
 '
@@ -233,8 +233,8 @@ nm_boot_shim() {
 }
 
 # --- Forced DMA / quiet contract (do not inherit ambient experiment flags) ---
-boot_marker="${EASYSTICK_CMD52_MARKER:-}"
-host_marker="${EASYSTICK_ESPHOSTED_CMD52_MARKER:-}"
+boot_marker="${CMD52_MARKER:-}"
+host_marker="${ESPHOSTED_CMD52_MARKER:-}"
 if [[ -n "$boot_marker" && -n "$host_marker" && "$boot_marker" != "$host_marker" ]]; then
 	echo "CMD52_MARKER_GATE_FAIL: boot-shim and esp-hosted marker flags differ" >&2
 	exit 1
@@ -244,24 +244,24 @@ case "$cmd52_marker" in
 	0|1) ;;
 	*) echo "CMD52_MARKER_GATE_FAIL: marker flag must be 0 or 1" >&2; exit 1 ;;
 esac
-export EASYSTICK_CMD52_MARKER="$cmd52_marker"
-export EASYSTICK_ESPHOSTED_CMD52_MARKER="$cmd52_marker"
-export EASYSTICK_CMD53_RETENTION_BB=1
-export EASYSTICK_SDIO_FORCE_PIO=0
-export EASYSTICK_IDMAC_DESC_INVALIDATE=0
-export EASYSTICK_IDMAC_NONCOHERENT_RING=0
-export EASYSTICK_CMD53_RX_DESC_BYTES=0
-export EASYSTICK_ESPHOSTED_TX_LEDGER=0
-export EASYSTICK_TCP22_LEDGER=0
-export EASYSTICK_SSH_LEDGER=0
-export EASYSTICK_ESPHOSTED_DIAGNOSTICS=0
-export EASYSTICK_DW_MMC_CMD53_ERR_PROV=0
+export CMD52_MARKER="$cmd52_marker"
+export ESPHOSTED_CMD52_MARKER="$cmd52_marker"
+export CMD53_RETENTION_BB=1
+export SDIO_FORCE_PIO=0
+export IDMAC_DESC_INVALIDATE=0
+export IDMAC_NONCOHERENT_RING=0
+export CMD53_RX_DESC_BYTES=0
+export ESPHOSTED_TX_LEDGER=0
+export TCP22_LEDGER=0
+export SSH_LEDGER=0
+export ESPHOSTED_DIAGNOSTICS=0
+export DW_MMC_CMD53_ERR_PROV=0
 
-unset EASYSTICK_CMD53_BB_SELFTEST EASYSTICK_CMD53_BB_SELFTEST_TORN || true
+unset CMD53_BB_SELFTEST CMD53_BB_SELFTEST_TORN || true
 if [[ "$selftest_torn" == "1" ]]; then
-	export EASYSTICK_CMD53_BB_SELFTEST_TORN=1
+	export CMD53_BB_SELFTEST_TORN=1
 elif [[ "$selftest" == "1" ]]; then
-	export EASYSTICK_CMD53_BB_SELFTEST=1
+	export CMD53_BB_SELFTEST=1
 fi
 
 echo "CMD53_BB: product_profile=$product_profile boot_shim_profile=$shim_profile FORCE_PIO=0 cmd52_marker=$cmd52_marker"
@@ -274,7 +274,7 @@ build_boot_shim "$shim_profile" "$shim_out"
 if [[ "$shim_profile" == "m2" ]]; then
 	grep -aFq 'C6 reset GPIO42' "$elf" || \
 		grep -aFq 'Slot 1 SDIO GPIO matrix ready' "$elf" || {
-		echo "CMD53_BB_GATE_FAIL: m2 boot-shim missing EASYSTICK_M2_SDIO markers" >&2
+		echo "CMD53_BB_GATE_FAIL: m2 boot-shim missing M2_SDIO markers" >&2
 		exit 1
 	}
 fi
@@ -335,32 +335,32 @@ if [[ "$shim_profile" == "c68" ]]; then
 		"$c68_release_pa" "$c68_stage_pa"
 fi
 for patch_name in \
-	0052-easystick-dw-mmc-cmd53-retention-bb.patch \
-	0053-easystick-mmc-cmd53-post-bb.patch \
-	0054-easystick-wdt-crash-capsule.patch; do
+	0052-dw-mmc-cmd53-retention-bb.patch \
+	0053-mmc-cmd53-post-bb.patch \
+	0054-wdt-crash-capsule.patch; do
 	"$PYTHON" "${bb_dir}/render_patch.py" \
 		"${patch_src}/${patch_name}" \
 		"${rendered}/${patch_name}" \
 		"$bb_pa"
 done
 "$PYTHON" "${bb_dir}/render_patch.py" \
-	"${bb_dir}/esp-hosted-patches/0026-easystick-cmd53-retention-bb6.patch" \
-	"${rendered}/0026-easystick-cmd53-retention-bb6.patch" \
+	"${bb_dir}/esp-hosted-patches/0026-cmd53-retention-bb6.patch" \
+	"${rendered}/0026-cmd53-retention-bb6.patch" \
 	"$bb_pa"
 if [[ "$cmd52_marker" == "1" ]]; then
 	"$PYTHON" "${bb_dir}/render_patch.py" \
-		"${script_dir}/buildroot-external/package/esp-hosted-ng/0030-easystick-sdio-cmd52-retention-marker.patch" \
-		"${rendered}/0030-easystick-sdio-cmd52-retention-marker.patch" \
+		"${script_dir}/buildroot-external/package/esp-hosted-ng/0030-sdio-cmd52-retention-marker.patch" \
+		"${rendered}/0030-sdio-cmd52-retention-marker.patch" \
 		"$bb_pa"
 fi
-rendered_sha=$(sha256sum "${rendered}/0052-easystick-dw-mmc-cmd53-retention-bb.patch" | awk '{print $1}')
-rendered_0053_sha=$(sha256sum "${rendered}/0053-easystick-mmc-cmd53-post-bb.patch" | awk '{print $1}')
-rendered_0054_sha=$(sha256sum "${rendered}/0054-easystick-wdt-crash-capsule.patch" | awk '{print $1}')
-rendered_bb6_sha=$(sha256sum "${rendered}/0026-easystick-cmd53-retention-bb6.patch" | awk '{print $1}')
+rendered_sha=$(sha256sum "${rendered}/0052-dw-mmc-cmd53-retention-bb.patch" | awk '{print $1}')
+rendered_0053_sha=$(sha256sum "${rendered}/0053-mmc-cmd53-post-bb.patch" | awk '{print $1}')
+rendered_0054_sha=$(sha256sum "${rendered}/0054-wdt-crash-capsule.patch" | awk '{print $1}')
+rendered_bb6_sha=$(sha256sum "${rendered}/0026-cmd53-retention-bb6.patch" | awk '{print $1}')
 rendered_marker_sha=none
 rendered_marker_path=none
 if [[ "$cmd52_marker" == "1" ]]; then
-	rendered_marker_path="${rendered}/0030-easystick-sdio-cmd52-retention-marker.patch"
+	rendered_marker_path="${rendered}/0030-sdio-cmd52-retention-marker.patch"
 	rendered_marker_sha=$(sha256sum \
 		"$rendered_marker_path" |
 		awk '{print $1}')
@@ -374,10 +374,10 @@ printf '%s\n' "$rendered_marker_sha" >"${output}/cmd53-bb-0030.sha256"
 "$PYTHON" - "$output/cmd53-bb-manifest.json" \
 	"$product_profile" "$shim_profile" "$bb_pa" \
 	"$bin" "$bin_sha" "$elf" "$elf_sha" \
-	"$rendered/0052-easystick-dw-mmc-cmd53-retention-bb.patch" "$rendered_sha" \
-	"$rendered/0053-easystick-mmc-cmd53-post-bb.patch" "$rendered_0053_sha" \
-	"$rendered/0054-easystick-wdt-crash-capsule.patch" "$rendered_0054_sha" \
-	"$rendered/0026-easystick-cmd53-retention-bb6.patch" "$rendered_bb6_sha" \
+	"$rendered/0052-dw-mmc-cmd53-retention-bb.patch" "$rendered_sha" \
+	"$rendered/0053-mmc-cmd53-post-bb.patch" "$rendered_0053_sha" \
+	"$rendered/0054-wdt-crash-capsule.patch" "$rendered_0054_sha" \
+	"$rendered/0026-cmd53-retention-bb6.patch" "$rendered_bb6_sha" \
 	"$selftest" "$selftest_torn" "$bb_size" "$cmd52_marker" \
 	"$rendered_marker_path" "$rendered_marker_sha" <<'PY'
 import re
@@ -390,7 +390,7 @@ from pathlib import Path
 def bb_version(path):
     text = Path(path).read_text(encoding="utf-8", errors="replace")
     values = re.findall(
-        r"#define\s+EASYSTICK_CMD53_BB_VERSION\s+([0-9]+)u\b", text
+        r"#define\s+CMD53_BB_VERSION\s+([0-9]+)u\b", text
     )
     if len(set(values)) != 1:
         raise SystemExit("CMD53_BB_GATE_FAIL: inconsistent BB version in patch")
@@ -406,9 +406,9 @@ for patch in (patch53, patch26):
 doc = {
     "product_profile": product,
     "boot_shim_profile": shim,
-    "easystick_cmd53_bb_pa": pa,
-    "easystick_cmd53_bb_version": version,
-    "easystick_cmd53_bb_size": int(bb_size),
+    "cmd53_bb_pa": pa,
+    "cmd53_bb_version": version,
+    "cmd53_bb_size": int(bb_size),
     "cmd52_marker_enabled": marker_enabled == "1",
     "cmd52_marker_pa": (
         f"0x{int(pa.rstrip('u'), 16) + 0x120:08x}u"
@@ -471,29 +471,29 @@ if [[ "$have_profile" -eq 0 ]]; then
 	profile_args=(--profile "$product_profile")
 fi
 
-export EASYSTICK_KERNEL_PATCH_OVERRIDE_DIR="$rendered"
-export EASYSTICK_CMD53_BB_PA="$bb_pa"
-export EASYSTICK_CMD53_BB_0052_SHA256="$rendered_sha"
-export EASYSTICK_CMD53_BB_0053_SHA256="$rendered_0053_sha"
-export EASYSTICK_CMD53_BB_0054_SHA256="$rendered_0054_sha"
-export EASYSTICK_CMD53_BB_ESPHOSTED_PATCH="${rendered}/0026-easystick-cmd53-retention-bb6.patch"
+export KERNEL_PATCH_OVERRIDE_DIR="$rendered"
+export CMD53_BB_PA="$bb_pa"
+export CMD53_BB_0052_SHA256="$rendered_sha"
+export CMD53_BB_0053_SHA256="$rendered_0053_sha"
+export CMD53_BB_0054_SHA256="$rendered_0054_sha"
+export CMD53_BB_ESPHOSTED_PATCH="${rendered}/0026-cmd53-retention-bb6.patch"
 if [[ "$cmd52_marker" == "1" ]]; then
-	export EASYSTICK_CMD53_BB_ESPHOSTED_MARKER_PATCH="$rendered_marker_path"
+	export CMD53_BB_ESPHOSTED_MARKER_PATCH="$rendered_marker_path"
 else
-	unset EASYSTICK_CMD53_BB_ESPHOSTED_MARKER_PATCH || true
+	unset CMD53_BB_ESPHOSTED_MARKER_PATCH || true
 fi
-export EASYSTICK_CMD53_RETENTION_BB=1
-export EASYSTICK_CMD53_BOOT_SHIM_BIN="$bin"
-export EASYSTICK_CMD53_BOOT_SHIM_ELF="$elf"
-export EASYSTICK_CMD53_BOOT_SHIM_BIN_SHA256="$bin_sha"
-export EASYSTICK_CMD53_BOOT_SHIM_ELF_SHA256="$elf_sha"
+export CMD53_RETENTION_BB=1
+export CMD53_BOOT_SHIM_BIN="$bin"
+export CMD53_BOOT_SHIM_ELF="$elf"
+export CMD53_BOOT_SHIM_BIN_SHA256="$bin_sha"
+export CMD53_BOOT_SHIM_ELF_SHA256="$elf_sha"
 if [[ "$shim_profile" == "c68" ]]; then
-	export EASYSTICK_C68_CLEAN_RELEASE=1
-	export EASYSTICK_C68_RELEASE_PA="$c68_release_pa"
-	export EASYSTICK_C68_STAGE_PA="$c68_stage_pa"
-	export EASYSTICK_C68_ENTRY_PA="$c68_entry_pa"
-	export EASYSTICK_C68_BOOT_SHIM_BIN="$bin"
-	export EASYSTICK_C68_BOOT_SHIM_ELF="$elf"
+	export C68_CLEAN_RELEASE=1
+	export C68_RELEASE_PA="$c68_release_pa"
+	export C68_STAGE_PA="$c68_stage_pa"
+	export C68_ENTRY_PA="$c68_entry_pa"
+	export C68_BOOT_SHIM_BIN="$bin"
+	export C68_BOOT_SHIM_ELF="$elf"
 fi
 
 if [[ "$shim_only" == "1" ]]; then
@@ -506,7 +506,7 @@ fi
 "${script_dir}/build-m1.sh" "$source_arg" "$output" "${profile_args[@]}" ${extra_args[@]+"${extra_args[@]}"}
 
 image="${br_images}/Image"
-dtb="${br_images}/easystick-stamp-p4.dtb"
+dtb="${br_images}/esp32p4-m5stamp-p4.dtb"
 rootfs=""
 for cand in \
 	"${br_images}/rootfs.squashfs" \
@@ -524,7 +524,7 @@ done
 	exit 1
 }
 
-if [[ "${EASYSTICK_CMD53_RETENTION_BB:-0}" == "1" ]]; then
+if [[ "${CMD53_RETENTION_BB:-0}" == "1" ]]; then
 	wdt_attest="${output}/wdt-crash-capsule-attestation.json"
 	[[ -s "$wdt_attest" ]] || {
 		echo "CMD53_BB_GATE_FAIL: missing WDT crash-capsule build attestation" >&2
@@ -538,7 +538,7 @@ from pathlib import Path
 
 attest_path, expected_patch_sha, image_path = sys.argv[1:]
 doc = json.loads(Path(attest_path).read_text(encoding="utf-8"))
-if doc.get("kind") != "easystick-wdt-crash-capsule-build-attestation":
+if doc.get("kind") != "wdt-crash-capsule-build-attestation":
     raise SystemExit("CMD53_BB_GATE_FAIL: invalid WDT attestation kind")
 actual_patch_sha = doc.get("patch", {}).get("sha256", "").lower()
 if actual_patch_sha != expected_patch_sha.lower():
@@ -573,12 +573,12 @@ write_args=(
 	--image "$image"
 	--dtb "$dtb"
 	--rootfs "$rootfs"
-	--rendered-0052 "${rendered}/0052-easystick-dw-mmc-cmd53-retention-bb.patch"
-	--rendered-0053 "${rendered}/0053-easystick-mmc-cmd53-post-bb.patch"
-	--rendered-0054 "${rendered}/0054-easystick-wdt-crash-capsule.patch"
-	--rendered-0026 "${rendered}/0026-easystick-cmd53-retention-bb6.patch"
+	--rendered-0052 "${rendered}/0052-dw-mmc-cmd53-retention-bb.patch"
+	--rendered-0053 "${rendered}/0053-mmc-cmd53-post-bb.patch"
+	--rendered-0054 "${rendered}/0054-wdt-crash-capsule.patch"
+	--rendered-0026 "${rendered}/0026-cmd53-retention-bb6.patch"
 	--bb-size "$bb_size"
-	--idmac-noncoherent-ring "${EASYSTICK_IDMAC_NONCOHERENT_RING:-0}"
+	--idmac-noncoherent-ring "${IDMAC_NONCOHERENT_RING:-0}"
 )
 if [[ "$cmd52_marker" == "1" ]]; then
 	write_args+=(--rendered-0030 "$rendered_marker_path" --cmd52-marker)

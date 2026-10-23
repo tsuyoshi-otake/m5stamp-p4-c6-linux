@@ -1,6 +1,6 @@
 # Native Linux integration boundary
 
-This directory contains EasyStick-owned Linux integration: the Stamp-P4 DTS,
+This directory contains Stamp-P4-owned Linux integration: the Stamp-P4 DTS,
 kernel configuration, Buildroot external tree, rootfs overlay, image-size
 checks, and boot-shim handoff metadata. The pinned upstream source trees are
 included as gitlinks in [`../vendor/`](../vendor/); generated build output and
@@ -75,7 +75,7 @@ with the preceding narrowing in
 This supersedes the logic-analyzer and C6-reflash guidance above as the next
 step, and it removes the C6 from suspicion for this symptom.
 
-`0012-easystick-sdio-register-cmd52-access.patch` reconstructs the byte-wise
+`0012-sdio-register-cmd52-access.patch` reconstructs the byte-wise
 register accessors from the retained module binary's relocations, because no
 commit ever contained them — they were an uncommitted edit to the vendored
 `esp-hosted` working tree, destroyed by a forced submodule checkout. The CMD53
@@ -114,7 +114,7 @@ and a 1500 ms post-reset delay. The official Stamp-P4 Wi-Fi example uses the
 same pins and reaches STA/DHCP in its supported Arduino environment. The
 Espressif ESP-Hosted-MCU implementation documents the corresponding sequence
 as active-high for 10 ms, inactive for 10 ms, active again, then a 1500 ms
-readiness wait before card initialization. EasyStick's prior shim used
+readiness wait before card initialization. Stamp-P4's prior shim used
 1 ms/20 ms/100 ms, so the next P4-only candidate now matches the official
 10 ms/10 ms/1500 ms timing. This aligns the board lifecycle only; it does not
 yet prove Linux SDIO IRQ/CMD53 compatibility or accept M2.
@@ -129,8 +129,8 @@ timing change as a sufficient fix; keep M2 in diagnostic status and continue
 with P4-side pending-frame/IRQ/CMD53 telemetry.
 
 The follow-up PIO diagnostic also found and corrected a DTS omission: kernel
-patch `0008-easystick-dw-mmc-force-pio.patch` only takes effect when the
-SDIO node contains `easystick,force-pio`. The first `c66451c` boot reported
+patch `0008-dw-mmc-force-pio.patch` only takes effect when the
+SDIO node contains `espressif,force-pio`. The first `c66451c` boot reported
 `Using internal DMA controller`; the PIO candidate now reports `Using PIO
 mode`. PIO still produced `Rx Pos=0`, `BOOT_CMD53_RX len=0`, no ESP boot-up
 event, and no `wlan0`, so DMA selection was a real test-condition defect but
@@ -146,7 +146,7 @@ re-check the flash/PSRAM size budget before enabling it.
 
 The same M3 profile documents the USB initial-setup contract in
 [`m3/initial-setup.md`](m3/initial-setup.md). Both connectors use the same
-`/usr/sbin/easystick-firstboot` flow once their local login console is
+`/usr/sbin/firstboot` flow once their local login console is
 available: USB-C is the intended primary path (with the boot-shim/UART
 fallback until native Linux USB-Serial/JTAG support exists), and USB-A is the
 fallback after the separate M4 CDC-ACM gadget work is complete. Neither path
@@ -176,7 +176,7 @@ CPU held, so a save needs no reboot
 ([`tests/issue5-smp-2026-10-19.md`](tests/issue5-smp-2026-10-19.md)).
 
 The corrected isolated C68 stress image built with
-`EASYSTICK_C68_L3_SMOKE=1 EASYSTICK_C68_STRESS=1` passed three consecutive
+`C68_L3_SMOKE=1 C68_STRESS=1` passed three consecutive
 120 s UART captures: BusyBox `top`, `/usr/sbin/m5stamp-smp-stress`, CPU1-affine
 processes, repeated fork/exec, bidirectional IPI calls, and the final
 `M5STAMP_STRESS PASS` were all observed in each run. The raw captures, schema-v2
@@ -194,7 +194,7 @@ when switching back to a smaller profile.
 Temperature support remains a separate, opt-in Phase-1 feature. The
 independent boot-shim oracle has a recorded hardware PASS in
 [`tests/tsens-oracle-2026-08-19.md`](tests/tsens-oracle-2026-08-19.md).
-`EASYSTICK_TSENS_LINUX=1` selects kernel patch 0050, which configures the
+`TSENS_LINUX=1` selects kernel patch 0050, which configures the
 ESP32-P4 REGI2C TSENS DAC in Linux, verifies `7 -> 7` and `15 -> 15`
 readback, decodes the 10-bit eFuse field using ESP-IDF's bit-8-sign /
 low-8-magnitude rule, and registers an `esp32p4-tsens` thermal zone. The Linux
@@ -211,7 +211,7 @@ Build C68 with `linux/build-c68.sh` (not `build-m1.sh` alone). The UP DTS
 and `linux.config` stay single-hart; C68 injects `c68/cpu1.dts.inc`,
 `c68/ipi.dts.inc`, and `c68/linux.config.fragment` at build time and
 rewrites `maxcpus=1` to `maxcpus=2` in both the DTB bootargs and
-`CONFIG_CMDLINE`; `EASYSTICK_C68_MAXCPUS=1` keeps one CPU. The A'
+`CONFIG_CMDLINE`; `C68_MAXCPUS=1` keeps one CPU. The A'
 provider is staged by patches 0040/0041; its first gate is publication of the
 generic IPI virq range before the CPU1 `riscv_ipi_enable()` call. Patch 0042
 adds a target1/source54 SYSTIMER clockevent for CPU1; the timer gate is

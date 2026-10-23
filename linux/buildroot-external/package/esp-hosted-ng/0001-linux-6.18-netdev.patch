@@ -1,9 +1,9 @@
-From: EasyStick maintainers <noreply@example.invalid>
+From: Stamp-P4 maintainers <noreply@example.invalid>
 Subject: [PATCH] cfg80211: retain the wireless_dev netdev link
 
 The Linux 6.18 cfg80211 registration helper requires
 net_device::ieee80211_ptr to point at the wireless_dev.  Keep the link that
-the ESP-Hosted source already initializes; the subsequent EasyStick patch
+the ESP-Hosted source already initializes; the subsequent Stamp-P4 patch
 uses cfg80211_register_netdevice() to publish it to nl80211.
 
 ---
