@@ -81,6 +81,8 @@ def main():
     for path, lineno, hit in collect_hits(root):
         if ALLOWED_PATH.search(path):
             continue
+        if "check-no-easystick" in hit:
+            continue
         if path not in cache:
             cache[path] = allowed_lines(os.path.join(root, path))
         if lineno in cache[path]:

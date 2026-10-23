@@ -91,7 +91,7 @@ diff --git a/mm/nommu_userspace_pool.c b/mm/nommu_userspace_pool.c
  	return (void *)va; /* 0 → NULL on failure, which is what we want */
  }
  
-@@ -124,3 +141,84 @@
+@@ -124,3 +141,87 @@
  
  RESERVEDMEM_OF_DECLARE(nommu_userspace_pool, "linux,nommu-userspace-pool",
  		       &nommu_userspace_pool_rmem_ops);
