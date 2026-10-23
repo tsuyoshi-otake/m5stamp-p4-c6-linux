@@ -19,7 +19,7 @@ Boots out-of-the-box into **Wi-Fi SoftAP mode** with automatic DHCP, Dropbear SS
 ## Key Features & Verified Hardware Capabilities
 
 - **SoC Target**: ESP32-P4 (Dual-Core RV32IMAC / ilp32, CPU clock 360 MHz as reported by the boot-shim, 32 MiB PSRAM, 16 MiB SPI Flash).
-- **SMP**: Both cores are online (`Linux 7.2.11 #1 SMP riscv32 GNU/Linux`, `/sys/devices/system/cpu/online` = `0-1`). v0.4.0 boots both by default; releases up to v0.3.2 booted with `maxcpus=1`, because with two CPUs CPU1 stopped taking interrupts a few seconds into boot (#5): an interrupt frame that is never returned through leaves the CLIC interrupt level raised. Fix `0079` drops the level at interrupt entry (the 1-CPU image needs it too, see the known issue below), and `0080` fixes a console race that two CPUs exposed. With both, CPU1 kept taking interrupts on all 46 test boots, and a 60-minute load soak (699 kills of a busy task, plus SSH and HTTP transfers) ran without a hang. Tests with crashing programs found two more faults: a program's fault could lock its core up (`0081`, one CPU too, see the known issue below), and CPU1 ran without the memory protection ESP-IDF gives CPU0, so a fault there panicked the kernel (fixed in the boot-shim). With those fixes, 200,000 faults in a row completed on either CPU next to the loads that had triggered both, and 10 of 10 resets passed the boot checks; see `linux/tests/issue5-smp-2026-10-19.md`. Saving the USB drive also rebooted a 2-CPU board, because the kernel's flash write (`0072`) refused to run with CPU1 online; it now holds CPU1 with interrupts off for each flash operation (`stop_machine()`), so saves go to flash without a reboot, and it spaces those operations out so that Wi-Fi keeps up (#43). Two CPU-bound programs at once take 8.1–8.3 s where one CPU takes 16.0 s, and fork+exec gains little. A signal delivered to a handler cost 1.7 to 1.8 times as much as on one CPU, because the kernel flushed the other CPU's instruction cache through an IPI for each one; `0083` returns through the kernel's own sigreturn code instead, and 40,000 handled faults take 0.7 s on either CPU (1.49 s on one CPU without it; #44). A 1-CPU image needs `EASYSTICK_C68_MAXCPUS=1` at build time; `maxcpus` in `/boot/config.txt` is informational and is not read by anything.
+- **SMP**: Both cores are online (`Linux 7.2.11 #1 SMP riscv32 GNU/Linux`, `/sys/devices/system/cpu/online` = `0-1`). v0.4.0 boots both by default; releases up to v0.3.2 booted with `maxcpus=1`, because with two CPUs CPU1 stopped taking interrupts a few seconds into boot (#5): an interrupt frame that is never returned through leaves the CLIC interrupt level raised. Fix `0079` drops the level at interrupt entry (the 1-CPU image needs it too, see the known issue below), and `0080` fixes a console race that two CPUs exposed. With both, CPU1 kept taking interrupts on all 46 test boots, and a 60-minute load soak (699 kills of a busy task, plus SSH and HTTP transfers) ran without a hang. Tests with crashing programs found two more faults: a program's fault could lock its core up (`0081`, one CPU too, see the known issue below), and CPU1 ran without the memory protection ESP-IDF gives CPU0, so a fault there panicked the kernel (fixed in the boot-shim). With those fixes, 200,000 faults in a row completed on either CPU next to the loads that had triggered both, and 10 of 10 resets passed the boot checks; see `linux/tests/issue5-smp-2026-10-19.md`. Saving the USB drive also rebooted a 2-CPU board, because the kernel's flash write (`0072`) refused to run with CPU1 online; it now holds CPU1 with interrupts off for each flash operation (`stop_machine()`), so saves go to flash without a reboot, and it spaces those operations out so that Wi-Fi keeps up (#43). Two CPU-bound programs at once take 8.1–8.3 s where one CPU takes 16.0 s, and fork+exec gains little. A signal delivered to a handler cost 1.7 to 1.8 times as much as on one CPU, because the kernel flushed the other CPU's instruction cache through an IPI for each one; `0083` returns through the kernel's own sigreturn code instead, and 40,000 handled faults take 0.7 s on either CPU (1.49 s on one CPU without it; #44). A 1-CPU image needs `C68_MAXCPUS=1` at build time; `maxcpus` in `/boot/config.txt` is informational and is not read by anything.
 - **Wi-Fi Companion**: ESP32-C6 (M5Stack Stamp-AddOn C6) connected via 4-bit SDIO (5 MHz by default, up to 40 MHz with `sdio_mhz=`, see [SDIO clock](#c6-firmware-security-features--regulatory-notes)).
 - **Out-of-the-Box SoftAP**:
   - Broadcasts a per-device SSID **`m5-XXXX`** with a WPA2-PSK passphrase generated on first boot (see [Per-device credentials](#per-device-credentials)).
@@ -31,7 +31,7 @@ Boots out-of-the-box into **Wi-Fi SoftAP mode** with automatic DHCP, Dropbear SS
   - **MicroPython (`python3`)**: MicroPython v1.22.2 compiled with bFLT Load-to-Ram (`-r`) and position-independent code (`-fPIC`) for stable NOMMU execution. It has the unix port's standard modules (`time`, `socket`, `select`, `json`, `re`, `struct`, `random`, `hashlib`, `binascii`, `collections`, `asyncio`, ...) without threads, TLS, `ffi`, `framebuf` or complex numbers, to stay under the 512 KB NOMMU allocation.
   - **Pico-style autorun**: `main.py`, `main.sh` or a bFLT `main` saved on the USB drive runs as `m5` at boot and restarts when a new version is saved ([details](#5-autorun-from-the-usb-drive-pico-style)).
   - **Writable Filesystem (OverlayFS)**: While the root filesystem is SquashFS (read-only for durability), RAM-backed OverlayFS is mounted on `/home`, `/root`, and `/var/lib` so users can create and edit scripts during the current boot. Its contents are lost when power is removed.
-  - **USB Mass Storage (`/boot` drive, optional hardware)**: With the [optional EasyStick carrier](#optional-hardware-easystick-usb-mass-storage-carrier), its Type-A USB connection (GPIO26/27) exposes a FAT-formatted 256KB `/boot` configuration drive to Windows/Mac/Linux hosts. Save a file and, a few seconds later, the board validates the drive, applies the settings and writes it to redundant A/B flash slots. No eject or reboot is needed.
+  - **USB Mass Storage (`/boot` drive, optional hardware)**: With the [optional USB carrier](#optional-hardware-usb-mass-storage-carrier), its Type-A USB connection (GPIO26/27) exposes a FAT-formatted 256KB `/boot` configuration drive to Windows/Mac/Linux hosts. Save a file and, a few seconds later, the board validates the drive, applies the settings and writes it to redundant A/B flash slots. No eject or reboot is needed.
 - **Kernel & SoC Stabilization**:
   - Full-Speed DWC2 USB OTG driver hardened with PIO mode and dedicated TX FIFO empty interrupt management, eliminating descriptor DMA coherency panics and enabling stable multi-block transfers.
   - Signal delivery `mcause` hardening (`0014`).
@@ -45,7 +45,7 @@ Boots out-of-the-box into **Wi-Fi SoftAP mode** with automatic DHCP, Dropbear SS
   - Early CRNG entropy initialization via `seedrng` on OverlayFS, preventing `getrandom()` system call stalls.
   - SDIO DW-MMC host controller driver enhancements with software DTO and buffer pacing (`0032`, `0033`, `0060`, `0061`).
   - NOMMU system-call pointers (`0071`): a pointer that is not in PSRAM or the memory-mapped root filesystem now fails with `EFAULT`. Before, the kernel read it itself; `vi` with no file name passes a NULL path and froze the board until the watchdog reset it.
-  - NOMMU user memory: programs load into a 10 MB reserved pool in two regions (6 MB + 4 MB, `0070`) instead of the fragmented page allocator, so SSH logins, `S40network restart` and console commands no longer routinely fail with `nommu: Allocation of length … failed` under normal load (#23). Since v0.4.2 the pool keeps a reserve for the system (`0089`–`0091`, #51): the allocator takes the smallest block that fits (best-fit), and a program started from an SSH login or the console is refused when it would leave less than 1.2 MB contiguous or 2 MiB in total free in the pool (it then falls back to the page allocator and may fail alone, `user_denied` in `nommu_pool`). Network scripts, `bootsync` and the watchdog run through `easystick-sys`, which marks them as system work, so a `config.txt` save or `S40network restart` started by a user no longer starves `wpa_supplicant` (1.85 MB contiguous). In the 5-restart tests on STA the system side had no real out-of-memory failure (11 before the fix, 0 after), at the cost of fewer concurrent user sessions at the edge; an unlucky user program can still fail with that message, and running it again works (#40/#49). `nommu_pool` also reports `user_denied`, `system_alloc_fail`, `user_reserve_contig` and `user_reserve_total`. `/sys/kernel/easystick/nommu_pool` (`0076`) reports the pool's `total`, `used`, `largest_free`, `alloc_fail` and `fallback` so exhaustion is visible without aggregating `/proc/*/maps`; the same fields appear in `easystick-info` and `easystick-status.txt`. To keep reload-time peaks low, `config.txt` saves now apply only the keys that changed (boot-only keys no longer restart Wi-Fi), applies are serialised, the udhcpc hook chain runs in one shell, and wait loops use a FIFO `read -t` instead of forking `sleep` (#39/#40). Each BusyBox process still takes about 500 KB, because bFLT programs do not share their text. The m3-lab image therefore runs init, inetd, syslogd and udhcpd from `busybox-daemons`, a second BusyBox built with only those four applets (192 KB each). At idle that leaves about 1 MB more of the pool free, which is one more concurrent SSH session (5–6 instead of 4–5; `linux/tests/busybox-daemons-2026-10-16.md`). `MemAvailable` does not change, because it does not count the pool.
+  - NOMMU user memory: programs load into a 10 MB reserved pool in two regions (6 MB + 4 MB, `0070`) instead of the fragmented page allocator, so SSH logins, `S40network restart` and console commands no longer routinely fail with `nommu: Allocation of length … failed` under normal load (#23). Since v0.4.2 the pool keeps a reserve for the system (`0089`–`0091`, #51): the allocator takes the smallest block that fits (best-fit), and a program started from an SSH login or the console is refused when it would leave less than 1.2 MB contiguous or 2 MiB in total free in the pool (it then falls back to the page allocator and may fail alone, `user_denied` in `nommu_pool`). Network scripts, `bootsync` and the watchdog run through `run-system`, which marks them as system work, so a `config.txt` save or `S40network restart` started by a user no longer starves `wpa_supplicant` (1.85 MB contiguous). In the 5-restart tests on STA the system side had no real out-of-memory failure (11 before the fix, 0 after), at the cost of fewer concurrent user sessions at the edge; an unlucky user program can still fail with that message, and running it again works (#40/#49). `nommu_pool` also reports `user_denied`, `system_alloc_fail`, `user_reserve_contig` and `user_reserve_total`. `/sys/kernel/board/nommu_pool` (`0076`) reports the pool's `total`, `used`, `largest_free`, `alloc_fail` and `fallback` so exhaustion is visible without aggregating `/proc/*/maps`; the same fields appear in `sysinfo` and `status.txt`. To keep reload-time peaks low, `config.txt` saves now apply only the keys that changed (boot-only keys no longer restart Wi-Fi), applies are serialised, the udhcpc hook chain runs in one shell, and wait loops use a FIFO `read -t` instead of forking `sleep` (#39/#40). Each BusyBox process still takes about 500 KB, because bFLT programs do not share their text. The m3-lab image therefore runs init, inetd, syslogd and udhcpd from `busybox-daemons`, a second BusyBox built with only those four applets (192 KB each). At idle that leaves about 1 MB more of the pool free, which is one more concurrent SSH session (5–6 instead of 4–5; `linux/tests/busybox-daemons-2026-10-16.md`). `MemAvailable` does not change, because it does not count the pool.
 
 ---
 
@@ -65,7 +65,7 @@ Linux / macOS serial examples, how to open the console without resetting the boa
 
 The C6 on the Stamp AddOn has no USB port of its own; it is updated over the SDIO link from the P4 with a temporary P4 updater image, after which the Linux image is written back.
 
-1. Build the C6 image: `bash linux/m2/build-c6.sh --vendor <out>` (needs the locked ESP-IDF; `EASYSTICK_C6_BT=0` leaves out BLE, which Linux does not use). `<out>/C6_PATCH_MANIFEST.txt` records the `network_adapter.bin` SHA-256 and the applied patches.
+1. Build the C6 image: `bash linux/m2/build-c6.sh --vendor <out>` (needs the locked ESP-IDF; `C6_BT=0` leaves out BLE, which Linux does not use). `<out>/C6_PATCH_MANIFEST.txt` records the `network_adapter.bin` SHA-256 and the applied patches.
 2. Build the updater: `bash linux/m2/build-ota-host.sh <external-source-root> <out>/build/network_adapter.bin <ota-out>` (the source root holds `esp_idf` and an `esp_hosted_mcu` checkout). It uses ESP-Hosted-MCU's `host_performs_slave_ota` example.
 3. Save a full 16 MB readback of the P4 first, then write the updater with `linux/m2/ota-host/flash-ota-host.ps1` (it refuses to run without `-AllowCandidateWrite` and a matching stock readback). The updater sends the C6 image over SDIO on its next boot.
 4. Write the Linux release image again and check the boot log for `ESP-Hosted Version: NG-1.0.6.0.1`.
@@ -79,14 +79,14 @@ The C6 on the Stamp AddOn has no USB port of its own; it is updated over the SDI
 | **Wi-Fi SoftAP** | `m5-XXXX` | — | `psk=` in `credentials.txt` | WPA2-PSK, 2.4 GHz 802.11b/g/n, channel 1/6/11 |
 | **SSH (`dropbear`)**| `192.168.4.1:22` | `m5` | `password=` in `credentials.txt` | Default user with home directory `/home/m5` |
 | **SSH (root)** | `192.168.4.1:22` | `root` | key only | Needs `root_authorized_keys` on the USB drive; password login for root is always off (#37) |
-| **Runtime status** | SSH / serial | — | — | Read `/run/easystick-status.txt`; the USB FAT image is not modified while exported |
+| **Runtime status** | SSH / serial | — | — | Read `/run/status.txt`; the USB FAT image is not modified while exported |
 | **Serial Console** | `COMx` (115200 8N1) | *(root shell)* | *(none)* | `ttyGS1` over USB-Serial/JTAG. Press `Enter` to activate |
 
 ### Per-device credentials
 
 Every board gets its own credentials on first boot; no SSID or password is shared between boards.
 
-- On first boot `S05easystick-tmpfs` writes `credentials.txt` to the USB drive: `device_id=`, `password=` (SSH/console password of user `m5`), `root_password=` (the `su` password, #37), and, while `wpa_supplicant.conf` is still the shipped default, `ssid=m5-<device_id>` and `psk=`. A `credentials.txt` written by an older image has no `root_password=`; the board generates one and appends it on the first boot of this image. That `wpa_supplicant.conf` is rewritten with the new SSID and passphrase, and `channel=` (1, 6 or 11, chosen from the device id) is added to `config.txt`.
+- On first boot `S05tmpfs` writes `credentials.txt` to the USB drive: `device_id=`, `password=` (SSH/console password of user `m5`), `root_password=` (the `su` password, #37), and, while `wpa_supplicant.conf` is still the shipped default, `ssid=m5-<device_id>` and `psk=`. A `credentials.txt` written by an older image has no `root_password=`; the board generates one and appends it on the first boot of this image. That `wpa_supplicant.conf` is rewritten with the new SSID and passphrase, and `channel=` (1, 6 or 11, chosen from the device id) is added to `config.txt`.
 - The same values are printed once on the serial console as `ES_CREDENTIALS NEW: ...` and are readable as root in `/tmp/credentials.txt`. **The serial log then contains the password; redact that line before sharing logs.**
 - The generated files are written to flash during that first boot (`ES_CREDENTIALS: saved to flash` in the serial log).
 - `password=` is applied to user `m5` at every boot, and `root_password=` to `root` for `su` (#37). To change one, edit it (8-64 characters, no `:`) in `credentials.txt` and save it; the board applies it a few seconds later. An invalid `root_password=` keeps root locked (`root:!`). `passwd` over SSH only lasts until the next boot.
@@ -103,6 +103,18 @@ Every board gets its own credentials on first boot; no SSID or password is share
 
 ### 1. Download Release Package
 
+> **Next release (on `main`, not yet published).** The names now describe what each part does,
+> and `easystick` is gone (#55): the hostname is `stamp-p4` (`stamp-p4.local`), the USB drive is
+> `STAMP_P4`, and the commands are `sysinfo`, `autorun`, `update-status`, `run-system`, `bootsyncd`,
+> `respawn` and `mdnsd`. The status file is `/run/status.txt` and the kernel knobs are in
+> `/sys/kernel/board/`. The DTB is `esp32p4-m5stamp-p4.dtb`, and the build flags have no prefix
+> (`NOMMU_POOL_BESTFIT`, `C68_MAXCPUS`, `LEGAL_INFO`, …). For one release the old names still
+> work: `easystick-*` commands, `easystick.local`, `/run/easystick-status.txt` and
+> `/sys/kernel/easystick/`. A drive whose `config.txt` sets `hostname=easystick` keeps that name.
+> udhcpc now runs from a small BusyBox of its own, which frees about 340 KB of the pool at idle (#45).
+> The flash steps below already use the new DTB name; the v0.4.2 zip still holds
+> `easystick-stamp-p4.dtb`.
+>
 > **v0.4.2** is built and published the same way as v0.2.2 to v0.4.1: the assets
 > are the CI build that was flashed and checked on hardware, and the tag run refuses
 > any asset whose hash is not in `linux/tests/v0.4.2-hardware-validation-2026-10-23.md`.
@@ -284,7 +296,7 @@ esptool.py --chip esp32p4 --port COM10 --baud 460800 \
     0x010000 boot-shim.bin \
     0x090000 Image \
     0x810000 rootfs.squashfs \
-    0x0f10000 easystick-stamp-p4.dtb \
+    0x0f10000 esp32p4-m5stamp-p4.dtb \
     0x0f40000 boot.img
 esptool.py --chip esp32p4 --port COM10 --baud 460800 \
     --before default_reset --after hard_reset erase_region 0xfc0000 0x2000
@@ -299,7 +311,7 @@ esptool.py --chip esp32p4 --port COM10 --baud 460800 \
 | `0x010000` | `boot-shim.bin` | Secondary boot-shim (PSRAM, SDIO matrix, CPU1 release, jump to Linux) |
 | `0x090000` | `Image` | Linux 7.2 SMP RISC-V kernel binary |
 | `0x810000` | `rootfs.squashfs` | Read-only SquashFS root filesystem with Buildroot userland |
-| `0x0f10000` | `easystick-stamp-p4.dtb` | Compiled Flattened Device Tree for Stamp-P4 |
+| `0x0f10000` | `esp32p4-m5stamp-p4.dtb` | Compiled Flattened Device Tree for Stamp-P4 |
 | `0x0f40000` | `boot.img` | 256KB FAT12 `/boot` slot 0 exposed via USB Mass Storage (Type-A) |
 | `0x0f80000` | — | Inactive 256KB `/boot` slot used for power-loss-safe updates |
 | `0x0fc0000` | — | Two redundant 4KB A/B metadata sectors at `0xfc0000` and `0xfc1000` |
@@ -307,12 +319,12 @@ esptool.py --chip esp32p4 --port COM10 --baud 460800 \
 ### 3. Connect & Use
 
 1. After flashing, the Stamp-P4 automatically reboots and starts SoftAP within ~10 seconds.
-2. **Optional USB Mass Storage Configuration**: If using the [EasyStick carrier](#optional-hardware-easystick-usb-mass-storage-carrier), disconnect the Stamp-P4 USB-C cable after flashing, then plug the carrier's USB Type-A connection into your PC. Do not power USB-A and USB-C simultaneously. A 256KB FAT drive (volume `EASYSTICK`) will appear with `cmdline.txt`, `config.txt`, and `wpa_supplicant.conf`. Without this carrier or equivalent USB wiring, skip this step and use Wi-Fi/SSH or the USB-C serial console.
-   - Edit and save the configuration. Once the host has not written to the drive for 3 seconds, `easystick-bootsync` copies the image, validates the FAT snapshot, applies it and writes it to flash (`Saved to flash` in the serial log; the flash write takes under a second for a small edit and about 4 seconds when most of the drive changed). No eject or reboot is needed; wait about 5 seconds after saving a small edit before unplugging, and about 10 seconds after copying larger files. The host's **Eject / Safely Remove** action still works and imports at once, which is the safe choice for hosts that cache writes (macOS and Linux may hold them until the eject).
+2. **Optional USB Mass Storage Configuration**: If using the [USB carrier](#optional-hardware-usb-mass-storage-carrier), disconnect the Stamp-P4 USB-C cable after flashing, then plug the carrier's USB Type-A connection into your PC. Do not power USB-A and USB-C simultaneously. A 256KB FAT drive (volume `STAMP_P4`) will appear with `cmdline.txt`, `config.txt`, and `wpa_supplicant.conf`. Without this carrier or equivalent USB wiring, skip this step and use Wi-Fi/SSH or the USB-C serial console.
+   - Edit and save the configuration. Once the host has not written to the drive for 3 seconds, `bootsyncd` copies the image, validates the FAT snapshot, applies it and writes it to flash (`Saved to flash` in the serial log; the flash write takes under a second for a small edit and about 4 seconds when most of the drive changed). No eject or reboot is needed; wait about 5 seconds after saving a small edit before unplugging, and about 10 seconds after copying larger files. The host's **Eject / Safely Remove** action still works and imports at once, which is the safe choice for hosts that cache writes (macOS and Linux may hold them until the eject).
    - Invalid or incomplete FAT images are rejected and the previous runtime configuration remains active; the next save is checked again.
-   - Live network status is available as `/run/easystick-status.txt` over SSH or serial. The exported USB drive is strictly dedicated to boot configuration (`cmdline.txt`, `config.txt`, `wpa_supplicant.conf`).
+   - Live network status is available as `/run/status.txt` over SSH or serial. The exported USB drive is strictly dedicated to boot configuration (`cmdline.txt`, `config.txt`, `wpa_supplicant.conf`).
    - Network settings (`wpa_supplicant.conf`, `config.txt`), `password=`/`root_password=` and `authorized_keys`/`root_authorized_keys` take effect at once. Saving a `config.txt` applies only the keys that changed (#39): `debug`, `hostname`, `country` and `ntp_server` update without touching Wi-Fi (the new hostname answers `.local` queries immediately); `wifi_ssid`/`wifi_psk`/`wifi_pmf` and `wpa_supplicant.conf` reload the running `wpa_supplicant` with SIGHUP and renew the DHCP lease instead of re-execing it, falling back to a full restart if the new settings do not associate (the reload still re-associates, so the link drops for about as long as a restart; correcting a wrong PSK brings the address back without a reboot); `wifi_mode` and unknown keys still do a full restart; and boot-only keys such as `sdio_mhz`, `ssh_password_auth`, `watchdog` and `maxcpus` just log `ES_CONFIG: <key>= changed; applies at the next boot`. Overlapping saves queue instead of running two restarts. `cmdline.txt` is only a copy of `/proc/cmdline` for reference: the kernel command line comes from the DTB, and editing the file has no effect.
-   - The kernel (`/sys/kernel/easystick/boot_commit`, patch `0072`) writes the image to the inactive flash slot, verifies its CRC, and only then writes the metadata that switches slots, in the format the boot shim checks at every boot. It rewrites only the sectors that differ from what the slot already holds and rests between flash operations, so Wi-Fi and SSH keep working during the write (#43). Power loss during the write leaves the previous slot active. If the kernel cannot write flash, the image is staged in PSRAM and the board reboots so the boot shim writes it (`Rebooting to commit the image to flash`); `auto_reboot=no` in `config.txt` turns that fallback reboot off.
+   - The kernel (`/sys/kernel/board/boot_commit`, patch `0072`) writes the image to the inactive flash slot, verifies its CRC, and only then writes the metadata that switches slots, in the format the boot shim checks at every boot. It rewrites only the sectors that differ from what the slot already holds and rests between flash operations, so Wi-Fi and SSH keep working during the write (#43). Power loss during the write leaves the previous slot active. If the kernel cannot write flash, the image is staged in PSRAM and the board reboots so the boot shim writes it (`Rebooting to commit the image to flash`); `auto_reboot=no` in `config.txt` turns that fallback reboot off.
 3. Open `credentials.txt` on the USB drive (or read the `ES_CREDENTIALS NEW` line in the serial log) and connect to the Wi-Fi SSID `ssid=` with the passphrase `psk=`.
 4. Your device will receive an IP address such as `192.168.4.2`.
 5. Open a terminal and SSH into the board:
@@ -328,16 +340,16 @@ esptool.py --chip esp32p4 --port COM10 --baud 460800 \
 
 ---
 
-## Optional Hardware: EasyStick USB Mass Storage Carrier
+## Optional Hardware: USB Mass Storage Carrier
 
-The **EasyStick Stamp-P4 Rev0.15** carrier is an optional convenience board for
+The **Stamp-P4 USB carrier Rev0.15** is an optional convenience board for
 using the USB mass-storage configuration drive without separately wiring the
 Stamp-P4's Full-Speed USB signals. It is not required for Linux boot, Wi-Fi,
 SSH, or the Stamp-P4 USB-C serial console; the Stamp-AddOn C6 and its SDIO
 connection are still required for Wi-Fi.
 
 - **Easy configuration from a PC**: plug the carrier's USB-A connection into
-  your computer to access the `EASYSTICK` drive with the release firmware.
+  your computer to access the `STAMP_P4` drive with the release firmware.
 - **Separate USB functions**: the carrier routes GPIO26 (D−) / GPIO27 (D+)
   for mass storage. The Stamp-P4's USB-C flashing/serial connection is not
   this mass-storage port.
@@ -419,7 +431,7 @@ ssh m5@<YOUR_NEW_IP>
 # Password: password= from credentials.txt
 ```
 
-The board also answers mDNS for `<hostname>.local` (`easystick.local` unless `hostname=` in `config.txt` says otherwise), so `ssh m5@easystick.local` works from hosts with mDNS (macOS, most Linux desktops, Windows 10+). Only the name is published; there is no service discovery.
+The board also answers mDNS for `<hostname>.local` (`stamp-p4.local` unless `hostname=` in `config.txt` says otherwise), so `ssh m5@stamp-p4.local` works from hosts with mDNS (macOS, most Linux desktops, Windows 10+). Only the name is published; there is no service discovery.
 
 *(Note: To test link state manually, run `iw dev wlan0 link` to view connection status, SSID, signal level, and BSSID).*
 
@@ -634,7 +646,7 @@ with open("/home/m5/log.txt", "r") as f:
 
 ### 5. Autorun from the USB drive (Pico-style)
 
-Put a program on the `EASYSTICK` drive (m3-lab image) and save: it runs as
+Put a program on the `STAMP_P4` drive (m3-lab image) and save: it runs as
 user `m5` at every boot, and a saved new version replaces the running one a
 few seconds later, with no eject or reboot. The first of these runs:
 
@@ -648,8 +660,8 @@ few seconds later, with no eject or reboot. The first of these runs:
   along, so `import mymodule` works. The copy, `/run/autorun`, is the working
   directory and belongs to `m5`; nothing is written back to the drive.
 - Output goes to `/run/autorun.log` (64 KB, one older copy in
-  `/run/autorun.log.1`). Over SSH: `easystick-autorun log` follows it,
-  `easystick-autorun status|stop|start|restart` controls the program.
+  `/run/autorun.log.1`). Over SSH: `autorun log` follows it,
+  `autorun status|stop|start|restart` controls the program.
 - A program that exits stays stopped, as on a Pico. Saving the drive restarts it
   only when the program or its settings changed; editing `credentials.txt`
   alone leaves it running.
@@ -708,7 +720,7 @@ This was resolved by integrating three essential ESP32-P4 SoC hardening patches:
 
 ## Repository Structure
 
-Optional EasyStick Rev0.15 [schematics and PCB Gerbers](board/hardware/README.md)
+Optional USB carrier Rev0.15 [schematics and PCB Gerbers](board/hardware/README.md)
 are available under the MIT License, with assembly and reproduction notes.
 
 ```text
@@ -795,7 +807,7 @@ The images contain third-party software under its own licenses. Corresponding so
 | ESP-Hosted NG host driver (`esp32_sdio.ko`) | GPL-2.0-only (shared headers GPL-2.0-only or Apache-2.0) |
 | ESP-Hosted NG C6 firmware (`network_adapter.bin`) | Apache-2.0 |
 
-Releases carry `…-legal-info.tar.gz`, Buildroot's `make legal-info` output for the image: the source archives, patches, configs and license texts of every package in the rootfs and the kernel (`manifest.csv` lists them). Sources of build-host tools (`host-sources`) are left out because they are not shipped. Build it locally with `EASYSTICK_LEGAL_INFO=1 bash linux/build-c68.sh …`; it lands in `<vendor>/buildroot/legal-info`. The boot shim and the C6 firmware are built from the ESP-IDF and ESP-Hosted revisions in `versions.lock.json`. The image itself lists the same pointers in `/usr/share/licenses/README`.
+Releases carry `…-legal-info.tar.gz`, Buildroot's `make legal-info` output for the image: the source archives, patches, configs and license texts of every package in the rootfs and the kernel (`manifest.csv` lists them). Sources of build-host tools (`host-sources`) are left out because they are not shipped. Build it locally with `LEGAL_INFO=1 bash linux/build-c68.sh …`; it lands in `<vendor>/buildroot/legal-info`. The boot shim and the C6 firmware are built from the ESP-IDF and ESP-Hosted revisions in `versions.lock.json`. The image itself lists the same pointers in `/usr/share/licenses/README`.
 
 The project's own files are licensed under GPL-2.0-only ([`LICENSE`](LICENSE), #31), except where a file carries its own `SPDX-License-Identifier`: the boot shim (`linux/boot-shim/`) is `Apache-2.0 OR GPL-2.0-only`, and the schematics and Gerbers under `board/hardware/` are MIT ([`board/hardware/LICENSE`](board/hardware/LICENSE)).
 
