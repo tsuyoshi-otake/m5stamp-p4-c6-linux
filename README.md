@@ -707,8 +707,8 @@ data access. A `printf`/`sleep` hello world is about 85 KB.
 
 Deep Sleep turns almost everything off for a while and then starts the board
 again, for example to take a measurement every hour on a battery. While the
-board sleeps it draws less than the 10 mA a USB meter resolves; with Linux
-running it draws 0.12–0.15 A.
+board sleeps it draws about 0.33 mA; a wake that joins Wi-Fi costs about
+32 s at 92 mA (see "Power" below).
 
 What happens:
 
@@ -823,7 +823,7 @@ than one happened at the same check):
 - The check needs the LP core, so it is refused while an LP core program is
   loaded (7. LP core program).
 - The checks do not change the sleep current that a USB meter can see, even
-  every second.
+  every second. (The PPK2 numbers under "Power" are without the LP core.)
 
 #### What is kept
 
@@ -836,6 +836,40 @@ than one happened at the same check):
 
 The sleep memory is `/sys/kernel/board/sleep_memory`: write up to 1024 bytes
 (a write at offset 0 replaces it) and read them back after the wake.
+
+#### Power
+
+Measured with a Nordic PPK2 supplying 5 V, sampling at 100 Hz, while
+[`linux/examples/sleep-cycle/main.py`](linux/examples/sleep-cycle/main.py)
+ran from the drive. Each cycle was: wake, wait for Wi-Fi (join and DHCP),
+stay 5 s, `deepsleep 60`. The LP core was off, and the C6 was turned off
+for the sleeps. Two cycles were recorded:
+
+| Phase | Time | Average | Peak | Charge |
+| :--- | :--- | :--- | :--- | :--- |
+| Deep Sleep | 58.7 s | 0.332 mA | 0.40 mA | 0.020 C |
+| Awake: boot, Wi-Fi, program, 5 s | 31.9 s / 32.1 s | 92.1 / 91.2 mA | 190 mA | 2.94 / 2.92 C |
+
+- While asleep the current is flat at 0.30–0.36 mA. This is the whole board
+  (regulators, flash and the P4 in Deep Sleep), not the chip alone.
+- While awake: about 35–75 mA in the ROM and the boot-shim, a 190 mA peak
+  when it starts, 80–105 mA while Linux boots, and 80–140 mA bursts while the
+  C6 scans and joins Wi-Fi (about 19 s after the wake).
+- 99 % of a cycle's charge is the time awake. A shorter wake saves far more
+  than a lower sleep current: drop the 5 s wait, and skip the scan and DHCP
+  where possible.
+
+Average current from these numbers (about 2.93 C per wake at 5 V):
+
+| Wake with Wi-Fi every | Average at 5 V |
+| :--- | :--- |
+| 1 min (the example) | 32 mA |
+| 10 min | 5.2 mA |
+| 1 h | 1.15 mA |
+| 1 day | 0.37 mA |
+| never (asleep) | 0.33 mA |
+
+A battery behind a 5 V boost converter loses its efficiency on top of this.
 
 #### Stopping a program that sleeps in a loop
 
