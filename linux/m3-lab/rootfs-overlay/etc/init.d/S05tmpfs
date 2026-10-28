@@ -112,6 +112,7 @@ config_value() {
 # (default lp.bin on the drive) and lp_period= (default 1s) in config.txt.
 # The kernel keeps a program that is still running from an earlier boot, with
 # its variables; a different file loads afresh.  Group m5 may read memory.
+# Runs while /boot is mounted.
 lp_core_start() {
 	lpc=/sys/kernel/board/lp_core
 	[ -w "$lpc/control" ] || return 0
@@ -137,7 +138,7 @@ lp_core_start() {
 			;;
 	esac
 	chgrp m5 "$lpc/memory" 2>/dev/null && chmod 640 "$lpc/memory" 2>/dev/null || true
-	if [ "${button:-0}" -eq 1 ]; then
+	if grep -qx 'button=1' /sys/kernel/board/wake_info 2>/dev/null; then
 		es_log "ES_LP: BOOT held; LP core left as it is"
 		return 0
 	fi
@@ -416,6 +417,8 @@ EOF
 		else
 			es_log "ES_AUTORUN FAIL: could not copy the program from the drive"
 		fi
+		# lp_program= is usually on the drive, so before the unmount.
+		lp_core_start
 		# Flush and unmount /boot before exposing backing file to USB host
 		# to prevent concurrent filesystem cache corruption between Linux and Windows
 		sync
@@ -463,8 +466,6 @@ EOF
 			done
 		fi
 	fi
-
-	lp_core_start
 
 	# bootsync saves the drive when the host's writes change the image after
 	# this point (bootsyncd, SEEN_REF).
