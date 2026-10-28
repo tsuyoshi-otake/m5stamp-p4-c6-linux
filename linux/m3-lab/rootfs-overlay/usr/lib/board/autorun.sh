@@ -149,6 +149,12 @@ autorun_start() {
 		es_log "autorun: off (autorun=off in config.txt)"
 		return 0
 	fi
+	# bootsyncd sets it when BOOT was held at this boot (#56).
+	if [ -n "$AUTORUN_HOLD" ]; then
+		echo "--- autorun: not started: BOOT was held at boot (run autorun to start)" >> "$AUTORUN_LOG"
+		es_log "autorun: not started: BOOT was held at boot"
+		return 0
+	fi
 	prog=""
 	if [ "$mode" = auto ]; then
 		for n in main.py main.sh main; do

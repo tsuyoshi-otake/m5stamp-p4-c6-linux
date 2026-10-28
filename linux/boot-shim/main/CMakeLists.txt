@@ -42,3 +42,6 @@ if("$ENV{CMD53_RETENTION_BB}" STREQUAL "1")
         target_compile_definitions(${COMPONENT_LIB} PRIVATE CMD53_BB_SELFTEST=1)
     endif()
 endif()
+# #56 Deep Sleep.  Added last so its RTC_NOINIT state links after rtc_c,
+# whose LP RAM address (0x50108080) the kernel hardcodes.
+target_sources(${COMPONENT_LIB} PRIVATE "deep_sleep.c")

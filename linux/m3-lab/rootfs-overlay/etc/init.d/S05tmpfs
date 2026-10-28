@@ -374,6 +374,31 @@ EOF
 		fi
 	fi
 
+	# Deep Sleep (#56).  Group m5 may request it (deepsleep, autorun programs)
+	# unless config.txt says deepsleep=no.  BOOT held at this boot holds the
+	# autorun program, so one that sleeps in a loop can be stopped.
+	if [ -r /sys/kernel/board/wake_info ]; then
+		wake=""
+		button=0
+		while IFS= read -r l; do
+			case "$l" in
+				wake_reason=*) wake=${l#wake_reason=} ;;
+				button=1) button=1 ;;
+			esac
+		done < /sys/kernel/board/wake_info
+		es_log "ES_WAKE: reason=$wake button=$button"
+		[ "$button" -eq 1 ] && : > /run/.autorun-hold
+		if grep -q '^[[:space:]]*deepsleep[[:space:]]*=[[:space:]]*no' /tmp/config.txt 2>/dev/null; then
+			es_log "ES_WAKE: deepsleep=no in config.txt; root only"
+		else
+			for f in deep_sleep sleep_memory; do
+				chgrp m5 "/sys/kernel/board/$f" 2>/dev/null &&
+					chmod 660 "/sys/kernel/board/$f" 2>/dev/null ||
+					es_log "ES_WAKE FAIL: could not open $f to group m5"
+			done
+		fi
+	fi
+
 	# bootsync saves the drive when the host's writes change the image after
 	# this point (bootsyncd, SEEN_REF).
 	touch -r /tmp/boot.img /run/.bootsync-seen 2>/dev/null || true

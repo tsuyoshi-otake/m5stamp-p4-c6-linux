@@ -68,6 +68,7 @@
 #include "soc/gpio_pins.h"
 #include "driver/gpio.h"
 #include "boot_ab.h"
+#include "deep_sleep.h"
 
 static void usb_otg_init(void)
 {
@@ -730,6 +731,8 @@ void app_main(void)
 #endif
 	cmd53_bb_release_after_dump();
 #endif
+	/* #56: may not return (Deep Sleep); before the C6 reset and SDIO. */
+	deep_sleep_early();
 #ifdef TSENS_ORACLE
 	if (!tsens_oracle_run())
 		fatal_restart("TSENS oracle failed");
@@ -801,6 +804,8 @@ void app_main(void)
 		 KERNEL_LOAD_PA, DTB_LOAD_PA);
 #endif
 	vTaskDelay(pdMS_TO_TICKS(20));
+	/* #56: last, so the clock estimate is taken right before the jump. */
+	deep_sleep_publish();
 	/* rootfs_handle intentionally remains mapped across the Linux jump. */
 	(void)rootfs_handle;
 	esp_hw_stack_guard_monitor_stop();

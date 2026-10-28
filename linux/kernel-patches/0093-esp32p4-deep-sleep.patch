@@ -1,0 +1,514 @@
+Subject: [PATCH] stamp-p4: Deep Sleep through the boot shim (#56)
+
+Linux cannot run the ESP32-P4 PMU sleep sequence itself: it runs from
+PSRAM, which loses power in Deep Sleep, and the wake path is the ROM
+boot.  So the boot shim does it.  Writing a request to
+/sys/kernel/board/deep_sleep stores it in the reserved PSRAM mailbox
+page (the one boot-commit uses for its /boot request, at +0x100) and
+reboots.  The shim then turns the C6 off, sets the LP timer and the LP
+GPIO (ext1) wake pins, and sleeps.  On the next boot it writes a wake
+report at +0x180, which this driver shows as wake_reason and wake_info,
+and the 1 KiB sleep_memory at +0x200, which the shim keeps in LP RAM.
+
+The request carries the Linux clock, and the shim adds the time it
+slept, so the clock is right again after a wake without NTP.
+
+Linux reboots through an MWDT reset that does not write the data cache
+back, so every store to the mailbox is written back here, and a reboot
+notifier writes the whole page back (which also covers the /boot
+request boot-commit staged from user space).
+
+---
+--- a/drivers/misc/Kconfig
++++ b/drivers/misc/Kconfig
+@@ -645,6 +645,16 @@
+ 	  update the boot shim otherwise applies at the next reboot.
+ 	  Reading it shows the slot the shim will boot.
+ 
++config ESP32P4_SLEEP
++	bool "ESP32-P4 Stamp-P4: Deep Sleep through the boot shim"
++	depends on SOC_ESP32P4 && !MMU && RISCV_DMA_NONCOHERENT
++	select CRC32
++	help
++	  Adds /sys/kernel/board/deep_sleep, wake_reason, wake_info and
++	  sleep_memory.  Writing a request to deep_sleep reboots into the
++	  boot shim, which turns the C6 off and puts the chip into Deep
++	  Sleep until a timer or LP GPIO wakes it.
++
+ source "drivers/misc/c2port/Kconfig"
+ source "drivers/misc/eeprom/Kconfig"
+ source "drivers/misc/cb710/Kconfig"
+--- a/drivers/misc/Makefile
++++ b/drivers/misc/Makefile
+@@ -75,3 +75,4 @@
+ obj-y				+= amd-sbi/
+ obj-$(CONFIG_MISC_RP1)		+= rp1/
+ obj-$(CONFIG_ESP32P4_BOOTFLASH)	+= esp32p4-bootflash.o
++obj-$(CONFIG_ESP32P4_SLEEP)	+= esp32p4-sleep.o
+--- /dev/null
++++ b/drivers/misc/esp32p4-sleep.c
+@@ -0,0 +1,464 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Deep Sleep through the boot shim (#56).
++ *
++ * The shim (boot-shim/main/deep_sleep.c) owns the PMU sleep sequence.  Linux
++ * leaves a request in the reserved PSRAM mailbox page and reboots; the shim
++ * turns the C6 off and sleeps, and on the next boot reports how the chip
++ * woke.  PSRAM loses power while asleep, so the shim keeps the request and
++ * the sleep memory in LP RAM meanwhile.
++ *
++ * /sys/kernel/board/
++ *   deep_sleep    write "timer_ms=N gpio=P:L[,P:L...] pull=0|1" to sleep;
++ *                 the board reboots at once (orderly_reboot).  Reading it
++ *                 shows the wake pins this board allows.
++ *   wake_reason   timer, gpio:<n> (comma separated if several), poweron,
++ *                 reset, or unknown with a shim that has no Deep Sleep.
++ *   wake_info     key=value lines with the details.
++ *   sleep_memory  up to 1024 bytes kept across Deep Sleep and reboots, but
++ *                 not across a power cycle.  A write replaces it; the new
++ *                 data reaches LP RAM at the next reboot or sleep.
++ *
++ * The layouts match boot-shim/main/deep_sleep.h.  Linux reboots through an
++ * MWDT reset, which does not write the data cache back, so every store to
++ * the mailbox is written back here before the reboot starts.
++ */
++#include <linux/crc32.h>
++#include <linux/dma-map-ops.h>
++#include <linux/init.h>
++#include <linux/kernel.h>
++#include <linux/kobject.h>
++#include <linux/mutex.h>
++#include <linux/nommu_userspace_pool.h>
++#include <linux/of.h>
++#include <linux/random.h>
++#include <linux/reboot.h>
++#include <linux/sysfs.h>
++#include <linux/timekeeping.h>
++
++#define SLEEP_MAILBOX_PA	0x499bf000UL
++#define BOOT_REQUEST_PA		SLEEP_MAILBOX_PA
++#define SLEEP_REQUEST_PA	(SLEEP_MAILBOX_PA + 0x100)
++#define WAKE_INFO_PA		(SLEEP_MAILBOX_PA + 0x180)
++#define SLEEP_MEM_PA		(SLEEP_MAILBOX_PA + 0x200)
++#define SLEEP_MEM_BYTES		1024u
++
++#define BOOT_REQUEST_MAGIC	0x45534243u	/* "ESBC" */
++#define BOOT_REQUEST_COMMIT	0x434f4d4du	/* "COMM" */
++#define SLEEP_REQUEST_MAGIC	0x45534453u	/* "ESDS" */
++#define SLEEP_REQUEST_VERSION	1u
++#define SLEEP_REQUEST_COMMIT	0x534c4550u	/* "SLEP" */
++#define SLEEP_FLAG_PULL		0x1u
++#define WAKE_INFO_MAGIC		0x4553574bu	/* "ESWK" */
++#define WAKE_INFO_VERSION	1u
++#define SLEEP_MEM_MAGIC		0x45534d4du	/* "ESMM" */
++#define SLEEP_MEM_PENDING	0x50454e44u	/* "PEND" */
++#define SLEEP_MEM_PUBLISHED	0x5055424cu	/* "PUBL" */
++
++#define WAKE_BOOT_POWERON	0u
++#define WAKE_BOOT_RESET		1u
++#define WAKE_BOOT_DEEPSLEEP	2u
++#define WAKE_BOOT_INTERRUPTED	3u
++#define WAKE_CAUSE_TIMER	0x1u
++#define WAKE_CAUSE_GPIO		0x2u
++
++/*
++ * Stamp-P4 + C6 AddOn: LP GPIO0-15 without GPIO9 (the C6 IO9 boot strap).
++ * Same as BOARD_SLEEP_WAKE_GPIO_MASK in the shim, which checks it again.
++ */
++#define WAKE_GPIO_MASK		0xfdffu
++
++struct boot_update_request {
++	u32 magic;
++	u32 version;
++	u32 image_bytes;
++	u32 image_crc32;
++	u32 commit_word;
++} __packed;
++
++struct sleep_request {
++	u32 magic;
++	u32 version;
++	u32 timer_ms;
++	u32 gpio_mask;
++	u32 gpio_high;
++	u32 flags;
++	u32 wall_sec_lo;
++	u32 wall_sec_hi;
++	u32 wall_usec;
++	u32 seq;
++	u32 record_crc32;
++	u32 commit_word;
++} __packed;
++
++struct wake_info {
++	u32 magic;
++	u32 version;
++	u32 boot;
++	u32 causes;
++	u32 gpio_status;
++	u32 button;
++	u32 skipped;
++	u32 skipped_gpio;
++	u32 seq;
++	u32 slept_ms;
++	u32 wall_sec_lo;
++	u32 wall_sec_hi;
++	u32 wall_usec;
++	u32 record_crc32;
++} __packed;
++
++struct sleep_mem {
++	u32 magic;
++	u32 state;
++	u32 len;
++	u32 crc32;
++	u8 data[SLEEP_MEM_BYTES];
++} __packed;
++
++static_assert(sizeof(struct sleep_request) == 48);
++static_assert(sizeof(struct wake_info) == 56);
++static_assert(sizeof(struct sleep_mem) == 16 + SLEEP_MEM_BYTES);
++
++static DEFINE_MUTEX(sleep_lock);
++static struct wake_info wake;		/* this boot's report, copied at init */
++static bool wake_valid;
++static bool clock_restored;
++static u8 mem_data[SLEEP_MEM_BYTES];
++static u32 mem_len;
++
++static u32 ieee_crc32(const void *data, size_t len)
++{
++	return ~crc32_le(~0u, data, len);
++}
++
++static void mailbox_writeback(unsigned long pa, size_t len)
++{
++	arch_sync_dma_for_device(pa, len, DMA_TO_DEVICE);
++}
++
++static const char *const skip_names[] = {
++	"none", "button", "gpio_active", "bad_request", "boot_update",
++};
++
++/* "timer", "gpio:3", "timer,gpio:3,gpio:5", "poweron", "reset", "unknown". */
++static int emit_reason(char *buf, int len)
++{
++	int pin;
++	bool any = false;
++
++	if (!wake_valid)
++		return len + sysfs_emit_at(buf, len, "unknown");
++	switch (wake.boot) {
++	case WAKE_BOOT_POWERON:
++		return len + sysfs_emit_at(buf, len, "poweron");
++	case WAKE_BOOT_DEEPSLEEP:
++		break;
++	default:
++		return len + sysfs_emit_at(buf, len, "reset");
++	}
++	if (wake.causes & WAKE_CAUSE_TIMER) {
++		len += sysfs_emit_at(buf, len, "timer");
++		any = true;
++	}
++	for (pin = 0; pin < 16; pin++) {
++		if (!(wake.gpio_status & BIT(pin)))
++			continue;
++		len += sysfs_emit_at(buf, len, "%sgpio:%d", any ? "," : "", pin);
++		any = true;
++	}
++	if (!any)
++		len += sysfs_emit_at(buf, len, "unknown");
++	return len;
++}
++
++static ssize_t wake_reason_show(struct kobject *kobj, struct kobj_attribute *attr,
++				char *buf)
++{
++	int len = emit_reason(buf, 0);
++
++	return len + sysfs_emit_at(buf, len, "\n");
++}
++
++static ssize_t wake_info_show(struct kobject *kobj, struct kobj_attribute *attr,
++			      char *buf)
++{
++	static const char *const boots[] = {
++		"poweron", "reset", "deepsleep", "reset_during_sleep",
++	};
++	int len = 0;
++
++	len += sysfs_emit_at(buf, len, "wake_reason=");
++	len = emit_reason(buf, len);
++	len += sysfs_emit_at(buf, len, "\n");
++	if (!wake_valid)
++		return len + sysfs_emit_at(buf, len, "supported=0\n");
++	len += sysfs_emit_at(buf, len, "boot=%s\n",
++			     wake.boot < ARRAY_SIZE(boots) ? boots[wake.boot] : "unknown");
++	len += sysfs_emit_at(buf, len, "slept_ms=%u\n", wake.slept_ms);
++	len += sysfs_emit_at(buf, len, "gpio_status=0x%04x\n", wake.gpio_status);
++	len += sysfs_emit_at(buf, len, "button=%u\n", wake.button);
++	len += sysfs_emit_at(buf, len, "skipped=%s\n",
++			     wake.skipped < ARRAY_SIZE(skip_names) ?
++			     skip_names[wake.skipped] : "unknown");
++	if (wake.skipped_gpio)
++		len += sysfs_emit_at(buf, len, "skipped_gpio=0x%04x\n", wake.skipped_gpio);
++	len += sysfs_emit_at(buf, len, "seq=%u\n", wake.seq);
++	len += sysfs_emit_at(buf, len, "clock=%s\n",
++			     clock_restored ? "restored" : "not_set");
++	return len + sysfs_emit_at(buf, len, "supported=1\n");
++}
++
++static ssize_t deep_sleep_show(struct kobject *kobj, struct kobj_attribute *attr,
++			       char *buf)
++{
++	return sysfs_emit(buf, "wake_gpio_mask=0x%04x max_timer_ms=%u\n",
++			  WAKE_GPIO_MASK, U32_MAX);
++}
++
++/* "P:L[,P:L...]": LP GPIO P wakes the chip at level L. */
++static int parse_gpios(char *s, u32 *mask, u32 *high)
++{
++	char *item;
++
++	while ((item = strsep(&s, ",")) != NULL) {
++		unsigned int pin, level;
++		char *colon = strchr(item, ':');
++
++		if (!colon)
++			return -EINVAL;
++		*colon = '\0';
++		if (kstrtouint(item, 10, &pin) || kstrtouint(colon + 1, 10, &level) ||
++		    pin > 15 || level > 1 || !(WAKE_GPIO_MASK & BIT(pin)))
++			return -EINVAL;
++		*mask |= BIT(pin);
++		if (level)
++			*high |= BIT(pin);
++	}
++	return 0;
++}
++
++static bool boot_update_pending(void)
++{
++	const volatile struct boot_update_request *r =
++		(const volatile struct boot_update_request *)BOOT_REQUEST_PA;
++
++	return r->magic == BOOT_REQUEST_MAGIC && r->commit_word == BOOT_REQUEST_COMMIT;
++}
++
++static ssize_t deep_sleep_store(struct kobject *kobj, struct kobj_attribute *attr,
++				const char *buf, size_t count)
++{
++	struct sleep_request *mb = (struct sleep_request *)SLEEP_REQUEST_PA;
++	struct sleep_request req = {
++		.magic = SLEEP_REQUEST_MAGIC,
++		.version = SLEEP_REQUEST_VERSION,
++	};
++	struct timespec64 now;
++	char *copy, *s, *tok;
++	int r = 0;
++
++	copy = kstrndup(buf, count, GFP_KERNEL);
++	if (!copy)
++		return -ENOMEM;
++	s = strim(copy);
++	while (!r && (tok = strsep(&s, " \t\n")) != NULL) {
++		if (!*tok)
++			continue;
++		if (!strncmp(tok, "timer_ms=", 9))
++			r = kstrtou32(tok + 9, 10, &req.timer_ms);
++		else if (!strncmp(tok, "gpio=", 5))
++			r = parse_gpios(tok + 5, &req.gpio_mask, &req.gpio_high);
++		else if (!strcmp(tok, "pull=1"))
++			req.flags |= SLEEP_FLAG_PULL;
++		else if (strcmp(tok, "pull=0"))
++			r = -EINVAL;
++	}
++	kfree(copy);
++	if (r)
++		return r;
++	if (!req.timer_ms && !req.gpio_mask)
++		return -EINVAL;
++
++	mutex_lock(&sleep_lock);
++	/* The shim would apply the update first and then not sleep. */
++	if (boot_update_pending()) {
++		mutex_unlock(&sleep_lock);
++		return -EBUSY;
++	}
++	ktime_get_real_ts64(&now);
++	/* A clock still in 1970 (no NTP yet) is not worth carrying over. */
++	if (now.tv_sec > 1000000000LL) {
++		req.wall_sec_lo = lower_32_bits(now.tv_sec);
++		req.wall_sec_hi = upper_32_bits(now.tv_sec);
++		req.wall_usec = now.tv_nsec / NSEC_PER_USEC;
++	}
++	req.seq = get_random_u32() | 1;
++	req.record_crc32 = ieee_crc32(&req, offsetof(struct sleep_request, record_crc32));
++
++	WRITE_ONCE(mb->commit_word, 0);
++	memcpy(mb, &req, offsetof(struct sleep_request, commit_word));
++	WRITE_ONCE(mb->commit_word, SLEEP_REQUEST_COMMIT);
++	mailbox_writeback(SLEEP_REQUEST_PA, sizeof(req));
++	mutex_unlock(&sleep_lock);
++
++	pr_info("sleep: deep sleep requested: seq=%u timer_ms=%u gpio=0x%04x high=0x%04x; rebooting\n",
++		req.seq, req.timer_ms, req.gpio_mask, req.gpio_high);
++	orderly_reboot();
++	return count;
++}
++
++static ssize_t sleep_memory_read(struct file *f, struct kobject *kobj,
++				 const struct bin_attribute *attr, char *buf,
++				 loff_t pos, size_t count)
++{
++	ssize_t n = 0;
++
++	mutex_lock(&sleep_lock);
++	if (pos < mem_len) {
++		n = min_t(size_t, count, mem_len - pos);
++		memcpy(buf, mem_data + pos, n);
++	}
++	mutex_unlock(&sleep_lock);
++	return n;
++}
++
++/* A write at offset 0 replaces the data; later offsets extend it. */
++static ssize_t sleep_memory_write(struct file *f, struct kobject *kobj,
++				  const struct bin_attribute *attr, char *buf,
++				  loff_t pos, size_t count)
++{
++	struct sleep_mem *mb = (struct sleep_mem *)SLEEP_MEM_PA;
++
++	if (pos > mem_len || pos >= SLEEP_MEM_BYTES)
++		return -EFBIG;
++	count = min_t(size_t, count, SLEEP_MEM_BYTES - pos);
++
++	mutex_lock(&sleep_lock);
++	memcpy(mem_data + pos, buf, count);
++	mem_len = pos + count;
++	WRITE_ONCE(mb->state, 0);
++	memcpy(mb->data, mem_data, mem_len);
++	mb->len = mem_len;
++	mb->crc32 = ieee_crc32(mem_data, mem_len);
++	mb->magic = SLEEP_MEM_MAGIC;
++	WRITE_ONCE(mb->state, SLEEP_MEM_PENDING);
++	mailbox_writeback(SLEEP_MEM_PA, sizeof(struct sleep_mem));
++	mutex_unlock(&sleep_lock);
++	return count;
++}
++
++static struct kobj_attribute deep_sleep_attr = __ATTR_RW_MODE(deep_sleep, 0600);
++static struct kobj_attribute wake_reason_attr = __ATTR_RO(wake_reason);
++static struct kobj_attribute wake_info_attr = __ATTR_RO(wake_info);
++static const struct bin_attribute sleep_memory_attr = {
++	.attr = { .name = "sleep_memory", .mode = 0600 },
++	.size = SLEEP_MEM_BYTES,
++	.read = sleep_memory_read,
++	.write = sleep_memory_write,
++};
++
++static struct attribute *sleep_attrs[] = {
++	&deep_sleep_attr.attr,
++	&wake_reason_attr.attr,
++	&wake_info_attr.attr,
++	NULL,
++};
++
++static const struct bin_attribute *const sleep_bin_attrs[] = {
++	&sleep_memory_attr,
++	NULL,
++};
++
++static const struct attribute_group sleep_group = {
++	.attrs = sleep_attrs,
++	.bin_attrs = sleep_bin_attrs,
++};
++
++/* Covers the /boot update request too: boot-commit stages it from user space. */
++static int sleep_reboot_notify(struct notifier_block *nb, unsigned long action,
++			       void *data)
++{
++	mailbox_writeback(SLEEP_MAILBOX_PA, PAGE_SIZE);
++	return NOTIFY_DONE;
++}
++
++static struct notifier_block sleep_reboot_nb = {
++	.notifier_call = sleep_reboot_notify,
++};
++
++static void read_mailbox(void)
++{
++	const struct wake_info *w = (const struct wake_info *)WAKE_INFO_PA;
++	const struct sleep_mem *m = (const struct sleep_mem *)SLEEP_MEM_PA;
++
++	/* The shim wrote these before Linux started; drop any stale lines. */
++	arch_sync_dma_for_cpu(WAKE_INFO_PA, 0x1000 - 0x180, DMA_FROM_DEVICE);
++	memcpy(&wake, w, sizeof(wake));
++	wake_valid = wake.magic == WAKE_INFO_MAGIC &&
++		     wake.version == WAKE_INFO_VERSION &&
++		     wake.record_crc32 == ieee_crc32(&wake,
++						     offsetof(struct wake_info, record_crc32));
++	if (m->magic == SLEEP_MEM_MAGIC && m->state == SLEEP_MEM_PUBLISHED &&
++	    m->len <= SLEEP_MEM_BYTES && m->crc32 == ieee_crc32(m->data, m->len)) {
++		mem_len = m->len;
++		memcpy(mem_data, m->data, mem_len);
++	}
++}
++
++/* The shim's estimate of the clock at the Linux jump, plus the time since. */
++static void restore_clock(void)
++{
++	struct timespec64 ts, up, now;
++	u64 sec;
++
++	if (!wake_valid || wake.boot != WAKE_BOOT_DEEPSLEEP ||
++	    !(wake.wall_sec_lo || wake.wall_sec_hi))
++		return;
++	ktime_get_real_ts64(&now);
++	sec = ((u64)wake.wall_sec_hi << 32) | wake.wall_sec_lo;
++	if (now.tv_sec >= sec)
++		return;
++	ktime_get_boottime_ts64(&up);
++	ts.tv_sec = sec;
++	ts.tv_nsec = wake.wall_usec * NSEC_PER_USEC;
++	ts = timespec64_add(ts, up);
++	if (!do_settimeofday64(&ts))
++		clock_restored = true;
++}
++
++static int __init esp32p4_sleep_init(void)
++{
++	struct kobject *kobj = board_kobj;
++	int r;
++
++	if (!of_machine_is_compatible("espressif,esp32p4"))
++		return 0;
++	read_mailbox();
++	restore_clock();
++	/* Same as bootflash: the NOMMU pool normally made /sys/kernel/board. */
++	if (!kobj)
++		kobj = kobject_create_and_add("board", kernel_kobj);
++	if (!kobj)
++		return -ENOMEM;
++	r = sysfs_create_group(kobj, &sleep_group);
++	if (r) {
++		if (!board_kobj)
++			kobject_put(kobj);
++		return r;
++	}
++	register_reboot_notifier(&sleep_reboot_nb);
++	if (wake_valid) {
++		char reason[64];
++
++		emit_reason(reason, 0);
++		pr_info("sleep: wake_reason=%s slept_ms=%u button=%u skipped=%s%s\n",
++			reason, wake.slept_ms, wake.button,
++			wake.skipped < ARRAY_SIZE(skip_names) ? skip_names[wake.skipped] : "?",
++			clock_restored ? " clock restored" : "");
++	} else {
++		pr_info("sleep: no wake report from the boot shim\n");
++	}
++	return 0;
++}
++late_initcall(esp32p4_sleep_init);

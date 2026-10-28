@@ -830,6 +830,9 @@ fi
 # two only for the addr-gpios aperture; with no gpios map the resource
 # at its exact size or a >4 MiB rootfs cannot be mounted.
 patches+=(0092-physmap-exact-size.patch)
+# #56: /sys/kernel/board/deep_sleep, wake_reason, wake_info and
+# sleep_memory; the boot shim does the sleep itself.
+patches+=(0093-esp32p4-deep-sleep.patch)
 # C67-L2-STAGE: observe-only SMP breadcrumbs in smpboot.c (no behaviour change).
 if [[ "${C67_SMP_STAGE:-0}" == "1" || "${C68_CLEAN_RELEASE:-0}" == "1" ]]; then
 	patches+=(0037-c67-l2-stage-smpboot.patch)

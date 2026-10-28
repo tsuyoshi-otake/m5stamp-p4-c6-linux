@@ -83,6 +83,10 @@ if [ -r /sys/kernel/board/nommu_pool ]; then
 	done < /sys/kernel/board/nommu_pool
 fi
 
+# How this boot started (#56): timer, gpio:N, poweron or reset.
+WAKE_REASON=unknown
+[ -r /sys/kernel/board/wake_reason ] && read -r WAKE_REASON < /sys/kernel/board/wake_reason
+
 # Check if status has actually changed compared to the runtime checkpoint.
 # (Avoids redundant writes, ensures zero extra I/O and zero unnecessary CPU load)
 STATUS_STR="${STATUS}|${IP}|${NETMASK}|${GATEWAY}|${SSID}|${MODE}|${POOL_USED}"
@@ -111,6 +115,7 @@ if printf '%s\n' \
 	"pool_used=${POOL_USED}" \
 	"pool_largest_free=${POOL_LARGEST_FREE}" \
 	"pool_alloc_fail=${POOL_FAIL}" \
+	"wake_reason=${WAKE_REASON}" \
 	"updated_at=uptime ${UPTIME}s" > "$STATUS_TMP"
 then
 	if mv -f "$STATUS_TMP" "$STATUS_FILE"; then

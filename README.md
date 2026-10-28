@@ -30,6 +30,7 @@ Boots out-of-the-box into **Wi-Fi SoftAP mode** with automatic DHCP, Dropbear SS
   - **Shell commands**: the main BusyBox carries the shell and the commands scripts use (`grep`, `sed`, `find`, `ps`, `df`, `dmesg`, `ping`, `nc`, ...). `/bin/sh` is BusyBox hush (ash needs an MMU), patched so that `set -e` follows POSIX, also in `( … )` and `$(…)` subshells, which hush runs by executing itself again on this NOMMU system (#41). The m3-lab image adds `busybox-tools`, a third BusyBox with about 65 everyday commands the main one leaves out to stay under the 512 KB NOMMU allocation: `awk`, `less`, `top`, `free`, `uptime`, `pgrep`/`pkill`, `watch`, `timeout`, `stat`, `diff`, `patch`, `hexdump`, `xxd`, `tar`, `gzip`, `unzip`, `wget` (HTTP only), `nslookup`, `traceroute`, `ip` and more. It is loaded only while one of them runs (about 430 KB of the user pool). `sudo`, `nano`, `curl`, `file`, `dig` and `lsblk` are not available: they need an MMU, a wide-character toolchain or more RAM than the board has. `su` exists (#37): it is a small setuid BusyBox (`/bin/busybox-su`) and asks for `root_password=` from `credentials.txt`; every attempt is logged to `/run/messages` (`su: + pts/0 m5:root`, `-` for a failure). SSH logins with a terminal are recorded as on other Linux systems: `who`, `w` and `users` show who is logged in (`/var/run/utmp`), `last` lists past logins (`/var/log/wtmp`), and `uptime` counts the users. `wtmp` is kept on the 2 MB `/tmp` ramdisk, so Dropbear rotates it to `wtmp.1` at 32 KiB (about 85 logins in the two files; `last -f /var/log/wtmp.1`); both start empty at every boot. If the ramdisk is full, logins still work but are not recorded until space is freed. Root over SSH is key-only — put a `root_authorized_keys` file on the USB drive — and the USB-C serial console stays an unauthenticated root shell. The SSH login message (`/etc/motd`) lists the common commands by group; `busybox --list` and `busybox-tools --list` print everything. `ping` is BusyBox's small variant: `ping HOST` prints `HOST is alive!` and takes no options such as `-c`. `traceroute` needs a raw socket, so it works only as root.
   - **MicroPython (`python3`)**: MicroPython v1.22.2 compiled with bFLT Load-to-Ram (`-r`) and position-independent code (`-fPIC`) for stable NOMMU execution. It has the unix port's standard modules (`time`, `socket`, `select`, `json`, `re`, `struct`, `random`, `hashlib`, `binascii`, `collections`, `asyncio`, ...) without threads, TLS, `ffi`, `framebuf` or complex numbers, to stay under the 512 KB NOMMU allocation.
   - **Pico-style autorun**: `main.py`, `main.sh` or a bFLT `main` saved on the USB drive runs as `m5` at boot and restarts when a new version is saved ([details](#5-autorun-from-the-usb-drive-pico-style)).
+  - **Deep Sleep**: `deepsleep 60` (or `deepsleep.sleep()` in MicroPython) turns the C6 off and puts the P4 into Deep Sleep until a timer or an LP GPIO wakes it; the board then boots Linux again and `/sys/kernel/board/wake_reason` says why. 1 KB of sleep memory and the clock carry over ([details](#6-deep-sleep)).
   - **Writable Filesystem (OverlayFS)**: While the root filesystem is SquashFS (read-only for durability), RAM-backed OverlayFS is mounted on `/home`, `/root`, and `/var/lib` so users can create and edit scripts during the current boot. Its contents are lost when power is removed.
   - **USB Mass Storage (`/boot` drive, optional hardware)**: With the [optional USB carrier](#optional-hardware-usb-mass-storage-carrier), its Type-A USB connection (GPIO26/27) exposes a FAT-formatted 256KB `/boot` configuration drive to Windows/Mac/Linux hosts. Save a file and, a few seconds later, the board validates the drive, applies the settings and writes it to redundant A/B flash slots. No eject or reboot is needed.
 - **Kernel & SoC Stabilization**:
@@ -694,13 +695,61 @@ data access. A `printf`/`sleep` hello world is about 85 KB.
 
 | Signal | ESP32-P4 Pin | ESP32-C6 Pin | Function |
 | :--- | :--- | :--- | :--- |
-| **C6_PU / RESET** | GPIO 42 | CHIP_PU | Reset line for C6 slave (controlled by boot-shim) |
+| **C6 power / RESET** | GPIO 42 | (SY8089 EN) | Enable of the C6's DC-DC converter. It latches through a 100 k pull-down and a 10 k pull-up from the C6 rail, so a 100 ms pulse turns the C6 on (high) or off (low) and the level then stays without the GPIO driving it. The boot-shim uses it to reset the C6 and to turn it off for Deep Sleep. |
 | **SDIO_CLK** | GPIO 43 | GPIO 19 | SDIO Clock |
 | **SDIO_CMD** | GPIO 44 | GPIO 18 | SDIO Command |
 | **SDIO_DAT0** | GPIO 45 | GPIO 21 | SDIO Data 0 |
 | **SDIO_DAT1 / IRQ**| GPIO 46 | GPIO 22 | SDIO Data 1 / Interrupt |
 | **SDIO_DAT2** | GPIO 47 | GPIO 23 | SDIO Data 2 |
 | **SDIO_DAT3** | GPIO 48 | GPIO 15 | SDIO Data 3 |
+
+### 6. Deep Sleep
+
+`deepsleep` puts the board into Deep Sleep (#56). The board reboots at once;
+the boot-shim turns the C6 off and puts the P4 to sleep, and when the timer
+runs out or a wake pin changes, the board boots Linux again (about as long
+as a reset), the autorun program starts again and `wake_reason` tells why.
+While asleep, Wi-Fi, SSH and the USB drive are gone and the board draws
+less than the 10 mA a USB meter resolves (0.12 A with Linux running).
+
+```sh
+deepsleep 60                 # 60 s (also 500ms, 30s, 15m, 2h; up to 49 days)
+deepsleep --gpio 4=0         # until LP GPIO 4 reads 0 (internal pull-up on)
+deepsleep 1h --gpio 4=0 --gpio 5=1   # whichever comes first
+cat /sys/kernel/board/wake_reason    # timer, gpio:4, poweron or reset
+cat /sys/kernel/board/wake_info      # details: slept_ms, button, skipped, ...
+```
+
+MicroPython (`/usr/lib/micropython/deepsleep.py`, importable from `main.py`):
+
+```python
+import deepsleep
+n = int(deepsleep.memory() or b"0") + 1   # 1 KB kept across Deep Sleep
+deepsleep.memory(b"%d" % n)
+print("wake", n, deepsleep.wake_reason())
+deepsleep.sleep(60000)                    # ms; does not return
+```
+
+- **Wake pins** are LP GPIO 0–15 except GPIO 9 (the C6's boot strap on the
+  AddOn); check which are free on your carrier. Each pin wakes at the level
+  given (`N=0` or `N=1`), and the opposite internal pull is on while asleep
+  (`--no-pull` for external resistors). A pin that is already at its wake
+  level refuses the sleep (`skipped=gpio_active` in `wake_info`).
+- **Sleep memory**: `/sys/kernel/board/sleep_memory` keeps up to 1024 bytes
+  across Deep Sleep and reboots, not across a power cycle.
+- **Clock**: the clock is carried over the sleep, so it is about right after a
+  wake even without NTP (`clock=restored` in `wake_info`).
+- **Stopping a program that sleeps in a loop**: hold **BOOT** while the board
+  wakes (or press RESET and then hold BOOT at once). That boot does not start
+  the autorun program, and `deepsleep` refuses to sleep in it (`-f`
+  overrides). BOOT held while the board is about to sleep also cancels the
+  sleep (`skipped=button`).
+- `deepsleep` waits until a change on the USB drive has been saved, and a
+  `/boot` update that waits for the next reboot refuses the sleep, so
+  nothing on the drive is lost. `deepsleep=no` in `config.txt` (read at boot)
+  allows Deep Sleep for root only.
+- Wake time from a sleep is the same as a reset, so this is for sleeps of
+  minutes or longer, not for a light sleep between short tasks.
 
 ---
 

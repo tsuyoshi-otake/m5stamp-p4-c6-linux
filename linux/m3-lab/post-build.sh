@@ -30,6 +30,8 @@ for path in \
 	"${TARGET_DIR}/usr/sbin/watchdog-feed" \
 	"${TARGET_DIR}/usr/sbin/update-status" \
 	"${TARGET_DIR}/usr/sbin/autorun" \
+	"${TARGET_DIR}/usr/sbin/deepsleep" \
+	"${TARGET_DIR}/usr/lib/micropython/deepsleep.py" \
 	"${TARGET_DIR}/usr/lib/board/autorun.sh" \
 	"${TARGET_DIR}/etc/inetd.conf"; do
 	if [ ! -f "${path}" ]; then
@@ -49,6 +51,8 @@ chmod 0755 "${TARGET_DIR}/usr/sbin/watchdog-feed"
 chmod 0755 "${TARGET_DIR}/usr/sbin/update-status"
 chmod 0755 "${TARGET_DIR}/usr/sbin/sysinfo"
 chmod 0755 "${TARGET_DIR}/usr/sbin/autorun"
+chmod 0755 "${TARGET_DIR}/usr/sbin/deepsleep"
+chmod 0644 "${TARGET_DIR}/usr/lib/micropython/deepsleep.py"
 # Overrides Buildroot's udhcpc script: the m3-lab copy sources its *.d
 # hooks instead of exec'ing them (#40).
 chmod 0755 "${TARGET_DIR}/usr/share/udhcpc/default.script"

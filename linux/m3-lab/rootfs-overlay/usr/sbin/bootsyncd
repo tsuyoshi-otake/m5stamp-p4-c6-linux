@@ -138,6 +138,8 @@ FLASH_HASH_FILE="/run/.boot-flash-md5"
 # not seen, but the import waits SETTLE_SECONDS after that second anyway.
 SEEN_REF="/run/.bootsync-seen"
 SETTLE_SECONDS=3
+# A host write is waiting for SETTLE_SECONDS of quiet.
+PENDING_MARK="/run/.bootsync-pending"
 
 # auto_reboot=no in config.txt: when the kernel cannot write flash, keep the
 # staged image in PSRAM until a manual reboot instead of rebooting to save it.
@@ -381,7 +383,13 @@ done
 [ -f "$SEEN_REF" ] || touch -r "$BOOT_IMG" "$SEEN_REF"
 # At boot S05 staged the drive's program; the init scripts are done now.  A
 # respawned bootsync finds nothing staged and leaves the program alone.
+# BOOT held at this boot (S05, #56): install the program but do not start it.
+[ -f /run/.autorun-hold ] && AUTORUN_HOLD=1
 autorun_apply
+if [ -n "$AUTORUN_HOLD" ]; then
+	AUTORUN_HOLD=""
+	rm -f /run/.autorun-hold
+fi
 
 LAST_STATE=""
 PENDING=0
@@ -409,6 +417,8 @@ while true; do
 		host-owned)
 			if [ "$BOOT_IMG" -nt "$SEEN_REF" ]; then
 				touch -r "$BOOT_IMG" "$SEEN_REF"
+				# deepsleep waits while this exists (#56).
+				[ "$PENDING" -eq 1 ] || : > "$PENDING_MARK"
 				PENDING=1
 				QUIET=0
 				continue
@@ -424,5 +434,6 @@ while true; do
 	esac
 	PENDING=0
 	import_snapshot && [ "$IMPORT_MODE" = eject ] && LAST_STATE="host-owned"
+	[ -f "$PENDING_MARK" ] && rm -f "$PENDING_MARK"
 	[ "$IMPORT_MODE" = settle ] || touch -r "$BOOT_IMG" "$SEEN_REF"
 done
