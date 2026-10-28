@@ -47,7 +47,7 @@ request boot-commit staged from user space).
 +obj-$(CONFIG_ESP32P4_SLEEP)	+= esp32p4-sleep.o
 --- /dev/null
 +++ b/drivers/misc/esp32p4-sleep.c
-@@ -0,0 +1,578 @@
+@@ -0,0 +1,599 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Deep Sleep through the boot shim (#56).
@@ -199,6 +199,8 @@ request boot-commit staged from user space).
 +static bool clock_restored;
 +static u8 mem_data[SLEEP_MEM_BYTES];
 +static u32 mem_len;
++static struct sleep_request pending;	/* the request written, until the reboot */
++static bool pending_valid;
 +
 +static u32 ieee_crc32(const void *data, size_t len)
 +{
@@ -388,10 +390,27 @@ request boot-commit staged from user space).
 +	return r->magic == BOOT_REQUEST_MAGIC && r->commit_word == BOOT_REQUEST_COMMIT;
 +}
 +
++/* Stamp the clock into the request and commit it to the mailbox. */
++static void write_request(struct sleep_request *req, const struct timespec64 *now)
++{
++	struct sleep_request *mb = (struct sleep_request *)SLEEP_REQUEST_PA;
++
++	/* A clock still in 1970 (no NTP yet) is not worth carrying over. */
++	if (now->tv_sec > 1000000000LL) {
++		req->wall_sec_lo = lower_32_bits(now->tv_sec);
++		req->wall_sec_hi = upper_32_bits(now->tv_sec);
++		req->wall_usec = now->tv_nsec / NSEC_PER_USEC;
++	}
++	req->record_crc32 = ieee_crc32(req, offsetof(struct sleep_request, record_crc32));
++	WRITE_ONCE(mb->commit_word, 0);
++	memcpy(mb, req, offsetof(struct sleep_request, commit_word));
++	WRITE_ONCE(mb->commit_word, SLEEP_REQUEST_COMMIT);
++	mailbox_writeback(SLEEP_REQUEST_PA, sizeof(*req));
++}
++
 +static ssize_t deep_sleep_store(struct kobject *kobj, struct kobj_attribute *attr,
 +				const char *buf, size_t count)
 +{
-+	struct sleep_request *mb = (struct sleep_request *)SLEEP_REQUEST_PA;
 +	struct sleep_request req = {
 +		.magic = SLEEP_REQUEST_MAGIC,
 +		.version = SLEEP_REQUEST_VERSION,
@@ -451,19 +470,10 @@ request boot-commit staged from user space).
 +		return -EBUSY;
 +	}
 +	ktime_get_real_ts64(&now);
-+	/* A clock still in 1970 (no NTP yet) is not worth carrying over. */
-+	if (now.tv_sec > 1000000000LL) {
-+		req.wall_sec_lo = lower_32_bits(now.tv_sec);
-+		req.wall_sec_hi = upper_32_bits(now.tv_sec);
-+		req.wall_usec = now.tv_nsec / NSEC_PER_USEC;
-+	}
 +	req.seq = get_random_u32() | 1;
-+	req.record_crc32 = ieee_crc32(&req, offsetof(struct sleep_request, record_crc32));
-+
-+	WRITE_ONCE(mb->commit_word, 0);
-+	memcpy(mb, &req, offsetof(struct sleep_request, commit_word));
-+	WRITE_ONCE(mb->commit_word, SLEEP_REQUEST_COMMIT);
-+	mailbox_writeback(SLEEP_REQUEST_PA, sizeof(req));
++	write_request(&req, &now);
++	pending = req;
++	pending_valid = true;
 +	mutex_unlock(&sleep_lock);
 +
 +	pr_info("sleep: deep sleep requested: seq=%u timer_ms=%u gpio=0x%04x high=0x%04x lp_period_ms=%u; rebooting\n",
@@ -539,10 +549,21 @@ request boot-commit staged from user space).
 +	.bin_attrs = sleep_bin_attrs,
 +};
 +
-+/* Covers the /boot update request too: boot-commit stages it from user space. */
++/*
++ * The shutdown between the request and the reset takes a few seconds; stamp
++ * the clock again here so the shim does not lose them.  Then write the page
++ * back, which covers the /boot update request too: boot-commit stages it
++ * from user space.
++ */
 +static int sleep_reboot_notify(struct notifier_block *nb, unsigned long action,
 +			       void *data)
 +{
++	if (pending_valid && (pending.wall_sec_lo | pending.wall_sec_hi)) {
++		struct timespec64 now;
++
++		ktime_get_real_ts64(&now);
++		write_request(&pending, &now);
++	}
 +	mailbox_writeback(SLEEP_MAILBOX_PA, PAGE_SIZE);
 +	return NOTIFY_DONE;
 +}

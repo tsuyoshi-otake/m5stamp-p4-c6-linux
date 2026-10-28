@@ -33,6 +33,7 @@
 #include "esp_rom_sys.h"
 #include "esp_rtc_time.h"
 #include "esp_sleep.h"
+#include "esp_timer.h"
 #include "esp32p4/rom/ets_sys.h"
 #include "hal/cache_hal.h"
 #include "hal/rtc_hal.h"
@@ -60,6 +61,7 @@ struct lp_sleep_state {
 	struct sleep_request req;
 	uint32_t rtc_us_lo;     /* esp_rtc_get_time_us() just before sleeping */
 	uint32_t rtc_us_hi;
+	uint32_t boot_us;       /* esp_timer_get_time() then: since the reset */
 	int32_t temp_base_mc;   /* milli-degC = raw * 438.6 + temp_base_mc */
 	uint32_t crc32;
 } __attribute__((packed));
@@ -279,10 +281,13 @@ static void classify_boot(uint32_t rom_reason, uint64_t rtc_now)
 	report.seq = req->seq;
 	report.slept_ms = slept_us / 1000u > UINT32_MAX ? UINT32_MAX :
 			  (uint32_t)(slept_us / 1000u);
+	/* Linux stamps the request just before the reset; this boot then took
+	 * boot_us to reach the sleep. */
 	if (req->wall_sec_lo || req->wall_sec_hi) {
 		wall_known = true;
 		wall_us_at_sleep = ((((uint64_t)req->wall_sec_hi << 32) |
-				     req->wall_sec_lo) * 1000000u) + req->wall_usec;
+				     req->wall_sec_lo) * 1000000u) + req->wall_usec +
+				   lp_state.boot_us;
 	}
 	/* Consume the state first, so a crash below cannot report it twice. */
 	memset(&lp_state, 0, sizeof(lp_state));
@@ -404,6 +409,7 @@ static void enter_sleep(const struct sleep_request *req)
 	lp_state.req = *req;
 	lp_state.rtc_us_lo = (uint32_t)rtc_now;
 	lp_state.rtc_us_hi = (uint32_t)(rtc_now >> 32);
+	lp_state.boot_us = (uint32_t)esp_timer_get_time();
 	lp_state.temp_base_mc = temp_base_mc;
 	lp_state.magic = LP_STATE_MAGIC;
 	lp_state.crc32 = crc32_ieee(&lp_state, offsetof(struct lp_sleep_state, crc32));
