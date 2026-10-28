@@ -1,6 +1,6 @@
 --- a/drivers/tty/serial/esp32_uart.c
 +++ b/drivers/tty/serial/esp32_uart.c
-@@ -675,6 +675,53 @@ static struct console esp32_uart_console = {
+@@ -675,6 +675,62 @@ static struct console esp32_uart_console = {
  	.data		= &esp32_uart_reg,
  };
  
@@ -14,14 +14,23 @@
 +#define ESP32P4_USB_JTAG_WR_DONE	BIT(0)
 +#define ESP32P4_USB_JTAG_DATA_FREE	BIT(1)
 +
++/*
++ * Nothing drains the FIFO while the USB host has the port closed.  Waiting
++ * the whole timeout for every character then held the boot up for about a
++ * minute (#56 wake tests), so after one timeout characters are dropped until
++ * the FIFO has room again, as ESP-IDF's console does.
++ */
++static bool esp32p4_usb_jtag_stalled;
++
 +static void esp32p4_usb_jtag_putchar(struct uart_port *port, u8 c)
 +{
 +	void __iomem *base = port->membase;
-+	unsigned int timeout = 1000000;
++	unsigned int timeout = esp32p4_usb_jtag_stalled ? 1 : 1000000;
 +
 +	while (!(readl(base + ESP32P4_USB_JTAG_EP1_CONF_REG) &
 +		 ESP32P4_USB_JTAG_DATA_FREE) && --timeout)
 +		cpu_relax();
++	esp32p4_usb_jtag_stalled = !timeout;
 +	if (!timeout)
 +		return;
 +
