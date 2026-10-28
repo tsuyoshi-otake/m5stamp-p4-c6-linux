@@ -22,6 +22,16 @@ else
 	echo "nommu_pool: not available"
 fi
 
+echo "== wake (deep sleep) =="
+# Absent on kernels without patch 0093.
+if [ -r /sys/kernel/board/wake_info ]; then
+	while IFS= read -r line; do
+		echo "$line"
+	done < /sys/kernel/board/wake_info
+else
+	echo "wake_info: not available"
+fi
+
 echo "== wi-fi =="
 ifconfig wlan0 2>/dev/null | grep -E 'HWaddr|inet addr' || echo "wlan0: not present"
 iw dev wlan0 link 2>/dev/null | head -n 3

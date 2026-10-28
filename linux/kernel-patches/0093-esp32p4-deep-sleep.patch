@@ -1,0 +1,1040 @@
+Subject: [PATCH] stamp-p4: Deep Sleep through the boot shim (#56)
+
+Linux cannot run the ESP32-P4 PMU sleep sequence itself: it runs from
+PSRAM, which loses power in Deep Sleep, and the wake path is the ROM
+boot.  So the boot shim does it.  Writing a request to
+/sys/kernel/board/deep_sleep stores it in the reserved PSRAM mailbox
+page (the one boot-commit uses for its /boot request, at +0x100) and
+reboots.  The shim then turns the C6 off, sets the LP timer and the LP
+GPIO (ext1) wake pins, and sleeps.  On the next boot it writes a wake
+report at +0x180, which this driver shows as wake_reason and wake_info,
+and the 1 KiB sleep_memory at +0x200, which the shim keeps in LP RAM.
+
+The request carries the Linux clock, and the shim adds the time it
+slept, so the clock is right again after a wake without NTP.
+
+Linux reboots through an MWDT reset that does not write the data cache
+back, so every store to the mailbox is written back here, and a reboot
+notifier writes the whole page back (which also covers the /boot
+request boot-commit staged from user space).
+
+---
+--- a/drivers/misc/Kconfig
++++ b/drivers/misc/Kconfig
+@@ -645,6 +645,16 @@
+ 	  update the boot shim otherwise applies at the next reboot.
+ 	  Reading it shows the slot the shim will boot.
+ 
++config ESP32P4_SLEEP
++	bool "ESP32-P4 Stamp-P4: Deep Sleep through the boot shim"
++	depends on SOC_ESP32P4 && !MMU && RISCV_DMA_NONCOHERENT
++	select CRC32
++	help
++	  Adds /sys/kernel/board/deep_sleep, wake_reason, wake_info and
++	  sleep_memory.  Writing a request to deep_sleep reboots into the
++	  boot shim, which turns the C6 off and puts the chip into Deep
++	  Sleep until a timer or LP GPIO wakes it.
++
+ source "drivers/misc/c2port/Kconfig"
+ source "drivers/misc/eeprom/Kconfig"
+ source "drivers/misc/cb710/Kconfig"
+--- a/drivers/misc/Makefile
++++ b/drivers/misc/Makefile
+@@ -75,3 +75,4 @@
+ obj-y				+= amd-sbi/
+ obj-$(CONFIG_MISC_RP1)		+= rp1/
+ obj-$(CONFIG_ESP32P4_BOOTFLASH)	+= esp32p4-bootflash.o
++obj-$(CONFIG_ESP32P4_SLEEP)	+= esp32p4-sleep.o
+--- /dev/null
++++ b/drivers/misc/esp32p4-sleep.c
+@@ -0,0 +1,990 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Deep Sleep through the boot shim (#56).
++ *
++ * The shim (boot-shim/main/deep_sleep.c) owns the PMU sleep sequence.  Linux
++ * leaves a request in the reserved PSRAM mailbox page and reboots; the shim
++ * turns the C6 off and sleeps, and on the next boot reports how the chip
++ * woke.  PSRAM loses power while asleep, so the shim keeps the request and
++ * the sleep memory in LP RAM meanwhile.
++ *
++ * /sys/kernel/board/
++ *   deep_sleep    write "timer_ms=N gpio=P:L[,P:L...] pull=0|1
++ *                 temp_above=C temp_below=C lp_period_ms=N" to sleep;
++ *                 the board reboots at once (orderly_reboot).  Reading it
++ *                 shows the wake pins this board allows.
++ *   wake_reason   timer, gpio:<n>, temp_high, temp_low (comma separated if
++ *                 several), poweron, reset, or unknown with a shim that has
++ *                 no Deep Sleep.
++ *   wake_info     key=value lines with the details.
++ *   sleep_memory  up to 1024 bytes kept across Deep Sleep and reboots, but
++ *                 not across a power cycle.  A write replaces it; the new
++ *                 data reaches LP RAM at the next reboot or sleep.
++ *
++ * temp_above/temp_below (degC, up to three decimals) run the LP core while
++ * asleep (#57): it reads the chip temperature every lp_period_ms (default
++ * 10 s) and wakes the chip when it stays past a threshold.
++ *
++ * /sys/kernel/board/lp_core/ runs a user LP core program (#59), built with
++ * ESP-IDF for the LP RAM reserve that the shim reports:
++ *   program       write the image (staged until a start)
++ *   control       "start mode=always|sleep period_ms=N", "restart ...", "stop"
++ *   state         key=value lines: state, mode, bytes, crc32, period_ms,
++ *                 ram_base, ram_bytes
++ *   memory        the LP RAM reserve: the program's variables
++ * always runs it now and through reboots and Deep Sleep; sleep runs it only
++ * while asleep (the shim starts it).  LP RAM and the LP core survive reboots
++ * and Deep Sleep, so a start with the program already there keeps it and its
++ * variables.  A RESET or power cycle clears both.
++ *
++ * The layouts match boot-shim/main/deep_sleep.h.  Linux reboots through an
++ * MWDT reset, which does not write the data cache back, so every store to
++ * the mailbox is written back here before the reboot starts.
++ */
++#include <linux/crc32.h>
++#include <linux/ctype.h>
++#include <linux/delay.h>
++#include <linux/dma-map-ops.h>
++#include <linux/init.h>
++#include <linux/io.h>
++#include <linux/kernel.h>
++#include <linux/kobject.h>
++#include <linux/math64.h>
++#include <linux/mutex.h>
++#include <linux/nommu_userspace_pool.h>
++#include <linux/of.h>
++#include <linux/random.h>
++#include <linux/reboot.h>
++#include <linux/sysfs.h>
++#include <linux/timekeeping.h>
++
++#define SLEEP_MAILBOX_PA	0x499bf000UL
++#define BOOT_REQUEST_PA		SLEEP_MAILBOX_PA
++#define SLEEP_REQUEST_PA	(SLEEP_MAILBOX_PA + 0x100)
++#define WAKE_INFO_PA		(SLEEP_MAILBOX_PA + 0x180)
++#define SLEEP_MEM_PA		(SLEEP_MAILBOX_PA + 0x200)
++#define SLEEP_MEM_BYTES		1024u
++
++#define BOOT_REQUEST_MAGIC	0x45534243u	/* "ESBC" */
++#define BOOT_REQUEST_COMMIT	0x434f4d4du	/* "COMM" */
++#define SLEEP_REQUEST_MAGIC	0x45534453u	/* "ESDS" */
++#define SLEEP_REQUEST_VERSION	2u
++#define SLEEP_REQUEST_COMMIT	0x534c4550u	/* "SLEP" */
++#define SLEEP_FLAG_PULL		0x1u
++#define SLEEP_FLAG_LP_KEEP	0x2u
++#define SLEEP_FLAG_LP_RUN	0x4u
++#define WAKE_INFO_MAGIC		0x4553574bu	/* "ESWK" */
++#define WAKE_INFO_VERSION	3u
++#define SLEEP_MEM_MAGIC		0x45534d4du	/* "ESMM" */
++#define SLEEP_MEM_PENDING	0x50454e44u	/* "PEND" */
++#define SLEEP_MEM_PUBLISHED	0x5055424cu	/* "PUBL" */
++#define SLEEP_LP_PERIOD_MIN_MS	100u
++#define SLEEP_LP_PERIOD_MAX_MS	3600000u
++#define SLEEP_LP_PERIOD_DEF_MS	10000u
++#define SLEEP_TEMP_OFF		S32_MIN
++/* The shim's sensor range is -10..80 degC; beyond these a threshold is a typo. */
++#define SLEEP_TEMP_MIN_MC	(-40000)
++#define SLEEP_TEMP_MAX_MC	125000
++
++#define WAKE_BOOT_POWERON	0u
++#define WAKE_BOOT_RESET		1u
++#define WAKE_BOOT_DEEPSLEEP	2u
++#define WAKE_BOOT_INTERRUPTED	3u
++#define WAKE_CAUSE_TIMER	0x1u
++#define WAKE_CAUSE_GPIO		0x2u
++#define WAKE_CAUSE_TEMP_LOW	0x4u
++#define WAKE_CAUSE_TEMP_HIGH	0x8u
++#define WAKE_CAUSE_LP_CORE	0x10u
++
++/*
++ * LP core registers, as IDF's lp_core_ll.h and ulp_lp_core_run() use them
++ * (the same on chip rev v1.x and v3).  LP_SYS STORE11/12 record the loaded
++ * program for the shim and for the next boot; see deep_sleep.h.
++ */
++#define LP_RAM_PA		0x50108000UL
++#define LP_RAM_END_PA		0x50110000UL
++#define LP_ROM_PA		0x50100000UL
++#define LP_SYS_PA		0x50110000UL
++#define LP_SYS_CORE_BOOT	0x18
++#define LP_SYS_APP_BOOT		0x28
++#define LP_SYS_STORE(n)		(0x2c + 4 * (n))
++#define LP_STORE_SLOW_CAL	1	/* RTC slow clock period, us << 19 */
++#define LP_STORE_UART_INIT	9	/* bit 0: LP ROM skips the LP UART */
++#define LP_STORE_PROG_CRC	11
++#define LP_STORE_PROG_INFO	12
++#define LP_PROGRAM_MAGIC	0xa5u
++#define LP_MODE_ALWAYS		1u
++#define LP_MODE_SLEEP		2u
++#define LPPERI_PA		0x50120000UL
++#define LPPERI_CLK_EN		0x0
++#define LPPERI_RESET_EN		0x8
++#define LPPERI_CPU		0xc	/* bit 31: debug module off */
++#define LPPERI_LP_CORE		BIT(31)
++#define PMU_PA			0x50115000UL
++#define PMU_LP_CPU_PWR0		0x184
++#define PMU_LP_CPU_PWR1		0x188
++#define PMU_LP_CPU_PWR2		0x18c	/* wakeup_en */
++#define PMU_HP_LP_CPU_COMM	0x19c
++#define PMU_SLP_STALL_EN	BIT(29)
++#define PMU_SLP_RESET_EN	BIT(30)
++#define PMU_SLEEP_REQ		BIT(31)
++#define PMU_HP_TRIGGER_LP	BIT(31)
++#define LP_WAKE_LP_TIMER	BIT(18)
++#define LP_WAKE_HP_CPU		BIT(22)
++#define LP_VECTOR_BYTES		0x80	/* the reset handler follows */
++#define LP_SHARED_BYTES		16	/* ulp_lp_core_memory_shared_cfg_t */
++#define LP_PERIOD_MAX_MS	3600000u
++
++/*
++ * Stamp-P4 + C6 AddOn: LP GPIO0-15 without GPIO9 (the C6 IO9 boot strap).
++ * Same as BOARD_SLEEP_WAKE_GPIO_MASK in the shim, which checks it again.
++ */
++#define WAKE_GPIO_MASK		0xfdffu
++
++struct boot_update_request {
++	u32 magic;
++	u32 version;
++	u32 image_bytes;
++	u32 image_crc32;
++	u32 commit_word;
++} __packed;
++
++struct sleep_request {
++	u32 magic;
++	u32 version;
++	u32 timer_ms;
++	u32 gpio_mask;
++	u32 gpio_high;
++	u32 flags;
++	u32 wall_sec_lo;
++	u32 wall_sec_hi;
++	u32 wall_usec;
++	u32 seq;
++	u32 lp_period_ms;
++	s32 lp_temp_low_mc;
++	s32 lp_temp_high_mc;
++	u32 record_crc32;
++	u32 commit_word;
++} __packed;
++
++struct wake_info {
++	u32 magic;
++	u32 version;
++	u32 boot;
++	u32 causes;
++	u32 gpio_status;
++	u32 button;
++	u32 skipped;
++	u32 skipped_gpio;
++	u32 seq;
++	u32 slept_ms;
++	u32 wall_sec_lo;
++	u32 wall_sec_hi;
++	u32 wall_usec;
++	u32 lp_checks;
++	s32 lp_last_mc;
++	s32 lp_min_mc;
++	s32 lp_max_mc;
++	u32 lp_ram_base;
++	u32 lp_ram_bytes;
++	u32 record_crc32;
++} __packed;
++
++struct sleep_mem {
++	u32 magic;
++	u32 state;
++	u32 len;
++	u32 crc32;
++	u8 data[SLEEP_MEM_BYTES];
++} __packed;
++
++static_assert(sizeof(struct sleep_request) == 60);
++static_assert(sizeof(struct wake_info) == 80);
++static_assert(sizeof(struct sleep_mem) == 16 + SLEEP_MEM_BYTES);
++
++static DEFINE_MUTEX(sleep_lock);
++static struct wake_info wake;		/* this boot's report, copied at init */
++static bool wake_valid;
++static bool clock_restored;
++static u8 mem_data[SLEEP_MEM_BYTES];
++static u32 mem_len;
++static struct sleep_request pending;	/* the request written, until the reboot */
++static bool pending_valid;
++static void __iomem *lp_ram, *lp_sys, *lpperi, *pmu;	/* lp_sys NULL: no LP core */
++static u32 lp_base, lp_bytes;
++static u8 *lp_stage;			/* the image written to program */
++static u32 lp_stage_len;
++
++static u32 ieee_crc32(const void *data, size_t len)
++{
++	return ~crc32_le(~0u, data, len);
++}
++
++static void mailbox_writeback(unsigned long pa, size_t len)
++{
++	arch_sync_dma_for_device(pa, len, DMA_TO_DEVICE);
++}
++
++static const char *const skip_names[] = {
++	"none", "button", "gpio_active", "bad_request", "boot_update",
++	"temp_active",
++};
++
++/*
++ * "timer", "gpio:3", "timer,gpio:3,gpio:5", "temp_high", "poweron", "reset",
++ * "unknown".
++ * scnprintf, not sysfs_emit_at: init prints it into a buffer on the stack.
++ */
++static int emit_reason(char *buf, int len, size_t size)
++{
++	int pin;
++	bool any = false;
++
++	if (!wake_valid)
++		return len + scnprintf(buf + len, size - len, "unknown");
++	switch (wake.boot) {
++	case WAKE_BOOT_POWERON:
++		return len + scnprintf(buf + len, size - len, "poweron");
++	case WAKE_BOOT_DEEPSLEEP:
++		break;
++	default:
++		return len + scnprintf(buf + len, size - len, "reset");
++	}
++	if (wake.causes & WAKE_CAUSE_TIMER) {
++		len += scnprintf(buf + len, size - len, "timer");
++		any = true;
++	}
++	for (pin = 0; pin < 16; pin++) {
++		if (!(wake.gpio_status & BIT(pin)))
++			continue;
++		len += scnprintf(buf + len, size - len, "%sgpio:%d", any ? "," : "", pin);
++		any = true;
++	}
++	if (wake.causes & WAKE_CAUSE_TEMP_HIGH) {
++		len += scnprintf(buf + len, size - len, "%stemp_high", any ? "," : "");
++		any = true;
++	}
++	if (wake.causes & WAKE_CAUSE_TEMP_LOW) {
++		len += scnprintf(buf + len, size - len, "%stemp_low", any ? "," : "");
++		any = true;
++	}
++	if (wake.causes & WAKE_CAUSE_LP_CORE) {
++		len += scnprintf(buf + len, size - len, "%slp_core", any ? "," : "");
++		any = true;
++	}
++	if (!any)
++		len += scnprintf(buf + len, size - len, "unknown");
++	return len;
++}
++
++static ssize_t wake_reason_show(struct kobject *kobj, struct kobj_attribute *attr,
++				char *buf)
++{
++	int len = emit_reason(buf, 0, PAGE_SIZE);
++
++	return len + sysfs_emit_at(buf, len, "\n");
++}
++
++/* "key=24.7" (milli-degC with one decimal); returns the new length. */
++static int emit_mc(char *buf, int len, const char *key, s32 mc)
++{
++	u32 a = mc < 0 ? -(s64)mc : mc;
++
++	return len + sysfs_emit_at(buf, len, "%s=%s%u.%u\n", key, mc < 0 ? "-" : "",
++				   a / 1000, a % 1000 / 100);
++}
++
++static ssize_t wake_info_show(struct kobject *kobj, struct kobj_attribute *attr,
++			      char *buf)
++{
++	static const char *const boots[] = {
++		"poweron", "reset", "deepsleep", "reset_during_sleep",
++	};
++	int len = 0;
++
++	len += sysfs_emit_at(buf, len, "wake_reason=");
++	len = emit_reason(buf, len, PAGE_SIZE);
++	len += sysfs_emit_at(buf, len, "\n");
++	if (!wake_valid)
++		return len + sysfs_emit_at(buf, len, "supported=0\n");
++	len += sysfs_emit_at(buf, len, "boot=%s\n",
++			     wake.boot < ARRAY_SIZE(boots) ? boots[wake.boot] : "unknown");
++	len += sysfs_emit_at(buf, len, "slept_ms=%u\n", wake.slept_ms);
++	len += sysfs_emit_at(buf, len, "gpio_status=0x%04x\n", wake.gpio_status);
++	len += sysfs_emit_at(buf, len, "button=%u\n", wake.button);
++	len += sysfs_emit_at(buf, len, "skipped=%s\n",
++			     wake.skipped < ARRAY_SIZE(skip_names) ?
++			     skip_names[wake.skipped] : "unknown");
++	if (wake.skipped_gpio)
++		len += sysfs_emit_at(buf, len, "skipped_gpio=0x%04x\n", wake.skipped_gpio);
++	len += sysfs_emit_at(buf, len, "seq=%u\n", wake.seq);
++	if (wake.boot == WAKE_BOOT_DEEPSLEEP && wake.lp_checks) {
++		len += sysfs_emit_at(buf, len, "temp_checks=%u\n", wake.lp_checks);
++		len = emit_mc(buf, len, "temp_last", wake.lp_last_mc);
++		len = emit_mc(buf, len, "temp_min", wake.lp_min_mc);
++		len = emit_mc(buf, len, "temp_max", wake.lp_max_mc);
++	}
++	len += sysfs_emit_at(buf, len, "clock=%s\n",
++			     clock_restored ? "restored" : "not_set");
++	return len + sysfs_emit_at(buf, len, "supported=1\n");
++}
++
++static ssize_t deep_sleep_show(struct kobject *kobj, struct kobj_attribute *attr,
++			       char *buf)
++{
++	return sysfs_emit(buf, "wake_gpio_mask=0x%04x max_timer_ms=%u temp=1 lp_period_ms=%u-%u\n",
++			  WAKE_GPIO_MASK, U32_MAX, SLEEP_LP_PERIOD_MIN_MS,
++			  SLEEP_LP_PERIOD_MAX_MS);
++}
++
++/* "25", "-3.5", "30.125" degC to milli-degC. */
++static int parse_mc(const char *s, s32 *mc)
++{
++	bool neg = *s == '-';
++	unsigned int whole, frac = 0, digits = 0;
++	char ip[8];
++	const char *dot;
++	size_t n;
++	s64 v;
++
++	if (neg)
++		s++;
++	dot = strchr(s, '.');
++	n = dot ? dot - s : strlen(s);
++	if (!n || n >= sizeof(ip))
++		return -EINVAL;
++	memcpy(ip, s, n);
++	ip[n] = '\0';
++	if (kstrtouint(ip, 10, &whole))
++		return -EINVAL;
++	if (dot) {
++		for (s = dot + 1; *s; s++, digits++) {
++			if (!isdigit(*s) || digits >= 3)
++				return -EINVAL;
++			frac = frac * 10 + (*s - '0');
++		}
++		if (!digits)
++			return -EINVAL;
++		while (digits++ < 3)
++			frac *= 10;
++	}
++	v = (s64)whole * 1000 + frac;
++	if (neg)
++		v = -v;
++	if (v < SLEEP_TEMP_MIN_MC || v > SLEEP_TEMP_MAX_MC)
++		return -ERANGE;
++	*mc = v;
++	return 0;
++}
++
++/* "P:L[,P:L...]": LP GPIO P wakes the chip at level L. */
++static int parse_gpios(char *s, u32 *mask, u32 *high)
++{
++	char *item;
++
++	while ((item = strsep(&s, ",")) != NULL) {
++		unsigned int pin, level;
++		char *colon = strchr(item, ':');
++
++		if (!colon)
++			return -EINVAL;
++		*colon = '\0';
++		if (kstrtouint(item, 10, &pin) || kstrtouint(colon + 1, 10, &level) ||
++		    pin > 15 || level > 1 || !(WAKE_GPIO_MASK & BIT(pin)))
++			return -EINVAL;
++		*mask |= BIT(pin);
++		if (level)
++			*high |= BIT(pin);
++	}
++	return 0;
++}
++
++static bool boot_update_pending(void)
++{
++	const volatile struct boot_update_request *r =
++		(const volatile struct boot_update_request *)BOOT_REQUEST_PA;
++
++	return r->magic == BOOT_REQUEST_MAGIC && r->commit_word == BOOT_REQUEST_COMMIT;
++}
++
++/* Stamp the clock into the request and commit it to the mailbox. */
++static void write_request(struct sleep_request *req, const struct timespec64 *now)
++{
++	struct sleep_request *mb = (struct sleep_request *)SLEEP_REQUEST_PA;
++
++	/* A clock still in 1970 (no NTP yet) is not worth carrying over. */
++	if (now->tv_sec > 1000000000LL) {
++		req->wall_sec_lo = lower_32_bits(now->tv_sec);
++		req->wall_sec_hi = upper_32_bits(now->tv_sec);
++		req->wall_usec = now->tv_nsec / NSEC_PER_USEC;
++	}
++	req->record_crc32 = ieee_crc32(req, offsetof(struct sleep_request, record_crc32));
++	WRITE_ONCE(mb->commit_word, 0);
++	memcpy(mb, req, offsetof(struct sleep_request, commit_word));
++	WRITE_ONCE(mb->commit_word, SLEEP_REQUEST_COMMIT);
++	mailbox_writeback(SLEEP_REQUEST_PA, sizeof(*req));
++}
++
++/* The loaded program's LP_MODE_*, 0 when none; *crc and *bytes if given. */
++static u32 lp_mode(u32 *crc, u32 *bytes)
++{
++	u32 info;
++
++	if (!lp_sys)
++		return 0;
++	info = readl(lp_sys + LP_SYS_STORE(LP_STORE_PROG_INFO));
++	if (info >> 24 != LP_PROGRAM_MAGIC)
++		return 0;
++	if (crc)
++		*crc = readl(lp_sys + LP_SYS_STORE(LP_STORE_PROG_CRC));
++	if (bytes)
++		*bytes = info & GENMASK(21, 0);
++	return (info >> 22) & 3;
++}
++
++static bool lp_running(void)
++{
++	return (readl(pmu + PMU_LP_CPU_PWR2) & (LP_WAKE_LP_TIMER | LP_WAKE_HP_CPU)) &&
++	       (readl(lpperi + LPPERI_CLK_EN) & LPPERI_LP_CORE);
++}
++
++static void __iomem *lp_shared(void)
++{
++	return lp_ram + ALIGN_DOWN(lp_bytes, 8) - LP_SHARED_BYTES;
++}
++
++/* ulp_lp_core_stop(): no wakeup source, and sleep after this run. */
++static void lp_stop(void)
++{
++	writel(0, pmu + PMU_LP_CPU_PWR2);
++	writel(PMU_SLEEP_REQ, pmu + PMU_LP_CPU_PWR1);
++	udelay(100);
++}
++
++/*
++ * The period goes to the shared block, where the program's startup code
++ * reads it after each run (sleep_duration_ticks) to set the next LP timer
++ * alarm; 0 leaves the scheduling to the program.
++ */
++static int lp_set_period(u32 period_ms)
++{
++	u32 cal = readl(lp_sys + LP_SYS_STORE(LP_STORE_SLOW_CAL));
++	u64 us = (u64)period_ms * USEC_PER_MSEC;
++	void __iomem *sh = lp_shared();
++	u64 ticks;
++
++	if (!cal)
++		return -EIO;
++	ticks = div64_u64(us << 19, cal);
++	writel(lower_32_bits(us), sh);
++	writel(upper_32_bits(us), sh + 4);
++	writel(lower_32_bits(ticks), sh + 8);
++	writel(upper_32_bits(ticks), sh + 12);
++	return 0;
++}
++
++static u32 lp_period_ms(void)
++{
++	void __iomem *sh = lp_shared();
++	u64 us = ((u64)readl(sh + 4) << 32) | readl(sh);
++
++	return div64_u64(us, USEC_PER_MSEC);
++}
++
++/* ulp_lp_core_run() through the LP ROM, then an HP_CPU trigger runs it now. */
++static void lp_run(void)
++{
++	u32 v;
++
++	/* The LP ROM's UART init would hang on the XTAL clock off in sleep. */
++	writel(readl(lp_sys + LP_SYS_STORE(LP_STORE_UART_INIT)) | 1,
++	       lp_sys + LP_SYS_STORE(LP_STORE_UART_INIT));
++	writel(LP_ROM_PA, lp_sys + LP_SYS_CORE_BOOT);
++	writel(lp_base + LP_VECTOR_BYTES, lp_sys + LP_SYS_APP_BOOT);
++	v = readl(lpperi + LPPERI_RESET_EN);
++	writel(v | LPPERI_LP_CORE, lpperi + LPPERI_RESET_EN);
++	writel(v & ~LPPERI_LP_CORE, lpperi + LPPERI_RESET_EN);
++	writel(readl(lpperi + LPPERI_CLK_EN) | LPPERI_LP_CORE, lpperi + LPPERI_CLK_EN);
++	writel(readl(pmu + PMU_LP_CPU_PWR0) | PMU_SLP_STALL_EN | PMU_SLP_RESET_EN,
++	       pmu + PMU_LP_CPU_PWR0);
++	writel(LP_WAKE_LP_TIMER | LP_WAKE_HP_CPU, pmu + PMU_LP_CPU_PWR2);
++	writel(readl(lpperi + LPPERI_CPU) & ~LPPERI_LP_CORE, lpperi + LPPERI_CPU);
++	writel(PMU_HP_TRIGGER_LP, pmu + PMU_HP_LP_CPU_COMM);
++}
++
++/*
++ * Start the staged program.  The same image already in LP RAM is kept with
++ * its variables (and restarted where it stopped, if it had); force or a
++ * different image loads it afresh.  Called with sleep_lock held.
++ */
++static int lp_start(u32 mode, u32 period_ms, bool force)
++{
++	u32 crc, cur_crc = 0, cur_bytes = 0, cur_mode;
++	const char *what;
++	int r;
++
++	if (!lp_stage_len)
++		return -ENODATA;
++	crc = ieee_crc32(lp_stage, lp_stage_len);
++	cur_mode = lp_mode(&cur_crc, &cur_bytes);
++	if (force || !cur_mode || cur_crc != crc || cur_bytes != lp_stage_len) {
++		lp_stop();
++		memset_io(lp_ram, 0, lp_bytes);
++		memcpy_toio(lp_ram, lp_stage, lp_stage_len);
++		what = "loaded";
++	} else if (mode == LP_MODE_SLEEP && lp_running()) {
++		lp_stop();
++		what = "kept, stopped until a sleep";
++	} else if (mode == LP_MODE_ALWAYS && !lp_running()) {
++		what = "kept, resumed";
++	} else {
++		what = "kept";
++	}
++	r = lp_set_period(period_ms);
++	if (r)
++		return r;
++	writel(crc, lp_sys + LP_SYS_STORE(LP_STORE_PROG_CRC));
++	writel(LP_PROGRAM_MAGIC << 24 | mode << 22 | lp_stage_len,
++	       lp_sys + LP_SYS_STORE(LP_STORE_PROG_INFO));
++	if (mode == LP_MODE_ALWAYS && !lp_running())
++		lp_run();
++	pr_info("lp_core: %s: %u bytes crc32=0x%08x mode=%s period_ms=%u\n", what,
++		lp_stage_len, crc, mode == LP_MODE_ALWAYS ? "always" : "sleep", period_ms);
++	return 0;
++}
++
++static ssize_t control_store(struct kobject *kobj, struct kobj_attribute *attr,
++			     const char *buf, size_t count)
++{
++	u32 mode = 0, period_ms = 1000;
++	bool start, force = false;
++	char *copy, *s, *tok;
++	int r = 0;
++
++	copy = kstrndup(buf, count, GFP_KERNEL);
++	if (!copy)
++		return -ENOMEM;
++	s = strim(copy);
++	tok = strsep(&s, " \t\n");
++	start = !strcmp(tok, "start");
++	if (!strcmp(tok, "restart"))
++		start = force = true;
++	else if (!start && (strcmp(tok, "stop") || s))
++		r = -EINVAL;
++	while (!r && start && (tok = strsep(&s, " \t\n")) != NULL) {
++		if (!*tok)
++			continue;
++		if (!strcmp(tok, "mode=always"))
++			mode = LP_MODE_ALWAYS;
++		else if (!strcmp(tok, "mode=sleep"))
++			mode = LP_MODE_SLEEP;
++		else if (!strncmp(tok, "period_ms=", 10))
++			r = kstrtou32(tok + 10, 10, &period_ms);
++		else
++			r = -EINVAL;
++	}
++	kfree(copy);
++	if (!r && start && (!mode || period_ms > LP_PERIOD_MAX_MS))
++		r = -EINVAL;
++	if (r)
++		return r;
++
++	mutex_lock(&sleep_lock);
++	if (start) {
++		r = lp_start(mode, period_ms, force);
++	} else {
++		if (lp_running() || lp_mode(NULL, NULL))
++			pr_info("lp_core: stopped\n");
++		lp_stop();
++		writel(0, lp_sys + LP_SYS_STORE(LP_STORE_PROG_INFO));
++		writel(0, lp_sys + LP_SYS_STORE(LP_STORE_PROG_CRC));
++	}
++	mutex_unlock(&sleep_lock);
++	return r ? r : count;
++}
++
++static ssize_t state_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf)
++{
++	static const char *const modes[] = { "none", "always", "sleep", "none" };
++	u32 crc = 0, bytes = 0, mode;
++	bool running;
++	int len;
++
++	mutex_lock(&sleep_lock);
++	mode = lp_mode(&crc, &bytes);
++	running = lp_running();
++	len = sysfs_emit(buf, "state=%s\nmode=%s\n",
++			 running ? "running" : mode ? "loaded" : "stopped", modes[mode]);
++	if (mode)
++		len += sysfs_emit_at(buf, len, "bytes=%u\ncrc32=0x%08x\nperiod_ms=%u\n",
++				     bytes, crc, lp_period_ms());
++	len += sysfs_emit_at(buf, len, "ram_base=0x%08x\nram_bytes=%u\n", lp_base, lp_bytes);
++	mutex_unlock(&sleep_lock);
++	return len;
++}
++
++/* A write at offset 0 starts a new image; later offsets extend it. */
++static ssize_t program_write(struct file *f, struct kobject *kobj,
++			     const struct bin_attribute *attr, char *buf,
++			     loff_t pos, size_t count)
++{
++	ssize_t r;
++
++	mutex_lock(&sleep_lock);
++	if (!lp_stage)
++		lp_stage = kmalloc(attr->size, GFP_KERNEL);
++	if (!lp_stage) {
++		r = -ENOMEM;
++	} else if ((pos && pos != lp_stage_len) || pos >= attr->size) {
++		r = -EFBIG;
++	} else {
++		r = min_t(size_t, count, attr->size - pos);
++		memcpy(lp_stage + pos, buf, r);
++		lp_stage_len = pos + r;
++	}
++	mutex_unlock(&sleep_lock);
++	return r;
++}
++
++static ssize_t memory_read(struct file *f, struct kobject *kobj,
++			   const struct bin_attribute *attr, char *buf,
++			   loff_t pos, size_t count)
++{
++	if (pos >= lp_bytes)
++		return 0;
++	count = min_t(size_t, count, lp_bytes - pos);
++	memcpy_fromio(buf, lp_ram + pos, count);
++	return count;
++}
++
++static ssize_t memory_write(struct file *f, struct kobject *kobj,
++			    const struct bin_attribute *attr, char *buf,
++			    loff_t pos, size_t count)
++{
++	if (pos >= lp_bytes)
++		return -EFBIG;
++	count = min_t(size_t, count, lp_bytes - pos);
++	memcpy_toio(lp_ram + pos, buf, count);
++	return count;
++}
++
++static ssize_t deep_sleep_store(struct kobject *kobj, struct kobj_attribute *attr,
++				const char *buf, size_t count)
++{
++	struct sleep_request req = {
++		.magic = SLEEP_REQUEST_MAGIC,
++		.version = SLEEP_REQUEST_VERSION,
++		.lp_temp_low_mc = SLEEP_TEMP_OFF,
++		.lp_temp_high_mc = SLEEP_TEMP_OFF,
++	};
++	bool temp;
++	struct timespec64 now;
++	char *copy, *s, *tok;
++	int r = 0;
++
++	copy = kstrndup(buf, count, GFP_KERNEL);
++	if (!copy)
++		return -ENOMEM;
++	s = strim(copy);
++	while (!r && (tok = strsep(&s, " \t\n")) != NULL) {
++		if (!*tok)
++			continue;
++		if (!strncmp(tok, "timer_ms=", 9))
++			r = kstrtou32(tok + 9, 10, &req.timer_ms);
++		else if (!strncmp(tok, "gpio=", 5))
++			r = parse_gpios(tok + 5, &req.gpio_mask, &req.gpio_high);
++		else if (!strncmp(tok, "temp_above=", 11))
++			r = parse_mc(tok + 11, &req.lp_temp_high_mc);
++		else if (!strncmp(tok, "temp_below=", 11))
++			r = parse_mc(tok + 11, &req.lp_temp_low_mc);
++		else if (!strncmp(tok, "lp_period_ms=", 13))
++			r = kstrtou32(tok + 13, 10, &req.lp_period_ms);
++		else if (!strcmp(tok, "pull=1"))
++			req.flags |= SLEEP_FLAG_PULL;
++		else if (strcmp(tok, "pull=0"))
++			r = -EINVAL;
++	}
++	kfree(copy);
++	if (r)
++		return r;
++	temp = req.lp_temp_low_mc != SLEEP_TEMP_OFF ||
++	       req.lp_temp_high_mc != SLEEP_TEMP_OFF;
++	if (temp && !req.lp_period_ms)
++		req.lp_period_ms = SLEEP_LP_PERIOD_DEF_MS;
++	/* The period only means something with a threshold. */
++	if (temp != (req.lp_period_ms != 0) ||
++	    (temp && (req.lp_period_ms < SLEEP_LP_PERIOD_MIN_MS ||
++		      req.lp_period_ms > SLEEP_LP_PERIOD_MAX_MS)))
++		return -EINVAL;
++	if (req.lp_temp_low_mc != SLEEP_TEMP_OFF &&
++	    req.lp_temp_high_mc != SLEEP_TEMP_OFF &&
++	    req.lp_temp_low_mc >= req.lp_temp_high_mc)
++		return -EINVAL;
++
++	mutex_lock(&sleep_lock);
++	/* A user program has the LP core; the shim keeps or starts it. */
++	switch (lp_mode(NULL, NULL)) {
++	case LP_MODE_ALWAYS:
++		req.flags |= SLEEP_FLAG_LP_KEEP;
++		break;
++	case LP_MODE_SLEEP:
++		req.flags |= SLEEP_FLAG_LP_RUN;
++		break;
++	}
++	if (temp && (req.flags & (SLEEP_FLAG_LP_KEEP | SLEEP_FLAG_LP_RUN))) {
++		mutex_unlock(&sleep_lock);
++		return -EBUSY;
++	}
++	if (!req.timer_ms && !req.gpio_mask && !temp &&
++	    !(req.flags & (SLEEP_FLAG_LP_KEEP | SLEEP_FLAG_LP_RUN))) {
++		mutex_unlock(&sleep_lock);
++		return -EINVAL;
++	}
++	/* The shim would apply the update first and then not sleep. */
++	if (boot_update_pending()) {
++		mutex_unlock(&sleep_lock);
++		return -EBUSY;
++	}
++	ktime_get_real_ts64(&now);
++	req.seq = get_random_u32() | 1;
++	write_request(&req, &now);
++	pending = req;
++	pending_valid = true;
++	mutex_unlock(&sleep_lock);
++
++	pr_info("sleep: deep sleep requested: seq=%u timer_ms=%u gpio=0x%04x high=0x%04x lp_period_ms=%u flags=0x%x; rebooting\n",
++		req.seq, req.timer_ms, req.gpio_mask, req.gpio_high, req.lp_period_ms,
++		req.flags);
++	orderly_reboot();
++	return count;
++}
++
++static ssize_t sleep_memory_read(struct file *f, struct kobject *kobj,
++				 const struct bin_attribute *attr, char *buf,
++				 loff_t pos, size_t count)
++{
++	ssize_t n = 0;
++
++	mutex_lock(&sleep_lock);
++	if (pos < mem_len) {
++		n = min_t(size_t, count, mem_len - pos);
++		memcpy(buf, mem_data + pos, n);
++	}
++	mutex_unlock(&sleep_lock);
++	return n;
++}
++
++/* A write at offset 0 replaces the data; later offsets extend it. */
++static ssize_t sleep_memory_write(struct file *f, struct kobject *kobj,
++				  const struct bin_attribute *attr, char *buf,
++				  loff_t pos, size_t count)
++{
++	struct sleep_mem *mb = (struct sleep_mem *)SLEEP_MEM_PA;
++
++	if (pos > mem_len || pos >= SLEEP_MEM_BYTES)
++		return -EFBIG;
++	count = min_t(size_t, count, SLEEP_MEM_BYTES - pos);
++
++	mutex_lock(&sleep_lock);
++	memcpy(mem_data + pos, buf, count);
++	mem_len = pos + count;
++	WRITE_ONCE(mb->state, 0);
++	memcpy(mb->data, mem_data, mem_len);
++	mb->len = mem_len;
++	mb->crc32 = ieee_crc32(mem_data, mem_len);
++	mb->magic = SLEEP_MEM_MAGIC;
++	WRITE_ONCE(mb->state, SLEEP_MEM_PENDING);
++	mailbox_writeback(SLEEP_MEM_PA, sizeof(struct sleep_mem));
++	mutex_unlock(&sleep_lock);
++	return count;
++}
++
++static struct kobj_attribute deep_sleep_attr = __ATTR_RW_MODE(deep_sleep, 0600);
++static struct kobj_attribute wake_reason_attr = __ATTR_RO(wake_reason);
++static struct kobj_attribute wake_info_attr = __ATTR_RO(wake_info);
++static const struct bin_attribute sleep_memory_attr = {
++	.attr = { .name = "sleep_memory", .mode = 0600 },
++	.size = SLEEP_MEM_BYTES,
++	.read = sleep_memory_read,
++	.write = sleep_memory_write,
++};
++
++static struct attribute *sleep_attrs[] = {
++	&deep_sleep_attr.attr,
++	&wake_reason_attr.attr,
++	&wake_info_attr.attr,
++	NULL,
++};
++
++static const struct bin_attribute *const sleep_bin_attrs[] = {
++	&sleep_memory_attr,
++	NULL,
++};
++
++static const struct attribute_group sleep_group = {
++	.attrs = sleep_attrs,
++	.bin_attrs = sleep_bin_attrs,
++};
++
++static struct kobj_attribute lp_control_attr = __ATTR_WO(control);
++static struct kobj_attribute lp_state_attr = __ATTR_RO(state);
++/* Both sized at init from the shim's report. */
++static struct bin_attribute lp_program_attr = {
++	.attr = { .name = "program", .mode = 0200 },
++	.write = program_write,
++};
++/* Group m5 may read it (S05tmpfs); a write changes the LP core's code too. */
++static struct bin_attribute lp_memory_attr = {
++	.attr = { .name = "memory", .mode = 0600 },
++	.read = memory_read,
++	.write = memory_write,
++};
++
++static struct attribute *lp_attrs[] = {
++	&lp_control_attr.attr,
++	&lp_state_attr.attr,
++	NULL,
++};
++
++static const struct bin_attribute *const lp_bin_attrs[] = {
++	&lp_program_attr,
++	&lp_memory_attr,
++	NULL,
++};
++
++static const struct attribute_group lp_group = {
++	.attrs = lp_attrs,
++	.bin_attrs = lp_bin_attrs,
++};
++
++/* The LP RAM reserve comes from the shim, which links the LP programs. */
++static void lp_core_init(struct kobject *board)
++{
++	struct kobject *kobj;
++
++	if (!wake_valid || wake.lp_ram_bytes < LP_VECTOR_BYTES + 2 * LP_SHARED_BYTES ||
++	    wake.lp_ram_base < LP_RAM_PA || wake.lp_ram_base % 8 ||
++	    wake.lp_ram_bytes > LP_RAM_END_PA - wake.lp_ram_base) {
++		pr_info("lp_core: no LP RAM reserve from the boot shim\n");
++		return;
++	}
++	lp_base = wake.lp_ram_base;
++	lp_bytes = wake.lp_ram_bytes;
++	lp_ram = ioremap(lp_base, lp_bytes);
++	lp_sys = ioremap(LP_SYS_PA, 0x100);
++	lpperi = ioremap(LPPERI_PA, 0x100);
++	pmu = ioremap(PMU_PA, 0x200);
++	/* IDF's ulp_main.bin runs to the end of the shared block: all of it. */
++	lp_program_attr.size = lp_bytes;
++	lp_memory_attr.size = lp_bytes;
++	kobj = kobject_create_and_add("lp_core", board);
++	if (!lp_ram || !lp_sys || !lpperi || !pmu || !kobj ||
++	    sysfs_create_group(kobj, &lp_group)) {
++		pr_warn("lp_core: cannot set up\n");
++		kobject_put(kobj);
++		lp_sys = NULL;
++		return;
++	}
++	pr_info("lp_core: reserve 0x%08x+%u, %s\n", lp_base, lp_bytes,
++		lp_running() ? "running" : lp_mode(NULL, NULL) ? "loaded" : "stopped");
++}
++
++/*
++ * The shutdown between the request and the reset takes a few seconds; stamp
++ * the clock again here so the shim does not lose them.  Then write the page
++ * back, which covers the /boot update request too: boot-commit stages it
++ * from user space.
++ */
++static int sleep_reboot_notify(struct notifier_block *nb, unsigned long action,
++			       void *data)
++{
++	if (pending_valid && (pending.wall_sec_lo | pending.wall_sec_hi)) {
++		struct timespec64 now;
++
++		ktime_get_real_ts64(&now);
++		write_request(&pending, &now);
++	}
++	mailbox_writeback(SLEEP_MAILBOX_PA, PAGE_SIZE);
++	return NOTIFY_DONE;
++}
++
++static struct notifier_block sleep_reboot_nb = {
++	.notifier_call = sleep_reboot_notify,
++};
++
++static void read_mailbox(void)
++{
++	const struct wake_info *w = (const struct wake_info *)WAKE_INFO_PA;
++	const struct sleep_mem *m = (const struct sleep_mem *)SLEEP_MEM_PA;
++
++	/* The shim wrote these before Linux started; drop any stale lines. */
++	arch_sync_dma_for_cpu(WAKE_INFO_PA, 0x1000 - 0x180, DMA_FROM_DEVICE);
++	memcpy(&wake, w, sizeof(wake));
++	wake_valid = wake.magic == WAKE_INFO_MAGIC &&
++		     wake.version == WAKE_INFO_VERSION &&
++		     wake.record_crc32 == ieee_crc32(&wake,
++						     offsetof(struct wake_info, record_crc32));
++	if (m->magic == SLEEP_MEM_MAGIC && m->state == SLEEP_MEM_PUBLISHED &&
++	    m->len <= SLEEP_MEM_BYTES && m->crc32 == ieee_crc32(m->data, m->len)) {
++		mem_len = m->len;
++		memcpy(mem_data, m->data, mem_len);
++	}
++}
++
++/* The shim's estimate of the clock at the Linux jump, plus the time since. */
++static void restore_clock(void)
++{
++	struct timespec64 ts, up, now;
++	u64 sec;
++
++	if (!wake_valid || wake.boot != WAKE_BOOT_DEEPSLEEP ||
++	    !(wake.wall_sec_lo || wake.wall_sec_hi))
++		return;
++	ktime_get_real_ts64(&now);
++	sec = ((u64)wake.wall_sec_hi << 32) | wake.wall_sec_lo;
++	if (now.tv_sec >= sec)
++		return;
++	ktime_get_boottime_ts64(&up);
++	ts.tv_sec = sec;
++	ts.tv_nsec = wake.wall_usec * NSEC_PER_USEC;
++	ts = timespec64_add(ts, up);
++	if (!do_settimeofday64(&ts))
++		clock_restored = true;
++}
++
++static int __init esp32p4_sleep_init(void)
++{
++	struct kobject *kobj = board_kobj;
++	int r;
++
++	if (!of_machine_is_compatible("espressif,esp32p4"))
++		return 0;
++	read_mailbox();
++	restore_clock();
++	/* Same as bootflash: the NOMMU pool normally made /sys/kernel/board. */
++	if (!kobj)
++		kobj = kobject_create_and_add("board", kernel_kobj);
++	if (!kobj)
++		return -ENOMEM;
++	r = sysfs_create_group(kobj, &sleep_group);
++	if (r) {
++		if (!board_kobj)
++			kobject_put(kobj);
++		return r;
++	}
++	register_reboot_notifier(&sleep_reboot_nb);
++	lp_core_init(kobj);
++	if (wake_valid) {
++		char reason[64];
++
++		emit_reason(reason, 0, sizeof(reason));
++		pr_info("sleep: wake_reason=%s slept_ms=%u button=%u skipped=%s%s\n",
++			reason, wake.slept_ms, wake.button,
++			wake.skipped < ARRAY_SIZE(skip_names) ? skip_names[wake.skipped] : "?",
++			clock_restored ? " clock restored" : "");
++	} else {
++		pr_info("sleep: no wake report from the boot shim\n");
++	}
++	return 0;
++}
++late_initcall(esp32p4_sleep_init);

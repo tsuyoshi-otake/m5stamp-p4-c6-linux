@@ -102,6 +102,67 @@ generate_credentials() {
 # autorun_stage (#34).
 . /usr/lib/board/autorun.sh
 
+# The first "key=" value in config.txt (CRLF and blanks allowed).
+config_value() {
+	sed -e "s/$(printf '\r')\$//" /tmp/config.txt 2>/dev/null |
+		sed -n "s/^[ 	]*$1[ 	]*=[ 	]*//p" | head -n1 | tr -d ' 	'
+}
+
+# LP core program (#59): lp_core=always (default), sleep or off, lp_program=
+# (default lp.bin on the drive) and lp_period= (default 1s) in config.txt.
+# The kernel keeps a program that is still running from an earlier boot, with
+# its variables; a different file loads afresh.  Group m5 may read memory.
+# Runs while /boot is mounted.
+lp_core_start() {
+	lpc=/sys/kernel/board/lp_core
+	[ -w "$lpc/control" ] || return 0
+	lp_mode=$(config_value lp_core)
+	lp_mode=${lp_mode:-always}
+	lp_prog=$(config_value lp_program)
+	lp_prog=${lp_prog:-lp.bin}
+	case "$lp_prog" in /*) ;; *) lp_prog=/boot/$lp_prog ;; esac
+	lp_period=$(config_value lp_period)
+	lp_period=${lp_period:-1s}
+	lp_n=${lp_period%%[!0-9]*}
+	lp_unit=${lp_period#"$lp_n"}
+	lp_ms=""
+	case "$lp_n" in
+		''|??????????*) ;;
+		*)
+			case "$lp_unit" in
+				ms) lp_ms=$lp_n ;;
+				''|s) lp_ms=$((lp_n * 1000)) ;;
+				m) lp_ms=$((lp_n * 60000)) ;;
+				h) lp_ms=$((lp_n * 3600000)) ;;
+			esac
+			;;
+	esac
+	chgrp m5 "$lpc/memory" 2>/dev/null && chmod 640 "$lpc/memory" 2>/dev/null || true
+	if grep -qx 'button=1' /sys/kernel/board/wake_info 2>/dev/null; then
+		es_log "ES_LP: BOOT held; LP core left as it is"
+		return 0
+	fi
+	case "$lp_mode" in
+		off) echo stop > "$lpc/control" 2>/dev/null || true; return 0 ;;
+		always|sleep) ;;
+		*) es_log "ES_LP FAIL: lp_core=$lp_mode (always, sleep or off)"; return 0 ;;
+	esac
+	if [ ! -f "$lp_prog" ]; then
+		echo stop > "$lpc/control" 2>/dev/null || true
+		return 0
+	fi
+	if [ -z "$lp_ms" ] || [ "$lp_ms" -gt 3600000 ]; then
+		es_log "ES_LP FAIL: lp_period=$lp_period (0, 500ms, 1s, 1m, ... up to 1h)"
+		return 0
+	fi
+	if cat "$lp_prog" > "$lpc/program" 2>/dev/null &&
+		echo "start mode=$lp_mode period_ms=$lp_ms" > "$lpc/control" 2>/dev/null; then
+		es_log "ES_LP OK: $lp_prog mode=$lp_mode period_ms=$lp_ms"
+	else
+		es_log "ES_LP FAIL: could not start $lp_prog (too large for the LP RAM reserve?)"
+	fi
+}
+
 start() {
 	es_log "ES_TMPFS BEGIN"
 	mkdir -p /tmp 2>/dev/null || true
@@ -304,6 +365,11 @@ hostname=stamp-p4
 #ssh_password_auth=no
 # root SSH login is key-only: put a root_authorized_keys file on this drive
 # (#37).  su uses root_password= in credentials.txt.
+# LP core program (lp.bin built with ESP-IDF, see README): always runs it
+# all the time, sleep only during Deep Sleep, off never.
+#lp_core=always
+#lp_program=lp.bin
+#lp_period=1s
 # maxcpus is fixed in the DTB; this file does not change the CPU count.
 EOF
 		fi
@@ -351,6 +417,8 @@ EOF
 		else
 			es_log "ES_AUTORUN FAIL: could not copy the program from the drive"
 		fi
+		# lp_program= is usually on the drive, so before the unmount.
+		lp_core_start
 		# Flush and unmount /boot before exposing backing file to USB host
 		# to prevent concurrent filesystem cache corruption between Linux and Windows
 		sync
@@ -371,6 +439,31 @@ EOF
 				2) es_log "ES_CREDENTIALS: staged; saved to flash at the next reboot" ;;
 				*) es_log "ES_CREDENTIALS FAIL: could not stage boot.img; a power cycle generates new credentials" ;;
 			esac
+		fi
+	fi
+
+	# Deep Sleep (#56).  Group m5 may request it (deepsleep, autorun programs)
+	# unless config.txt says deepsleep=no.  BOOT held at this boot holds the
+	# autorun program, so one that sleeps in a loop can be stopped.
+	if [ -r /sys/kernel/board/wake_info ]; then
+		wake=""
+		button=0
+		while IFS= read -r l; do
+			case "$l" in
+				wake_reason=*) wake=${l#wake_reason=} ;;
+				button=1) button=1 ;;
+			esac
+		done < /sys/kernel/board/wake_info
+		es_log "ES_WAKE: reason=$wake button=$button"
+		[ "$button" -eq 1 ] && : > /run/.autorun-hold
+		if grep -q '^[[:space:]]*deepsleep[[:space:]]*=[[:space:]]*no' /tmp/config.txt 2>/dev/null; then
+			es_log "ES_WAKE: deepsleep=no in config.txt; root only"
+		else
+			for f in deep_sleep sleep_memory; do
+				chgrp m5 "/sys/kernel/board/$f" 2>/dev/null &&
+					chmod 660 "/sys/kernel/board/$f" 2>/dev/null ||
+					es_log "ES_WAKE FAIL: could not open $f to group m5"
+			done
 		fi
 	fi
 
