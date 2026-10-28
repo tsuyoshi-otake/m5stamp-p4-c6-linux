@@ -711,7 +711,8 @@ runs out, a wake pin changes or the chip temperature passes a limit, the
 board boots Linux again (about as long
 as a reset), the autorun program starts again and `wake_reason` tells why.
 While asleep, Wi-Fi, SSH and the USB drive are gone and the board draws
-less than the 10 mA a USB meter resolves (0.12 A with Linux running).
+less than the 10 mA a USB meter resolves, also with the temperature check
+running every second (0.12-0.15 A with Linux running).
 
 ```sh
 deepsleep 60                 # 60 s (also 500ms, 30s, 15m, 2h; up to 49 days)
@@ -749,7 +750,7 @@ deepsleep.sleep(60000)                    # ms; does not return
   (`skipped=temp_active`). After a sleep with a limit, `wake_info` has
   `temp_checks`, `temp_last`, `temp_min` and `temp_max`.
 - **Sleep memory**: `/sys/kernel/board/sleep_memory` keeps up to 1024 bytes
-  across Deep Sleep and reboots, not across a power cycle.
+  across Deep Sleep and reboots, not across a power cycle or a RESET press.
 - **Clock**: the clock is carried over the sleep, so it is about right after a
   wake even without NTP (`clock=restored` in `wake_info`).
 - **Stopping a program that sleeps in a loop**: hold **BOOT** while the board
