@@ -744,8 +744,10 @@ cat /sys/kernel/board/wake_info      # details
 | `--check-every TIME` | How often the temperature is checked: 100 ms to 1 h, default 10 s. |
 | `-f` | Sleep even if BOOT was held at boot or the USB drive is not saved yet. |
 
-At least one of a time, a wake pin or a temperature limit is needed. If more
-than one is given, whichever comes first wakes the board.
+At least one of a time, a wake pin or a temperature limit is needed, unless
+an LP core program is loaded (see 7. LP core program), which can wake the
+board itself. If more than one is given, whichever comes first wakes the
+board.
 
 #### From MicroPython
 
@@ -779,6 +781,7 @@ than one happened at the same check):
 | `timer` | The time ran out. |
 | `gpio:N` | Wake pin `N` reached its level. |
 | `temp_high` / `temp_low` | The chip temperature reached the `--temp-above` / `--temp-below` limit. |
+| `lp_core` | The LP core program woke the board (see 7. LP core program). |
 | `reset` | Not a wake: a normal reboot, a RESET press, or a sleep that was refused (see `skipped`). |
 | `poweron` | The board was powered on. |
 
@@ -817,6 +820,8 @@ than one happened at the same check):
   close to the temperature at sleep time fires within seconds.
 - A limit that is already passed when going to sleep refuses the sleep
   (`skipped=temp_active`).
+- The check needs the LP core, so it is refused while an LP core program is
+  loaded (7. LP core program).
 - The checks do not change the sleep current that a USB meter can see, even
   every second.
 
@@ -865,6 +870,93 @@ log in. To stop it:
   `temp_high` were not tried on hardware (they need wiring or heating); the
   timer, BOOT, the sleep memory, the clock, `temp_low`, the refusals and the
   MicroPython module were (#56, #57).
+
+### 7. LP core program
+
+The ESP32-P4 has a small extra CPU, the LP core (a slow RISC-V),
+next to the two CPUs that run Linux. It keeps running in Deep Sleep, and it
+can also run while Linux runs. Put a program for it on the USB drive and it
+runs at every boot, for example to count pulses, watch a sensor on the LP
+I2C or LP GPIOs, or wake the board when something happens.
+
+#### Setting it up
+
+1. Build the program with ESP-IDF (the same version as the boot shim,
+   v5.5). `linux/lp-example` in this repository is a ready project: its
+   `main/ulp/main.c` is the LP core program, and `sdkconfig.defaults` has
+   the settings that must match the board (chip revision below v3, LP core
+   type, 16 KB reserve).
+
+   ```sh
+   cd linux/lp-example
+   idf.py build
+   # the program:   build/esp-idf/main/ulp_main/ulp_main.bin
+   # its variables: build/esp-idf/main/ulp_main/ulp_main.ld
+   ```
+
+2. Copy `ulp_main.bin` to the USB drive as `lp.bin`.
+3. Reboot (or press RESET). The boot log shows
+   `ES_LP OK: /boot/lp.bin mode=always period_ms=1000`.
+
+`config.txt` settings (all optional):
+
+| Key | Default | Meaning |
+| :--- | :--- | :--- |
+| `lp_core` | `always` | `always`: run the program all the time, through reboots and Deep Sleep. `sleep`: run it only while the board is in Deep Sleep. `off`: do not run it. |
+| `lp_program` | `lp.bin` | The program file, on the USB drive or an absolute path. Without the file nothing runs. |
+| `lp_period` | `1s` | How often the program's `main()` runs: `500ms`, `1s`, `1m` and so on, up to `1h`. `0` leaves it to the program (`ulp_lp_core_lp_timer_set_wakeup_time()`). |
+
+#### Reading its variables
+
+The program's global variables live in LP RAM, at the addresses listed in
+`ulp_main.ld` (`ulp_runs = 0x50108980;` is the variable `runs`).
+
+```python
+import lpcore
+print(lpcore.state())               # state, mode, bytes, crc32, period_ms, ...
+print(lpcore.read(0x50108980))      # a 32-bit variable
+print(lpcore.read(0x50108978, 12))  # 12 bytes
+lpcore.write(0x5010897c, 15)        # root only
+```
+
+From the shell, `/sys/kernel/board/lp_core/memory` is the LP RAM reserve
+from its start (`ram_base` in `state`, 0x50108100):
+
+```sh
+cat /sys/kernel/board/lp_core/state
+od -An -tu4 -j $((0x50108980 - 0x50108100)) -N4 /sys/kernel/board/lp_core/memory
+```
+
+#### What is kept
+
+- A `reboot` and Deep Sleep keep the program running with its variables. At
+  boot the same `lp.bin` is not loaded again; a changed file is loaded
+  afresh, which zeroes the variables.
+- RESET and power off clear the LP core and its RAM; the next boot loads the
+  program again.
+- With BOOT held at boot, the LP core is left as it is.
+
+#### Waking the board from the program
+
+`ulp_lp_core_wakeup_main_processor()` in the program wakes the board from
+Deep Sleep; `wake_reason` is then `lp_core`. With a program loaded,
+`deepsleep` needs no time or wake pin (the program decides when to wake), and
+a time or wake pins can still be added. While Linux runs the call does
+nothing.
+
+The example program counts its runs in `runs` and, when `wake_every` is set
+to N, wakes the board every N runs.
+
+#### Limits
+
+- One LP core: with a program loaded, `deepsleep --temp-above/--temp-below`
+  (which uses the LP core itself) is refused. Set `lp_core=off` and reboot to
+  use them.
+- The program is limited to the 16 KB reserve, stack included.
+- Loading programs and writing their memory is for root: an LP core program
+  can reach most of the chip. Group `m5` (autorun) may read the memory.
+- The LP core's peripherals that Linux also uses (the temperature sensor) are
+  shared; avoid reconfiguring them from the program.
 
 ---
 
