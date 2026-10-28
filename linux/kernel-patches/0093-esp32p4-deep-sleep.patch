@@ -266,13 +266,13 @@ request boot-commit staged from user space).
 +	return len + sysfs_emit_at(buf, len, "\n");
 +}
 +
-+/* milli-degC as degC with one decimal, e.g. "24.7" or "-3.5". */
++/* "key=24.7" (milli-degC with one decimal); returns the new length. */
 +static int emit_mc(char *buf, int len, const char *key, s32 mc)
 +{
 +	u32 a = mc < 0 ? -(s64)mc : mc;
 +
-+	return sysfs_emit_at(buf, len, "%s=%s%u.%u\n", key, mc < 0 ? "-" : "",
-+			     a / 1000, a % 1000 / 100);
++	return len + sysfs_emit_at(buf, len, "%s=%s%u.%u\n", key, mc < 0 ? "-" : "",
++				   a / 1000, a % 1000 / 100);
 +}
 +
 +static ssize_t wake_info_show(struct kobject *kobj, struct kobj_attribute *attr,
