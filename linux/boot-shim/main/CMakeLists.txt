@@ -43,5 +43,7 @@ if("$ENV{CMD53_RETENTION_BB}" STREQUAL "1")
     endif()
 endif()
 # #56 Deep Sleep.  Added last so its RTC_NOINIT state links after rtc_c,
-# whose LP RAM address (0x50108080) the kernel hardcodes.
+# whose LP RAM address the CMD53_RETENTION_BB kernel patches take from nm.
 target_sources(${COMPONENT_LIB} PRIVATE "deep_sleep.c")
+# #57: the LP core program that checks the temperature while asleep.
+ulp_embed_binary(lp_monitor "lp/lp_monitor.c" "deep_sleep.c")

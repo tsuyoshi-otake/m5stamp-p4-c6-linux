@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 #pragma once
 
+#include <limits.h>
 #include <stdint.h>
 
 /*
@@ -20,15 +21,20 @@
 #define SLEEP_MEM_BYTES         1024u
 
 #define SLEEP_REQUEST_MAGIC     0x45534453u /* "ESDS" */
-#define SLEEP_REQUEST_VERSION   1u
+#define SLEEP_REQUEST_VERSION   2u /* 2: LP core temperature check (#57) */
 #define SLEEP_REQUEST_COMMIT    0x534c4550u /* "SLEP" */
 /* Enable the internal pull opposite to each wake level while asleep. */
 #define SLEEP_FLAG_PULL         0x1u
 /* About 49 days; the LP timer itself counts much longer. */
 #define SLEEP_TIMER_MAX_MS      0xffffffffu
+/* LP core check period: lp_timer_sleep_duration_us is 32 bits. */
+#define SLEEP_LP_PERIOD_MIN_MS  100u
+#define SLEEP_LP_PERIOD_MAX_MS  3600000u
+/* lp_temp_low_mc / lp_temp_high_mc when that threshold is not used */
+#define SLEEP_TEMP_OFF          INT32_MIN
 
 #define WAKE_INFO_MAGIC         0x4553574bu /* "ESWK" */
-#define WAKE_INFO_VERSION       1u
+#define WAKE_INFO_VERSION       2u
 
 /* wake_info.boot */
 #define WAKE_BOOT_POWERON       0u
@@ -39,6 +45,8 @@
 /* wake_info.causes */
 #define WAKE_CAUSE_TIMER        0x1u
 #define WAKE_CAUSE_GPIO         0x2u
+#define WAKE_CAUSE_TEMP_LOW     0x4u /* the LP core saw temp <= low */
+#define WAKE_CAUSE_TEMP_HIGH    0x8u /* the LP core saw temp >= high */
 
 /* wake_info.skipped: why the last request did not put the chip to sleep */
 #define SLEEP_SKIP_NONE         0u
@@ -46,6 +54,7 @@
 #define SLEEP_SKIP_GPIO_ACTIVE  2u /* a wake pin was already at its level */
 #define SLEEP_SKIP_BAD_REQUEST  3u
 #define SLEEP_SKIP_BOOT_UPDATE  4u /* a /boot update was pending */
+#define SLEEP_SKIP_TEMP_ACTIVE  5u /* the temperature was already past a threshold */
 
 #define SLEEP_MEM_MAGIC         0x45534d4du /* "ESMM" */
 #define SLEEP_MEM_PENDING       0x50454e44u /* "PEND": Linux wrote new data */
@@ -62,7 +71,10 @@ struct sleep_request {
 	uint32_t wall_sec_hi;
 	uint32_t wall_usec;
 	uint32_t seq;           /* echoed in wake_info */
-	uint32_t record_crc32;  /* IEEE CRC-32 of magic..seq */
+	uint32_t lp_period_ms;  /* LP core check period; 0: LP core not used */
+	int32_t lp_temp_low_mc; /* milli-degC; SLEEP_TEMP_OFF: not used */
+	int32_t lp_temp_high_mc;
+	uint32_t record_crc32;  /* IEEE CRC-32 of magic..lp_temp_high_mc */
 	uint32_t commit_word;   /* written last */
 } __attribute__((packed));
 
@@ -80,7 +92,11 @@ struct wake_info {
 	uint32_t wall_sec_lo;   /* estimated clock at the Linux jump; 0: unknown */
 	uint32_t wall_sec_hi;
 	uint32_t wall_usec;
-	uint32_t record_crc32;  /* IEEE CRC-32 of magic..wall_usec */
+	uint32_t lp_checks;     /* LP core temperature readings while asleep */
+	int32_t lp_last_mc;     /* milli-degC; meaningful when lp_checks > 0 */
+	int32_t lp_min_mc;
+	int32_t lp_max_mc;
+	uint32_t record_crc32;  /* IEEE CRC-32 of magic..lp_max_mc */
 } __attribute__((packed));
 
 struct sleep_mem {
@@ -91,8 +107,8 @@ struct sleep_mem {
 	uint8_t data[SLEEP_MEM_BYTES];
 } __attribute__((packed));
 
-_Static_assert(sizeof(struct sleep_request) == 48, "sleep request layout");
-_Static_assert(sizeof(struct wake_info) == 56, "wake info layout");
+_Static_assert(sizeof(struct sleep_request) == 60, "sleep request layout");
+_Static_assert(sizeof(struct wake_info) == 72, "wake info layout");
 _Static_assert(sizeof(struct sleep_mem) == 16 + SLEEP_MEM_BYTES, "sleep mem layout");
 _Static_assert(SLEEP_REQUEST_PA + sizeof(struct sleep_request) <= WAKE_INFO_PA,
 	       "sleep request overlaps wake info");

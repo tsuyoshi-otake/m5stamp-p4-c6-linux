@@ -47,7 +47,7 @@ request boot-commit staged from user space).
 +obj-$(CONFIG_ESP32P4_SLEEP)	+= esp32p4-sleep.o
 --- /dev/null
 +++ b/drivers/misc/esp32p4-sleep.c
-@@ -0,0 +1,467 @@
+@@ -0,0 +1,578 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Deep Sleep through the boot shim (#56).
@@ -59,21 +59,28 @@ request boot-commit staged from user space).
 + * the sleep memory in LP RAM meanwhile.
 + *
 + * /sys/kernel/board/
-+ *   deep_sleep    write "timer_ms=N gpio=P:L[,P:L...] pull=0|1" to sleep;
++ *   deep_sleep    write "timer_ms=N gpio=P:L[,P:L...] pull=0|1
++ *                 temp_above=C temp_below=C lp_period_ms=N" to sleep;
 + *                 the board reboots at once (orderly_reboot).  Reading it
 + *                 shows the wake pins this board allows.
-+ *   wake_reason   timer, gpio:<n> (comma separated if several), poweron,
-+ *                 reset, or unknown with a shim that has no Deep Sleep.
++ *   wake_reason   timer, gpio:<n>, temp_high, temp_low (comma separated if
++ *                 several), poweron, reset, or unknown with a shim that has
++ *                 no Deep Sleep.
 + *   wake_info     key=value lines with the details.
 + *   sleep_memory  up to 1024 bytes kept across Deep Sleep and reboots, but
 + *                 not across a power cycle.  A write replaces it; the new
 + *                 data reaches LP RAM at the next reboot or sleep.
++ *
++ * temp_above/temp_below (degC, up to three decimals) run the LP core while
++ * asleep (#57): it reads the chip temperature every lp_period_ms (default
++ * 10 s) and wakes the chip when it stays past a threshold.
 + *
 + * The layouts match boot-shim/main/deep_sleep.h.  Linux reboots through an
 + * MWDT reset, which does not write the data cache back, so every store to
 + * the mailbox is written back here before the reboot starts.
 + */
 +#include <linux/crc32.h>
++#include <linux/ctype.h>
 +#include <linux/dma-map-ops.h>
 +#include <linux/init.h>
 +#include <linux/kernel.h>
@@ -96,14 +103,21 @@ request boot-commit staged from user space).
 +#define BOOT_REQUEST_MAGIC	0x45534243u	/* "ESBC" */
 +#define BOOT_REQUEST_COMMIT	0x434f4d4du	/* "COMM" */
 +#define SLEEP_REQUEST_MAGIC	0x45534453u	/* "ESDS" */
-+#define SLEEP_REQUEST_VERSION	1u
++#define SLEEP_REQUEST_VERSION	2u
 +#define SLEEP_REQUEST_COMMIT	0x534c4550u	/* "SLEP" */
 +#define SLEEP_FLAG_PULL		0x1u
 +#define WAKE_INFO_MAGIC		0x4553574bu	/* "ESWK" */
-+#define WAKE_INFO_VERSION	1u
++#define WAKE_INFO_VERSION	2u
 +#define SLEEP_MEM_MAGIC		0x45534d4du	/* "ESMM" */
 +#define SLEEP_MEM_PENDING	0x50454e44u	/* "PEND" */
 +#define SLEEP_MEM_PUBLISHED	0x5055424cu	/* "PUBL" */
++#define SLEEP_LP_PERIOD_MIN_MS	100u
++#define SLEEP_LP_PERIOD_MAX_MS	3600000u
++#define SLEEP_LP_PERIOD_DEF_MS	10000u
++#define SLEEP_TEMP_OFF		S32_MIN
++/* The shim's sensor range is -10..80 degC; beyond these a threshold is a typo. */
++#define SLEEP_TEMP_MIN_MC	(-40000)
++#define SLEEP_TEMP_MAX_MC	125000
 +
 +#define WAKE_BOOT_POWERON	0u
 +#define WAKE_BOOT_RESET		1u
@@ -111,6 +125,8 @@ request boot-commit staged from user space).
 +#define WAKE_BOOT_INTERRUPTED	3u
 +#define WAKE_CAUSE_TIMER	0x1u
 +#define WAKE_CAUSE_GPIO		0x2u
++#define WAKE_CAUSE_TEMP_LOW	0x4u
++#define WAKE_CAUSE_TEMP_HIGH	0x8u
 +
 +/*
 + * Stamp-P4 + C6 AddOn: LP GPIO0-15 without GPIO9 (the C6 IO9 boot strap).
@@ -137,6 +153,9 @@ request boot-commit staged from user space).
 +	u32 wall_sec_hi;
 +	u32 wall_usec;
 +	u32 seq;
++	u32 lp_period_ms;
++	s32 lp_temp_low_mc;
++	s32 lp_temp_high_mc;
 +	u32 record_crc32;
 +	u32 commit_word;
 +} __packed;
@@ -155,6 +174,10 @@ request boot-commit staged from user space).
 +	u32 wall_sec_lo;
 +	u32 wall_sec_hi;
 +	u32 wall_usec;
++	u32 lp_checks;
++	s32 lp_last_mc;
++	s32 lp_min_mc;
++	s32 lp_max_mc;
 +	u32 record_crc32;
 +} __packed;
 +
@@ -166,8 +189,8 @@ request boot-commit staged from user space).
 +	u8 data[SLEEP_MEM_BYTES];
 +} __packed;
 +
-+static_assert(sizeof(struct sleep_request) == 48);
-+static_assert(sizeof(struct wake_info) == 56);
++static_assert(sizeof(struct sleep_request) == 60);
++static_assert(sizeof(struct wake_info) == 72);
 +static_assert(sizeof(struct sleep_mem) == 16 + SLEEP_MEM_BYTES);
 +
 +static DEFINE_MUTEX(sleep_lock);
@@ -189,10 +212,12 @@ request boot-commit staged from user space).
 +
 +static const char *const skip_names[] = {
 +	"none", "button", "gpio_active", "bad_request", "boot_update",
++	"temp_active",
 +};
 +
 +/*
-+ * "timer", "gpio:3", "timer,gpio:3,gpio:5", "poweron", "reset", "unknown".
++ * "timer", "gpio:3", "timer,gpio:3,gpio:5", "temp_high", "poweron", "reset",
++ * "unknown".
 + * scnprintf, not sysfs_emit_at: init prints it into a buffer on the stack.
 + */
 +static int emit_reason(char *buf, int len, size_t size)
@@ -220,6 +245,14 @@ request boot-commit staged from user space).
 +		len += scnprintf(buf + len, size - len, "%sgpio:%d", any ? "," : "", pin);
 +		any = true;
 +	}
++	if (wake.causes & WAKE_CAUSE_TEMP_HIGH) {
++		len += scnprintf(buf + len, size - len, "%stemp_high", any ? "," : "");
++		any = true;
++	}
++	if (wake.causes & WAKE_CAUSE_TEMP_LOW) {
++		len += scnprintf(buf + len, size - len, "%stemp_low", any ? "," : "");
++		any = true;
++	}
 +	if (!any)
 +		len += scnprintf(buf + len, size - len, "unknown");
 +	return len;
@@ -231,6 +264,15 @@ request boot-commit staged from user space).
 +	int len = emit_reason(buf, 0, PAGE_SIZE);
 +
 +	return len + sysfs_emit_at(buf, len, "\n");
++}
++
++/* milli-degC as degC with one decimal, e.g. "24.7" or "-3.5". */
++static int emit_mc(char *buf, int len, const char *key, s32 mc)
++{
++	u32 a = mc < 0 ? -(s64)mc : mc;
++
++	return sysfs_emit_at(buf, len, "%s=%s%u.%u\n", key, mc < 0 ? "-" : "",
++			     a / 1000, a % 1000 / 100);
 +}
 +
 +static ssize_t wake_info_show(struct kobject *kobj, struct kobj_attribute *attr,
@@ -257,6 +299,12 @@ request boot-commit staged from user space).
 +	if (wake.skipped_gpio)
 +		len += sysfs_emit_at(buf, len, "skipped_gpio=0x%04x\n", wake.skipped_gpio);
 +	len += sysfs_emit_at(buf, len, "seq=%u\n", wake.seq);
++	if (wake.boot == WAKE_BOOT_DEEPSLEEP && wake.lp_checks) {
++		len += sysfs_emit_at(buf, len, "temp_checks=%u\n", wake.lp_checks);
++		len = emit_mc(buf, len, "temp_last", wake.lp_last_mc);
++		len = emit_mc(buf, len, "temp_min", wake.lp_min_mc);
++		len = emit_mc(buf, len, "temp_max", wake.lp_max_mc);
++	}
 +	len += sysfs_emit_at(buf, len, "clock=%s\n",
 +			     clock_restored ? "restored" : "not_set");
 +	return len + sysfs_emit_at(buf, len, "supported=1\n");
@@ -265,8 +313,49 @@ request boot-commit staged from user space).
 +static ssize_t deep_sleep_show(struct kobject *kobj, struct kobj_attribute *attr,
 +			       char *buf)
 +{
-+	return sysfs_emit(buf, "wake_gpio_mask=0x%04x max_timer_ms=%u\n",
-+			  WAKE_GPIO_MASK, U32_MAX);
++	return sysfs_emit(buf, "wake_gpio_mask=0x%04x max_timer_ms=%u temp=1 lp_period_ms=%u-%u\n",
++			  WAKE_GPIO_MASK, U32_MAX, SLEEP_LP_PERIOD_MIN_MS,
++			  SLEEP_LP_PERIOD_MAX_MS);
++}
++
++/* "25", "-3.5", "30.125" degC to milli-degC. */
++static int parse_mc(const char *s, s32 *mc)
++{
++	bool neg = *s == '-';
++	unsigned int whole, frac = 0, digits = 0;
++	char ip[8];
++	const char *dot;
++	size_t n;
++	s64 v;
++
++	if (neg)
++		s++;
++	dot = strchr(s, '.');
++	n = dot ? dot - s : strlen(s);
++	if (!n || n >= sizeof(ip))
++		return -EINVAL;
++	memcpy(ip, s, n);
++	ip[n] = '\0';
++	if (kstrtouint(ip, 10, &whole))
++		return -EINVAL;
++	if (dot) {
++		for (s = dot + 1; *s; s++, digits++) {
++			if (!isdigit(*s) || digits >= 3)
++				return -EINVAL;
++			frac = frac * 10 + (*s - '0');
++		}
++		if (!digits)
++			return -EINVAL;
++		while (digits++ < 3)
++			frac *= 10;
++	}
++	v = (s64)whole * 1000 + frac;
++	if (neg)
++		v = -v;
++	if (v < SLEEP_TEMP_MIN_MC || v > SLEEP_TEMP_MAX_MC)
++		return -ERANGE;
++	*mc = v;
++	return 0;
 +}
 +
 +/* "P:L[,P:L...]": LP GPIO P wakes the chip at level L. */
@@ -306,7 +395,10 @@ request boot-commit staged from user space).
 +	struct sleep_request req = {
 +		.magic = SLEEP_REQUEST_MAGIC,
 +		.version = SLEEP_REQUEST_VERSION,
++		.lp_temp_low_mc = SLEEP_TEMP_OFF,
++		.lp_temp_high_mc = SLEEP_TEMP_OFF,
 +	};
++	bool temp;
 +	struct timespec64 now;
 +	char *copy, *s, *tok;
 +	int r = 0;
@@ -322,6 +414,12 @@ request boot-commit staged from user space).
 +			r = kstrtou32(tok + 9, 10, &req.timer_ms);
 +		else if (!strncmp(tok, "gpio=", 5))
 +			r = parse_gpios(tok + 5, &req.gpio_mask, &req.gpio_high);
++		else if (!strncmp(tok, "temp_above=", 11))
++			r = parse_mc(tok + 11, &req.lp_temp_high_mc);
++		else if (!strncmp(tok, "temp_below=", 11))
++			r = parse_mc(tok + 11, &req.lp_temp_low_mc);
++		else if (!strncmp(tok, "lp_period_ms=", 13))
++			r = kstrtou32(tok + 13, 10, &req.lp_period_ms);
 +		else if (!strcmp(tok, "pull=1"))
 +			req.flags |= SLEEP_FLAG_PULL;
 +		else if (strcmp(tok, "pull=0"))
@@ -330,7 +428,20 @@ request boot-commit staged from user space).
 +	kfree(copy);
 +	if (r)
 +		return r;
-+	if (!req.timer_ms && !req.gpio_mask)
++	temp = req.lp_temp_low_mc != SLEEP_TEMP_OFF ||
++	       req.lp_temp_high_mc != SLEEP_TEMP_OFF;
++	if (temp && !req.lp_period_ms)
++		req.lp_period_ms = SLEEP_LP_PERIOD_DEF_MS;
++	/* The period only means something with a threshold. */
++	if (temp != (req.lp_period_ms != 0) ||
++	    (temp && (req.lp_period_ms < SLEEP_LP_PERIOD_MIN_MS ||
++		      req.lp_period_ms > SLEEP_LP_PERIOD_MAX_MS)))
++		return -EINVAL;
++	if (req.lp_temp_low_mc != SLEEP_TEMP_OFF &&
++	    req.lp_temp_high_mc != SLEEP_TEMP_OFF &&
++	    req.lp_temp_low_mc >= req.lp_temp_high_mc)
++		return -EINVAL;
++	if (!req.timer_ms && !req.gpio_mask && !temp)
 +		return -EINVAL;
 +
 +	mutex_lock(&sleep_lock);
@@ -355,8 +466,8 @@ request boot-commit staged from user space).
 +	mailbox_writeback(SLEEP_REQUEST_PA, sizeof(req));
 +	mutex_unlock(&sleep_lock);
 +
-+	pr_info("sleep: deep sleep requested: seq=%u timer_ms=%u gpio=0x%04x high=0x%04x; rebooting\n",
-+		req.seq, req.timer_ms, req.gpio_mask, req.gpio_high);
++	pr_info("sleep: deep sleep requested: seq=%u timer_ms=%u gpio=0x%04x high=0x%04x lp_period_ms=%u; rebooting\n",
++		req.seq, req.timer_ms, req.gpio_mask, req.gpio_high, req.lp_period_ms);
 +	orderly_reboot();
 +	return count;
 +}

@@ -1,8 +1,9 @@
 #!/bin/sh
 # Deep Sleep (#56): ask the boot shim to put the chip to sleep.  The board
 # reboots at once; the C6 (Wi-Fi) and the USB drive are off while it sleeps,
-# and it boots Linux again when the timer runs out or a wake pin changes.
-# /sys/kernel/board/wake_reason tells which.
+# and it boots Linux again when the timer runs out, a wake pin changes or
+# the chip temperature passes a limit (#57: the LP core checks it while the
+# rest sleeps).  /sys/kernel/board/wake_reason tells which.
 #
 # Group m5 may write the request (S05tmpfs), unless config.txt says
 # deepsleep=no.  This command adds the checks a bare write skips: it waits
@@ -14,11 +15,18 @@ BOOT_IMG=/tmp/boot.img
 
 usage() {
 	cat >&2 <<-EOF
-	Usage: deepsleep [-f] [--no-pull] [--gpio N=LEVEL]... [TIME]
+	Usage: deepsleep [-f] [--no-pull] [--gpio N=LEVEL]... [--temp-above C]
+	                 [--temp-below C] [--check-every TIME] [TIME]
 	  TIME          10 (seconds), 500ms, 30s, 15m or 2h; at most 49 days
 	  --gpio N=L    wake when LP GPIO N (0-15 but 9) reads L (0 or 1);
 	                may be given more than once
 	  --no-pull     no internal pull on the wake pins (external resistors)
+	  --temp-above C, --temp-below C
+	                wake when the chip temperature (degC, e.g. 45 or -2.5)
+	                stays at or past C for two checks in a row
+	  --check-every TIME
+	                how often the temperature is checked; 100ms to 1h,
+	                default 10s
 	  -f, --force   skip the USB drive and BOOT-button checks
 	EOF
 	exit 2
@@ -56,6 +64,15 @@ drive_busy() {
 	return 1
 }
 
+# degC such as 45, -2.5 or 30.125 (the kernel checks the range).
+add_temp() {
+	t=${2#-}
+	case "$t" in
+		''|*[!0-9.]*|*.*.*|.*|*.|*.????*) die "$1 takes degrees C such as 45 or -2.5, not '$2'" ;;
+	esac
+	eval "$3=\$2"
+}
+
 add_gpio() {
 	case "$1" in
 		[0-9]=[01]|1[0-5]=[01]) ;;
@@ -69,19 +86,33 @@ MS=0
 GPIOS=""
 PULL=1
 FORCE=0
+ABOVE=""
+BELOW=""
+PERIOD=""
 while [ $# -gt 0 ]; do
 	case "$1" in
 		-f|--force) FORCE=1 ;;
 		--no-pull) PULL=0 ;;
 		--gpio) [ $# -ge 2 ] || usage; shift; add_gpio "$1" ;;
 		--gpio=*) add_gpio "${1#--gpio=}" ;;
+		--temp-above) [ $# -ge 2 ] || usage; shift; add_temp --temp-above "$1" ABOVE ;;
+		--temp-below) [ $# -ge 2 ] || usage; shift; add_temp --temp-below "$1" BELOW ;;
+		--check-every)
+			[ $# -ge 2 ] || usage; shift
+			keep=$MS
+			to_ms "$1" && [ "$MS" -ge 100 ] && [ "$MS" -le 3600000 ] ||
+				die "--check-every takes 100ms to 1h, not '$1'"
+			PERIOD=$MS
+			MS=$keep
+			;;
 		-h|--help) usage ;;
 		-*) usage ;;
 		*) to_ms "$1" || die "bad time '$1' (10, 500ms, 30s, 15m, 2h; at most 49 days)" ;;
 	esac
 	shift
 done
-[ "$MS" -gt 0 ] || [ -n "$GPIOS" ] || usage
+[ "$MS" -gt 0 ] || [ -n "$GPIOS" ] || [ -n "$ABOVE$BELOW" ] || usage
+[ -z "$PERIOD" ] || [ -n "$ABOVE$BELOW" ] || die "--check-every needs --temp-above or --temp-below"
 
 [ -e "$SYS/deep_sleep" ] || die "this kernel has no Deep Sleep support"
 [ -w "$SYS/deep_sleep" ] ||
@@ -103,12 +134,18 @@ fi
 
 req="timer_ms=$MS pull=$PULL"
 [ -n "$GPIOS" ] && req="$req gpio=$GPIOS"
+[ -n "$ABOVE" ] && req="$req temp_above=$ABOVE"
+[ -n "$BELOW" ] && req="$req temp_below=$BELOW"
+[ -n "$PERIOD" ] && req="$req lp_period_ms=$PERIOD"
 msg="Deep Sleep:"
 [ "$MS" -gt 0 ] && msg="$msg timer ${MS} ms"
 [ -n "$GPIOS" ] && msg="$msg wake pins $GPIOS (pin:level)"
+[ -n "$ABOVE" ] && msg="$msg above ${ABOVE} C"
+[ -n "$BELOW" ] && msg="$msg below ${BELOW} C"
+[ -n "$ABOVE$BELOW" ] && msg="$msg (checked every ${PERIOD:-10000} ms)"
 echo "$msg; rebooting now"
 sync
 if ! echo "$req" > "$SYS/deep_sleep" 2>/dev/null; then
 	# EBUSY: a /boot update waits for the shim, which would not sleep.
-	die "refused: a USB drive save is waiting for a reboot (reboot first), or a bad request"
+	die "refused: a USB drive save is waiting for a reboot (reboot first), or a bad request (temperature out of -40..125, or below >= above)"
 fi

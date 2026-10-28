@@ -12,6 +12,12 @@
  * the same reason as a Linux reboot, and the PMU wakeup status survives other
  * resets.  So a wake is recognised by the LP RAM state written just before
  * sleeping, not by the reset reason (#56 hardware results).
+ *
+ * A request can also run the LP core while the chip sleeps (#57): the program
+ * in lp/lp_monitor.c reads the LP temperature sensor every lp_period_ms and
+ * wakes the chip when the temperature passes a threshold.  The thresholds go
+ * to it as raw sensor steps, converted with the reading taken just before the
+ * sleep, and its results come back as milli-degC the same way.
  */
 
 #include <inttypes.h>
@@ -21,17 +27,28 @@
 
 #include "driver/gpio.h"
 #include "driver/rtc_io.h"
+#include "driver/temperature_sensor.h"
 #include "esp_attr.h"
+#include "esp_private/esp_sleep_internal.h"
 #include "esp_rom_sys.h"
 #include "esp_rtc_time.h"
 #include "esp_sleep.h"
 #include "esp32p4/rom/ets_sys.h"
 #include "hal/cache_hal.h"
 #include "hal/rtc_hal.h"
+#include "hal/temperature_sensor_ll.h"
 #include "soc/reset_reasons.h"
+#include "ulp_lp_core.h"
 
 #include "boot_ab.h"
 #include "deep_sleep.h"
+#include "lp_monitor.h"
+
+extern const uint8_t lp_monitor_bin_start[] asm("_binary_lp_monitor_bin_start");
+extern const uint8_t lp_monitor_bin_end[] asm("_binary_lp_monitor_bin_end");
+
+/* One sensor step is 0.4386 degC (TEMPERATURE_SENSOR_LL_ADC_FACTOR). */
+#define TSENS_MC_PER_STEP_X10 4386
 
 #define LP_STATE_MAGIC  0x45534c50u /* "ESLP" */
 #define LP_MEM_MAGIC    0x45534c4du /* "ESLM" */
@@ -43,6 +60,7 @@ struct lp_sleep_state {
 	struct sleep_request req;
 	uint32_t rtc_us_lo;     /* esp_rtc_get_time_us() just before sleeping */
 	uint32_t rtc_us_hi;
+	int32_t temp_base_mc;   /* milli-degC = raw * 438.6 + temp_base_mc */
 	uint32_t crc32;
 } __attribute__((packed));
 
@@ -61,6 +79,9 @@ static struct wake_info report;
 static bool wall_known;
 static uint64_t wall_us_at_sleep;
 static uint64_t rtc_us_at_sleep;
+/* The LP core thresholds for the coming sleep (check_request). */
+static int32_t temp_base_mc;
+static uint32_t temp_low_raw, temp_high_raw;
 
 static uint32_t crc32_ieee(const void *data, uint32_t bytes)
 {
@@ -137,6 +158,106 @@ static void c6_power_off(void)
 	gpio_config(&c);
 }
 
+static int32_t raw_to_mc(uint32_t raw, int32_t base)
+{
+	return (int32_t)((int64_t)raw * TSENS_MC_PER_STEP_X10 / 10) + base;
+}
+
+/* floor(a / b) and ceil(a / b) for b > 0. */
+static int64_t div_floor(int64_t a, int64_t b)
+{
+	return a >= 0 ? a / b : -((-a + b - 1) / b);
+}
+
+static int64_t div_ceil(int64_t a, int64_t b)
+{
+	return -div_floor(-a, b);
+}
+
+/*
+ * Read the sensor and turn the request's thresholds into raw steps.  Returns
+ * a skip reason when the temperature is already past one, as a wake pin at
+ * its level is.
+ */
+static uint32_t temp_prepare(const struct sleep_request *req)
+{
+	temperature_sensor_config_t cfg = TEMPERATURE_SENSOR_CONFIG_DEFAULT(-10, 80);
+	temperature_sensor_handle_t h = NULL;
+	float c;
+	uint32_t raw;
+	int32_t now_mc;
+
+	if (temperature_sensor_install(&cfg, &h) != ESP_OK ||
+	    temperature_sensor_enable(h) != ESP_OK ||
+	    temperature_sensor_get_celsius(h, &c) != ESP_OK)
+		return SLEEP_SKIP_BAD_REQUEST;
+	raw = temperature_sensor_ll_get_raw_value();
+	if (raw == 0)
+		return SLEEP_SKIP_BAD_REQUEST;
+	/* The sensor stays enabled: the LP core reads it while asleep. */
+	now_mc = (int32_t)(c * 1000.0f);
+	temp_base_mc = now_mc - (int32_t)((int64_t)raw * TSENS_MC_PER_STEP_X10 / 10);
+	temp_low_raw = 0;
+	temp_high_raw = 0;
+	if (req->lp_temp_low_mc != SLEEP_TEMP_OFF) {
+		int64_t r = div_floor(((int64_t)req->lp_temp_low_mc - temp_base_mc) * 10,
+				      TSENS_MC_PER_STEP_X10);
+
+		if (r >= raw)
+			return SLEEP_SKIP_TEMP_ACTIVE;
+		/* Below the sensor's range it can never fire: leave it off. */
+		temp_low_raw = r >= 1 ? (uint32_t)r : 0;
+	}
+	if (req->lp_temp_high_mc != SLEEP_TEMP_OFF) {
+		int64_t r = div_ceil(((int64_t)req->lp_temp_high_mc - temp_base_mc) * 10,
+				     TSENS_MC_PER_STEP_X10);
+
+		if (r <= raw)
+			return SLEEP_SKIP_TEMP_ACTIVE;
+		temp_high_raw = r <= 255 ? (uint32_t)r : 0;
+	}
+	ets_printf("boot: DEEP_SLEEP temp now=%d mC raw=%u low_raw=%u high_raw=%u period_ms=%u\n",
+		   (int)now_mc, (unsigned)raw, (unsigned)temp_low_raw,
+		   (unsigned)temp_high_raw, (unsigned)req->lp_period_ms);
+	return SLEEP_SKIP_NONE;
+}
+
+static bool lp_start(const struct sleep_request *req)
+{
+	ulp_lp_core_cfg_t cfg = {
+		.wakeup_source = ULP_LP_CORE_WAKEUP_SOURCE_LP_TIMER,
+		.lp_timer_sleep_duration_us = req->lp_period_ms * 1000u,
+	};
+
+	if (ulp_lp_core_load_binary(lp_monitor_bin_start,
+				    lp_monitor_bin_end - lp_monitor_bin_start) != ESP_OK)
+		return false;
+	ulp_low_raw = temp_low_raw;
+	ulp_high_raw = temp_high_raw;
+	if (ulp_lp_core_run(&cfg) != ESP_OK)
+		return false;
+	/* Keep the SAR/TSENS powered in sleep; IDF turns it off otherwise. */
+	esp_sleep_sub_mode_config(ESP_SLEEP_USE_ADC_TSEN_MONITOR_MODE, true);
+	esp_sleep_enable_ulp_wakeup();
+	return true;
+}
+
+/* The LP core's results, read after the wake; it is stopped first. */
+static void lp_collect(int32_t base)
+{
+	ulp_lp_core_stop();
+	report.lp_checks = ulp_checks;
+	if (ulp_checks) {
+		report.lp_last_mc = raw_to_mc(ulp_last_raw, base);
+		report.lp_min_mc = raw_to_mc(ulp_min_raw, base);
+		report.lp_max_mc = raw_to_mc(ulp_max_raw, base);
+	}
+	if (ulp_why == 1)
+		report.causes |= WAKE_CAUSE_TEMP_LOW;
+	else if (ulp_why == 2)
+		report.causes |= WAKE_CAUSE_TEMP_HIGH;
+}
+
 /* Look at how this boot started; a sleep state in LP RAM means a wake. */
 static void classify_boot(uint32_t rom_reason, uint64_t rtc_now)
 {
@@ -149,6 +270,7 @@ static void classify_boot(uint32_t rom_reason, uint64_t rtc_now)
 	/* A copy: lp_state is cleared below. */
 	const struct sleep_request saved = lp_state.req;
 	const struct sleep_request *req = &saved;
+	const int32_t base = lp_state.temp_base_mc;
 	uint64_t slept_us;
 	uint32_t pins;
 
@@ -164,6 +286,8 @@ static void classify_boot(uint32_t rom_reason, uint64_t rtc_now)
 	}
 	/* Consume the state first, so a crash below cannot report it twice. */
 	memset(&lp_state, 0, sizeof(lp_state));
+	if (req->lp_period_ms)
+		lp_collect(base);
 
 	if (rom_reason != RESET_REASON_CORE_MWDT &&
 	    rom_reason != RESET_REASON_CORE_PMU_PWR_DOWN) {
@@ -179,7 +303,8 @@ static void classify_boot(uint32_t rom_reason, uint64_t rtc_now)
 	}
 	/* The LP timer runs about 0.14 % short (#56), so allow 1 %. */
 	if (req->timer_ms &&
-	    (!pins || report.slept_ms >= req->timer_ms - req->timer_ms / 100u))
+	    (!(report.causes & ~WAKE_CAUSE_TIMER) ||
+	     report.slept_ms >= req->timer_ms - req->timer_ms / 100u))
 		report.causes |= WAKE_CAUSE_TIMER;
 }
 
@@ -201,10 +326,16 @@ static void take_sleep_mem(void)
 static uint32_t check_request(const struct sleep_request *req, bool button)
 {
 	uint32_t active = 0;
+	bool temp = req->lp_temp_low_mc != SLEEP_TEMP_OFF ||
+		    req->lp_temp_high_mc != SLEEP_TEMP_OFF;
 
-	if (!req->timer_ms && !req->gpio_mask)
+	if (!req->timer_ms && !req->gpio_mask && !temp)
 		return SLEEP_SKIP_BAD_REQUEST;
 	if (req->gpio_mask & ~BOARD_SLEEP_WAKE_GPIO_MASK)
+		return SLEEP_SKIP_BAD_REQUEST;
+	if (temp != (req->lp_period_ms != 0) ||
+	    (temp && (req->lp_period_ms < SLEEP_LP_PERIOD_MIN_MS ||
+		      req->lp_period_ms > SLEEP_LP_PERIOD_MAX_MS)))
 		return SLEEP_SKIP_BAD_REQUEST;
 	if (button)
 		return SLEEP_SKIP_BUTTON;
@@ -243,7 +374,7 @@ static uint32_t check_request(const struct sleep_request *req, bool button)
 		report.skipped_gpio = active;
 		return SLEEP_SKIP_GPIO_ACTIVE;
 	}
-	return SLEEP_SKIP_NONE;
+	return temp ? temp_prepare(req) : SLEEP_SKIP_NONE;
 }
 
 static void enter_sleep(const struct sleep_request *req)
@@ -259,6 +390,11 @@ static void enter_sleep(const struct sleep_request *req)
 	if (req->timer_ms)
 		esp_sleep_enable_timer_wakeup((uint64_t)req->timer_ms * 1000u);
 	rtc_hal_ext1_clear_wakeup_status();
+	if (req->lp_period_ms && !lp_start(req)) {
+		ets_printf("boot: DEEP_SLEEP LP core did not start; not sleeping\n");
+		report.skipped = SLEEP_SKIP_BAD_REQUEST;
+		return;
+	}
 	if (high)
 		esp_sleep_enable_ext1_wakeup_io(high, ESP_EXT1_WAKEUP_ANY_HIGH);
 	if (low)
@@ -268,6 +404,7 @@ static void enter_sleep(const struct sleep_request *req)
 	lp_state.req = *req;
 	lp_state.rtc_us_lo = (uint32_t)rtc_now;
 	lp_state.rtc_us_hi = (uint32_t)(rtc_now >> 32);
+	lp_state.temp_base_mc = temp_base_mc;
 	lp_state.magic = LP_STATE_MAGIC;
 	lp_state.crc32 = crc32_ieee(&lp_state, offsetof(struct lp_sleep_state, crc32));
 	esp_deep_sleep_start();
@@ -305,6 +442,7 @@ void deep_sleep_early(void)
 			    &zero, sizeof(zero));
 	}
 	report.skipped = check_request(&req, report.button);
+	/* Returns only when the LP core did not start; it sets skipped then. */
 	if (report.skipped == SLEEP_SKIP_NONE)
 		enter_sleep(&req);
 	report.seq = req.seq;

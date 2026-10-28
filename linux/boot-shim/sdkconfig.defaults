@@ -15,3 +15,9 @@ CONFIG_ESP_TASK_WDT_EN=n
 CONFIG_INT_WDT=n
 # C68-CLEAN-RELEASE: do not start CPU1 as a FreeRTOS secondary core.
 CONFIG_FREERTOS_UNICORE=y
+
+# Deep Sleep LP core program (#57, lp/lp_monitor.c).  Its 4 KB sit at the
+# start of LP RAM, so the RTC_NOINIT data moves up by that much.
+CONFIG_ULP_COPROC_ENABLED=y
+CONFIG_ULP_COPROC_TYPE_LP_CORE=y
+CONFIG_ULP_COPROC_RESERVE_MEM=4096
