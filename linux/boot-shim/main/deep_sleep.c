@@ -18,6 +18,10 @@
  * wakes the chip when the temperature passes a threshold.  The thresholds go
  * to it as raw sensor steps, converted with the reading taken just before the
  * sleep, and its results come back as milli-degC the same way.
+ *
+ * Linux can also load a user program into the LP core (#59) and keep it
+ * running, or have it started here for the sleep.  The request then says so
+ * (SLEEP_FLAG_LP_KEEP / SLEEP_FLAG_LP_RUN) and the program may wake the chip.
  */
 
 #include <inttypes.h>
@@ -38,8 +42,10 @@
 #include "hal/cache_hal.h"
 #include "hal/rtc_hal.h"
 #include "hal/temperature_sensor_ll.h"
+#include "soc/lp_system_reg.h"
 #include "soc/reset_reasons.h"
 #include "ulp_lp_core.h"
+#include "ulp_lp_core_memory_shared.h"
 
 #include "boot_ab.h"
 #include "deep_sleep.h"
@@ -47,6 +53,7 @@
 
 extern const uint8_t lp_monitor_bin_start[] asm("_binary_lp_monitor_bin_start");
 extern const uint8_t lp_monitor_bin_end[] asm("_binary_lp_monitor_bin_end");
+extern uint32_t _rtc_ulp_memory_start;
 
 /* One sensor step is 0.4386 degC (TEMPERATURE_SENSOR_LL_ADC_FACTOR). */
 #define TSENS_MC_PER_STEP_X10 4386
@@ -244,6 +251,27 @@ static bool lp_start(const struct sleep_request *req)
 	return true;
 }
 
+/*
+ * lp_core=sleep (#59): start the program Linux loaded, as ulp_lp_core_run()
+ * would after ulp_lp_core_load_binary().  Linux left the period in the shared
+ * block; HP_CPU runs it once now, and it schedules its own next runs.
+ */
+static bool lp_user_start(void)
+{
+	uint32_t info = REG_READ(LP_SYSTEM_REG_LP_STORE12_REG);
+	ulp_lp_core_cfg_t cfg = {
+		.wakeup_source = ULP_LP_CORE_WAKEUP_SOURCE_LP_TIMER |
+				 ULP_LP_CORE_WAKEUP_SOURCE_HP_CPU,
+		.lp_timer_sleep_duration_us =
+			ulp_lp_core_memory_shared_cfg_get()->sleep_duration_us,
+	};
+
+	if (info >> 24 != LP_PROGRAM_MAGIC ||
+	    ((info >> 22) & 3u) != LP_PROGRAM_MODE_SLEEP)
+		return false;
+	return ulp_lp_core_run(&cfg) == ESP_OK;
+}
+
 /* The LP core's results, read after the wake; it is stopped first. */
 static void lp_collect(int32_t base)
 {
@@ -273,6 +301,7 @@ static void classify_boot(uint32_t rom_reason, uint64_t rtc_now)
 	const struct sleep_request saved = lp_state.req;
 	const struct sleep_request *req = &saved;
 	const int32_t base = lp_state.temp_base_mc;
+	const bool lp_user = req->flags & (SLEEP_FLAG_LP_KEEP | SLEEP_FLAG_LP_RUN);
 	uint64_t slept_us;
 	uint32_t pins;
 
@@ -293,6 +322,9 @@ static void classify_boot(uint32_t rom_reason, uint64_t rtc_now)
 	memset(&lp_state, 0, sizeof(lp_state));
 	if (req->lp_period_ms)
 		lp_collect(base);
+	/* lp_core=sleep: the program ran for this sleep only. */
+	if (req->flags & SLEEP_FLAG_LP_RUN)
+		ulp_lp_core_stop();
 
 	if (rom_reason != RESET_REASON_CORE_MWDT &&
 	    rom_reason != RESET_REASON_CORE_PMU_PWR_DOWN) {
@@ -306,11 +338,15 @@ static void classify_boot(uint32_t rom_reason, uint64_t rtc_now)
 		report.causes |= WAKE_CAUSE_GPIO;
 		report.gpio_status = pins;
 	}
-	/* The LP timer runs about 0.14 % short (#56), so allow 1 %. */
+	/* The LP timer runs about 0.14 % short (#56), so allow 1 %.  A user LP
+	 * program wakes the chip without a trace, so with one only the time
+	 * tells the timer from it. */
 	if (req->timer_ms &&
-	    (!(report.causes & ~WAKE_CAUSE_TIMER) ||
+	    ((!lp_user && !(report.causes & ~WAKE_CAUSE_TIMER)) ||
 	     report.slept_ms >= req->timer_ms - req->timer_ms / 100u))
 		report.causes |= WAKE_CAUSE_TIMER;
+	if (lp_user && !report.causes)
+		report.causes |= WAKE_CAUSE_LP_CORE;
 }
 
 /* Linux's new sleep memory into LP RAM, which survives Deep Sleep. */
@@ -333,8 +369,12 @@ static uint32_t check_request(const struct sleep_request *req, bool button)
 	uint32_t active = 0;
 	bool temp = req->lp_temp_low_mc != SLEEP_TEMP_OFF ||
 		    req->lp_temp_high_mc != SLEEP_TEMP_OFF;
+	uint32_t lp_user = req->flags & (SLEEP_FLAG_LP_KEEP | SLEEP_FLAG_LP_RUN);
 
-	if (!req->timer_ms && !req->gpio_mask && !temp)
+	if (!req->timer_ms && !req->gpio_mask && !temp && !lp_user)
+		return SLEEP_SKIP_BAD_REQUEST;
+	/* One LP core: a user program or the temperature check. */
+	if (lp_user && (temp || lp_user == (SLEEP_FLAG_LP_KEEP | SLEEP_FLAG_LP_RUN)))
 		return SLEEP_SKIP_BAD_REQUEST;
 	if (req->gpio_mask & ~BOARD_SLEEP_WAKE_GPIO_MASK)
 		return SLEEP_SKIP_BAD_REQUEST;
@@ -395,11 +435,15 @@ static void enter_sleep(const struct sleep_request *req)
 	if (req->timer_ms)
 		esp_sleep_enable_timer_wakeup((uint64_t)req->timer_ms * 1000u);
 	rtc_hal_ext1_clear_wakeup_status();
-	if (req->lp_period_ms && !lp_start(req)) {
+	if ((req->lp_period_ms && !lp_start(req)) ||
+	    ((req->flags & SLEEP_FLAG_LP_RUN) && !lp_user_start())) {
 		ets_printf("boot: DEEP_SLEEP LP core did not start; not sleeping\n");
 		report.skipped = SLEEP_SKIP_BAD_REQUEST;
 		return;
 	}
+	/* A user program may wake the chip; with LP_KEEP it just runs on. */
+	if (req->flags & (SLEEP_FLAG_LP_KEEP | SLEEP_FLAG_LP_RUN))
+		esp_sleep_enable_ulp_wakeup();
 	if (high)
 		esp_sleep_enable_ext1_wakeup_io(high, ESP_EXT1_WAKEUP_ANY_HIGH);
 	if (low)
@@ -463,6 +507,8 @@ void deep_sleep_publish(void)
 
 	report.magic = WAKE_INFO_MAGIC;
 	report.version = WAKE_INFO_VERSION;
+	report.lp_ram_base = (uint32_t)(uintptr_t)&_rtc_ulp_memory_start;
+	report.lp_ram_bytes = CONFIG_ULP_COPROC_RESERVE_MEM;
 	if (wall_known) {
 		uint64_t now = esp_rtc_get_time_us();
 		uint64_t wall = wall_us_at_sleep +

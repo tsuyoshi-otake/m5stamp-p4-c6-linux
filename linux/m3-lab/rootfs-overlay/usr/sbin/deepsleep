@@ -3,7 +3,8 @@
 # reboots at once; the C6 (Wi-Fi) and the USB drive are off while it sleeps,
 # and it boots Linux again when the timer runs out, a wake pin changes or
 # the chip temperature passes a limit (#57: the LP core checks it while the
-# rest sleeps).  /sys/kernel/board/wake_reason tells which.
+# rest sleeps), or a user LP core program wakes it (#59, lp_core= in
+# config.txt).  /sys/kernel/board/wake_reason tells which.
 #
 # Group m5 may write the request (S05tmpfs), unless config.txt says
 # deepsleep=no.  This command adds the checks a bare write skips: it waits
@@ -28,6 +29,9 @@ usage() {
 	                how often the temperature is checked; 100ms to 1h,
 	                default 10s
 	  -f, --force   skip the USB drive and BOOT-button checks
+	With an LP core program loaded (lp_core= in config.txt) no wake source
+	is needed: the program can wake the board.  It cannot be combined with
+	--temp-above/--temp-below, which use the LP core themselves.
 	EOF
 	exit 2
 }
@@ -111,7 +115,12 @@ while [ $# -gt 0 ]; do
 	esac
 	shift
 done
-[ "$MS" -gt 0 ] || [ -n "$GPIOS" ] || [ -n "$ABOVE$BELOW" ] || usage
+# The user LP core program's mode (#59): always, sleep, or none.
+LP_MODE=$(sed -n 's/^mode=//p' "$SYS/lp_core/state" 2>/dev/null)
+LP_MODE=${LP_MODE:-none}
+[ "$MS" -gt 0 ] || [ -n "$GPIOS" ] || [ -n "$ABOVE$BELOW" ] || [ "$LP_MODE" != none ] || usage
+[ -z "$ABOVE$BELOW" ] || [ "$LP_MODE" = none ] ||
+	die "the LP core runs the lp_core=$LP_MODE program; --temp-above/--temp-below need it (lp_core=off in config.txt and reboot)"
 [ -z "$PERIOD" ] || [ -n "$ABOVE$BELOW" ] || die "--check-every needs --temp-above or --temp-below"
 
 [ -e "$SYS/deep_sleep" ] || die "this kernel has no Deep Sleep support"
@@ -143,6 +152,7 @@ msg="Deep Sleep:"
 [ -n "$ABOVE" ] && msg="$msg above ${ABOVE} C"
 [ -n "$BELOW" ] && msg="$msg below ${BELOW} C"
 [ -n "$ABOVE$BELOW" ] && msg="$msg (checked every ${PERIOD:-10000} ms)"
+[ "$LP_MODE" != none ] && msg="$msg LP core program (lp_core=$LP_MODE)"
 echo "$msg; rebooting now"
 sync
 if ! echo "$req" > "$SYS/deep_sleep" 2>/dev/null; then

@@ -1,0 +1,8 @@
+# Must match linux/boot-shim/sdkconfig.defaults: the chip revision selection
+# and the reserve decide where the program and its variables are linked.
+CONFIG_IDF_TARGET="esp32p4"
+CONFIG_ESP32P4_SELECTS_REV_LESS_V3=y
+CONFIG_ESP32P4_REV_MIN_0=y
+CONFIG_ULP_COPROC_ENABLED=y
+CONFIG_ULP_COPROC_TYPE_LP_CORE=y
+CONFIG_ULP_COPROC_RESERVE_MEM=16384

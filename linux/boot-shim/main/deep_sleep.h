@@ -25,6 +25,11 @@
 #define SLEEP_REQUEST_COMMIT    0x534c4550u /* "SLEP" */
 /* Enable the internal pull opposite to each wake level while asleep. */
 #define SLEEP_FLAG_PULL         0x1u
+/* A user LP core program (#59) is loaded: keep it running and let it wake the
+ * chip (lp_core=always), or start it for the sleep and stop it after the wake
+ * (lp_core=sleep).  Not with a temperature threshold, which needs the LP core. */
+#define SLEEP_FLAG_LP_KEEP      0x2u
+#define SLEEP_FLAG_LP_RUN       0x4u
 /* About 49 days; the LP timer itself counts much longer. */
 #define SLEEP_TIMER_MAX_MS      0xffffffffu
 /* LP core check period: lp_timer_sleep_duration_us is 32 bits. */
@@ -34,7 +39,7 @@
 #define SLEEP_TEMP_OFF          INT32_MIN
 
 #define WAKE_INFO_MAGIC         0x4553574bu /* "ESWK" */
-#define WAKE_INFO_VERSION       2u
+#define WAKE_INFO_VERSION       3u /* 3: LP RAM reserve (#59) */
 
 /* wake_info.boot */
 #define WAKE_BOOT_POWERON       0u
@@ -47,6 +52,7 @@
 #define WAKE_CAUSE_GPIO         0x2u
 #define WAKE_CAUSE_TEMP_LOW     0x4u /* the LP core saw temp <= low */
 #define WAKE_CAUSE_TEMP_HIGH    0x8u /* the LP core saw temp >= high */
+#define WAKE_CAUSE_LP_CORE      0x10u /* early, by a user LP core program */
 
 /* wake_info.skipped: why the last request did not put the chip to sleep */
 #define SLEEP_SKIP_NONE         0u
@@ -55,6 +61,17 @@
 #define SLEEP_SKIP_BAD_REQUEST  3u
 #define SLEEP_SKIP_BOOT_UPDATE  4u /* a /boot update was pending */
 #define SLEEP_SKIP_TEMP_ACTIVE  5u /* the temperature was already past a threshold */
+
+/*
+ * The user LP core program that Linux loaded (#59), recorded in LP_SYS
+ * STORE11/12, which IDF does not use and which keep their value over reboots
+ * and Deep Sleep but not over a chip reset, like the LP RAM they describe.
+ * STORE11: IEEE CRC-32 of the image.  STORE12: LP_PROGRAM_MAGIC in bits
+ * 31..24, the LP_PROGRAM_MODE_* in bits 23..22, the image bytes in 21..0.
+ */
+#define LP_PROGRAM_MAGIC        0xa5u
+#define LP_PROGRAM_MODE_ALWAYS  1u
+#define LP_PROGRAM_MODE_SLEEP   2u
 
 #define SLEEP_MEM_MAGIC         0x45534d4du /* "ESMM" */
 #define SLEEP_MEM_PENDING       0x50454e44u /* "PEND": Linux wrote new data */
@@ -96,7 +113,9 @@ struct wake_info {
 	int32_t lp_last_mc;     /* milli-degC; meaningful when lp_checks > 0 */
 	int32_t lp_min_mc;
 	int32_t lp_max_mc;
-	uint32_t record_crc32;  /* IEEE CRC-32 of magic..lp_max_mc */
+	uint32_t lp_ram_base;   /* LP RAM reserved for LP core programs (#59) */
+	uint32_t lp_ram_bytes;
+	uint32_t record_crc32;  /* IEEE CRC-32 of magic..lp_ram_bytes */
 } __attribute__((packed));
 
 struct sleep_mem {
@@ -108,7 +127,7 @@ struct sleep_mem {
 } __attribute__((packed));
 
 _Static_assert(sizeof(struct sleep_request) == 60, "sleep request layout");
-_Static_assert(sizeof(struct wake_info) == 72, "wake info layout");
+_Static_assert(sizeof(struct wake_info) == 80, "wake info layout");
 _Static_assert(sizeof(struct sleep_mem) == 16 + SLEEP_MEM_BYTES, "sleep mem layout");
 _Static_assert(SLEEP_REQUEST_PA + sizeof(struct sleep_request) <= WAKE_INFO_PA,
 	       "sleep request overlaps wake info");

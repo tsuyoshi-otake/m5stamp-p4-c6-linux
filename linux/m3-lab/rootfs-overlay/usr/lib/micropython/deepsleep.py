@@ -5,7 +5,8 @@
 #   n = deepsleep.memory()            # bytes kept across Deep Sleep
 #   deepsleep.memory(b"count=%d" % k) # up to 1024 bytes
 #   deepsleep.wake_reason()           # "timer", "gpio:4", "temp_high",
-#                                     # "temp_low", "poweron", "reset"
+#                                     # "temp_low", "lp_core", "poweron",
+#                                     # "reset"
 #   deepsleep.sleep(60000)            # ms; does not return
 #   deepsleep.sleep(gpio={4: 0})      # wake when GPIO4 reads 0
 #   deepsleep.sleep(temp_above=45)    # wake when the chip reaches 45 degC
