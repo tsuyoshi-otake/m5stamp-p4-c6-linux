@@ -705,65 +705,166 @@ data access. A `printf`/`sleep` hello world is about 85 KB.
 
 ### 6. Deep Sleep
 
-`deepsleep` puts the board into Deep Sleep (#56). The board reboots at once;
-the boot-shim turns the C6 off and puts the P4 to sleep, and when the timer
-runs out, a wake pin changes or the chip temperature passes a limit, the
-board boots Linux again (about as long
-as a reset), the autorun program starts again and `wake_reason` tells why.
-While asleep, Wi-Fi, SSH and the USB drive are gone and the board draws
-less than the 10 mA a USB meter resolves, also with the temperature check
-running every second (0.12-0.15 A with Linux running).
+Deep Sleep turns almost everything off for a while and then starts the board
+again, for example to take a measurement every hour on a battery. While the
+board sleeps it draws less than the 10 mA a USB meter resolves; with Linux
+running it draws 0.12–0.15 A.
+
+What happens:
+
+1. `deepsleep` (or `deepsleep.sleep()` in MicroPython) asks for the sleep and
+   the board reboots at once. Programs stop, as on a reboot.
+2. The boot-shim turns the C6 (Wi-Fi) off and puts the P4 into Deep Sleep.
+   The USB serial port and the USB drive disappear from the PC.
+3. When the timer runs out, a wake pin changes or the chip temperature passes
+   a limit, the board starts like after a reset: Linux is up about 7 s after
+   the wake, and Wi-Fi and SSH a little later.
+4. The autorun program starts again and can read why the board woke and what
+   it kept in the sleep memory.
+
+#### From the shell
 
 ```sh
-deepsleep 60                 # 60 s (also 500ms, 30s, 15m, 2h; up to 49 days)
-deepsleep --gpio 4=0         # until LP GPIO 4 reads 0 (internal pull-up on)
+deepsleep 60                         # 60 s
+deepsleep 15m                        # also 500ms, 30s, 2h; up to 49 days
+deepsleep --gpio 4=0                 # until LP GPIO 4 reads 0
 deepsleep 1h --gpio 4=0 --gpio 5=1   # whichever comes first
 deepsleep --temp-above 45            # until the chip reaches 45 degC
 deepsleep 2h --temp-below 5 --check-every 1m
-cat /sys/kernel/board/wake_reason    # timer, gpio:4, temp_high, temp_low,
-                                     # poweron or reset
-cat /sys/kernel/board/wake_info      # details: slept_ms, button, skipped, ...
+cat /sys/kernel/board/wake_reason    # after the wake: why it woke
+cat /sys/kernel/board/wake_info      # details
 ```
 
-MicroPython (`/usr/lib/micropython/deepsleep.py`, importable from `main.py`):
+| Option | Meaning |
+| :--- | :--- |
+| `TIME` | Wake after this long: `10` (seconds), `500ms`, `30s`, `15m`, `2h`. At most 49 days. |
+| `--gpio N=L` | Wake when LP GPIO `N` (0–15, not 9) reads `L` (0 or 1). Can be given more than once. |
+| `--no-pull` | Do not turn on the internal pull resistor on the wake pins (use your own). |
+| `--temp-above C` / `--temp-below C` | Wake when the chip temperature reaches `C` degC (for example `45` or `-2.5`). |
+| `--check-every TIME` | How often the temperature is checked: 100 ms to 1 h, default 10 s. |
+| `-f` | Sleep even if BOOT was held at boot or the USB drive is not saved yet. |
+
+At least one of a time, a wake pin or a temperature limit is needed. If more
+than one is given, whichever comes first wakes the board.
+
+#### From MicroPython
+
+`/usr/lib/micropython/deepsleep.py` can be imported from `main.py`:
 
 ```python
 import deepsleep
-n = int(deepsleep.memory() or b"0") + 1   # 1 KB kept across Deep Sleep
+
+n = int(deepsleep.memory() or b"0") + 1     # count the wakes in sleep memory
 deepsleep.memory(b"%d" % n)
-print("wake", n, deepsleep.wake_reason())
-deepsleep.sleep(60000)                    # ms; does not return
-# deepsleep.sleep(temp_above=45, check_ms=5000)
+print("wake", n, deepsleep.wake_reason())   # "timer", "gpio:4", "temp_high", ...
+info = deepsleep.wake_info()                # dict of the wake_info lines
+print(info.get("temp_max"))
+
+deepsleep.sleep(60000)                      # ms; does not return
+# deepsleep.sleep(gpio={4: 0})              # wake when GPIO4 reads 0
+# deepsleep.sleep(3600000, temp_above=45, check_ms=5000)
 ```
 
-- **Wake pins** are LP GPIO 0–15 except GPIO 9 (the C6's boot strap on the
-  AddOn); check which are free on your carrier. Each pin wakes at the level
-  given (`N=0` or `N=1`), and the opposite internal pull is on while asleep
-  (`--no-pull` for external resistors). A pin that is already at its wake
-  level refuses the sleep (`skipped=gpio_active` in `wake_info`).
-- **Temperature wake** (#57): the P4's LP core stays on while the rest
-  sleeps and reads the chip's internal temperature sensor every check period
-  (default 10 s, `--check-every` 100 ms to 1 h). Two readings in a row at or
-  past the limit wake the board (`temp_high` / `temp_low`). The sensor
-  measures the chip, not the air, and its steps are about 0.44 degC. A limit
-  already passed when going to sleep refuses the sleep
-  (`skipped=temp_active`). After a sleep with a limit, `wake_info` has
-  `temp_checks`, `temp_last`, `temp_min` and `temp_max`.
-- **Sleep memory**: `/sys/kernel/board/sleep_memory` keeps up to 1024 bytes
-  across Deep Sleep and reboots, not across a power cycle or a RESET press.
-- **Clock**: the clock is carried over the sleep, so it is about right after a
-  wake even without NTP (`clock=restored` in `wake_info`).
-- **Stopping a program that sleeps in a loop**: hold **BOOT** while the board
-  wakes (or press RESET and then hold BOOT at once). That boot does not start
-  the autorun program, and `deepsleep` refuses to sleep in it (`-f`
-  overrides). BOOT held while the board is about to sleep also cancels the
-  sleep (`skipped=button`).
-- `deepsleep` waits until a change on the USB drive has been saved, and a
-  `/boot` update that waits for the next reboot refuses the sleep, so
-  nothing on the drive is lost. `deepsleep=no` in `config.txt` (read at boot)
-  allows Deep Sleep for root only.
-- Wake time from a sleep is the same as a reset, so this is for sleeps of
-  minutes or longer, not for a light sleep between short tasks.
+`sleep()` takes `ms`, `gpio` (a dict of pin: level), `pull`, `temp_above`,
+`temp_below`, `check_ms` and `force` (the same as `-f`). It raises `OSError`
+when the sleep is refused.
+
+#### Why it woke
+
+`/sys/kernel/board/wake_reason` holds one of these (comma separated if more
+than one happened at the same check):
+
+| `wake_reason` | Meaning |
+| :--- | :--- |
+| `timer` | The time ran out. |
+| `gpio:N` | Wake pin `N` reached its level. |
+| `temp_high` / `temp_low` | The chip temperature reached the `--temp-above` / `--temp-below` limit. |
+| `reset` | Not a wake: a normal reboot, a RESET press, or a sleep that was refused (see `skipped`). |
+| `poweron` | The board was powered on. |
+
+`/sys/kernel/board/wake_info` has the details, one `key=value` per line:
+
+| Key | Meaning |
+| :--- | :--- |
+| `boot` | `deepsleep`, `reset`, `poweron`, or `reset_during_sleep`. |
+| `slept_ms` | How long the board slept. |
+| `gpio_status` | The wake pins that woke it, as a bit mask. |
+| `button` | `1` if BOOT was held when the board started. |
+| `skipped` | Why the last request did not sleep: `none`, `button`, `gpio_active`, `temp_active`, `bad_request`, `boot_update`. |
+| `temp_checks`, `temp_last`, `temp_min`, `temp_max` | After a sleep with a temperature limit: how many checks the LP core made and what it read (degC). |
+| `clock` | `restored` when the clock was carried over the sleep. |
+
+#### Wake pins
+
+- LP GPIO 0–15 can wake the board, except GPIO 9 (the C6's boot strap on the
+  AddOn). Check which of them are free on your carrier.
+- While asleep, the opposite internal pull is on (pull-up for `N=0`, pull-down
+  for `N=1`), so a button to GND with `--gpio N=0` needs no resistor.
+  `--no-pull` turns the pulls off for external resistors.
+- A pin that is already at its wake level refuses the sleep
+  (`skipped=gpio_active`), as the board would wake at once.
+- Outputs are not kept while asleep: every pin is released, so a pin that
+  drives something (an LED, a relay) goes off.
+
+#### Temperature wake
+
+- The P4's small LP core keeps running while the rest sleeps. Every check
+  period it reads the chip's internal temperature sensor; two readings in a
+  row at or past the limit wake the board.
+- The sensor measures the chip, not the air, and its steps are about
+  0.44 degC. The chip is about 10 degC warmer than the room while Linux runs
+  and cools down within minutes of going to sleep, so a `--temp-below` limit
+  close to the temperature at sleep time fires within seconds.
+- A limit that is already passed when going to sleep refuses the sleep
+  (`skipped=temp_active`).
+- The checks do not change the sleep current that a USB meter can see, even
+  every second.
+
+#### What is kept
+
+| | Deep Sleep | `reboot` | RESET button, power off |
+| :--- | :--- | :--- | :--- |
+| Sleep memory (1 KB) | kept | kept | lost |
+| Clock | kept (within about 1 s; NTP corrects it when Wi-Fi is up) | not set until NTP | not set until NTP |
+| Files in `/tmp`, `/home` and other RAM folders | lost | lost | lost |
+| The USB drive (`/boot`) | kept (saved before sleeping) | kept | kept |
+
+The sleep memory is `/sys/kernel/board/sleep_memory`: write up to 1024 bytes
+(a write at offset 0 replaces it) and read them back after the wake.
+
+#### Stopping a program that sleeps in a loop
+
+An autorun program that always calls `deepsleep` would leave little time to
+log in. To stop it:
+
+- **Hold BOOT while the board wakes** (hold it from a few seconds before the
+  wake until a few seconds after). That boot does not start the autorun
+  program (`autorun: not started: BOOT was held at boot` in the log), and
+  `deepsleep` refuses to sleep in it until the next boot (`-f` overrides).
+- Or press **RESET**, release it, and then hold **BOOT** at once for a few
+  seconds. Do not hold BOOT while pressing RESET: the P4 may then start its
+  download mode instead.
+- BOOT held while the board is about to go to sleep cancels that sleep
+  (`skipped=button`).
+
+#### Safety and permissions
+
+- `deepsleep` waits (up to 20 s) until a change on the USB drive has been
+  saved. A `/boot` update that waits for the next reboot refuses the sleep, so
+  nothing on the drive is lost: reboot first.
+- Group `m5` (the autorun user) may use Deep Sleep. `deepsleep=no` in
+  `config.txt` (read at boot) allows it for root only.
+
+#### Limits
+
+- A wake takes as long as a reset, so Deep Sleep suits sleeps of minutes or
+  longer, not short pauses.
+- The USB serial port and the USB drive disappear while the board sleeps; a
+  terminal on the PC has to reopen the port after the wake.
+- Checked on a Stamp-P4 (chip rev v1.3) with the C6 AddOn. GPIO wake and
+  `temp_high` were not tried on hardware (they need wiring or heating); the
+  timer, BOOT, the sleep memory, the clock, `temp_low`, the refusals and the
+  MicroPython module were (#56, #57).
 
 ---
 
