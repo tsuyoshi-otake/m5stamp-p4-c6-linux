@@ -146,7 +146,9 @@ static void classify_boot(uint32_t rom_reason, uint64_t rtc_now)
 		return;
 	}
 
-	const struct sleep_request *req = &lp_state.req;
+	/* A copy: lp_state is cleared below. */
+	const struct sleep_request saved = lp_state.req;
+	const struct sleep_request *req = &saved;
 	uint64_t slept_us;
 	uint32_t pins;
 

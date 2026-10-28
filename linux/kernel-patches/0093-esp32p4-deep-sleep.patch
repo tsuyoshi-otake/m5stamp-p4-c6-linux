@@ -47,7 +47,7 @@ request boot-commit staged from user space).
 +obj-$(CONFIG_ESP32P4_SLEEP)	+= esp32p4-sleep.o
 --- /dev/null
 +++ b/drivers/misc/esp32p4-sleep.c
-@@ -0,0 +1,464 @@
+@@ -0,0 +1,467 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Deep Sleep through the boot shim (#56).
@@ -191,41 +191,44 @@ request boot-commit staged from user space).
 +	"none", "button", "gpio_active", "bad_request", "boot_update",
 +};
 +
-+/* "timer", "gpio:3", "timer,gpio:3,gpio:5", "poweron", "reset", "unknown". */
-+static int emit_reason(char *buf, int len)
++/*
++ * "timer", "gpio:3", "timer,gpio:3,gpio:5", "poweron", "reset", "unknown".
++ * scnprintf, not sysfs_emit_at: init prints it into a buffer on the stack.
++ */
++static int emit_reason(char *buf, int len, size_t size)
 +{
 +	int pin;
 +	bool any = false;
 +
 +	if (!wake_valid)
-+		return len + sysfs_emit_at(buf, len, "unknown");
++		return len + scnprintf(buf + len, size - len, "unknown");
 +	switch (wake.boot) {
 +	case WAKE_BOOT_POWERON:
-+		return len + sysfs_emit_at(buf, len, "poweron");
++		return len + scnprintf(buf + len, size - len, "poweron");
 +	case WAKE_BOOT_DEEPSLEEP:
 +		break;
 +	default:
-+		return len + sysfs_emit_at(buf, len, "reset");
++		return len + scnprintf(buf + len, size - len, "reset");
 +	}
 +	if (wake.causes & WAKE_CAUSE_TIMER) {
-+		len += sysfs_emit_at(buf, len, "timer");
++		len += scnprintf(buf + len, size - len, "timer");
 +		any = true;
 +	}
 +	for (pin = 0; pin < 16; pin++) {
 +		if (!(wake.gpio_status & BIT(pin)))
 +			continue;
-+		len += sysfs_emit_at(buf, len, "%sgpio:%d", any ? "," : "", pin);
++		len += scnprintf(buf + len, size - len, "%sgpio:%d", any ? "," : "", pin);
 +		any = true;
 +	}
 +	if (!any)
-+		len += sysfs_emit_at(buf, len, "unknown");
++		len += scnprintf(buf + len, size - len, "unknown");
 +	return len;
 +}
 +
 +static ssize_t wake_reason_show(struct kobject *kobj, struct kobj_attribute *attr,
 +				char *buf)
 +{
-+	int len = emit_reason(buf, 0);
++	int len = emit_reason(buf, 0, PAGE_SIZE);
 +
 +	return len + sysfs_emit_at(buf, len, "\n");
 +}
@@ -239,7 +242,7 @@ request boot-commit staged from user space).
 +	int len = 0;
 +
 +	len += sysfs_emit_at(buf, len, "wake_reason=");
-+	len = emit_reason(buf, len);
++	len = emit_reason(buf, len, PAGE_SIZE);
 +	len += sysfs_emit_at(buf, len, "\n");
 +	if (!wake_valid)
 +		return len + sysfs_emit_at(buf, len, "supported=0\n");
@@ -501,7 +504,7 @@ request boot-commit staged from user space).
 +	if (wake_valid) {
 +		char reason[64];
 +
-+		emit_reason(reason, 0);
++		emit_reason(reason, 0, sizeof(reason));
 +		pr_info("sleep: wake_reason=%s slept_ms=%u button=%u skipped=%s%s\n",
 +			reason, wake.slept_ms, wake.button,
 +			wake.skipped < ARRAY_SIZE(skip_names) ? skip_names[wake.skipped] : "?",
