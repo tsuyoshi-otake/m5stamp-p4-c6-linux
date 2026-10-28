@@ -68,27 +68,3 @@ if [ -f "${TARGET_DIR}/usr/sbin/sdio-diag" ]; then
 	sed -i 's/\r$//' "${TARGET_DIR}/usr/sbin/sdio-diag"
 	chmod 0755 "${TARGET_DIR}/usr/sbin/sdio-diag"
 fi
-
-# #55 compat, remove after v0.5.x: one-release aliases for the old
-# easystick-* command names.  Symlinks only; the binaries carry the new
-# role names.
-for compat_pair in \
-	"easystick-bootsync:bootsyncd" \
-	"easystick-info:sysinfo" \
-	"easystick-update-status:update-status" \
-	"easystick-autorun:autorun" \
-	"easystick-usb-lun:usb-lun" \
-	"easystick-watchdog:watchdog-feed" \
-	"easystick-sys:run-system" \
-	"easystick-mdns:mdnsd" \
-	"easystick-boot-commit:boot-commit" \
-	"easystick-firstboot:firstboot" \
-	"easystick-sdio-diag:sdio-diag"; do
-	compat_old=${compat_pair%%:*}
-	compat_new=${compat_pair##*:}
-	if [ -f "${TARGET_DIR}/usr/sbin/${compat_new}" ] &&
-		[ ! -e "${TARGET_DIR}/usr/sbin/${compat_old}" ]; then
-		ln -sf "${compat_new}" "${TARGET_DIR}/usr/sbin/${compat_old}"
-	fi
-done
-# #55 compat end

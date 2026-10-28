@@ -35,13 +35,7 @@ fi
 echo "== wi-fi =="
 ifconfig wlan0 2>/dev/null | grep -E 'HWaddr|inet addr' || echo "wlan0: not present"
 iw dev wlan0 link 2>/dev/null | head -n 3
-# #55 compat, remove after v0.5.x: fall back to the old status name.
-if [ -r /run/status.txt ]; then
-	cat /run/status.txt
-elif [ -r /run/easystick-status.txt ]; then
-	cat /run/easystick-status.txt
-fi
-# #55 compat end
+[ -r /run/status.txt ] && cat /run/status.txt
 
 echo "== usb lun =="
 /usr/sbin/usb-lun state 2>/dev/null || echo "unavailable"

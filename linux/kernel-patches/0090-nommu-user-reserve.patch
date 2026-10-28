@@ -335,16 +335,13 @@ diff --git a/mm/nommu_userspace_pool.c b/mm/nommu_userspace_pool.c
  static int __init nommu_pool_sysfs_init(void)
  {
  	struct kobject *kobj;
-@@ -224,9 +456,12 @@
+@@ -224,6 +456,9 @@
  		kobject_put(kobj);
  		return r;
  	}
 +	r = sysfs_create_group(kobj, &nommu_reserve_group);
 +	if (r)
 +		pr_warn("user-reserve sysfs group not created: %d\n", r);
- 	/* #55 compat, remove after v0.5.x: keep the old sysfs path working. */
- 	sysfs_create_link(kernel_kobj, kobj, "easystick");
- 	/* #55 compat end */
  	return 0;
  }
  device_initcall(nommu_pool_sysfs_init);

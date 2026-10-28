@@ -150,7 +150,7 @@ int main(int argc, char **argv)
 		size_t off, len, n;
 		unsigned int qd, i, id;
 		ssize_t r;
-		int match = 0, unicast, compat = 0;
+		int match = 0, unicast;
 		const char *answer = host;
 
 		/* wlan0 may come and go with S40network reloads. */
@@ -193,14 +193,6 @@ int main(int argc, char **argv)
 				match = 1;
 				break;
 			}
-			/* #55 compat, remove after v0.5.x: answer the old name. */
-			if (cls == CLASS_IN && (type == TYPE_A || type == TYPE_ANY) &&
-			    !strcasecmp(q, "easystick.local")) {
-				match = 1;
-				compat = 1;
-				break;
-			}
-			/* #55 compat end */
 		}
 		if (!match)
 			continue;
@@ -213,10 +205,6 @@ int main(int argc, char **argv)
 		/* A query from a port other than the mDNS port is a legacy unicast query:
 		 * answer to the sender, echo the ID and the question. */
 		unicast = ntohs(from.sin_port) != port;
-		/* #55 compat, remove after v0.5.x */
-		if (compat)
-			answer = "easystick";
-		/* #55 compat end */
 		memset(tx, 0, 12);
 		n = 12;
 		put16(tx + 2, 0x8400);

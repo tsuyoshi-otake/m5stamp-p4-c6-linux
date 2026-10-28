@@ -49,7 +49,11 @@ the old names.
 | `00NN-easystick-*.patch` | `00NN-*.patch` |
 | `easystick_cmd53_bb_*` | `cmd53_bb_*` |
 
-## Compatibility (remove after v0.5.x)
+## Compatibility (removed in v0.5.0)
+
+These aliases were in v0.4.3 only.  v0.5.0 removed them; the old names no
+longer work.
+
 
 - `/usr/sbin/easystick-*` symlinks to the new names
   (`board/stamp-p4/post-build.sh`)

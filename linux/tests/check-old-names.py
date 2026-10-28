@@ -5,8 +5,6 @@
 - board/hardware/ (the carrier's design files),
 - the #55 rename record linux/tests/issue55-rename-2026-10-23.md
   (it lists the old names by necessity),
-- '#55 compat' regions (one-release aliases; '#55 compat' starts a
-  region, '#55 compat end' closes it), and
 - '55b keep' regions (the README rename note and the v0.4.2
   checksum/asset lines that quote real published file names;
   '55b keep' starts a region, '55b keep end' closes it).
@@ -27,8 +25,8 @@ ALLOWED_PATH = re.compile(
     r"linux/tests/issue55-rename-2026-10-23\.md$|"
     r"linux/tests/check-old-names\.py$)")
 
-BEGIN = re.compile(r"#55 compat|55b keep")
-END = re.compile(r"#55 compat end|55b keep end")
+BEGIN = re.compile(r"55b keep")
+END = re.compile(r"55b keep end")
 
 
 def allowed_lines(path):
@@ -101,7 +99,7 @@ def main():
         print(hit)
     if bad:
         print(f"#55b check: {len(bad)} 'easystick' reference(s) outside the "
-              "allowlist (exceptions or keep/compat regions)", file=sys.stderr)
+              "allowlist (exceptions or keep regions)", file=sys.stderr)
         return 1
     print("#55b check: no 'easystick' references outside the allowlist")
     return 0

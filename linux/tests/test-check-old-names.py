@@ -48,7 +48,7 @@ for path in ("linux/tests/v0.4.1-hardware-validation-2026-10-21.md",
              "linux/kernel-patches/0076-nommu-pool-sysfs.patch"):
     check(f"rejected {path}", not ap.search(path))
 
-# 3. region helper: '#55 compat' and '55b keep' lines allowed
+# 3. region helper: '55b keep' lines allowed; '#55 compat' no longer is
 import tempfile
 with tempfile.TemporaryDirectory() as td:
     p = os.path.join(td, "f.txt")
@@ -56,6 +56,6 @@ with tempfile.TemporaryDirectory() as td:
         f.write("nope\n#55 compat\neasystick x\n#55 compat end\n"
                 "no2\n55b keep\neasystick y\n55b keep end\nno3\n")
     ok = mod.allowed_lines(p)
-check("compat+keep lines allowed", ok == {2, 3, 4, 6, 7, 8})
+check("keep lines allowed, compat not", ok == {6, 7, 8})
 
 sys.exit(1 if fails else 0)

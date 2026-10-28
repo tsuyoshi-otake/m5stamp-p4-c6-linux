@@ -17,9 +17,6 @@ RUNTIME_DIR="${RUNTIME_DIR:-/run}"
 STATUS_FILE="$RUNTIME_DIR/status.txt"
 STATUS_TMP="$RUNTIME_DIR/.status.$$"
 LAST_STATUS_FILE="$RUNTIME_DIR/.last_status"
-# #55 compat, remove after v0.5.x: mirror the old runtime status path.
-STATUS_FILE_COMPAT="$RUNTIME_DIR/easystick-status.txt"
-# #55 compat end
 
 # If IP is not provided or is none, try to read from wlan0 if status is not explicitly DISCONNECTED
 if [ "$IP" = "none" ] || [ -z "$IP" ]; then
@@ -119,10 +116,6 @@ if printf '%s\n' \
 	"updated_at=uptime ${UPTIME}s" > "$STATUS_TMP"
 then
 	if mv -f "$STATUS_TMP" "$STATUS_FILE"; then
-		# #55 compat, remove after v0.5.x
-		ln -f "$STATUS_FILE" "$STATUS_FILE_COMPAT" 2>/dev/null ||
-			cp "$STATUS_FILE" "$STATUS_FILE_COMPAT" 2>/dev/null || true
-		# #55 compat end
 		echo "$STATUS_STR" > "$LAST_STATUS_FILE"
 		echo "[status] Runtime status updated: status=${STATUS} ip=${IP} ssid=${SSID}"
 		return 0 2>/dev/null || exit 0
