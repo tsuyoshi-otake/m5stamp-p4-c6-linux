@@ -2,6 +2,8 @@
 .DS_Store
 Thumbs.db
 Desktop.ini
+# "> NUL" in Git Bash creates a real file named NUL
+/NUL
 .vscode/
 .idea/
 *.swp
