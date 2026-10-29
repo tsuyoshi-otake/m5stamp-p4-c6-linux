@@ -105,6 +105,21 @@ Every board gets its own credentials on first boot; no SSID or password is share
 ### 1. Download Release Package
 
 <!-- 55b keep -->
+> **v0.5.0** is built and published the same way as v0.4.3: the tag run refuses any asset
+> whose hash is not in `linux/tests/v0.5.0-hardware-validation-2026-10-29.md`.
+> Changes since v0.4.3:
+> - Deep Sleep (#56): `deepsleep` from the shell and the `deepsleep` module in MicroPython.
+>   The board sleeps at about 0.33 mA and wakes on a timer or on wake pins;
+>   it keeps 1 KB of sleep memory and the clock across the sleep (see "6. Deep Sleep").
+> - Temperature wake (#57): the LP core watches the chip temperature while the board sleeps.
+> - Your own LP core program (#59): `lp_core=` and `lp_program=` in `config.txt` run it
+>   always or only while asleep; Linux reads its variables in `/sys/kernel/board/lp_core/`
+>   or with the `lpcore` module (see "7. LP core program").
+> - The boot no longer waits about 50 s when nothing reads the USB serial port (#58).
+> - The one-release aliases from v0.4.3 are gone: the `easystick-*` commands,
+>   `easystick.local`, `/run/easystick-status.txt` and `/sys/kernel/easystick/` no longer
+>   exist. Use the names below.
+>
 > **v0.4.3** is built and published the same way as v0.4.2: the tag run refuses any asset
 > whose hash is not in `linux/tests/v0.4.3-hardware-validation-2026-10-24.md`.
 > Changes since v0.4.2: the names now describe what each part does,
@@ -266,8 +281,8 @@ Every board gets its own credentials on first boot; no SSID or password is share
 > the GPL corresponding source (`*-legal-info.tar.gz`, #31).
 
 Download either the monolithic 16MB raw flash image or the partition zip package from the [Releases](https://github.com/tsuyoshi-otake/m5stamp-p4-c6-linux/releases) page:
-- **`m5stamp-p4-c6-linux-smp-v0.4.3-16mb.bin.gz`**: Single 16MB raw flash image (simplest, flash to `0x0`).
-- **`m5stamp-p4-c6-linux-smp-v0.4.3.zip`**: Individual partition binaries with automated PowerShell flash script.
+- **`m5stamp-p4-c6-linux-smp-v0.5.0-16mb.bin.gz`**: Single 16MB raw flash image (simplest, flash to `0x0`).
+- **`m5stamp-p4-c6-linux-smp-v0.5.0.zip`**: Individual partition binaries with automated PowerShell flash script.
 
 ### 2. Flash using `esptool.py`
 
@@ -275,8 +290,8 @@ Connect the M5Stamp-P4 via its USB-C port to your computer. Identify your serial
 
 #### Option A: Monolithic 16MB Raw Image Flash (Recommended)
 ```bash
-gzip -d m5stamp-p4-c6-linux-smp-v0.4.3-16mb.bin.gz
-esptool.py --chip esp32p4 --port COM10 --baud 460800 write_flash 0x0 m5stamp-p4-c6-linux-smp-v0.4.3-16mb.bin
+gzip -d m5stamp-p4-c6-linux-smp-v0.5.0-16mb.bin.gz
+esptool.py --chip esp32p4 --port COM10 --baud 460800 write_flash 0x0 m5stamp-p4-c6-linux-smp-v0.5.0-16mb.bin
 ```
 
 #### Option B: Release PowerShell Script
@@ -1063,24 +1078,24 @@ This compiles:
 
 ---
 
-## SHA-256 Checksums (v0.4.3)
+## SHA-256 Checksums (v0.5.0)
 
 ```text
 Raw 16MB Monolithic Image:
-792531c9663d339d3b9a4d732698362075ef24664c7ce9ce93ef5d938f600501  m5stamp-p4-c6-linux-smp-v0.4.3-16mb.bin.gz
-e95d1911863c9fdff76810dd95eee6614041175dbeb7681a6595021338f9fce2  m5stamp-p4-c6-linux-smp-v0.4.3-16mb.bin (uncompressed)
+3123bfdb1a398da67f92ffb3fccedab5ec68684ab694720b8636424702c8d3c9  m5stamp-p4-c6-linux-smp-v0.5.0-16mb.bin.gz
+ede8673dc2aa0431964dbd05ba8632236b11bdd4b151d0b0b98d657cbb772183  m5stamp-p4-c6-linux-smp-v0.5.0-16mb.bin (uncompressed)
 
 Partition Archive:
-2465b30bd97c2f19d100bb6675aa60ae8e9679b1953463bb61522014527feae5  m5stamp-p4-c6-linux-smp-v0.4.3.zip
+8092cd0b930aba972acf1f4a1f520cc42f5da036e153b3979a1dfd46ebd1ce81  m5stamp-p4-c6-linux-smp-v0.5.0.zip
 
 Individual Partitions:
-c46443df091fc4cdcd1561049f2ae96d5a335ae38a34d8035138bf1d2c86d2f5  bootloader.bin
+c0050045c8fd03ea89ccdb53176ec9cf37a4c58632bc1b8afbcbd6a72b33e0c6  bootloader.bin
 7937656f29960d53b63010b51836e233d092e067e320cde5778ec43e04218870  partition-table.bin
-41774cd68cea0c9c498e21cab6ddc00a7ee5944fa44d12d6d9920f058eec8900  boot-shim.bin
-695afee607ba9817323f8d4410af5cdc7f2ac54353514e0e0fd16810c27bbec5  Image
-9626cdf3e0e19495c406319c486aceec4df5ccbe42e624f29b4dac436f765997  rootfs.squashfs
+dac407089d532ef56c09cd699011ab370aca0728eac3f1a1a904f5774b29afc8  boot-shim.bin
+1239c2e806a2435456a846f29ea57c4bf6f15dad2bc69275176b9fbd45cdbd62  Image
+911ce4ce2d311d06ec4f7aacd1bf98fceb1deb9e3dd6e8f6d56e4709231f9094  rootfs.squashfs
 2cffd1615e895ff0911e2a56feb689ee7bffe832fa61a6d1619510984188e7af  esp32p4-m5stamp-p4.dtb
-b541bc67a63e4e9b55185b65ace7cb4647e149cf9932f9ed8349bf7bb6eaeee2  boot.img
+ab4bec8915b52ea0647ee3abcdb0d042c721df8ff6a5265ed455557ddefa80c5  boot.img
 ```
 
 ---
