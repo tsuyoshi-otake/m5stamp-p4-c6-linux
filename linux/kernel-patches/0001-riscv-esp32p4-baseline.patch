@@ -190,8 +190,8 @@ index addc8188152f..138779118d04 100644
  
 +#ifdef CONFIG_SOC_ESP32P4
 +/*
-+ * ESP32-P4 HP core implements only M-mode, so userspace also runs in
-+ * M-mode and mstatus.MPP is always M.  The generic "SR_PP == 0 means
++ * ESP32-P4 userspace runs in M-mode too (0031; the core has U-mode,
++ * #61), so the saved MPP is always M.  The generic "SR_PP == 0 means
 + * user" test is therefore useless on this platform.
 + *
 + * Instead, exploit entry.S's CSR_SCRATCH invariant:
@@ -400,8 +400,8 @@ index 61b7a7716697..4dc9318e138b 100644
  	REG_L s0, PT_STATUS(sp)
 +#ifdef CONFIG_SOC_ESP32P4
 +	/*
-+	 * ESP32-P4 HP core has no U-mode, so user tasks run in M-mode and
-+	 * mstatus.MPP is always M.  Use entry.S's SCRATCH invariant:
++	 * User tasks run in M-mode on ESP32-P4 (0031; U-mode exists, #61),
++	 * so the saved MPP is always M.  Use entry.S's SCRATCH invariant:
 +	 * pt_regs->tp holds the pre-trap SCRATCH value, which equals the
 +	 * current kernel tp if the trap came from kernel context, and the
 +	 * user task's tp otherwise.  Materialize an "is-kernel" flag
@@ -477,7 +477,7 @@ index 61b7a7716697..4dc9318e138b 100644
  	RISCV_PTR do_trap_unknown
 +#ifdef CONFIG_SOC_ESP32P4
 +	/*
-+	 * ESP32-P4 has no U-mode: userspace ecall arrives as ecall_m.
++	 * ESP32-P4 userspace runs in M-mode (0031): its ecall is ecall_m.
 +	 * Dispatch it through the normal syscall path.
 +	 */
 +	RISCV_PTR do_trap_ecall_u
