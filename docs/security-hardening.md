@@ -28,6 +28,21 @@ The kernel and rootfs are not covered by ROM Secure Boot. Without the shim
 check in the second row, an attacker can still replace Linux while the boot
 chain stays "secure".
 
+## USB entry points
+
+Signed, encrypted firmware still leaves the development conveniences that
+give anyone with a USB cable the owner's rights. A product build would also:
+
+- turn off the USB drive, or export it read-only, and keep `credentials.txt`
+  off it;
+- turn off autorun of `main.py`/`main.sh`/`main` from the drive;
+- put a login on the serial console (`getty`), or turn the console off;
+- accept updates through the boot FAT A/B commit only when they are signed.
+
+Process isolation is not part of this plan: user programs run in M-mode and
+share one memory pool (README, *Security Design*), as on most ESP32 products,
+so the firmware is one trust domain.
+
 ## Order of work
 
 1. Add a signature check for `kernel`/`rootfs`/`dtb` to the boot shim (for

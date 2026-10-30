@@ -73,6 +73,19 @@ The C6 on the Stamp AddOn has no USB port of its own; it is updated over the SDI
 
 `tools/readback-c6-ng.ps1` reads the C6 flash through a C6 programmer port, if you have one wired, so the original C6 firmware can be kept. The SDIO update path was used during bring-up (`linux/tests/wlan0-regression-bisect-2026-08-12.md`); it is not part of the release workflow.
 
+## Security Design
+
+The release images are set up as a development board. The security model (#60–#62) is:
+
+- **Two boundaries.** Over the network everything needs authentication: Wi-Fi is WPA2-PSK, SSH needs the per-device random password or a key, and the only other service is mDNS. Over USB, whoever can plug in has the owner's rights: the serial console is a root shell, the drive holds `credentials.txt` and runs `main.py` at boot, and esptool can rewrite the flash. Keeping the board in your hands is the boundary.
+- **Code running on the board owns the whole device.** User programs run in RISC-V machine mode (M-mode), like the kernel, so any program can write kernel memory, CSRs, peripherals and the flash. The `m5`/root split and `su` keep mistakes apart; they do not stop an attacker.
+- **Why user programs do not run in U-mode.** The ESP32-P4 has U-mode and PMP memory protection, and both work on v1.3: a kernel that returned to user programs in U-mode passed 21 boots and two 30-minute load runs (#61). It would still not stop an attacker:
+  - Without an MMU every process shares one memory pool, so a compromised `m5` program can rewrite a root daemon (Dropbear, inetd) and become root, and root can load kernel modules or write the flash through `/dev/mtd`.
+  - ESP-IDF's startup code in the boot shim locks 14 of the 16 PMP entries, and the locked entries let U-mode read and write the peripherals, including the SPI flash controller.
+
+  U-mode would only make the kernel more robust against buggy programs, at the cost of reworking the boot shim's PMP setup and the user memory allocator. It stays a later option, mainly for v3.x silicon (32 PMP entries). M-mode userspace (`0031`) also avoids an `mret` interrupt race seen on v1.0 silicon.
+- **Most ESP32 products work the same way.** Their firmware is one trust domain too; a product protects it with Secure Boot, flash encryption, closed debug ports and signed updates rather than process isolation. Those are off here because they burn eFuses, which cannot be undone, and they would remove the recovery path, the USB drive configuration and autorun. [docs/security-hardening.md](docs/security-hardening.md) lists what a product build needs, and [SECURITY.md](SECURITY.md) lists the known limitations.
+
 ## Default Credentials & Connection
 
 | Service | SSID / Host | Username | Password | Notes |

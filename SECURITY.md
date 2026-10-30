@@ -4,8 +4,17 @@ Please report vulnerabilities privately through GitHub's
 "Report a vulnerability" (private security advisory) feature on this
 repository instead of opening a public issue.
 
-Known limitations of the current images (see the issue tracker for details):
+Known limitations of the current images (see the issue tracker for details,
+and [Security Design](README.md#security-design) in the README for the
+reasoning):
 
+- User programs run in machine mode (M-mode), like the kernel (#61, #62).
+  Any program that runs on the board can write kernel memory, peripherals and
+  the flash, so code execution as any user compromises the whole device. The
+  `m5`/root split and `su` guard against mistakes, not against an attacker.
+- Anyone who can plug into the USB ports has the owner's rights: the serial
+  console, the drive (credentials and autorun) and the flash. The boundary is
+  network authentication plus physical custody of the board.
 - Each unit generates its own Wi-Fi PSK and `m5` SSH password on first boot
   (`credentials.txt` on the USB drive, #24). Anyone who can read that drive or
   the flash has them.
