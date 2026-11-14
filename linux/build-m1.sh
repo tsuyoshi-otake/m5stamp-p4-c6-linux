@@ -767,6 +767,8 @@ if [[ "$board" == stamp-p4 ]]; then
 fi
 if ! $c68_profile; then
 	patches+=(0016-clocksource-esp32p4-systimer-hardening.patch)
+	# The UP map path must not reuse an enabled IDF-vectored IRQ slot.
+	patches+=(0094-esp32p4-clic-mask-up-mapping.patch)
 fi
 # m3-lab only: MWDT feed observe markers (timeout/policy unchanged).
 # m3-lab only: TCP/22 bidirectional progress ledger (0024-C2; observe-only).

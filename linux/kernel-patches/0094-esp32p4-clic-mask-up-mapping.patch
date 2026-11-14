@@ -1,0 +1,33 @@
+Subject: [PATCH] irqchip: mask inherited P4 CLIC slots before mapping
+
+On the Waveshare ESP32-P4-WIFI6 with P4 silicon v1.3, the IDF loader leaves
+CLIC slot 18 enabled and selectively vectored for its SYSTIMER interrupt.
+The UP driver reuses that slot for UART0, routing the new source before
+replacing the IDF vector attributes and before request_irq installs the
+Linux handler. An assertion in that window can enter the retained IDF
+vector.
+
+Mask the slot before changing its route or attributes. Linux IRQ startup
+owns re-enabling it during protected action setup. With the other images
+and configuration unchanged, three EN resets reached the shell on
+the first attempt instead of entering the IDF recursive-panic path and
+recovering through a software reset.
+
+This patch is for the UP irqchip implementation. The C68 SMP routing patch
+has a separate map implementation and is left unchanged.
+
+--- a/drivers/irqchip/irq-esp32p4-clic.c
++++ b/drivers/irqchip/irq-esp32p4-clic.c
+@@ -103,6 +103,12 @@
+ 	u8 attr;
+ 	irq_flow_handler_t handler;
+ 
++	/*
++	 * The loader may leave this slot enabled with an IDF vector. Mask it
++	 * before routing the new source; Linux unmasks it once a handler is ready.
++	 */
++	writeb(0, clic_base + hwirq * 4 + CLIC_INTIE_OFF);
++
+ 	if (clic_intmtx_base && clic_intmtx_source[hwirq])
+ 		writel(hwirq, clic_intmtx_base + clic_intmtx_source[hwirq] * 4);
+ 
