@@ -225,3 +225,47 @@ requires `build-cmd53-bb.sh` (mutually exclusive with `0051`).
 This is a bring-up check, not a release credential.  Record the lease and
 serial evidence outside Git, then rebuild with the production M3 key-only
 profile before any wider network test.
+
+## Investigation tools (i2c, file transfer)
+
+The lab image carries BusyBox `i2cget`, `i2cset`, `i2cdump`, `i2cdetect`,
+`devmem`, `xxd`, `nc` and `rx` — enough to probe on-board registers and move
+files without a USB drive.  They are applets inside the BusyBox image, not
+separate bFLT binaries, so they need no per-binary `flthdr -s` stack entry in
+post-build.sh.  The release profile (`linux/m3/`) does not get them.
+
+### Moving a file to the board
+
+Over Wi-Fi (preferred — join the SoftAP first, then):
+
+```text
+board:  nc -l -p 9000 > /tmp/file
+PC:     nc 192.168.4.1 9000 < file
+board:  sha256sum /tmp/file        # compare with the PC's hash
+```
+
+`nc` is a lab tool; a `LAB_TOOLS=0` build drops it, the same as `dbclient`.
+
+Serial only, through the console's XMODEM (slow — order of a minute per
+100 KB):
+
+```text
+board:  rx /tmp/file
+PC:     send the file with the terminal program's XMODEM option
+```
+
+### Building one-off C helpers for the board
+
+Cross-compile inside the build container with the Buildroot toolchain, then
+set the bFLT stack the same way post-build.sh does for `usr/bin/wifi-qr`:
+
+```sh
+riscv32-buildroot-linux-uclibc-gcc -fPIC -Wl,-elf2flt=-r -static -o tool tool.c
+riscv32-buildroot-linux-uclibc-flthdr -s 16384 tool
+riscv32-buildroot-linux-uclibc-flthdr tool     # must show Stack Size: 0x4000
+```
+
+All three flags are required: a plain `-static` or non-PIC build produces a
+bFLT that SIGSEGVs on this NOMMU target.  The `flthdr -s` step is not
+optional either — the elf2flt default of 4 KB silently corrupts .data/.bss
+when the stack overflows; 16 KB is what the small helpers in the image get.

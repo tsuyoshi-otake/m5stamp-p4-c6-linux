@@ -56,9 +56,24 @@ find_lun_file() {
 	[ "$n" -eq 1 ] || LUN_FILE=""
 }
 
+# A board without a USB controller (the Tab5) can never expose a drive.
+# The check is a shell-builtin glob so the 1 s poll still execs nothing.
+udc_present() {
+	for c in "${RUN_SYSTEM_CLASS_UDC_ROOT:-/sys/class/udc}"/*; do
+		[ -e "$c" ] && return 0
+	done
+	return 1
+}
+
 lun_state() {
 	[ -n "$LUN_FILE" ] && [ -f "$LUN_FILE" ] || find_lun_file
 	if [ -z "$LUN_FILE" ]; then
+		if ! udc_present; then
+			# No USB drive exists on this board; that is not an error,
+			# and $LUN_CTL is not needed to know it.
+			LUN_STATE="no-drive"
+			return
+		fi
 		LUN_STATE=$($LUN_CTL state 2>/dev/null) || LUN_STATE="error"
 		return
 	fi
@@ -395,7 +410,12 @@ LAST_STATE=""
 PENDING=0
 QUIET=0
 LOG_TICKS=0
-log "Daemon started; drive changes are saved ${SETTLE_SECONDS} s after the host stops writing"
+NO_DRIVE_LOGGED=""
+if udc_present; then
+	log "Daemon started; drive changes are saved ${SETTLE_SECONDS} s after the host stops writing"
+else
+	log "Daemon started"
+fi
 
 while true; do
 	tick 1
@@ -407,7 +427,14 @@ while true; do
 	fi
 	lun_state
 	if [ "$LUN_STATE" != "$LAST_STATE" ]; then
-		log "ownership=$LUN_STATE"
+		if [ "$LUN_STATE" = "no-drive" ]; then
+			if [ -z "$NO_DRIVE_LOGGED" ]; then
+				log "No USB drive on this board; network requests and autorun are still served"
+				NO_DRIVE_LOGGED=1
+			fi
+		else
+			log "ownership=$LUN_STATE"
+		fi
 		LAST_STATE=$LUN_STATE
 	fi
 	case "$LUN_STATE" in

@@ -312,12 +312,18 @@ esptool.py --chip esp32p4 --port COM10 --baud 460800 write_flash 0x0 m5stamp-p4-
 .\flash-candidate.ps1 -Port COM10 -AllowCandidateWrite
 ```
 
+Write with this script rather than calling esptool directly: it prints each
+artifact's SHA-256 and the kernel build it wrote (`Expect after boot:
+uname -v = …`), so the booted image can be reconciled against what was
+written.
 The boot slots (boot FS with user Wi-Fi config) and A/B bootmeta are preserved
 by default; pass `-WriteBoot` to write `boot.img` and reset the A/B selection.
 `-WriteBoot` is required for the first upgrade from v0.2.1-smp or older, which have
 no A/B slots. The default (no flag) is only for reflashing a v0.2.2 or later
 installation whose A/B slots and metadata are already initialized.
 `-PreserveBoot` is still accepted for compatibility and is a no-op.
+The script verifies the writes and resets the board so Linux boots; pass
+`-NoReset` to leave it in download mode.
 
 #### Option C: Manual Multi-Partition Flash
 ```bash
@@ -1088,6 +1094,14 @@ This compiles:
 2. Linux 7.2 SMP kernel with RISC-V P4 patches and Stamp-P4 Device Tree
 3. Buildroot root filesystem with Busybox (vi, udhcpd), Dropbear SSH, MicroPython, and ESP-Hosted-NG (`esp32_sdio.ko`)
 4. Combined image artifacts ready for flashing
+
+For release builds use `linux/release-build.sh` — the same wrapper the
+release workflow calls. It sets the three `NOMMU_*` variables that are the
+release settings of the user-pool allocator, then runs `linux/build-c68.sh`:
+
+```bash
+bash linux/release-build.sh --vendor /path/to/output --profile m3-lab
+```
 
 ---
 

@@ -11,5 +11,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y shellcheck
       - name: Rootfs script checks
         run: sh tests/static-check.sh
-      - name: Boot log checker self-test
-        run: python3 linux/tests/test-check-boot-log.py
+      - name: Secret scan
+        run: python3 tools/check-no-secrets.py
+      - name: Host tests
+        run: sh linux/tests/run-host-tests.sh

@@ -16,6 +16,8 @@ CONFIG_SHA256SUM=y
 CONFIG_DEVMEM=y
 CONFIG_NETSTAT=y
 CONFIG_NC=y
+# nc -l is the standard file-transfer path onto the board (tab5 #17).
+CONFIG_NC_SERVER=y
 CONFIG_DEFAULT_MODULES_DIR="/lib/modules"
 CONFIG_DEFAULT_DEPMOD_FILE="modules.dep"
 CONFIG_VI=y
@@ -31,6 +33,17 @@ CONFIG_FEATURE_VI_SETOPTS=y
 CONFIG_FEATURE_VI_SET=y
 CONFIG_FEATURE_VI_WIN_RESIZE=y
 CONFIG_FEATURE_VI_ASK_TERMINAL=y
+
+# Investigation tools (tab5 #17): I2C register access and an XMODEM receiver,
+# so a board without a USB drive can still probe the bus and take files over
+# serial.  Applets live inside the BusyBox image — no extra bFLT binaries and
+# no per-binary stack entries for post-build.sh.  CONFIG_I2CTRANSFER stays
+# out (the newer i2c-tools-style applet the disable list already drops).
+CONFIG_I2CGET=y
+CONFIG_I2CSET=y
+CONFIG_I2CDUMP=y
+CONFIG_I2CDETECT=y
+CONFIG_RX=y
 
 # ==============================================================================
 # NOMMU Memory Optimization: Disable bulky non-essential applets to bring

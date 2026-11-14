@@ -33,11 +33,25 @@ def main() -> None:
     s05 = read("linux/m3-lab/rootfs-overlay/etc/init.d/S05tmpfs")
     build = read("linux/build-m1.sh")
 
+    # README content is allowed to differ per board, so which board this
+    # repository documents is taken from the release workflow's ES_BOARD
+    # (Tab5 sets it explicitly; the Stamp repo leaves the stamp-p4 default).
+    release_yml = read(".github/workflows/release.yml")
+    is_tab5 = "ES_BOARD: tab5" in release_yml
     assert "Reboot Persistence" not in readme
-    assert "Eject / Safely Remove" in readme
-    assert "Saved to flash" in readme
-    assert "inactive flash slot" in readme
-    assert "No eject or reboot is needed" in readme
+    if is_tab5:
+        # The Tab5 has no USB gadget, so its README must not carry the
+        # Stamp's drive flow (eject, autorun).
+        assert "Eject / Safely Remove" not in readme
+        assert "Autorun from the USB drive" not in readme
+    else:
+        # The Stamp-P4 README documents the USB drive flow the board has.
+        assert "Eject / Safely Remove" in readme
+        assert "Saved to flash" in readme
+        assert "inactive flash slot" in readme
+        assert "No eject or reboot is needed" in readme
+        assert "riscv32-linux-gcc -Os -fPIC -Wl,-elf2flt" in readme
+        assert "### 5. Autorun from the USB drive (Pico-style)" in readme
 
     assert "\t\tdevice-owned)\n\t\t\tIMPORT_MODE=eject\n" in bootsync
     assert "mount -t vfat -o ro,loop" in bootsync
@@ -103,10 +117,9 @@ def main() -> None:
     variant = read("linux/buildroot-external/package/micropython-nommu/variant/mpconfigvariant.h")
     assert "MICROPY_CONFIG_ROM_LEVEL_EXTRA_FEATURES" in variant
     assert "mpy_bss_end + mpy_stack < 496 * 1024" in build
-    # Editing autorun= must not reload Wi-Fi; the README build line needs -fPIC.
+    # Editing autorun= must not reload Wi-Fi.
     # #39: bootsync diffs config.txt per key and calls S40network apply.
     assert "net_changed_keys \"$STAGE/$name\" \"/tmp/$name\"" in bootsync
-    assert "riscv32-linux-gcc -Os -fPIC -Wl,-elf2flt" in readme
     # bootsync runs under umask 077; a network apply from it wrote resolv.conf
     # 0600, so m5 could not resolve names.  Its children get a login umask.
     assert "( umask 022; exec /etc/init.d/S40network apply $NET_KEYS )" in bootsync
@@ -117,7 +130,6 @@ def main() -> None:
     assert "No eject or reboot is needed" in motd
     assert "busybox-tools --list" in motd
     assert "autorun status" in motd
-    assert "### 5. Autorun from the USB drive (Pico-style)" in readme
     assert max(len(line) for line in motd.splitlines()) <= 78
     # A reused Buildroot output must not keep a stale boot-commit helper.
     assert 'for pkg_dir in "$external_root"/package/*/; do' in build
