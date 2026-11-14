@@ -36,6 +36,7 @@ REQUIRED = (
     "tar",
 )
 RECOMMENDED = ("cmake", "ninja", "dtc", "openssl")
+VERSION_ARGS = {"unzip": ("-v",), "openssl": ("version",)}
 
 
 def usable(name: str) -> Optional[str]:
@@ -43,7 +44,7 @@ def usable(name: str) -> Optional[str]:
     if path is None:
         return None
     try:
-        subprocess.run((path, "--version"), stdout=subprocess.DEVNULL,
+        subprocess.run((path, *VERSION_ARGS.get(name, ("--version",))), stdout=subprocess.DEVNULL,
                        stderr=subprocess.DEVNULL, check=True, timeout=3)
     except (OSError, subprocess.SubprocessError):
         return None
