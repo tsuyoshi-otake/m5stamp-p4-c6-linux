@@ -312,6 +312,10 @@ esptool.py --chip esp32p4 --port COM10 --baud 460800 write_flash 0x0 m5stamp-p4-
 .\flash-candidate.ps1 -Port COM10 -AllowCandidateWrite
 ```
 
+Write with this script rather than calling esptool directly: it prints each
+artifact's SHA-256 and the kernel build it wrote (`Expect after boot:
+uname -v = …`), so the booted image can be reconciled against what was
+written.
 The boot slots (boot FS with user Wi-Fi config) and A/B bootmeta are preserved
 by default; pass `-WriteBoot` to write `boot.img` and reset the A/B selection.
 `-WriteBoot` is required for the first upgrade from v0.2.1-smp or older, which have

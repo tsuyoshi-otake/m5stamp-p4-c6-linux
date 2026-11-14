@@ -81,6 +81,22 @@ foreach ($artifact in $artifacts) {
 	$paths[$artifact.Name] = Assert-File $artifact.Name $artifact.Max
 }
 
+# Written-vs-booted reconciliation: the kernel image carries its "Linux
+# version ..." banner, and the running kernel prints it again on boot.  The
+# part from '#' is what `uname -v` reports; it identifies the exact build.
+$kernelBanner = $null
+$unameV = $null
+$imageText = [System.Text.Encoding]::ASCII.GetString(
+	[System.IO.File]::ReadAllBytes($paths["Image"]))
+$bannerMatch = [regex]::Match($imageText, "Linux version \d[\x20-\x7e]*")
+if ($bannerMatch.Success) {
+	$kernelBanner = $bannerMatch.Value
+	$vMatch = [regex]::Match($kernelBanner, "#\d+ [\x20-\x7e]+")
+	if ($vMatch.Success) {
+		$unameV = $vMatch.Value
+	}
+}
+
 $versionOutput = (& $PythonPath -m esptool version 2>&1 | Out-String)
 if ($LASTEXITCODE -ne 0 -or $versionOutput -notmatch "4\.8\.1") {
 	throw "This target is pinned to esptool 4.8.1; detected: $($versionOutput.Trim())"
@@ -95,6 +111,15 @@ if ($stockPath) {
 }
 Write-Host "  stock_sha256=$stockHash"
 Write-Host "  artifacts=$artifactRoot"
+foreach ($artifact in $artifacts) {
+	$artifactHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $paths[$artifact.Name]).Hash.ToLowerInvariant()
+	Write-Host "    $($artifact.Address) sha256=$artifactHash  $($artifact.Name)"
+}
+if ($kernelBanner) {
+	Write-Host "  kernel=$kernelBanner"
+} else {
+	Write-Warning "No 'Linux version' banner found in Image; the booted kernel cannot be checked against this write."
+}
 if ($WriteBoot) {
 	Write-Host "  boot slots: WRITE boot.img + reset A/B metadata (-WriteBoot)"
 } else {
@@ -191,6 +216,9 @@ if ($NoReset) {
 	Write-Host "Board left in download mode; reset it to boot"
 } else {
 	Write-Host "Board reset; Linux boots now"
+}
+if ($unameV) {
+	Write-Host "Expect after boot: uname -v = $unameV"
 }
 if ($stockPath) {
 	Write-Host "Recovery command (only after entering ROM mode):"
