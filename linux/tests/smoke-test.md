@@ -11,7 +11,9 @@ DTR/RTS so the capture does not reset the board itself (see
 
 ## 1. Cold boot
 
-Flash, then start the capture and reset the board with `-Reset`:
+Flash, then start the capture and reset the board with `-Reset`
+(`flash-candidate.ps1` resets the board itself by default; pass it
+`-NoReset` only when a later esptool step must run first):
 
 ```powershell
 pwsh linux/tests/capture-boot.ps1 -Port COM10 -Output boot.bin -TimeoutSeconds 90 -Reset

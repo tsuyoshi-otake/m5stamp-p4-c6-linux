@@ -1,0 +1,237 @@
+# Subject: ssh: keep the PTY vfork child to plain syscalls (#53)
+#
+# ptycommand() ran the session command in a vfork() child that still
+# did libc work in the shared address space: signal(SIGTTOU) inside
+# pty_make_controlling_tty() wrote the shared uClibc sighandler table,
+# chansess_login_alloc/login_login/login_free_entry did malloc + a
+# utmp file write, and the DO_MOTD block did malloc/stat/read/write.
+# Any one of those can corrupt state the parent still depends on
+# before execve() returns, so the child has to be syscalls-only.
+#
+# The observed PTY failure was a chain, not a direct crash in the
+# child.  Kernel instrumentation showed the parent dying inside
+# free_child_envp's free() loop on an out-of-bounds element pointer
+# (0012's m_free(*e++) double evaluation; 9448a76 in this branch).
+# The dead parent's fd teardown then closed the ptmx master, the
+# resulting pty_close -> vhangup sent SIGHUP+SIGCONT to the slave's
+# session leader - the exec'ing child - and the fatal signal turned
+# the flat loader's killable kernel_read into -EINTR, which printed
+# "binfmt_flat: Unable to read code+data+bss" and tore the session
+# down.  Whether child-side libc writes ever contributed to the
+# parent's crash is unresolved [INF]: the fault reproduced while the
+# child was pared to a direct execve, and the envp loop bug alone
+# accounts for the exact faulting pointer (the next heap chunk's size
+# word).  Noptycommand() survived the same bug only because its heap
+# layout usually put a NULL after the envp array [INF].
+#
+# For DROPBEAR_VFORK the child is now syscalls-only: close(master),
+# setsid(), TIOCSCTTY on the slave (the vfork-safe subset of
+# pty_make_controlling_tty), dup2 to 0/1/2, a plain write() of the
+# motd the parent read before vfork(), then execchild().  The utmp
+# login record moves to the parent after vfork(), which also gives it
+# the real child pid.  All child error paths end in _exit(127) - the
+# old "return DROPBEAR_FAILURE" from a vfork child was itself a
+# shared-stack corruption.  The !DROPBEAR_VFORK fork() path is
+# unchanged.
+#
+--- a/src/svr-chansession.c
++++ b/src/svr-chansession.c
+@@ -50,6 +50,11 @@
+ static void execchild(const void *user_data_chansess);
+ #if DROPBEAR_VFORK
+ static char **svr_child_envp;
++#if DROPBEAR_VFORK && DO_MOTD
++/* Parent reads the motd before vfork(); the child just write()s it. */
++static char svr_child_motd[4096];
++static unsigned int svr_child_motd_len;
++#endif
+ static char **build_child_envp(const struct ChanSess *chansess);
+ static void free_child_envp(void);
+ #endif
+@@ -827,8 +832,7 @@
+ 
+ 	pid_t pid;
+ 	struct logininfo *li = NULL;
+-#if DO_MOTD
+-	buffer * motdbuf = NULL;
++#if DO_MOTD && DROPBEAR_VFORK
+ 	int len;
+ 	struct stat sb;
+ 	char *hushpath = NULL;
+@@ -841,9 +845,47 @@
+ 		dropbear_log(LOG_WARNING, "No pty was allocated, couldn't execute");
+ 		return DROPBEAR_FAILURE;
+ 	}
+-	
++
+ #if DROPBEAR_VFORK
++	/* The vfork child shares the server's memory until execve, so it may
++	 * only run plain syscalls (no libc, malloc, stdio, utmp or signal() -
++	 * see the noptycommand notes).  All libc work moves to the parent:
++	 * the envp above/below, the motd read here, and the utmp record after
++	 * vfork. */
+ 	svr_child_envp = build_child_envp(chansess);
++
++#if DO_MOTD
++	svr_child_motd_len = 0;
++	if (svr_opts.domotd && !chansess->cmd) {
++		/* don't show the motd if ~/.hushlogin exists */
++		/* 12 == strlen("/.hushlogin\0") */
++		len = strlen(ses.authstate.pw_dir) + 12;
++		hushpath = m_malloc(len);
++		snprintf(hushpath, len, "%s/.hushlogin", ses.authstate.pw_dir);
++		if (stat(hushpath, &sb) < 0) {
++			char *expand_path = expand_homedir_path(MOTD_FILENAME);
++			int fd = open(expand_path, O_RDONLY);
++			m_free(expand_path);
++			if (fd >= 0) {
++				len = read(fd, svr_child_motd, sizeof(svr_child_motd));
++				close(fd);
++				if (len > 0) {
++					/* cap at a screenful; append a trailing LF
++					 * when it fits, overwrite only at the cap */
++					if (svr_child_motd[len - 1] != '\n') {
++						if (len < sizeof(svr_child_motd))
++							svr_child_motd[len++] = '\n';
++						else
++							svr_child_motd[len - 1] = '\n';
++					}
++					svr_child_motd_len = len;
++				}
++			}
++		}
++		m_free(hushpath);
++	}
++#endif /* DO_MOTD */
++
+ 	pid = vfork();
+ #else
+ 	pid = fork();
+@@ -857,26 +895,47 @@
+ 
+ 	if (pid == 0) {
+ 		/* child */
+-		
+-		TRACE(("back to normal sigchld"))
+ #if DROPBEAR_VFORK
+-		/* Leave SIGCHLD alone: this child still runs in the parent's
+-		 * memory, and uClibc's LinuxThreads signal() records the handler
+-		 * in a table there, so SIG_DFL would make the parent's next
+-		 * SIGCHLD call a NULL handler.  execve() resets caught signals
+-		 * to SIG_DFL anyway. */
+-#else
++		/* Plain syscalls only until execve: the child still runs in the
++		 * parent's memory, so no libc/malloc/stdio/utmp/signal() here. */
++		close(chansess->master);
++
++		/* Become session leader and take the pty slave as the
++		 * controlling tty.  This is the vfork-safe subset of
++		 * pty_make_controlling_tty(): a fresh session leader's
++		 * TIOCSCTTY cannot SIGTTOU-stop, so the SIG_IGN dance (a
++		 * Solaris workaround) and the verification opens are dropped. */
++		setsid();
++		ioctl(chansess->slave, TIOCSCTTY, 0);
++
++		if ((dup2(chansess->slave, STDIN_FILENO) < 0) ||
++			(dup2(chansess->slave, STDOUT_FILENO) < 0) ||
++			(dup2(chansess->slave, STDERR_FILENO) < 0)) {
++			_exit(127);
++		}
++		close(chansess->slave);
++
++#if DO_MOTD
++		if (svr_child_motd_len > 0) {
++			write(STDOUT_FILENO, svr_child_motd, svr_child_motd_len);
++		}
++#endif
++
++		execchild(chansess);
++		/* not reached - execchild _exit()s on failure */
++		_exit(127);
++#else /* !DROPBEAR_VFORK */
++		TRACE(("back to normal sigchld"))
+ 		/* Revert to normal sigchld handling */
+ 		if (signal(SIGCHLD, SIG_DFL) == SIG_ERR) {
+ 			dropbear_exit("signal() error");
+ 		}
+-#endif
+-		
++
+ 		/* redirect stdin/stdout/stderr */
+ 		close(chansess->master);
+ 
+ 		pty_make_controlling_tty(&chansess->slave, chansess->tty);
+-		
++
+ 		if ((dup2(chansess->slave, STDIN_FILENO) < 0) ||
+ 			(dup2(chansess->slave, STDOUT_FILENO) < 0)) {
+ 			TRACE(("leave ptycommand: error redirecting filedesc"))
+@@ -905,33 +964,31 @@
+ 
+ #if DO_MOTD
+ 		if (svr_opts.domotd && !chansess->cmd) {
++			buffer * motdbuf = NULL;
++			int len;
++			struct stat sb;
++			char *hushpath = NULL;
+ 			/* don't show the motd if ~/.hushlogin exists */
+-
+ 			/* 12 == strlen("/.hushlogin\0") */
+-			len = strlen(ses.authstate.pw_dir) + 12; 
+-
++			len = strlen(ses.authstate.pw_dir) + 12;
+ 			hushpath = m_malloc(len);
+ 			snprintf(hushpath, len, "%s/.hushlogin", ses.authstate.pw_dir);
+-
+ 			if (stat(hushpath, &sb) < 0) {
+ 				char *expand_path = NULL;
+-				/* more than a screenful is stupid IMHO */
+ 				motdbuf = buf_new(MOTD_MAXSIZE);
+ 				expand_path = expand_homedir_path(MOTD_FILENAME);
+ 				if (buf_readfile(motdbuf, expand_path) == DROPBEAR_SUCCESS) {
+-					/* incase it is full size, add LF at last position */
+ 					if (motdbuf->len == motdbuf->size) motdbuf->data[motdbuf->len - 1]=10;
+ 					buf_setpos(motdbuf, 0);
+ 					while (motdbuf->pos != motdbuf->len) {
+ 						len = motdbuf->len - motdbuf->pos;
+-						len = write(STDOUT_FILENO, 
++						len = write(STDOUT_FILENO,
+ 								buf_getptr(motdbuf, len), len);
+ 						buf_incrpos(motdbuf, len);
+ 					}
+ 				}
+ 				m_free(expand_path);
+ 				buf_free(motdbuf);
+-
+ 			}
+ 			m_free(hushpath);
+ 		}
+@@ -939,15 +996,26 @@
+ 
+ 		execchild(chansess);
+ 		/* not reached */
+-
++#endif /* DROPBEAR_VFORK */
+ 	} else {
+ 		/* parent */
+ 		TRACE(("continue ptycommand: parent"))
+ #if DROPBEAR_VFORK
+ 		free_child_envp();
+-#endif
+ 		chansess->pid = pid;
+ 
++		/* utmp bookkeeping is parent's work under vfork: the child may
++		 * not run libc, and recording here also gives the entry the
++		 * real child pid. */
++		li = chansess_login_alloc(chansess);
++		svr_raise_gid_utmp();
++		login_login(li);
++		svr_restore_gid();
++		login_free_entry(li);
++#else
++		chansess->pid = pid;
++#endif
++
+ 		/* add a child pid */
+ 		addchildpid(chansess, pid);
+ 

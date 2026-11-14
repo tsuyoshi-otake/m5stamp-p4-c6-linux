@@ -6,10 +6,13 @@ resetting the board), then run:
 
     python3 linux/tests/check-boot-log.py boot.bin
     python3 linux/tests/check-boot-log.py --after-reboot boot-after-reboot.bin
+    python3 linux/tests/check-boot-log.py --expect-kernel-build "#1 SMP ..." boot.bin
 
 --after-reboot is for the capture that follows a plain `reboot`; that boot
-must not report a crash capsule (#19).  Prints one PASS/FAIL line per check
-and exits non-zero when any check fails.
+must not report a crash capsule (#19).  --expect-kernel-build fails unless
+the capture's `Linux version` line contains the given string, so the booted
+kernel can be checked against the build the flasher reported (tab5 #19).
+Prints one PASS/FAIL line per check and exits non-zero when any check fails.
 """
 
 from __future__ import annotations
@@ -59,7 +62,8 @@ def read_lines(path: Path) -> list[str]:
     return [line.rstrip("\r") for line in text.split("\n")]
 
 
-def check(lines: list[str], after_reboot: bool) -> list[tuple[bool, str]]:
+def check(lines: list[str], after_reboot: bool,
+          expect_kernel_build: str | None = None) -> list[tuple[bool, str]]:
     results: list[tuple[bool, str]] = []
 
     for name, pattern in REQUIRED.items():
@@ -80,6 +84,13 @@ def check(lines: list[str], after_reboot: bool) -> list[tuple[bool, str]]:
         results.append((not hits,
                         "no crash capsule after reboot"
                         + (f": {hits[0][:120]}" if hits else "")))
+
+    if expect_kernel_build is not None:
+        hit = next((line for line in lines if "Linux version " in line), None)
+        ok = hit is not None and expect_kernel_build in hit
+        results.append((ok, "expected kernel build"
+                        + (f": {hit.strip()}" if hit
+                           else ": no Linux version line in capture")))
     return results
 
 
@@ -100,10 +111,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("capture", type=Path)
     parser.add_argument("--after-reboot", action="store_true",
                         help="the capture follows a plain reboot; fail on a crash capsule")
+    parser.add_argument("--expect-kernel-build", metavar="STRING",
+                        help="fail unless the capture's Linux version line contains STRING")
     args = parser.parse_args(argv)
 
     lines = read_lines(args.capture)
-    results = check(lines, args.after_reboot)
+    results = check(lines, args.after_reboot, args.expect_kernel_build)
     for ok, message in results:
         print(f"{'PASS' if ok else 'FAIL'}: {message}")
     for name, pattern in WARN.items():

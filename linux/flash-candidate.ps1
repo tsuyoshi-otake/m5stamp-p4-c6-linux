@@ -28,6 +28,11 @@ param(
 	# default, so this switch is a no-op.
 	[switch] $PreserveBoot,
 
+	# Default is to hard-reset the board after the write verifies, so Linux
+	# boots without a manual reset.  -NoReset keeps the old behaviour of
+	# leaving the board in download mode.
+	[switch] $NoReset,
+
 	[string] $ExpectedStockSha256 = "229459f251eaf6222f0c07968702d72a3818e520da1788ce465027d969020c24"
 )
 
@@ -44,6 +49,24 @@ if ($Board -eq "waveshare-wifi6" -and -not $StockReadback) {
 # Native Python needs a filesystem path, without PowerShell's provider prefix.
 $artifactRoot = (Resolve-Path -LiteralPath $ArtifactsDirectory).ProviderPath
 $stockPath = $null
+
+# SHA-256 through .NET.  Get-FileHash is in a module that Windows PowerShell
+# cannot load when it is started from a PowerShell 7 shell: it inherits that
+# shell's PSModulePath and finds the wrong Microsoft.PowerShell.Utility.
+function Get-Sha256([string] $Path) {
+	$stream = [System.IO.File]::OpenRead($Path)
+	try {
+		$sha = [System.Security.Cryptography.SHA256]::Create()
+		try {
+			$bytes = $sha.ComputeHash($stream)
+		} finally {
+			$sha.Dispose()
+		}
+	} finally {
+		$stream.Dispose()
+	}
+	return ([System.BitConverter]::ToString($bytes) -replace "-", "").ToLowerInvariant()
+}
 
 function Assert-File([string] $Name, [UInt32] $MaxBytes) {
 	$path = Join-Path $artifactRoot $Name
@@ -62,7 +85,7 @@ if ($StockReadback) {
 	if ((Get-Item -LiteralPath $stockPath).Length -ne 0x1000000) {
 		throw "Stock readback must be exactly 16 MiB: $stockPath"
 	}
-	$stockHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $stockPath).Hash.ToLowerInvariant()
+	$stockHash = Get-Sha256 $stockPath
 	if ($stockHash -ne $ExpectedStockSha256.ToLowerInvariant()) {
 		throw "Stock readback SHA-256 mismatch: got $stockHash, expected $ExpectedStockSha256"
 	}
@@ -93,6 +116,23 @@ foreach ($artifact in $artifacts) {
 	$paths[$artifact.Name] = Assert-File $artifact.Name $artifact.Max
 }
 
+# Written-vs-booted reconciliation: the kernel image carries its "Linux
+# version ..." banner, and the running kernel prints it again on boot.  The
+# part from '#' is what `uname -v` reports; it identifies the exact build.
+$kernelBanner = $null
+$unameV = $null
+$imageText = [System.Text.Encoding]::ASCII.GetString(
+	[System.IO.File]::ReadAllBytes($paths["Image"]))
+# The image holds two "Linux version" strings: a link-time placeholder that
+# ends in "# SMP" with no build number, and the real banner.  Only the one
+# with a build number and date is what the running kernel reports.
+$bannerMatch = [regex]::Match($imageText,
+	"Linux version \d[\x20-\x7e]*? (#\d+ [\x20-\x7e]+)")
+if ($bannerMatch.Success) {
+	$kernelBanner = $bannerMatch.Value
+	$unameV = $bannerMatch.Groups[1].Value
+}
+
 $versionOutput = (& $PythonPath -m esptool version 2>&1 | Out-String)
 if ($LASTEXITCODE -ne 0 -or $versionOutput -notmatch "4\.8\.1") {
 	throw "This target is pinned to esptool 4.8.1; detected: $($versionOutput.Trim())"
@@ -109,10 +149,24 @@ if ($stockPath) {
 }
 Write-Host "  stock_sha256=$stockHash"
 Write-Host "  artifacts=$artifactRoot"
+foreach ($artifact in $artifacts) {
+	$artifactHash = Get-Sha256 $paths[$artifact.Name]
+	Write-Host "    $($artifact.Address) sha256=$artifactHash  $($artifact.Name)"
+}
+if ($kernelBanner) {
+	Write-Host "  kernel=$kernelBanner"
+} else {
+	Write-Warning "No 'Linux version' banner found in Image; the booted kernel cannot be checked against this write."
+}
 if ($WriteBoot) {
 	Write-Host "  boot slots: WRITE boot.img + reset A/B metadata (-WriteBoot)"
 } else {
 	Write-Host "  boot slots: preserved (default; pass -WriteBoot to update the boot FS)"
+}
+if ($NoReset) {
+	Write-Host "  reset: none (-NoReset); the board stays in download mode"
+} else {
+	Write-Host "  reset: hard reset after the last flash operation"
 }
 Write-Host "  C6 write: none (COM10 is the P4 module USB-C path)"
 
@@ -157,9 +211,16 @@ if ($LASTEXITCODE -ne 0) {
 	throw "P4 candidate write failed. Enter ROM mode and restore the preserved stock readback before retrying."
 }
 
+# With -WriteBoot the A/B metadata erase follows and does the reset itself,
+# so verify leaves the board in download mode for it.  Otherwise verify is
+# the last flash operation and resets the board into the new image.
+$verifyAfter = "hard_reset"
+if ($WriteBoot -or $NoReset) {
+	$verifyAfter = "no_reset"
+}
 $verifyArgs = @(
 	"-m", "esptool", "--chip", "esp32p4", "--port", $Port,
-	"--baud", "460800", "--before", "default_reset", "--after", "no_reset",
+	"--baud", "460800", "--before", "default_reset", "--after", $verifyAfter,
 	"verify_flash"
 )
 foreach ($artifact in $artifacts) {
@@ -182,9 +243,13 @@ if ($LASTEXITCODE -ne 0) {
 # loss before this point leaves the previously selected slot bootable; after
 # the erase, boot-shim deliberately falls back to the newly verified slot0.
 if ($WriteBoot) {
+	$eraseAfter = "hard_reset"
+	if ($NoReset) {
+		$eraseAfter = "no_reset"
+	}
 	$metadataArgs = @(
 		"-m", "esptool", "--chip", "esp32p4", "--port", $Port,
-		"--baud", "460800", "--before", "default_reset", "--after", "hard_reset",
+		"--baud", "460800", "--before", "default_reset", "--after", $eraseAfter,
 		"erase_region", "0xfc0000", "0x2000"
 	)
 	& $PythonPath @metadataArgs
@@ -194,6 +259,14 @@ if ($WriteBoot) {
 }
 
 Write-Host "P4 candidate write and verify passed"
+if ($NoReset) {
+	Write-Host "Board left in download mode; reset it to boot"
+} else {
+	Write-Host "Board reset; Linux boots now"
+}
+if ($unameV) {
+	Write-Host "Expect after boot: uname -v = $unameV"
+}
 if ($stockPath) {
 	Write-Host "Recovery command (only after entering ROM mode):"
 	Write-Host "  $PythonPath -m esptool --chip esp32p4 --port $Port write_flash 0x0 $stockPath"

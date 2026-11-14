@@ -83,4 +83,16 @@ expect(rc == 1 and "FAIL: CPU1 protection reported" in out,
 rc, out = run(GOOD + b"M3-lab: CONFIG ERROR: country=xx1 is not a two-letter code; ignored\r\n")
 expect(rc == 0 and "WARN: config error" in out, f"config errors only warn\n{out}")
 
+rc, out = run(GOOD, "--expect-kernel-build", "#1 SMP")
+expect(rc == 0 and "PASS: expected kernel build" in out,
+       f"a matching kernel build passes\n{out}")
+
+rc, out = run(GOOD, "--expect-kernel-build", "#2 SMP")
+expect(rc == 1 and "FAIL: expected kernel build" in out,
+       f"a different kernel build is caught\n{out}")
+
+rc, out = run(GOOD.replace(b"Linux version", b"Kernel release"), "--expect-kernel-build", "#1 SMP")
+expect(rc == 1 and "FAIL: expected kernel build" in out,
+       f"a capture without a Linux version line is caught\n{out}")
+
 print("PASS: check-boot-log flags failures and passes a clean boot")
