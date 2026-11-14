@@ -1,0 +1,70 @@
+From: Devin <devin@cognition.ai>
+Date: Fri, 30 Oct 2026 00:00:00 +0900
+Subject: [PATCH 14/14] stamp-p4: don't let a client channel-eof hangup a
+ fresh pty session child
+
+Issue #53.  Measured failure on m3-lab (OpenSSH client on the LAN):
+
+    ssh -tt m5@10.255.10.160 'echo X' </dev/null
+      -> exit-signal, no output, and
+         "binfmt_flat: Unable to read code+data+bss, errno -4" in dmesg
+
+while the identical exec session succeeds over loopback
+(dbclient -t m5@127.0.0.1 'cmd') and succeeds over the LAN as soon
+as stdin is held open:
+
+    (sleep 3) | ssh -tt m5@10.255.10.160 'echo X'   -> works
+
+When the client's stdin is already at EOF, OpenSSH sends
+SSH_MSG_CHANNEL_EOF immediately after the exec request.  That lands
+in recv_msg_channel_eof() -> check_close() ->
+close_chan_fd(channel->writefd, SHUT_WR).  ptycommand() wires the pty
+master as both readfd and writefd and sets bidir_fd = 0, so
+close_chan_fd() takes the non-socket branch and m_close()s the
+master outright.  That is the last master fd: the pty driver's
+vhangup sends SIGHUP to the freshly created session leader, and the
+signal lands while the vfork child is still inside execve() - the
+bFLT load is slow enough on this target that the eof always arrives
+first -> flat loader read returns -EINTR -> exec fails ->
+binfmt_flat errno -4 -> exit-signal to the client.
+
+The same race exists upstream; on a fast machine the child usually
+execs and produces output before the eof is processed, so it goes
+unnoticed.  The NOMMU flat loader stretches the window enough that
+the child loses every time.
+
+Set bidir_fd = 1 on the session channel in ptycommand():
+close_chan_fd() then takes the socket path - shutdown(master,
+SHUT_WR) fails harmlessly with ENOTSOCK, writefd is marked
+FD_CLOSED (input forwarding stops, as it should), and the master
+stays open so the child keeps running and its output keeps flowing.
+The single m_close(master) still happens at channel teardown once
+readfd/writefd/errfd are all FD_CLOSED.  A pty cannot convey EOF to
+the child's stdin anyway, so this also matches OpenSSH server
+behaviour: the remote command runs until it exits.
+
+noptycommand() keeps bidir_fd = 0: writefd there is a real pipe and
+hard-closing it is what delivers stdin EOF to the child.
+---
+ src/svr-chansession.c | 10 +++++++++-
+ 1 file changed, 9 insertions(+), 1 deletion(-)
+
+--- a/src/svr-chansession.c
++++ b/src/svr-chansession.c
+@@ -1028,7 +1028,15 @@
+ 		channel->readfd = chansess->master;
+ 		/* don't need to set stderr here */
+ 		ses.maxfd = MAX(ses.maxfd, chansess->master);
+-		channel->bidir_fd = 0;
++		/* Keep bidir_fd set so a client channel-eof takes the
++		 * socket path in close_chan_fd(): shutdown() on a pty
++		 * fails harmlessly (ENOTSOCK), writefd is marked
++		 * FD_CLOSED, and the master stays open.  With bidir_fd
++		 * cleared the eof would m_close() the last master fd,
++		 * vhangup would SIGHUP the fresh session leader, and on
++		 * this slow NOMMU target the signal lands inside the
++		 * child's execve() (binfmt_flat -EINTR). */
++		channel->bidir_fd = 1;
+ 
+ 		setnonblocking(chansess->master);
+ 

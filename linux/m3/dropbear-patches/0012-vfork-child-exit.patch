@@ -227,7 +227,7 @@ kernel sigaction changes and the shared sighandler[] table is untouched.
  		chansess->pid = pid;
  
  		/* add a child pid */
-@@ -970,9 +991,79 @@
+@@ -970,9 +991,81 @@
  
  /* Clean up, drop to user privileges, set up the environment and execute
   * the command/shell. This function does not return. */
@@ -292,7 +292,9 @@ kernel sigaction changes and the shared sighandler[] table is untouched.
 +	char **e = svr_child_envp;
 +	if (e) {
 +		while (*e) {
-+			m_free(*e++);
++			/* not m_free(): its (X) = NULL assignment would
++			 * evaluate *e++ twice, skipping elements */
++			m_free_direct(*e++);
 +		}
 +		m_free(svr_child_envp);
 +		svr_child_envp = NULL;
