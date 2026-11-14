@@ -242,6 +242,20 @@ fi
 
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 firmware_root=$(cd -- "${script_dir}/.." && pwd)
+board=${P4_BOARD:-stamp-p4}
+board_dts=esp32p4-m5stamp-p4
+case "$board" in
+	stamp-p4) ;;
+	waveshare-wifi6)
+		# Networking needs its own verified GPIO routing and C6 recovery.
+		[[ "$profile" == m1 && "${C68_CLEAN_RELEASE:-0}" == 0 ]] || {
+			echo "waveshare-wifi6 currently supports the single-core m1 profile only" >&2
+			exit 2
+		}
+		board_dts=esp32p4-waveshare-wifi6
+		;;
+	*) echo "unsupported P4_BOARD: $board" >&2; exit 2 ;;
+esac
 ES_GIT_REV=$(git -C "$firmware_root" rev-parse --short=12 HEAD 2>/dev/null || echo unknown)
 if [ -n "$(git -C "$firmware_root" status --porcelain --untracked-files=no 2>/dev/null)" ]; then ES_GIT_DIRTY=1; else ES_GIT_DIRTY=0; fi
 ES_VERSION=$(git -C "$firmware_root" describe --tags --always 2>/dev/null || echo unknown)
@@ -740,7 +754,6 @@ patches=(
 	0024-riscv-esp32p4-early-uart-marker.patch
 		0025-esp32p4-usb-jtag-earlycon.patch
 		0026-riscv-esp32p4-boot-markers.patch
-		0027-headless-uart-console.patch
 		0028-esp32p4-usb-serial-jtag-acm.patch
 		0062-esp32p4-usb-acm-tx-bounded-poll.patch
 		0080-esp32-acm-tx-irq-lock.patch
@@ -748,6 +761,10 @@ patches=(
 		0063-dwc2-force-pio.patch
 	0031-riscv-esp32p4-m-mode-userspace.patch
 )
+# CH343 is wired to UART0 on Waveshare; keep its console registered.
+if [[ "$board" == stamp-p4 ]]; then
+	patches+=(0027-headless-uart-console.patch)
+fi
 if ! $c68_profile; then
 	patches+=(0016-clocksource-esp32p4-systimer-hardening.patch)
 fi
@@ -1109,10 +1126,15 @@ printf '%s\n' "c68-expt-clear: ${C68_EXPT_CLEAR:-1}" >>"${patch_stage}/SOURCE.tx
 # materialize that tiny vendor tree in generated output for Buildroot.
 rm -rf -- "$dts_stage"
 mkdir -p -- "${dts_stage}/espressif"
-cp -- "${firmware_root}/linux/dts/esp32p4-m5stamp-p4.dts" \
-	"${dts_stage}/espressif/esp32p4-m5stamp-p4.dts"
+cp -- "${firmware_root}/linux/dts/${board_dts}.dts" \
+	"${dts_stage}/espressif/${board_dts}.dts"
+if [[ "$board" == waveshare-wifi6 ]]; then
+	# The board overrides the shared P4 nodes in the inherited DTS.
+	cp -- "${firmware_root}/linux/dts/esp32p4-m5stamp-p4.dts" \
+		"${dts_stage}/espressif/esp32p4-m5stamp-p4.dts"
+fi
 if [[ "$wdt_test_timeout_s" != "0" ]]; then
-	python3 - "${dts_stage}/espressif/esp32p4-m5stamp-p4.dts" \
+	python3 - "${dts_stage}/espressif/${board_dts}.dts" \
 		"$wdt_test_timeout_s" "$wdt_test_no_feed" <<'PY'
 from pathlib import Path
 import sys
@@ -1133,7 +1155,7 @@ path.write_text(text.replace(needle, replacement, 1), encoding="utf-8", newline=
 PY
 fi
 if [[ -n "$sdio_max_identity" ]]; then
-	dts_file="${dts_stage}/espressif/esp32p4-m5stamp-p4.dts"
+	dts_file="${dts_stage}/espressif/${board_dts}.dts"
 	[[ $(grep -c 'max-frequency = <40000000>;' "$dts_file") == 1 ]] || {
 		echo "SDIO_MAX_GATE_FAIL: expected exactly one 40 MHz max-frequency in the DTS" >&2
 		exit 1
@@ -1144,7 +1166,7 @@ if [[ -n "$pstore_identity" ]]; then
 	# 64 KB just below the boot-update request page; the boot-shim does not
 	# load anything there (kernel 0x48000000, DTB 0x48800000, boot FAT
 	# 0x499c0000).
-	dts_file="${dts_stage}/espressif/esp32p4-m5stamp-p4.dts"
+	dts_file="${dts_stage}/espressif/${board_dts}.dts"
 	[[ $(grep -c 'linux_nommu_pool: nommu-userspace-pool@49a00000 {' "$dts_file") == 1 ]] || {
 		echo "PSTORE_GATE_FAIL: nommu pool node not found in the DTS" >&2
 		exit 1
@@ -1229,7 +1251,7 @@ CONFIG_ESP32P4_TSENS=y
 EOF
 	fi
 	python3 "${firmware_root}/linux/c68/insert_cpu1.py" \
-		"${dts_stage}/espressif/esp32p4-m5stamp-p4.dts" \
+		"${dts_stage}/espressif/${board_dts}.dts" \
 		"${firmware_root}/linux/c68/cpu1.dts.inc" \
 		"${firmware_root}/linux/c68/ipi.dts.inc"
 	if [[ "${C68_MAXCPUS:-1}" == "2" ]]; then
@@ -1238,7 +1260,7 @@ EOF
 		# unchanged.  Update both sources: the DT bootargs win on this
 		# kernel (CONFIG_CMDLINE_FORCE is unset); the CONFIG_CMDLINE
 		# copy stays in sync.
-		[[ $(grep -c 'maxcpus=1' "${dts_stage}/espressif/esp32p4-m5stamp-p4.dts") == 1 ]] || {
+		[[ $(grep -c 'maxcpus=1' "${dts_stage}/espressif/${board_dts}.dts") == 1 ]] || {
 			echo "MAXCPUS_GATE_FAIL: expected exactly one maxcpus=1 in the staged DTS" >&2
 			exit 1
 		}
@@ -1247,11 +1269,11 @@ EOF
 			exit 1
 		}
 		sed -i 's/maxcpus=1/maxcpus=2/' \
-			"${dts_stage}/espressif/esp32p4-m5stamp-p4.dts"
+			"${dts_stage}/espressif/${board_dts}.dts"
 		sed -i 's/maxcpus=1/maxcpus=2/' "${kernel_config_fragment}"
 	fi
 else
-	if grep -q 'cpu@1' "${dts_stage}/espressif/esp32p4-m5stamp-p4.dts"; then
+	if grep -q 'cpu@1' "${dts_stage}/espressif/${board_dts}.dts"; then
 		echo "UP DTS gate failed: staged DTB source contains cpu@1" >&2
 		exit 1
 	fi
@@ -1260,10 +1282,17 @@ else
 		exit 1
 	fi
 fi
-cat >"${dts_stage}/espressif/Makefile" <<'EOF'
-# SPDX-License-Identifier: GPL-2.0-only
-dtb-$(CONFIG_ARCH_ESPRESSIF) += esp32p4-m5stamp-p4.dtb
-EOF
+if [[ "$board" == waveshare-wifi6 ]]; then
+	cat "${script_dir}/boards/waveshare-wifi6/linux.config" >>"${kernel_config_fragment}"
+	# The second askfirst shell is for Stamp's native USB connector.
+	sed -i '/^ttyGS1::/d' "${external_root}/board/stamp-p4/rootfs-overlay/etc/inittab"
+	cp -- "${script_dir}/boards/waveshare-wifi6/motd" \
+		"${external_root}/board/stamp-p4/rootfs-overlay/etc/motd"
+fi
+# CONFIG_ARCH_ESPRESSIF is expanded by Make.
+# shellcheck disable=SC2016
+printf '# SPDX-License-Identifier: GPL-2.0-only\ndtb-$(CONFIG_ARCH_ESPRESSIF) += %s.dtb\n' \
+	"$board_dts" >"${dts_stage}/espressif/Makefile"
 
 make_args=(
 	-C "$buildroot_for_make"
@@ -1310,7 +1339,7 @@ cmd53_bb_pa_id="${CMD53_BB_PA:-none}"
 cmd53_bb_0052_sha_id="${CMD53_BB_0052_SHA256:-none}"
 cmd53_bb_0053_sha_id="${CMD53_BB_0053_SHA256:-none}"
 cmd53_bb_0054_sha_id="${CMD53_BB_0054_SHA256:-none}"
-profile_identity="profile-contract=21 profile=${profile} network=${network_profile} ssh=${ssh_profile} lab=${lab_profile} sdio-default-mhz=${sdio_default_mhz} wdt-test-timeout-s=${wdt_test_timeout_s} wdt-test-no-feed=${wdt_test_no_feed} stacktrace-diagnostics=${stacktrace_diagnostics} stacktrace-module-debug-strip=${stacktrace_diagnostics} esp-hosted-cmd52-trace=${cmd52_trace} esp-hosted-cmd52-marker=${cmd52_marker} ssh-ledger=${SSH_LEDGER:-0} tcp22-ledger=${TCP22_LEDGER:-0} esp-hosted-tx-ledger=${ESPHOSTED_TX_LEDGER:-0} esp-hosted-diagnostics=${ESPHOSTED_DIAGNOSTICS:-0} dw-mmc-cmd53-err-prov=${DW_MMC_CMD53_ERR_PROV:-0} cmd53-retention-bb=${CMD53_RETENTION_BB:-0} cmd53-bb-allow-pio=${cmd53_bb_allow_pio} cmd53-bb-pa=${cmd53_bb_pa_id} cmd53-bb-0052-sha=${cmd53_bb_0052_sha_id} cmd53-bb-0053-sha=${cmd53_bb_0053_sha_id} cmd53-bb-0054-sha=${cmd53_bb_0054_sha_id} force-pio=${SDIO_FORCE_PIO:-1} idmac-inv=${IDMAC_DESC_INVALIDATE:-0} idmac-nc=${IDMAC_NONCOHERENT_RING:-0} cmd53-rx-desc=${CMD53_RX_DESC_BYTES:-0} buildroot-jlevel=${BUILDROOT_JLEVEL:-auto} c68=${c68_profile} top=${c68_top_profile} stress=${c68_stress_profile} l3=${C68_L3_SMOKE:-0} tsens-linux=${TSENS_LINUX:-0} tsens-oracle=${TSENS_ORACLE:-0}${lab_tools_identity}${pstore_identity}"
+profile_identity="profile-contract=21 board=${board} profile=${profile} network=${network_profile} ssh=${ssh_profile} lab=${lab_profile} sdio-default-mhz=${sdio_default_mhz} wdt-test-timeout-s=${wdt_test_timeout_s} wdt-test-no-feed=${wdt_test_no_feed} stacktrace-diagnostics=${stacktrace_diagnostics} stacktrace-module-debug-strip=${stacktrace_diagnostics} esp-hosted-cmd52-trace=${cmd52_trace} esp-hosted-cmd52-marker=${cmd52_marker} ssh-ledger=${SSH_LEDGER:-0} tcp22-ledger=${TCP22_LEDGER:-0} esp-hosted-tx-ledger=${ESPHOSTED_TX_LEDGER:-0} esp-hosted-diagnostics=${ESPHOSTED_DIAGNOSTICS:-0} dw-mmc-cmd53-err-prov=${DW_MMC_CMD53_ERR_PROV:-0} cmd53-retention-bb=${CMD53_RETENTION_BB:-0} cmd53-bb-allow-pio=${cmd53_bb_allow_pio} cmd53-bb-pa=${cmd53_bb_pa_id} cmd53-bb-0052-sha=${cmd53_bb_0052_sha_id} cmd53-bb-0053-sha=${cmd53_bb_0053_sha_id} cmd53-bb-0054-sha=${cmd53_bb_0054_sha_id} force-pio=${SDIO_FORCE_PIO:-1} idmac-inv=${IDMAC_DESC_INVALIDATE:-0} idmac-nc=${IDMAC_NONCOHERENT_RING:-0} cmd53-rx-desc=${CMD53_RX_DESC_BYTES:-0} buildroot-jlevel=${BUILDROOT_JLEVEL:-auto} c68=${c68_profile} top=${c68_top_profile} stress=${c68_stress_profile} l3=${C68_L3_SMOKE:-0} tsens-linux=${TSENS_LINUX:-0} tsens-oracle=${TSENS_ORACLE:-0}${lab_tools_identity}${pstore_identity}"
 
 set_config_value() {
 	local config=$1 key=$2 value=$3
@@ -1582,7 +1611,7 @@ PY
 c68_fail_closed_after_linux() {
 	local kernel_config="${br_output}/build/linux-custom/.config"
 	local image="${br_output}/images/Image"
-	local dtb="${br_output}/images/esp32p4-m5stamp-p4.dtb"
+	local dtb="${br_output}/images/${board_dts}.dtb"
 	local vmlinux="${br_output}/build/linux-custom/vmlinux"
 	local dtc="${br_output}/host/bin/dtc"
 	[[ -f "$kernel_config" ]] || {
@@ -1826,7 +1855,7 @@ c68_fail_closed_after_linux() {
 			}
 		fi
 		grep -Fq '<&clic0 23 54 IRQ_TYPE_LEVEL_HIGH>' \
-			"${dts_stage}/espressif/esp32p4-m5stamp-p4.dts" || {
+			"${dts_stage}/espressif/${board_dts}.dts" || {
 			echo "C68_GATE_FAIL: staged DTS has no CPU1 SYSTIMER target1 route" >&2
 			exit 1
 		}
@@ -1926,7 +1955,7 @@ PY
 			"$timer_observe_manifest" \
 			"$l3_smoke_manifest" \
 			"$tsens_linux_manifest" \
-			"${dts_stage}/espressif/esp32p4-m5stamp-p4.dts" \
+			"${dts_stage}/espressif/${board_dts}.dts" \
 			"${kernel_config_fragment}" <<'PY'
 import json, os, sys
 from pathlib import Path
@@ -2142,6 +2171,10 @@ if [[ "${CMD53_BB_SKIP_BR_CLEAN:-0}" != "1" && -f "$profile_stamp" ]]; then
 fi
 
 make "${make_args[@]}" stamp_p4_defconfig
+if [[ "$board" == waveshare-wifi6 ]]; then
+	set_config_value "${br_output}/.config" BR2_TARGET_GENERIC_HOSTNAME '"waveshare-p4"'
+	set_config_value "${br_output}/.config" BR2_TARGET_GENERIC_ISSUE '"Waveshare ESP32-P4-WIFI6 NOMMU Linux"'
+fi
 # Buildroot's defconfig intentionally contains the board defaults only.  Lock
 # the source revision and patch staging path in the generated output so the
 # repository does not duplicate a moving hash or vendor reference patches.
@@ -2153,7 +2186,7 @@ set_config_value "${br_output}/.config" BR2_LINUX_KERNEL_PATCH "\"${patch_stage}
 set_config_value "${br_output}/.config" BR2_LINUX_KERNEL_USE_CUSTOM_CONFIG y
 set_config_value "${br_output}/.config" BR2_LINUX_KERNEL_CUSTOM_CONFIG_FILE "\"${firmware_root}/linux/linux.config\""
 set_config_value "${br_output}/.config" BR2_LINUX_KERNEL_DTS_SUPPORT y
-set_config_value "${br_output}/.config" BR2_LINUX_KERNEL_INTREE_DTS_NAME '\"espressif/stamp-p4\"'
+set_config_value "${br_output}/.config" BR2_LINUX_KERNEL_INTREE_DTS_NAME "\"espressif/${board_dts}\""
 set_config_value "${br_output}/.config" BR2_LINUX_KERNEL_CUSTOM_DTS_PATH "# BR2_LINUX_KERNEL_CUSTOM_DTS_PATH is not set"
 set_config_value "${br_output}/.config" BR2_LINUX_KERNEL_CUSTOM_DTS_DIR "\"${dts_stage}\""
 set_config_value "${br_output}/.config" BR2_RISCV_USE_MMU "# BR2_RISCV_USE_MMU is not set"

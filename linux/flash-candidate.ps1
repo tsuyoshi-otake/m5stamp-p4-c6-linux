@@ -5,6 +5,9 @@ param(
 
 	[string] $PythonPath = "python",
 
+	[ValidateSet("stamp-p4", "waveshare-wifi6")]
+	[string] $Board = "stamp-p4",
+
 	[Alias("ArtifactsDir")]
 	[string] $ArtifactsDirectory = $PSScriptRoot,
 
@@ -30,6 +33,9 @@ param(
 $ErrorActionPreference = "Stop"
 if (-not $AllowCandidateWrite) {
 	throw "Refusing candidate write. Re-run with -AllowCandidateWrite after reviewing the M2 map, stock readback, and recovery procedure."
+}
+if ($Board -eq "waveshare-wifi6" -and -not $StockReadback) {
+	throw "Waveshare bring-up requires a verified lower-16-MiB readback and its -ExpectedStockSha256. Upper flash is preserved."
 }
 
 $artifactRoot = (Resolve-Path -LiteralPath $ArtifactsDirectory).Path
@@ -60,13 +66,17 @@ if ($StockReadback) {
 	$stockHash = "not supplied"
 }
 
+$dtbName = "esp32p4-m5stamp-p4.dtb"
+if ($Board -eq "waveshare-wifi6") {
+	$dtbName = "esp32p4-waveshare-wifi6.dtb"
+}
 $artifacts = @(
 	@{ Address = "0x2000"; Name = "bootloader.bin"; Max = 0x6000 },
 	@{ Address = "0x8000"; Name = "partition-table.bin"; Max = 0x1000 },
 	@{ Address = "0x10000"; Name = "boot-shim.bin"; Max = 0x80000 },
 	@{ Address = "0x90000"; Name = "Image"; Max = 0x780000 },
 	@{ Address = "0x810000"; Name = "rootfs.squashfs"; Max = 0x700000 },
-	@{ Address = "0xf10000"; Name = "esp32p4-m5stamp-p4.dtb"; Max = 0x10000 }
+	@{ Address = "0xf10000"; Name = $dtbName; Max = 0x10000 }
 )
 if ($WriteBoot) {
 	$artifacts += @{ Address = "0xf40000"; Name = "boot.img"; Max = 0x40000 }
@@ -82,6 +92,7 @@ if ($LASTEXITCODE -ne 0 -or $versionOutput -notmatch "4\.8\.1") {
 }
 
 Write-Host "P4 candidate write gate passed"
+Write-Host "  board=$Board"
 Write-Host "  port=$Port"
 if ($stockPath) {
 	Write-Host "  stock=$stockPath"
@@ -102,9 +113,18 @@ $chipArgs = @(
 	"--baud", "460800", "--before", "default_reset", "--after", "no_reset",
 	"chip_id"
 )
-& $PythonPath @chipArgs
+if ($Board -eq "waveshare-wifi6") {
+	$chipArgs[-1] = "flash_id"
+}
+$chipOutput = (& $PythonPath @chipArgs 2>&1 | Out-String)
+Write-Host $chipOutput
 if ($LASTEXITCODE -ne 0) {
 	throw "P4 ROM chip_id failed; no write was attempted"
+}
+if ($Board -eq "waveshare-wifi6" -and
+    ($chipOutput -notmatch 'ESP32-P4 \(revision v1\.3\)' -or
+     $chipOutput -notmatch 'Detected flash size: 32MB')) {
+	throw "Waveshare profile requires the qualified P4 v1.3 with 32 MB flash; no write was attempted."
 }
 
 $writeArgs = @(

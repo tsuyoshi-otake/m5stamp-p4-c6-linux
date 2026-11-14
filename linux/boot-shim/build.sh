@@ -31,6 +31,16 @@ while [[ $# -gt 0 ]]; do
 	esac
 done
 case "$profile" in m1|m2|c68) ;; *) echo "unsupported profile: $profile" >&2; exit 2 ;; esac
+case "${P4_BOARD:-stamp-p4}" in
+	stamp-p4) ;;
+	waveshare-wifi6)
+		[[ "$profile" == m1 ]] || {
+			echo "waveshare-wifi6 currently supports the m1 loader only" >&2
+			exit 2
+		}
+		;;
+	*) echo "unsupported P4_BOARD: $P4_BOARD" >&2; exit 2 ;;
+esac
 if [[ "${TSENS_ORACLE:-0}" == "1" && "$profile" != "c68" ]]; then
 	echo "TSENS_ORACLE requires the C68 single-core profile" >&2
 	exit 2

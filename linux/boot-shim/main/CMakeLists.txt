@@ -5,6 +5,10 @@ idf_component_register(
     INCLUDE_DIRS "."
 )
 
+if("$ENV{P4_BOARD}" STREQUAL "waveshare-wifi6")
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE BOARD_WAVESHARE_WIFI6=1)
+endif()
+
 # Build identification (#22): the git revision is printed at boot.
 if(DEFINED ENV{ES_GIT_REV} AND NOT "$ENV{ES_GIT_REV}" STREQUAL "")
     target_compile_definitions(${COMPONENT_LIB} PRIVATE GIT_REV="$ENV{ES_GIT_REV}")

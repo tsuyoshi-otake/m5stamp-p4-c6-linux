@@ -1,0 +1,27 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/* Reuse the community P4 interrupt, timer and reserved-memory definitions. */
+#include "esp32p4-m5stamp-p4.dts"
+
+/ {
+	model = "Waveshare ESP32-P4-WIFI6";
+	compatible = "waveshare,esp32-p4-wifi6", "espressif,esp32p4";
+
+	chosen {
+		stdout-path = "serial0:115200n8";
+		bootargs = "earlycon=esp32p4uart,mmio32,0x500ca000,115200n8 console=ttyS0,115200n8 loglevel=7 root=/dev/mtdblock0 rootfstype=squashfs ro init=/sbin/init maxcpus=1";
+	};
+};
+
+/* The Type-C connector reaches UART0 through a CH343, not native USB. */
+&usb_serial_jtag {
+	status = "disabled";
+};
+
+/* Stamp's SDIO/reset wiring and USB carrier do not describe this board. */
+&sdmmc1 {
+	status = "disabled";
+};
+
+&usb_otg11 {
+	status = "disabled";
+};
