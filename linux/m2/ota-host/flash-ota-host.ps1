@@ -66,6 +66,24 @@ if (-not $PSBoundParameters.ContainsKey("ExpectedStockSha256")) {
 	$ExpectedStockSha256 = $StockSha256ByBoard[$Board]
 }
 
+# SHA-256 through .NET.  Get-FileHash is in a module that Windows PowerShell
+# cannot load when it is started from a PowerShell 7 shell: it inherits that
+# shell's PSModulePath and finds the wrong Microsoft.PowerShell.Utility.
+function Get-Sha256([string] $Path) {
+	$stream = [System.IO.File]::OpenRead($Path)
+	try {
+		$sha = [System.Security.Cryptography.SHA256]::Create()
+		try {
+			$bytes = $sha.ComputeHash($stream)
+		} finally {
+			$sha.Dispose()
+		}
+	} finally {
+		$stream.Dispose()
+	}
+	return ([System.BitConverter]::ToString($bytes) -replace "-", "").ToLowerInvariant()
+}
+
 function Assert-File([string] $Name, [UInt32] $MaxBytes) {
 	$path = Join-Path $artifactRoot $Name
 	if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
@@ -81,7 +99,7 @@ function Assert-File([string] $Name, [UInt32] $MaxBytes) {
 if ((Get-Item -LiteralPath $stockPath).Length -ne 0x1000000) {
 	throw "Stock readback must be exactly 16 MiB: $stockPath"
 }
-$stockHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $stockPath).Hash.ToLowerInvariant()
+$stockHash = Get-Sha256 $stockPath
 if ($stockHash -ne $ExpectedStockSha256.ToLowerInvariant()) {
 	throw "Stock readback SHA-256 mismatch: got $stockHash, expected $ExpectedStockSha256"
 }
