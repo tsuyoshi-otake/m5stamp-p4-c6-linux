@@ -254,6 +254,9 @@ case "$board" in
 		board_dts=esp32p4-waveshare-wifi6
 		if [[ "$profile" == m2 ]]; then
 			board_dts=esp32p4-waveshare-wifi6-sdio
+			# The C6 boot frame fails on PIO; keep the inherited ring sync.
+			: "${SDIO_FORCE_PIO:=0}"
+			: "${IDMAC_NONCOHERENT_RING:=1}"
 		fi
 		;;
 	*) echo "unsupported P4_BOARD: $board" >&2; exit 2 ;;
