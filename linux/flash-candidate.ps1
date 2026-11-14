@@ -8,6 +8,9 @@ param(
 	[ValidateSet("stamp-p4", "waveshare-wifi6")]
 	[string] $Board = "stamp-p4",
 
+	[ValidateSet("m1", "m2")]
+	[string] $Profile = "m1",
+
 	[Alias("ArtifactsDir")]
 	[string] $ArtifactsDirectory = $PSScriptRoot,
 
@@ -69,6 +72,9 @@ if ($StockReadback) {
 $dtbName = "esp32p4-m5stamp-p4.dtb"
 if ($Board -eq "waveshare-wifi6") {
 	$dtbName = "esp32p4-waveshare-wifi6.dtb"
+	if ($Profile -eq "m2") {
+		$dtbName = "esp32p4-waveshare-wifi6-sdio.dtb"
+	}
 }
 $artifacts = @(
 	@{ Address = "0x2000"; Name = "bootloader.bin"; Max = 0x6000 },
@@ -93,6 +99,7 @@ if ($LASTEXITCODE -ne 0 -or $versionOutput -notmatch "4\.8\.1") {
 
 Write-Host "P4 candidate write gate passed"
 Write-Host "  board=$Board"
+Write-Host "  profile=$Profile"
 Write-Host "  port=$Port"
 if ($stockPath) {
 	Write-Host "  stock=$stockPath"
