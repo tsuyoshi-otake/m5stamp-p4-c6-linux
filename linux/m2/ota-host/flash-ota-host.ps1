@@ -14,8 +14,26 @@ param(
 
 	[switch] $AllowCandidateWrite,
 
-	[string] $ExpectedStockSha256 = "229459f251eaf6222f0c07968702d72a3818e520da1788ce465027d969020c24"
+	# The board the OTA host was built for.  The default is detected from the
+	# build output: a Tab5 build leaves project/components/tab5_c6_power and a
+	# project/sdkconfig.defaults carrying the Tab5 SDIO pin map (C6 reset on
+	# GPIO15).  When ArtifactsDirectory is a bare staging folder without the
+	# project/ tree there is nothing to detect from, so pass -Board
+	# explicitly; without a detection or this switch the default is stamp-p4.
+	[ValidateSet("stamp-p4", "tab5")]
+	[string] $Board,
+
+	# SHA-256 of this board's stock 16 MiB readback.  The default follows the
+	# detected or given board; an explicit value always wins.
+	[string] $ExpectedStockSha256
 )
+
+# Stock readback hashes kept per board: Stamp-P4 Rev0.15 (two matched
+# readbacks, 2026-08-09) and the Tab5 unit (stock-2026-11-10/tab5-stock.bin).
+$StockSha256ByBoard = @{
+	"stamp-p4" = "229459f251eaf6222f0c07968702d72a3818e520da1788ce465027d969020c24"
+	"tab5"     = "a260eda93e4e5ddc1d3abddd361b1eb326c07d4248b67d1b493feba057fde231"
+}
 
 # This image is a temporary P4 host used only to migrate the C6 slave over the
 # already-wired SDIO link. It is not the Linux image and does not program a C6
@@ -27,6 +45,26 @@ if (-not $AllowCandidateWrite) {
 
 $artifactRoot = (Resolve-Path -LiteralPath $ArtifactsDirectory).Path
 $stockPath = (Resolve-Path -LiteralPath $StockReadback).Path
+
+# Board resolution, same idea as flash-candidate.ps1's package check: the
+# build output marks itself.  tab5_c6_power exists only under ES_BOARD=tab5;
+# the sdkconfig.defaults copy selects the C6 reset pin per board (Tab5=15,
+# Stamp=42).  A bare staging directory has neither marker and stays stamp-p4.
+if (-not $PSBoundParameters.ContainsKey("Board")) {
+	$Board = "stamp-p4"
+	if (Test-Path -LiteralPath (Join-Path $artifactRoot "project/components/tab5_c6_power") -PathType Container) {
+		$Board = "tab5"
+	} else {
+		$sdkdefaults = Join-Path $artifactRoot "project/sdkconfig.defaults"
+		if ((Test-Path -LiteralPath $sdkdefaults -PathType Leaf) -and
+			(Select-String -LiteralPath $sdkdefaults -Pattern "CONFIG_ESP_HOSTED_SDIO_GPIO_RESET_SLAVE=15" -Quiet)) {
+			$Board = "tab5"
+		}
+	}
+}
+if (-not $PSBoundParameters.ContainsKey("ExpectedStockSha256")) {
+	$ExpectedStockSha256 = $StockSha256ByBoard[$Board]
+}
 
 function Assert-File([string] $Name, [UInt32] $MaxBytes) {
 	$path = Join-Path $artifactRoot $Name
@@ -76,6 +114,7 @@ if ($LASTEXITCODE -ne 0 -or $versionOutput -notmatch "4\.8\.1") {
 
 Write-Host "P4 temporary OTA-host write gate passed"
 Write-Host "  port=$Port"
+Write-Host "  board=$Board"
 Write-Host "  stock=$stockPath"
 Write-Host "  stock_sha256=$stockHash"
 Write-Host "  artifacts=$artifactRoot"
