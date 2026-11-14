@@ -793,22 +793,25 @@ patches+=(0076-nommu-pool-sysfs.patch)
 # A signal handler returns through the kernel's own rt_sigreturn code, not a
 # copy on the user stack that needs an icache flush on every CPU (#44).
 patches+=(0083-esp32p4-sigreturn-in-kernel.patch)
-# The C6's SDIO interrupt work is the first hop of every RX packet; run it
-# on system_highpri_wq so it is not queued behind CPU-bound work (#43).
-patches+=(0084-mmc-sdio-irq-highpri.patch)
-# #35 debug: dw_mmc.fiford_mode picks how PIO reads take words from the
-# FIFO; 0 (the default) is upstream.
-patches+=(0085-dw-mmc-fiford-mode.patch)
-# #35: dw_mmc.es_dma_threshold lets short transfers use IDMAC, since the
-# P4 FIFO does not pop on CPU reads; -1 (the default) is upstream.
-patches+=(0086-dw-mmc-dma-threshold.patch)
-# #35: with espressif,fifo-no-pop in the DT, reads that would go PIO take
-# IDMAC through an aligned bounce buffer (dw_mmc.es_fifo_bounce overrides).
-patches+=(0087-dw-mmc-fifo-bounce.patch)
-# #35: same bounce for writes - preventive: raw PIO writes measured
-# correct, but keep production traffic off the CPU FIFO in both
-# directions (dw_mmc.es_fifo_bounce_wr overrides the write side only).
-patches+=(0088-dw-mmc-fifo-bounce-write.patch)
+if $network_profile; then
+	# These extend the dw_mmc trace/slot support in network-only patch 0007.
+	# The C6's SDIO interrupt work is the first hop of every RX packet; run it
+	# on system_highpri_wq so it is not queued behind CPU-bound work (#43).
+	patches+=(0084-mmc-sdio-irq-highpri.patch)
+	# #35 debug: dw_mmc.fiford_mode picks how PIO reads take words from the
+	# FIFO; 0 (the default) is upstream.
+	patches+=(0085-dw-mmc-fiford-mode.patch)
+	# #35: dw_mmc.es_dma_threshold lets short transfers use IDMAC, since the
+	# P4 FIFO does not pop on CPU reads; -1 (the default) is upstream.
+	patches+=(0086-dw-mmc-dma-threshold.patch)
+	# #35: with espressif,fifo-no-pop in the DT, reads that would go PIO take
+	# IDMAC through an aligned bounce buffer (dw_mmc.es_fifo_bounce overrides).
+	patches+=(0087-dw-mmc-fifo-bounce.patch)
+	# #35: same bounce for writes - preventive: raw PIO writes measured
+	# correct, but keep production traffic off the CPU FIFO in both
+	# directions (dw_mmc.es_fifo_bounce_wr overrides the write side only).
+	patches+=(0088-dw-mmc-fifo-bounce-write.patch)
+fi
 # #51 experiment: switch the NOMMU user pool from first-fit to best-fit.
 if [[ "${NOMMU_POOL_BESTFIT:-0}" == "1" ]]; then
 	patches+=(0089-nommu-pool-best-fit.patch)
