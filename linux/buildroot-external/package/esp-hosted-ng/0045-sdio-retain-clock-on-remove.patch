@@ -1,0 +1,32 @@
+Subject: [PATCH] sdio: retain the configured clock across card removal
+
+esp_init_interface_layer() sets the requested clock once at module init.
+esp_remove() clears the transport context, including that configuration,
+so a later probe skips the clock override. On the Waveshare P4/C6 this
+leaves the bus at the MMC-negotiated 20 MHz while clockspeed still says 5.
+
+Keep the module-lifetime clock configuration when clearing per-card state.
+The next probe can then apply the same requested rate before opening the
+data path. Reset GPIO ownership and the transfer/queue paths are unchanged.
+
+--- a/sdio/esp_sdio.c
++++ b/sdio/esp_sdio.c
+@@ -645,6 +645,7 @@ static void esp_remove(struct sdio_func *func)
+ {
+ 	struct esp_sdio_context *context;
+ 	uint8_t prio_q_idx = 0;
++	u32 sdio_clk_mhz;
+ 
+ 	context = sdio_get_drvdata(func);
+ 
+@@ -683,7 +684,10 @@ static void esp_remove(struct sdio_func *func)
+ 			context->func = NULL;
+ 			context->adapter->dev = NULL;
+ 		}
++		/* The clock is configured at module init, not on each probe. */
++		sdio_clk_mhz = context->sdio_clk_mhz;
+ 		memset(context, 0, sizeof(struct esp_sdio_context));
++		context->sdio_clk_mhz = sdio_clk_mhz;
+ 	}
+ 	esp_dbg("ESP SDIO cleanup completed\n");
+ }
