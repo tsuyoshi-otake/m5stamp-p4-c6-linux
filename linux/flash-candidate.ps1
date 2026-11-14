@@ -41,7 +41,8 @@ if ($Board -eq "waveshare-wifi6" -and -not $StockReadback) {
 	throw "Waveshare bring-up requires a verified lower-16-MiB readback and its -ExpectedStockSha256. Upper flash is preserved."
 }
 
-$artifactRoot = (Resolve-Path -LiteralPath $ArtifactsDirectory).Path
+# Native Python needs a filesystem path, without PowerShell's provider prefix.
+$artifactRoot = (Resolve-Path -LiteralPath $ArtifactsDirectory).ProviderPath
 $stockPath = $null
 
 function Assert-File([string] $Name, [UInt32] $MaxBytes) {
@@ -57,7 +58,7 @@ function Assert-File([string] $Name, [UInt32] $MaxBytes) {
 }
 
 if ($StockReadback) {
-	$stockPath = (Resolve-Path -LiteralPath $StockReadback).Path
+	$stockPath = (Resolve-Path -LiteralPath $StockReadback).ProviderPath
 	if ((Get-Item -LiteralPath $stockPath).Length -ne 0x1000000) {
 		throw "Stock readback must be exactly 16 MiB: $stockPath"
 	}
