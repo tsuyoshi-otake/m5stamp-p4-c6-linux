@@ -84,13 +84,16 @@ if [[ "$profile" == m2 || "$profile" == c68 ]]; then
 else
 	export SDKCONFIG_DEFAULTS="${project_dir}/sdkconfig.defaults"
 fi
+if [[ "${P4_BOARD:-stamp-p4}" == waveshare-wifi6 ]]; then
+	export SDKCONFIG_DEFAULTS="${SDKCONFIG_DEFAULTS};${script_dir}/../boards/waveshare-wifi6/sdkconfig.defaults"
+fi
 
 rm -f "${output}/sdkconfig" "${output}/sdkconfig.old"
 if [[ "$profile" == c68 ]]; then
 	rm -rf -- "${output}/build"
 fi
 
-idf.py -B "${output}/build" -C "$project_dir" reconfigure build
+idf.py -D "SDKCONFIG=${SDKCONFIG}" -B "${output}/build" -C "$project_dir" reconfigure build
 
 for artifact in bootloader/bootloader.bin partition_table/partition-table.bin stamp_p4_boot_shim.bin; do
 	[[ -s "${output}/build/${artifact}" ]] || {
