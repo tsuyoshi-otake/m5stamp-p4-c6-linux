@@ -42,8 +42,24 @@ project_dir=$(cd -- "${script_dir}" && pwd)
 	echo "IDF_PATH must point to the locked ESP-IDF checkout" >&2
 	exit 1
 }
+locked_idf=$(python3 - "${script_dir}/../../versions.lock.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+print(json.loads(Path(sys.argv[1]).read_text())["sources"]["esp_idf"]["commit"])
+PY
+)
+actual_idf=$(git -C "$IDF_PATH" rev-parse HEAD)
+[[ "$actual_idf" == "$locked_idf" ]] || {
+	echo "ESP-IDF revision mismatch: $actual_idf; required $locked_idf" >&2
+	exit 1
+}
 command -v idf.py >/dev/null || {
 	echo "idf.py is not on PATH; source ESP-IDF export.sh first" >&2
+	exit 1
+}
+[[ "$(realpath "$(command -v idf.py)")" == "$(realpath "${IDF_PATH}/tools/idf.py")" ]] || {
+	echo "idf.py on PATH does not belong to IDF_PATH; source its export.sh first" >&2
 	exit 1
 }
 
