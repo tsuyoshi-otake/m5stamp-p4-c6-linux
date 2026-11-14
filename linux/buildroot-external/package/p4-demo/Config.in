@@ -1,0 +1,5 @@
+config BR2_PACKAGE_P4_DEMO
+	bool "P4 status and TCP demo"
+	help
+	  Small native C application for system status and a checked TCP exchange.
+	  Uses one process with bounded socket waits, suitable for NOMMU Linux.

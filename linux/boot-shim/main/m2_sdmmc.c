@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 /*
- * ESP32-P4 Slot 1 GPIO-matrix/clock bootstrap for Stamp-AddOn C6.
+ * ESP32-P4 Slot 1 GPIO-matrix/clock bootstrap for the board's C6.
  *
  * Linux's board port does not yet have an upstream P4 pinctrl/clock
  * controller, so the boot shim leaves the controller clocked and routes the
- * six SDIO signals before jumping to the kernel.  The constants mirror the
+ * six SDIO signals before jumping to the kernel. The board selects its pins
+ * and C6 EN signal; the controller/matrix signals are shared. Constants mirror the
  * locked ESP-IDF 5.5.3 ESP32-P4 v1 register definitions.  This is an M2
  * experiment: it must be validated on the assembled carrier at 20 MHz before
  * any higher-speed or DMA setting is attempted.
@@ -15,6 +16,9 @@
 
 #include "esp_log.h"
 #include "esp_rom_sys.h"
+#ifdef BOARD_WAVESHARE_WIFI6
+#include "driver/gpio.h"
+#endif
 
 static const char *TAG = "m2-sdio";
 
@@ -82,6 +86,18 @@ static inline void clear_set_bits(uint32_t addr, uint32_t clear, uint32_t set)
 
 static void configure_iomux_gpio(uint32_t gpio, bool pullup)
 {
+#ifdef BOARD_WAVESHARE_WIFI6
+	/* IDF owns the pad layout, including the LP-bank SDIO pins 14/15. */
+	gpio_config_t config = {
+		.pin_bit_mask = 1ULL << gpio,
+		.mode = pullup ? GPIO_MODE_INPUT_OUTPUT : GPIO_MODE_OUTPUT,
+		.pull_up_en = pullup ? GPIO_PULLUP_ENABLE : GPIO_PULLUP_DISABLE,
+		.pull_down_en = GPIO_PULLDOWN_DISABLE,
+		.intr_type = GPIO_INTR_DISABLE,
+	};
+	ESP_ERROR_CHECK(gpio_config(&config));
+	ESP_ERROR_CHECK(gpio_set_drive_capability(gpio, GPIO_DRIVE_CAP_3));
+#else
 	/*
 	 * ESP32-P4's IO_MUX register map is not gpio_number * 4 throughout:
 	 * GPIO26 starts at offset 0x6c, so the Stamp SDIO pins 42..48 occupy
@@ -107,6 +123,7 @@ static void configure_iomux_gpio(uint32_t gpio, bool pullup)
 	if (pullup)
 		set |= IOMUX_FUN_PU;
 	clear_set_bits(IO_MUX_BASE + offset, clear, set);
+#endif
 }
 
 static void route_output(uint32_t gpio, uint32_t signal)
@@ -124,6 +141,17 @@ static void route_input(uint32_t signal, uint32_t gpio)
 
 static void pulse_c6_reset(void)
 {
+#ifdef BOARD_WAVESHARE_WIFI6
+	/* EN is already wired to P4 GPIO54; do not drive Stamp's GPIO42. */
+	ESP_ERROR_CHECK(gpio_set_level(GPIO_NUM_54, 1));
+	configure_iomux_gpio(54u, false);
+	esp_rom_delay_us(C6_RESET_ASSERT_US);
+	ESP_ERROR_CHECK(gpio_set_level(GPIO_NUM_54, 0));
+	esp_rom_delay_us(C6_RESET_INACTIVE_US);
+	ESP_ERROR_CHECK(gpio_set_level(GPIO_NUM_54, 1));
+	esp_rom_delay_us(C6_RESET_READY_DELAY_US);
+	ESP_LOGI(TAG, "C6 reset GPIO54 released");
+#else
 	const uint32_t bit = 1u << (42u - 32u);
 
 	configure_iomux_gpio(42u, false);
@@ -135,6 +163,7 @@ static void pulse_c6_reset(void)
 	*reg32(GPIO_OUT1_W1TS) = bit;
 	esp_rom_delay_us(C6_RESET_READY_DELAY_US);
 	ESP_LOGI(TAG, "C6 reset GPIO42 released");
+#endif
 }
 
 static void enable_sdmmc_clock(void)
@@ -167,22 +196,20 @@ void m2_sdmmc_init(void)
 {
 	enable_sdmmc_clock();
 
-	/* Slot 1: CLK=43, CMD=44, DAT0..3=45..48. */
+#ifdef BOARD_WAVESHARE_WIFI6
+	/* Waveshare: CLK=18, CMD=19, DAT0..3=14..17. */
+	const uint32_t pins[] = { 18u, 19u, 14u, 15u, 16u, 17u };
+#else
 	const uint32_t pins[] = { 43u, 44u, 45u, 46u, 47u, 48u };
+#endif
 	for (uint32_t i = 0; i < 6u; ++i)
 		configure_iomux_gpio(pins[i], i != 0u);
 
-	route_output(43u, 0u); /* SD_CARD_CCLK_2_PAD_OUT_IDX */
-	route_output(44u, 1u); /* SD_CARD_CCMD_2_PAD_OUT_IDX */
-	route_output(45u, 2u);
-	route_output(46u, 3u);
-	route_output(47u, 4u);
-	route_output(48u, 5u);
-	route_input(1u, 44u); /* CMD */
-	route_input(2u, 45u); /* DAT0 */
-	route_input(3u, 46u); /* DAT1 / SDIO interrupt */
-	route_input(4u, 47u); /* DAT2 */
-	route_input(5u, 48u); /* DAT3 */
+	/* Slot-1 matrix indices are CLK=0, CMD=1 and DAT0..3=2..5. */
+	for (uint32_t i = 0; i < 6u; ++i)
+		route_output(pins[i], i);
+	for (uint32_t i = 1; i < 6u; ++i)
+		route_input(i, pins[i]);
 	/*
 	 * P4 gates the in-band DAT1 interrupt with a separate per-slot
 	 * card_int matrix input. Slot 1 has no separate pin on Stamp-P4, so
@@ -192,8 +219,8 @@ void m2_sdmmc_init(void)
 
 	/*
 	 * Reset before Linux enumerates the card. ESP-IDF's working SDIO host does
-	 * this, whereas the Linux ESP-Hosted module cannot drive GPIO42 through its
-	 * current legacy gpiolib mapping. This avoids resetting an enumerated card.
+	 * this. Keep reset ownership here rather than resetting an enumerated card
+	 * from the Linux ESP-Hosted module's probe path.
 	 * M5Stack's official Stamp-P4 ESP-Hosted configuration waits 1500 ms after
 	 * a 10 ms active-high / 10 ms inactive / active-high sequence; keep the
 	 * same readiness window before handoff.

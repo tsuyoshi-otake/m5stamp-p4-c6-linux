@@ -1,0 +1,137 @@
+{
+  "schema": 1,
+  "status": "candidate_not_for_flash",
+  "board": "Waveshare ESP32-P4-WIFI6",
+  "flash_bytes": 33554432,
+  "alignment_bytes": 4096,
+  "write_gate": "verify_p4_v1_3_identity_lower_16mb_backup_and_artifacts",
+  "load_addresses": {
+    "kernel_psram": "0x48000000",
+    "dtb_psram": "0x48800000",
+    "psram_bytes": 33554432
+  },
+  "regions": [
+    {
+      "name": "rom-reserved",
+      "offset": "0x000000",
+      "size_bytes": "0x002000",
+      "kind": "reserved"
+    },
+    {
+      "name": "bootloader",
+      "offset": "0x002000",
+      "size_bytes": "0x006000",
+      "kind": "esp-idf-bootloader",
+      "artifact": true
+    },
+    {
+      "name": "partition-table",
+      "offset": "0x008000",
+      "size_bytes": "0x001000",
+      "kind": "esp-idf-partition-table",
+      "artifact": true
+    },
+    {
+      "name": "nvs",
+      "offset": "0x009000",
+      "size_bytes": "0x006000",
+      "kind": "preserve-existing-data"
+    },
+    {
+      "name": "phy-init",
+      "offset": "0x00f000",
+      "size_bytes": "0x001000",
+      "kind": "preserve-existing-data"
+    },
+    {
+      "name": "boot-shim",
+      "offset": "0x010000",
+      "size_bytes": "0x080000",
+      "kind": "esp-idf-app",
+      "artifact": true
+    },
+    {
+      "name": "kernel",
+      "offset": "0x090000",
+      "size_bytes": "0x780000",
+      "kind": "flat-riscv-image",
+      "artifact": true
+    },
+    {
+      "name": "rootfs",
+      "offset": "0x810000",
+      "size_bytes": "0x700000",
+      "kind": "squashfs-mtd-rom",
+      "artifact": true
+    },
+    {
+      "name": "dtb",
+      "offset": "0xf10000",
+      "size_bytes": "0x010000",
+      "kind": "flattened-device-tree",
+      "artifact": true
+    },
+    {
+      "name": "crashlog",
+      "offset": "0xf20000",
+      "size_bytes": "0x020000",
+      "kind": "writable-crash-capsule",
+      "artifact": false
+    },
+    {
+      "name": "boot",
+      "offset": "0xf40000",
+      "size_bytes": "0x040000",
+      "kind": "fat-boot-image",
+      "artifact": true
+    },
+    {
+      "name": "boot_alt",
+      "offset": "0xf80000",
+      "size_bytes": "0x040000",
+      "kind": "fat-boot-image-ab-slot",
+      "artifact": false
+    },
+    {
+      "name": "bootmeta0",
+      "offset": "0xfc0000",
+      "size_bytes": "0x001000",
+      "kind": "boot-image-ab-metadata",
+      "artifact": false
+    },
+    {
+      "name": "bootmeta1",
+      "offset": "0xfc1000",
+      "size_bytes": "0x001000",
+      "kind": "boot-image-ab-metadata",
+      "artifact": false
+    },
+    {
+      "name": "tail-reserve",
+      "offset": "0xfc2000",
+      "size_bytes": "0x03e000",
+      "kind": "reserved"
+    },
+    {
+      "name": "upper-flash-reserve",
+      "offset": "0x1000000",
+      "size_bytes": "0x1000000",
+      "kind": "reserved-preserve"
+    }
+  ],
+  "invariants": {
+    "one_hp_core": true,
+    "mmu": false,
+    "rootfs_read_only": true,
+    "rootfs_mtd_rom_placeholder": [
+      "0xdeadbeef",
+      "0xcafefade"
+    ],
+    "c6_sdio_in_m1": false,
+    "usb_gadget_in_m1": false,
+    "write_commands_allowed": false
+  },
+  "supported_chip_revisions": [
+    "v1.3"
+  ]
+}

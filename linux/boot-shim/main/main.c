@@ -70,6 +70,7 @@
 #include "boot_ab.h"
 #include "deep_sleep.h"
 
+#ifndef BOARD_WAVESHARE_WIFI6
 static void usb_otg_init(void)
 {
 	ESP_LOGI("otg", "enabling USB OTG 1.1 (FS GPIO26/27) clock and PHY...");
@@ -93,6 +94,7 @@ static void usb_otg_init(void)
 	USB_WRAP.otg_conf.dp_pullup = 0;
 	gpio_pullup_dis(GPIO_NUM_27);
 }
+#endif
 
 static const char *TAG = "boot";
 
@@ -732,7 +734,10 @@ void app_main(void)
 	cmd53_bb_release_after_dump();
 #endif
 	/* #56: may not return (Deep Sleep); before the C6 reset and SDIO. */
+	/* Stamp's sleep path controls its GPIO42 C6 supply, unlike Waveshare. */
+#ifndef BOARD_WAVESHARE_WIFI6
 	deep_sleep_early();
+#endif
 #ifdef TSENS_ORACLE
 	if (!tsens_oracle_run())
 		fatal_restart("TSENS oracle failed");
@@ -742,7 +747,9 @@ void app_main(void)
 	m2_sdmmc_init();
 	#endif
 	/* Enable Full-Speed USB OTG (DWC2) for Type-A USB Gadget */
+#ifndef BOARD_WAVESHARE_WIFI6
 	usb_otg_init();
+#endif
 	const esp_partition_t *kernel = esp_partition_find_first(
 		ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_ANY, "kernel");
 	const esp_partition_t *dtb_part = esp_partition_find_first(

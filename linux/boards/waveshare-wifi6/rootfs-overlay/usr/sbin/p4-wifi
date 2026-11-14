@@ -1,0 +1,80 @@
+#!/bin/sh
+# Keep keys in the private boot image or an explicitly supplied runtime file.
+set -e
+run=/run/p4-wifi
+conf=${P4_WIFI_CONFIG:-/boot/wpa_supplicant.conf}
+
+pid_running() {
+	[ -r "$1" ] || return 1
+	IFS= read -r checked_pid <"$1" || return 1
+	case "$checked_pid" in ''|*[!0-9]*) return 1 ;; esac
+	IFS= read -r checked_comm 2>/dev/null <"/proc/$checked_pid/comm" || return 1
+	[ "$checked_comm" = "$2" ]
+}
+
+stop_pid() {
+	file=$1
+	want=$2
+	[ -r "$file" ] || return 0
+	pid=$(cat "$file")
+	case "$pid" in ''|*[!0-9]*) rm -f "$file"; return 0 ;; esac
+	# A stale PID file must not terminate another process after PID reuse.
+	if [ "$(cat "/proc/$pid/comm" 2>/dev/null || true)" = "$want" ]; then
+		kill "$pid" 2>/dev/null || true
+		i=0
+		while [ "$(cat "/proc/$pid/comm" 2>/dev/null || true)" = "$want" ]; do
+			[ "$i" -lt 5 ] || { echo "$want did not stop" >&2; return 1; }
+			i=$((i + 1))
+			sleep 1
+		done
+	fi
+	rm -f "$file"
+}
+
+case "${1:-status}" in
+start)
+	[ -r "$conf" ] || { echo "No Wi-Fi configuration at $conf" >&2; exit 1; }
+	mkdir -p "$run"
+	chmod 0700 "$run"
+	if pid_running "$run/wpa.pid" wpa_supplicant && pid_running "$run/dhcp.pid" udhcpc; then
+		echo "Wi-Fi already started"
+		exit 0
+	fi
+	# Reconcile partial failure before replacing either worker's PID file.
+	stop_pid "$run/dhcp.pid" udhcpc
+	stop_pid "$run/wpa.pid" wpa_supplicant
+	i=0
+	until ifconfig wlan0 >/dev/null 2>&1; do
+		[ "$i" -lt 15 ] || { echo "wlan0 did not appear" >&2; exit 1; }
+		i=$((i + 1))
+		sleep 1
+	done
+	ifconfig wlan0 up
+	# No daemon fork on NOMMU. The shell launches the foreground worker.
+	( umask 077; exec wpa_supplicant -q -i wlan0 -c "$conf" -C "$run" >"$run/wpa.log" 2>&1 ) &
+	echo "$!" >"$run/wpa.pid"
+	# DHCP stays resident to renew leases; both workers are owned here.
+	( umask 077; exec udhcpc -f -i wlan0 -p "$run/dhcp.pid" -t 5 -T 3 -A 5 >"$run/dhcp.log" 2>&1 ) &
+	echo "$!" >"$run/dhcp.pid"
+	# Catch immediate exec/configuration failures without waiting for the AP.
+	sleep 1
+	if ! pid_running "$run/wpa.pid" wpa_supplicant || ! pid_running "$run/dhcp.pid" udhcpc; then
+		stop_pid "$run/dhcp.pid" udhcpc
+		stop_pid "$run/wpa.pid" wpa_supplicant
+		echo "Wi-Fi worker failed; inspect $run/wpa.log and $run/dhcp.log" >&2
+		exit 1
+	fi
+	echo "P4_WIFI_STARTED: p4-wifi status reports association and address"
+	;;
+stop)
+	stop_pid "$run/dhcp.pid" udhcpc
+	stop_pid "$run/wpa.pid" wpa_supplicant
+	;;
+status)
+	ifconfig wlan0
+	if [ -S "$run/wlan0" ]; then
+		wpa_cli -p "$run" -i wlan0 status
+	fi
+	;;
+*) echo "Usage: p4-wifi {start|stop|status}" >&2; exit 2 ;;
+esac

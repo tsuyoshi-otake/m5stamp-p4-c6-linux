@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import gzip
 import hashlib
+import json
 import re
 import tarfile
 import stat
@@ -66,8 +67,14 @@ def zip_member(archive: zipfile.ZipFile, name: str, data: bytes, mode: int = 0o6
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--build-output", type=Path, required=True)
-    parser.add_argument("--boot-shim-directory", default="boot-shim-c68")
-    parser.add_argument("--boot-image", type=Path, required=True)
+    parser.add_argument("--boot-shim-directory")
+    parser.add_argument("--boot-image", type=Path)
+    parser.add_argument("--board", choices=("stamp-p4", "waveshare-wifi6"), default="stamp-p4")
+    parser.add_argument("--profile", choices=("m1", "m2"), default="m2")
+    parser.add_argument("--allow-candidate", action="store_true",
+                        help="package a development candidate without asserting release readiness")
+    parser.add_argument("--c6-build-output", type=Path,
+                        help="paired C6 build output (required for Waveshare m2)")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--version", required=True, help="release version such as v0.2.1")
     args = parser.parse_args()
@@ -78,36 +85,85 @@ def main() -> int:
     repo_root = Path(__file__).resolve().parents[2]
     verifier = Path(__file__).with_name("verify-images.py")
     layout = repo_root / "linux" / "m2" / "flash-layout.json"
+    waveshare = args.board == "waveshare-wifi6"
+    if not args.boot_shim_directory:
+        args.boot_shim_directory = "boot-shim" if waveshare else "boot-shim-c68"
+    artifacts = dict(ARTIFACTS)
+    if waveshare:
+        if args.boot_image:
+            parser.error("keep private Wi-Fi boot images separate from distributable Waveshare archives")
+        if args.profile == "m2" and not args.c6_build_output:
+            parser.error("Waveshare m2 requires --c6-build-output for its paired firmware")
+        layout = repo_root / "linux" / "boards" / "waveshare-wifi6" / "flash-layout.json"
+        dtb_name = "esp32p4-waveshare-wifi6" + ("-sdio" if args.profile == "m2" else "") + ".dtb"
+        del artifacts["esp32p4-m5stamp-p4.dtb"]
+        artifacts[dtb_name] = (0xF10000, 0x10000, "buildroot/images/" + dtb_name)
+    elif not args.boot_image:
+        parser.error("Stamp packaging requires --boot-image")
     partitions = repo_root / "linux" / "boot-shim" / "partitions-m2.csv"
+    verify_args = [sys.executable, str(verifier), "--layout", str(layout),
+                   "--partition-table", str(partitions), "--json"]
+    if not args.allow_candidate:
+        verify_args.append("--require-ready")
     subprocess.run(
-        [sys.executable, str(verifier), "--layout", str(layout),
-         "--partition-table", str(partitions), "--require-ready", "--json"],
+        verify_args,
         check=True,
         stdout=subprocess.DEVNULL,
     )
 
     args.output.mkdir(parents=True, exist_ok=True)
-    prefix = f"m5stamp-p4-c6-linux-smp-{args.version}"
+    prefix = (f"waveshare-p4-wifi6-{args.profile}-{args.version}" if waveshare
+              else f"m5stamp-p4-c6-linux-smp-{args.version}")
     raw_path = args.output / f"{prefix}-16mb.bin"
     gzip_path = args.output / f"{prefix}-16mb.bin.gz"
     zip_path = args.output / f"{prefix}.zip"
 
     members: dict[str, bytes] = {}
-    flash = bytearray(b"\xff") * FLASH_BYTES
-    for name, (offset, maximum, relative) in ARTIFACTS.items():
+    # Waveshare uses partition writes so an archive cannot erase NVS or
+    # private configuration through a blanket monolithic-image flash.
+    flash = None if waveshare else bytearray(b"\xff") * FLASH_BYTES
+    for name, (offset, maximum, relative) in artifacts.items():
         source = args.build_output / relative.format(shim=args.boot_shim_directory)
         data = checked_file(source, maximum)
         members[name] = data
-        flash[offset:offset + len(data)] = data
+        if flash is not None:
+            flash[offset:offset + len(data)] = data
 
-    boot = checked_file(args.boot_image, BOOT_BYTES, exact=True)
-    if boot[510:512] != b"\x55\xaa":
-        raise SystemExit(f"boot image has no DOS boot signature: {args.boot_image}")
-    members["boot.img"] = boot
-    flash[BOOT_OFFSET:BOOT_OFFSET + BOOT_BYTES] = boot
-
-    raw_path.write_bytes(flash)
-    gzip_path.write_bytes(gzip.compress(flash, compresslevel=9, mtime=0))
+    if flash is not None:
+        boot = checked_file(args.boot_image, BOOT_BYTES, exact=True)
+        if boot[510:512] != b"\x55\xaa":
+            raise SystemExit(f"boot image has no DOS boot signature: {args.boot_image}")
+        members["boot.img"] = boot
+        flash[BOOT_OFFSET:BOOT_OFFSET + BOOT_BYTES] = boot
+        raw_path.write_bytes(flash)
+        gzip_path.write_bytes(gzip.compress(flash, compresslevel=9, mtime=0))
+    if waveshare and args.profile == "m2":
+        c6 = args.c6_build_output / "build"
+        for name, maximum in (("bootloader/bootloader.bin", 0x8000),
+                              ("partition_table/partition-table.bin", 0x1000),
+                              ("ota_data_initial.bin", 0x2000),
+                              ("network_adapter.bin", 0x120000),
+                              ("flasher_args.json", 0x10000)):
+            members["c6/" + name] = checked_file(c6 / name, maximum)
+        members["c6/C6_PATCH_MANIFEST.txt"] = checked_file(
+            args.c6_build_output / "C6_PATCH_MANIFEST.txt", 0x10000)
+    if waveshare:
+        packaging_commit = subprocess.check_output(
+            ["git", "-C", str(repo_root), "rev-parse", "HEAD"], text=True).strip()
+        packaging_dirty = bool(subprocess.check_output(
+            ["git", "-C", str(repo_root), "status", "--porcelain", "--untracked-files=no"], text=True))
+        members["make-wifi-boot.py"] = (repo_root / "tools/make-wifi-boot.py").read_bytes()
+        members["build-manifest.json"] = (json.dumps({
+            "board": args.board, "profile": args.profile, "version": args.version,
+            "status": "development_candidate" if args.allow_candidate else "release",
+            "packaging_source_commit": packaging_commit,
+            "packaging_source_dirty": packaging_dirty,
+            "artifact_identity": "hashes identify tested bytes; embedded build labels may predate packaging",
+            "source_lock": json.loads((repo_root / "versions.lock.json").read_text()),
+            "p4_offsets": {name: hex(value[0]) for name, value in artifacts.items()},
+            "private_configuration": "provision separately; excluded from this archive",
+            "hashes": {name: hashlib.sha256(data).hexdigest() for name, data in sorted(members.items())},
+        }, indent=2) + "\n").encode()
 
     member_hashes = "".join(
         f"{hashlib.sha256(data).hexdigest()}  {name}\n"
@@ -136,16 +192,15 @@ def main() -> int:
                 bundle.addfile(info, stream)
 
     release_hashes = args.output / "SHA256SUMS.txt"
+    release_files = [zip_path, debug_path] if waveshare else [gzip_path, raw_path, zip_path, debug_path]
     release_hashes.write_text(
-        f"{sha256(gzip_path)}  {gzip_path.name}\n"
-        f"{sha256(raw_path)}  {raw_path.name}\n"
-        f"{sha256(zip_path)}  {zip_path.name}\n"
-        f"{sha256(debug_path)}  {debug_path.name}\n",
+        "".join(f"{sha256(path)}  {path.name}\n" for path in release_files),
         encoding="ascii",
         newline="\n",
     )
     print(f"release package: {zip_path}")
-    print(f"monolithic image: {gzip_path}")
+    if not waveshare:
+        print(f"monolithic image: {gzip_path}")
     print(f"checksums: {release_hashes}")
     return 0
 

@@ -1,0 +1,29 @@
+#!/bin/sh
+# The NOMMU root is read-only; runtime files need a bounded writable home.
+case "$1" in
+start)
+	if ! mke2fs -q -m 2 -i 4096 /dev/ram0 ||
+	   ! mount -t ext2 -o nosuid,nodev /dev/ram0 /tmp; then
+		echo "P4_RUNTIME_FAILED: cannot mount bounded scratch storage" >&2
+		exit 1
+	fi
+	chmod 1777 /tmp
+	mkdir -p /tmp/run
+	chmod 0755 /tmp/run
+	mount -o bind /tmp/run /run || exit 1
+	hostname waveshare-p4
+	ifconfig lo up
+	# The loader selected/validated the boot image and copied it here.
+	# Mount the copy read-only; updates use the existing boot-commit helper.
+	if dd if=/dev/mem of=/tmp/boot.img bs=4096 skip=301504 count=64 2>/dev/null; then
+		chmod 0600 /tmp/boot.img
+		if mount -t vfat -o ro,loop,umask=0077 /tmp/boot.img /boot 2>/dev/null; then
+			echo "P4_CONFIG_READY: /boot mounted read-only"
+		else
+			echo "P4_CONFIG_ABSENT: serial shell remains available"
+		fi
+	fi
+	;;
+stop) ;;
+*) exit 2 ;;
+esac

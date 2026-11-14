@@ -1,0 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-only
+#include "esp32p4-waveshare-wifi6.dts"
+
+/* The board loader routes GPIO14..19 and resets the C6 before Linux probes. */
+&sdmmc1 {
+	status = "okay";
+};

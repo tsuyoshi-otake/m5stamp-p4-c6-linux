@@ -31,6 +31,16 @@ while [[ $# -gt 0 ]]; do
 	esac
 done
 case "$profile" in m1|m2|c68) ;; *) echo "unsupported profile: $profile" >&2; exit 2 ;; esac
+case "${P4_BOARD:-stamp-p4}" in
+	stamp-p4) ;;
+	waveshare-wifi6)
+		[[ "$profile" == m1 || "$profile" == m2 ]] || {
+			echo "waveshare-wifi6 supports the single-core m1 and m2 loaders only" >&2
+			exit 2
+		}
+		;;
+	*) echo "unsupported P4_BOARD: $P4_BOARD" >&2; exit 2 ;;
+esac
 if [[ "${TSENS_ORACLE:-0}" == "1" && "$profile" != "c68" ]]; then
 	echo "TSENS_ORACLE requires the C68 single-core profile" >&2
 	exit 2
@@ -42,8 +52,24 @@ project_dir=$(cd -- "${script_dir}" && pwd)
 	echo "IDF_PATH must point to the locked ESP-IDF checkout" >&2
 	exit 1
 }
+locked_idf=$(python3 - "${script_dir}/../../versions.lock.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+print(json.loads(Path(sys.argv[1]).read_text())["sources"]["esp_idf"]["commit"])
+PY
+)
+actual_idf=$(git -C "$IDF_PATH" rev-parse HEAD)
+[[ "$actual_idf" == "$locked_idf" ]] || {
+	echo "ESP-IDF revision mismatch: $actual_idf; required $locked_idf" >&2
+	exit 1
+}
 command -v idf.py >/dev/null || {
 	echo "idf.py is not on PATH; source ESP-IDF export.sh first" >&2
+	exit 1
+}
+[[ "$(realpath "$(command -v idf.py)")" == "$(realpath "${IDF_PATH}/tools/idf.py")" ]] || {
+	echo "idf.py on PATH does not belong to IDF_PATH; source its export.sh first" >&2
 	exit 1
 }
 
@@ -68,13 +94,16 @@ if [[ "$profile" == m2 || "$profile" == c68 ]]; then
 else
 	export SDKCONFIG_DEFAULTS="${project_dir}/sdkconfig.defaults"
 fi
+if [[ "${P4_BOARD:-stamp-p4}" == waveshare-wifi6 ]]; then
+	export SDKCONFIG_DEFAULTS="${SDKCONFIG_DEFAULTS};${script_dir}/../boards/waveshare-wifi6/sdkconfig.defaults"
+fi
 
 rm -f "${output}/sdkconfig" "${output}/sdkconfig.old"
 if [[ "$profile" == c68 ]]; then
 	rm -rf -- "${output}/build"
 fi
 
-idf.py -B "${output}/build" -C "$project_dir" reconfigure build
+idf.py -D "SDKCONFIG=${SDKCONFIG}" -B "${output}/build" -C "$project_dir" reconfigure build
 
 for artifact in bootloader/bootloader.bin partition_table/partition-table.bin stamp_p4_boot_shim.bin; do
 	[[ -s "${output}/build/${artifact}" ]] || {
