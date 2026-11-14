@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import serial
+from serial.tools import list_ports
 
 
 def main() -> int:
@@ -33,19 +34,34 @@ def main() -> int:
     if args.output.exists():
         raise SystemExit(f"refusing to overwrite capture: {args.output}")
 
+    linux_ch343 = sys.platform == "linux" and any(
+        device.device == str(Path(args.port).resolve())
+        and (device.vid, device.pid) == (0x1A86, 0x55D3)
+        for device in list_ports.comports()
+    )
+    port = serial.Serial(
+        port=None,
+        baudrate=args.baud,
+        timeout=0.1,
+        write_timeout=0.1,
+        dsrdtr=linux_ch343,
+        rtscts=False,
+    )
+    if linux_ch343:
+        # cdc_acm raises both lines on open. Clearing DTR first pulses EN
+        # through the board's auto-reset circuit. Let pyserial clear RTS
+        # first, then clear DTR below; this use of dsrdtr is Linux-only.
+        port.rts = False
+    port.port = args.port
+
     started = datetime.now(timezone.utc)
     digest = hashlib.sha256()
     byte_count = 0
     end = time.monotonic() + args.seconds
     try:
-        with serial.Serial(
-            port=args.port,
-            baudrate=args.baud,
-            timeout=0.1,
-            write_timeout=0.1,
-            dsrdtr=False,
-            rtscts=False,
-        ) as port, args.output.open("xb") as capture:
+        with port, args.output.open("xb") as capture:
+            if linux_ch343:
+                port.dtr = False
             print(
                 f"Capturing raw UART from {args.port} for {args.seconds:g}s; "
                 "press Ctrl-C to stop"
@@ -57,7 +73,6 @@ def main() -> int:
                 port.dtr = False
                 port.rts = True
                 time.sleep(0.1)
-                port.dtr = True
                 port.rts = False
                 time.sleep(0.1)
             while time.monotonic() < end:
@@ -82,6 +97,7 @@ def main() -> int:
         "baud": args.baud,
         "capture_seconds_requested": args.seconds,
         "reset_requested": args.reset,
+        "serial_open": "linux_ch343_rts_before_dtr" if linux_ch343 else "default",
         "bytes": byte_count,
         "sha256": digest.hexdigest(),
         "file": str(args.output),
