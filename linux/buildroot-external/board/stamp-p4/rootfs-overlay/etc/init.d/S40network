@@ -48,6 +48,8 @@ case "$1" in
 	}
 	MODULE_SHA256=$(sha256sum "$KO" 2>/dev/null | awk '{print $1}')
 	echo "ES_SDIO_LOAD_OK source=$MODULE_SOURCE requested_mhz=$WANT_MHZ module_param_mhz=$ACTUAL_PARAM_MHZ module_sha256=${MODULE_SHA256:-unavailable}"
+	# Boards with a station supervisor own association and the DHCP worker.
+	[ "${ES_SDIO_LOAD_ONLY:-0}" != 1 ] || exit 0
 	(
 		i=0
 		while [ "$i" -lt 30 ]; do

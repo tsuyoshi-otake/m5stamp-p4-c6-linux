@@ -1295,6 +1295,9 @@ else
 fi
 if [[ "$board" == waveshare-wifi6 ]]; then
 	cat "${script_dir}/boards/waveshare-wifi6/linux.config" >>"${kernel_config_fragment}"
+	if $network_profile; then
+		cat "${script_dir}/boards/waveshare-wifi6/network.config" >>"${kernel_config_fragment}"
+	fi
 	# The second askfirst shell is for Stamp's native USB connector.
 	sed -i '/^ttyGS1::/d' "${external_root}/board/stamp-p4/rootfs-overlay/etc/inittab"
 	cp -- "${script_dir}/boards/waveshare-wifi6/motd" \
@@ -2330,6 +2333,22 @@ if $lab_profile; then
 	set_config_value "${br_output}/.config" BR2_PACKAGE_RUN_SYSTEM y
 else
 	set_config_value "${br_output}/.config" BR2_PACKAGE_BOOT_COMMIT "# BR2_PACKAGE_BOOT_COMMIT is not set"
+fi
+if [[ "$board" == waveshare-wifi6 ]] && $network_profile; then
+	board_overlay="${script_dir}/boards/waveshare-wifi6/rootfs-overlay"
+	rootfs_overlay="${rootfs_overlay} ${board_overlay}"
+	busybox_fragments="${busybox_fragments} ${script_dir}/boards/waveshare-wifi6/busybox.fragment"
+	# Preserve the shared SDIO module loader; the board owns DHCP/association.
+	install -D -m 0755 "${external_root}/board/stamp-p4/rootfs-overlay/etc/init.d/S40network" \
+		"${external_root}/board/stamp-p4/rootfs-overlay/usr/libexec/p4-sdio-load"
+	install -d "${external_root}/board/stamp-p4/rootfs-overlay/boot"
+	# The random-seed service requires writable /var/lib; this image's keys
+	# and runtime state have explicit separate owners instead.
+	cat >>"${external_root}/board/stamp-p4/post-build.sh" <<'EOF'
+rm -f "${TARGET_DIR}/etc/init.d/S01seedrng" "${TARGET_DIR}/etc/init.d/S41timesync"
+EOF
+	set_config_value "${br_output}/.config" BR2_PACKAGE_WPA_SUPPLICANT_CLI y
+	set_config_value "${br_output}/.config" BR2_PACKAGE_BOOT_COMMIT y
 fi
 set_config_value "${br_output}/.config" BR2_ROOTFS_OVERLAY "\"${rootfs_overlay}\""
 set_config_value "${br_output}/.config" BR2_ROOTFS_POST_BUILD_SCRIPT "\"${post_build_scripts}\""

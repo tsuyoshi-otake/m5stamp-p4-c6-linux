@@ -1,0 +1,16 @@
+#!/bin/sh
+# Reuse the common module loader; add board-owned station configuration.
+case "$1" in
+start)
+	if ES_SDIO_LOAD_ONLY=1 /usr/libexec/p4-sdio-load start; then
+		/usr/sbin/p4-wifi start || echo "P4_WIFI_UNAVAILABLE: use p4-wifi status"
+	else
+		echo "P4_SDIO_UNAVAILABLE: serial shell remains available"
+	fi
+	;;
+stop)
+	/usr/sbin/p4-wifi stop
+	/usr/libexec/p4-sdio-load stop
+	;;
+*) exit 2 ;;
+esac
