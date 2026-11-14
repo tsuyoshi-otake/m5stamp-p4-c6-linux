@@ -318,6 +318,8 @@ by default; pass `-WriteBoot` to write `boot.img` and reset the A/B selection.
 no A/B slots. The default (no flag) is only for reflashing a v0.2.2 or later
 installation whose A/B slots and metadata are already initialized.
 `-PreserveBoot` is still accepted for compatibility and is a no-op.
+The script verifies the writes and resets the board so Linux boots; pass
+`-NoReset` to leave it in download mode.
 
 #### Option C: Manual Multi-Partition Flash
 ```bash

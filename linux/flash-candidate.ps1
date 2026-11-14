@@ -22,6 +22,11 @@ param(
 	# default, so this switch is a no-op.
 	[switch] $PreserveBoot,
 
+	# Default is to hard-reset the board after the write verifies, so Linux
+	# boots without a manual reset.  -NoReset keeps the old behaviour of
+	# leaving the board in download mode.
+	[switch] $NoReset,
+
 	[string] $ExpectedStockSha256 = "229459f251eaf6222f0c07968702d72a3818e520da1788ce465027d969020c24"
 )
 
@@ -95,6 +100,11 @@ if ($WriteBoot) {
 } else {
 	Write-Host "  boot slots: preserved (default; pass -WriteBoot to update the boot FS)"
 }
+if ($NoReset) {
+	Write-Host "  reset: none (-NoReset); the board stays in download mode"
+} else {
+	Write-Host "  reset: hard reset after the last flash operation"
+}
 Write-Host "  C6 write: none (COM10 is the P4 module USB-C path)"
 
 $chipArgs = @(
@@ -129,9 +139,16 @@ if ($LASTEXITCODE -ne 0) {
 	throw "P4 candidate write failed. Enter ROM mode and restore the preserved stock readback before retrying."
 }
 
+# With -WriteBoot the A/B metadata erase follows and does the reset itself,
+# so verify leaves the board in download mode for it.  Otherwise verify is
+# the last flash operation and resets the board into the new image.
+$verifyAfter = "hard_reset"
+if ($WriteBoot -or $NoReset) {
+	$verifyAfter = "no_reset"
+}
 $verifyArgs = @(
 	"-m", "esptool", "--chip", "esp32p4", "--port", $Port,
-	"--baud", "460800", "--before", "default_reset", "--after", "no_reset",
+	"--baud", "460800", "--before", "default_reset", "--after", $verifyAfter,
 	"verify_flash"
 )
 foreach ($artifact in $artifacts) {
@@ -154,9 +171,13 @@ if ($LASTEXITCODE -ne 0) {
 # loss before this point leaves the previously selected slot bootable; after
 # the erase, boot-shim deliberately falls back to the newly verified slot0.
 if ($WriteBoot) {
+	$eraseAfter = "hard_reset"
+	if ($NoReset) {
+		$eraseAfter = "no_reset"
+	}
 	$metadataArgs = @(
 		"-m", "esptool", "--chip", "esp32p4", "--port", $Port,
-		"--baud", "460800", "--before", "default_reset", "--after", "hard_reset",
+		"--baud", "460800", "--before", "default_reset", "--after", $eraseAfter,
 		"erase_region", "0xfc0000", "0x2000"
 	)
 	& $PythonPath @metadataArgs
@@ -166,6 +187,11 @@ if ($WriteBoot) {
 }
 
 Write-Host "P4 candidate write and verify passed"
+if ($NoReset) {
+	Write-Host "Board left in download mode; reset it to boot"
+} else {
+	Write-Host "Board reset; Linux boots now"
+}
 if ($stockPath) {
 	Write-Host "Recovery command (only after entering ROM mode):"
 	Write-Host "  $PythonPath -m esptool --chip esp32p4 --port $Port write_flash 0x0 $stockPath"
