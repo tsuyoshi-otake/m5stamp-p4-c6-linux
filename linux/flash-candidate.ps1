@@ -88,13 +88,14 @@ $kernelBanner = $null
 $unameV = $null
 $imageText = [System.Text.Encoding]::ASCII.GetString(
 	[System.IO.File]::ReadAllBytes($paths["Image"]))
-$bannerMatch = [regex]::Match($imageText, "Linux version \d[\x20-\x7e]*")
+# The image holds two "Linux version" strings: a link-time placeholder that
+# ends in "# SMP" with no build number, and the real banner.  Only the one
+# with a build number and date is what the running kernel reports.
+$bannerMatch = [regex]::Match($imageText,
+	"Linux version \d[\x20-\x7e]*? (#\d+ [\x20-\x7e]+)")
 if ($bannerMatch.Success) {
 	$kernelBanner = $bannerMatch.Value
-	$vMatch = [regex]::Match($kernelBanner, "#\d+ [\x20-\x7e]+")
-	if ($vMatch.Success) {
-		$unameV = $vMatch.Value
-	}
+	$unameV = $bannerMatch.Groups[1].Value
 }
 
 $versionOutput = (& $PythonPath -m esptool version 2>&1 | Out-String)
