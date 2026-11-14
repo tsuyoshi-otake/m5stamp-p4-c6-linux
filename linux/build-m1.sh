@@ -247,12 +247,14 @@ board_dts=esp32p4-m5stamp-p4
 case "$board" in
 	stamp-p4) ;;
 	waveshare-wifi6)
-		# Networking needs its own verified GPIO routing and C6 recovery.
-		[[ "$profile" == m1 && "${C68_CLEAN_RELEASE:-0}" == 0 ]] || {
-			echo "waveshare-wifi6 currently supports the single-core m1 profile only" >&2
+		[[ ( "$profile" == m1 || "$profile" == m2 ) && "${C68_CLEAN_RELEASE:-0}" == 0 ]] || {
+			echo "waveshare-wifi6 supports the single-core m1 and m2 profiles only" >&2
 			exit 2
 		}
 		board_dts=esp32p4-waveshare-wifi6
+		if [[ "$profile" == m2 ]]; then
+			board_dts=esp32p4-waveshare-wifi6-sdio
+		fi
 		;;
 	*) echo "unsupported P4_BOARD: $board" >&2; exit 2 ;;
 esac
@@ -1134,6 +1136,10 @@ if [[ "$board" == waveshare-wifi6 ]]; then
 	# The board overrides the shared P4 nodes in the inherited DTS.
 	cp -- "${firmware_root}/linux/dts/esp32p4-m5stamp-p4.dts" \
 		"${dts_stage}/espressif/esp32p4-m5stamp-p4.dts"
+	if [[ "$profile" == m2 ]]; then
+		cp -- "${firmware_root}/linux/dts/esp32p4-waveshare-wifi6.dts" \
+			"${dts_stage}/espressif/esp32p4-waveshare-wifi6.dts"
+	fi
 fi
 if [[ "$wdt_test_timeout_s" != "0" ]]; then
 	python3 - "${dts_stage}/espressif/${board_dts}.dts" \

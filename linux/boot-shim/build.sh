@@ -34,8 +34,8 @@ case "$profile" in m1|m2|c68) ;; *) echo "unsupported profile: $profile" >&2; ex
 case "${P4_BOARD:-stamp-p4}" in
 	stamp-p4) ;;
 	waveshare-wifi6)
-		[[ "$profile" == m1 ]] || {
-			echo "waveshare-wifi6 currently supports the m1 loader only" >&2
+		[[ "$profile" == m1 || "$profile" == m2 ]] || {
+			echo "waveshare-wifi6 supports the single-core m1 and m2 loaders only" >&2
 			exit 2
 		}
 		;;
