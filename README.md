@@ -1095,6 +1095,14 @@ This compiles:
 3. Buildroot root filesystem with Busybox (vi, udhcpd), Dropbear SSH, MicroPython, and ESP-Hosted-NG (`esp32_sdio.ko`)
 4. Combined image artifacts ready for flashing
 
+For release builds use `linux/release-build.sh` — the same wrapper the
+release workflow calls. It sets the three `NOMMU_*` variables that are the
+release settings of the user-pool allocator, then runs `linux/build-c68.sh`:
+
+```bash
+bash linux/release-build.sh --vendor /path/to/output --profile m3-lab
+```
+
 ---
 
 ## SHA-256 Checksums (v0.5.0)
