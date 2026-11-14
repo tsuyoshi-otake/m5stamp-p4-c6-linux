@@ -13,3 +13,47 @@ jobs:
         run: sh tests/static-check.sh
       - name: Boot log checker self-test
         run: python3 linux/tests/test-check-boot-log.py
+  waveshare-build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+      - name: Build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bison flex bc cpio rsync unzip file cmake ninja-build device-tree-compiler \
+            libssl-dev libncurses-dev libelf-dev libgmp-dev libmpc-dev squashfs-tools \
+            dosfstools mtools python3-venv python3-pip
+      - name: Verify pinned sources
+        run: python3 tools/verify-source-lock.py
+      - name: Install pinned IDF toolchain
+        run: |
+          export IDF_TOOLS_PATH=$RUNNER_TEMP/idf-tools
+          (cd vendor/esp-idf && ./install.sh esp32p4,esp32c6)
+      - name: Build Waveshare loader and Linux userspace
+        run: |
+          export IDF_TOOLS_PATH=$RUNNER_TEMP/idf-tools IDF_PATH=$PWD/vendor/esp-idf
+          . "$IDF_PATH/export.sh"
+          export P4_BOARD=waveshare-wifi6 BUILDROOT_JLEVEL=4
+          bash linux/boot-shim/build.sh "$RUNNER_TEMP/waveshare/boot-shim" --profile m2
+          bash linux/build-m1.sh --vendor "$RUNNER_TEMP/waveshare" --profile m2
+      - name: Build paired C6 firmware
+        run: |
+          export IDF_TOOLS_PATH=$RUNNER_TEMP/idf-tools IDF_PATH=$PWD/vendor/esp-idf
+          . "$IDF_PATH/export.sh"
+          bash linux/m2/build-c6.sh --vendor "$RUNNER_TEMP/c6"
+      - name: Check Waveshare image layout
+        run: |
+          python3 linux/tools/verify-images.py \
+            --layout linux/boards/waveshare-wifi6/flash-layout.json \
+            --partition-table linux/boot-shim/partitions-m2.csv \
+            --artifact "boot-shim=$RUNNER_TEMP/waveshare/boot-shim/build/stamp_p4_boot_shim.bin" \
+            --artifact "kernel=$RUNNER_TEMP/waveshare/buildroot/images/Image" \
+            --artifact "rootfs=$RUNNER_TEMP/waveshare/buildroot/images/rootfs.squashfs" \
+            --artifact "dtb=$RUNNER_TEMP/waveshare/buildroot/images/esp32p4-waveshare-wifi6-sdio.dtb"
