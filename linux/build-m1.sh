@@ -2176,6 +2176,7 @@ make "${make_args[@]}" stamp_p4_defconfig
 if [[ "$board" == waveshare-wifi6 ]]; then
 	set_config_value "${br_output}/.config" BR2_TARGET_GENERIC_HOSTNAME '"waveshare-p4"'
 	set_config_value "${br_output}/.config" BR2_TARGET_GENERIC_ISSUE '"Waveshare ESP32-P4-WIFI6 NOMMU Linux"'
+	set_config_value "${br_output}/.config" BR2_PACKAGE_P4_DEMO y
 fi
 # Buildroot's defconfig intentionally contains the board defaults only.  Lock
 # the source revision and patch staging path in the generated output so the
