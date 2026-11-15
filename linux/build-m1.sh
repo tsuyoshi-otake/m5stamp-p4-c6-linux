@@ -1294,12 +1294,22 @@ CONFIG_POWER_RESET_GPIO=y
 # USB-A host on the USB2.0 HS DWC @0x50000000 (#30): dwc2 in
 # host-only mode (patch 0063 forces PIO -- no coherent DMA under
 # NOMMU).  usb-storage + hid cover the first bring-up devices.
+# The m3-lab fragment selects USB_DWC2_PERIPHERAL for the FS OTG
+# gadget, but on Tab5 that node's FSLS PHY shares the I2S audio
+# pads and stays disabled -- HOST is the only mode this board
+# uses, so the choice is forced here (PERIPHERAL stays for
+# Stamp-P4, where the gadget node is enabled).
 CONFIG_USB_SUPPORT=y
 CONFIG_USB=y
+# CONFIG_USB_DWC2_PERIPHERAL is not set
 CONFIG_USB_DWC2_HOST=y
 CONFIG_SCSI=y
 CONFIG_BLK_DEV_SD=y
 CONFIG_USB_STORAGE=y
+# The m2 fragment disables HID_SUPPORT outright ("nothing here speaks
+# ethtool netlink" size trim); without it every HID_* option is
+# invisible and USB_HID drops out of olddefconfig.
+CONFIG_HID_SUPPORT=y
 CONFIG_HID=y
 CONFIG_HID_GENERIC=y
 CONFIG_USB_HID=y
@@ -1354,6 +1364,17 @@ CONFIG_PREEMPT_NONE=y
 EOF
 if $c68_profile; then
 	cat "${firmware_root}/linux/c68/linux.config.fragment" >>"${kernel_config_fragment}"
+	if [[ "$board" == "tab5" ]]; then
+		cat >>"${kernel_config_fragment}" <<'EOF'
+
+# Tab5: the C68 fragment above re-selects USB_DWC2_PERIPHERAL for the
+# boot-FS gadget, but on this board the FS OTG node stays disabled
+# (FSLS PHY shares the I2S pads) and the Type-A port @0x50000000 is
+# the only dwc2 user -- it needs HOST.  Keep this override last.
+# CONFIG_USB_DWC2_PERIPHERAL is not set
+CONFIG_USB_DWC2_HOST=y
+EOF
+	fi
 	if $c68_top_profile; then
 		cat >>"${kernel_config_fragment}" <<'EOF'
 
