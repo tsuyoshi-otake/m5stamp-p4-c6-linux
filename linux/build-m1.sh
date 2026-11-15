@@ -2419,6 +2419,11 @@ if $ssh_profile; then
 		post_build_scripts="${post_build_scripts} ${lab_stage}/post-build.sh"
 		users_table="${lab_stage}/users.txt"
 		busybox_fragments="${busybox_fragments} ${lab_stage}/busybox.fragment"
+		if [[ "$board" == tab5 ]]; then
+			# Last fragment wins: keep the tab5 additions after the
+			# shared m3-lab fragment that disables hwclock.
+			busybox_fragments="${busybox_fragments} ${lab_stage}/busybox-tab5.fragment"
+		fi
 		localoptions="${lab_stage}/dropbear-localoptions.h"
 	fi
 	set_config_value "${br_output}/.config" BR2_ROOTFS_OVERLAY "\"${rootfs_overlay}\""

@@ -1,0 +1,5 @@
+# Tab5-only BusyBox applets.  Applied on top of busybox.fragment for
+# ES_BOARD=tab5 builds; Stamp-P4 keeps the shared fragment unchanged.
+# RX8130CE RTC (#28): S02rtc restores/saves the clock with hwclock -s/-w,
+# and the smoke test reads it back with hwclock -r.
+CONFIG_HWCLOCK=y
