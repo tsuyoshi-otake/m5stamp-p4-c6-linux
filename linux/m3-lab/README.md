@@ -254,7 +254,32 @@ board:  rx /tmp/file
 PC:     send the file with the terminal program's XMODEM option
 ```
 
-### Building one-off C helpers for the board
+## Touch input (Tab5)
+
+The ST712x touch controller shows up as an evdev device,
+`/dev/input/event0`, with `BTN_TOUCH` + `ABS_X`/`ABS_Y` (and
+`ABS_MT_POSITION_*` for multi-touch).  `touch-dots` is the minimal way to
+use it: run it, and each finger-down draws a 9x9 white dot on `/dev/fb0`
+at the touched spot, printing the framebuffer coordinates on stdout (so
+an SSH session can watch them without the panel).  `Ctrl-C` restores the
+text console; dots stay until fbcon repaints.
+
+```sh
+touch-dots                    # /dev/input/event0
+touch-dots /dev/input/event1  # another evdev node
+```
+
+To read the events yourself: each `struct input_event` is 16 bytes —
+8-byte `timeval`, then `type`/`code`/`value`.  `EV_ABS` `ABS_X`/`ABS_Y`
+(or `ABS_MT_POSITION_X`/`Y`) carry coordinates in device units;
+`EVIOCGABS` reports their range (the DT scales them to the panel's
+720x1280).  `EV_KEY` `BTN_TOUCH` value 1/0 is finger down/up; every
+burst ends with `EV_SYN` `SYN_REPORT`.  `touch-dots` maps `0..abs_max`
+onto `0..xres-1`, so the axis orientation is whatever the DT
+`touchscreen-*` properties produce — with `fbcon=rotate:` the dots land
+in the framebuffer's rotated coordinate space.
+
+## Building one-off C helpers for the board
 
 Cross-compile inside the build container with the Buildroot toolchain, then
 set the bFLT stack the same way post-build.sh does for `usr/bin/wifi-qr`:

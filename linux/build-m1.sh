@@ -2376,16 +2376,20 @@ if $lab_profile; then
 	# PR_SET_SYSTEM_WORK wrapper so system scripts keep system-side
 	# NOMMU classification when a user starts them (#50 round 4).
 	set_config_value "${br_output}/.config" BR2_PACKAGE_RUN_SYSTEM y
-	# First-boot SoftAP credentials QR on the Tab5 panel (#4).  The
-	# package only exists on Tab5 builds.
+	# First-boot SoftAP credentials QR on the Tab5 panel (#4), and the
+	# evdev-to-panel touch demo (#33).  Both packages only exist on
+	# Tab5 builds.
 	if [[ "$board" == tab5 ]]; then
 		set_config_value "${br_output}/.config" BR2_PACKAGE_WIFI_QR y
+		set_config_value "${br_output}/.config" BR2_PACKAGE_TOUCH_DOTS y
 	else
 		set_config_value "${br_output}/.config" BR2_PACKAGE_WIFI_QR "# BR2_PACKAGE_WIFI_QR is not set"
+		set_config_value "${br_output}/.config" BR2_PACKAGE_TOUCH_DOTS "# BR2_PACKAGE_TOUCH_DOTS is not set"
 	fi
 else
 	set_config_value "${br_output}/.config" BR2_PACKAGE_BOOT_COMMIT "# BR2_PACKAGE_BOOT_COMMIT is not set"
 	set_config_value "${br_output}/.config" BR2_PACKAGE_WIFI_QR "# BR2_PACKAGE_WIFI_QR is not set"
+	set_config_value "${br_output}/.config" BR2_PACKAGE_TOUCH_DOTS "# BR2_PACKAGE_TOUCH_DOTS is not set"
 fi
 set_config_value "${br_output}/.config" BR2_ROOTFS_OVERLAY "\"${rootfs_overlay}\""
 set_config_value "${br_output}/.config" BR2_ROOTFS_POST_BUILD_SCRIPT "\"${post_build_scripts}\""
@@ -2656,6 +2660,14 @@ if $ssh_profile; then
 			}
 			[[ -x "${br_output}/target/usr/bin/wifi-qr" ]] || {
 				echo "m3-lab check failed: wifi-qr missing" >&2
+				exit 1
+			}
+			grep -Fqx -- "BR2_PACKAGE_TOUCH_DOTS=y" "${br_output}/.config" || {
+				echo "m3-lab config check failed: BR2_PACKAGE_TOUCH_DOTS=y" >&2
+				exit 1
+			}
+			[[ -x "${br_output}/target/usr/bin/touch-dots" ]] || {
+				echo "m3-lab check failed: touch-dots missing" >&2
 				exit 1
 			}
 		fi

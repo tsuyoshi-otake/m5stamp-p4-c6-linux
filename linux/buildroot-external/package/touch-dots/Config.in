@@ -1,0 +1,7 @@
+config BR2_PACKAGE_TOUCH_DOTS
+	bool "Tab5 touch-to-dot demo"
+	help
+	  Reads evdev touch events (ST712x on /dev/input/event0) and
+	  draws a white dot on /dev/fb0 at each touched position (#33).
+	  Installed only on Tab5 lab builds, where the panel and touch
+	  controller exist.
