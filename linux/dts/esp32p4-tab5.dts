@@ -513,15 +513,14 @@
 			touchscreen-size-x = <720>;
 			touchscreen-size-y = <1280>;
 			/*
-			 * The controller's raw axes already match the fb
-			 * pixel layout (720x1280 portrait); only +x is
-			 * mirrored against the panel's displayed +x.
-			 * The earlier swapped-x-y entry was measured
-			 * wrong (#33): it turned reported X into raw Y
-			 * (0..1279 landscape).  Verified against
-			 * five-corner taps 2026-11-15.
+			 * No transform: the controller reports raw
+			 * 720x1280 portrait axes that already match the
+			 * fb pixel layout.  The earlier swapped-x-y and
+			 * inverted-x entries were both measured wrong
+			 * (#33): five-corner evdev taps on the
+			 * inverted-x build showed a mirrored +x with
+			 * scale ~1, i.e. the raw stream was correct.
 			 */
-			touchscreen-inverted-x;
 			status = "okay";
 		};
 
@@ -607,13 +606,13 @@
 				<&gpio0 23 IRQ_TYPE_EDGE_FALLING>;
 			touchscreen-size-x = <720>;
 			touchscreen-size-y = <1280>;
-			/*
-			 * Same orientation correction as touch@55 (#33):
-			 * portrait axes already match the fb; only +x is
-			 * mirrored.  Confirm on the alternate SKU.
-			 */
-			touchscreen-inverted-x;
-			status = "okay";
+			/* Same "no transform" rule as touch@55 (#33). */
+			/* Disabled by default (#36): nothing sits at 0x5d
+			 * on ST712x boards, and the enabled probe spams
+			 * "I2C communication failure" to the console.
+			 * The boot shim flips this node to okay when its
+			 * panel detection finds the GT911 (ILI9881C SKU). */
+			status = "disabled";
 		};
 
 		/*
