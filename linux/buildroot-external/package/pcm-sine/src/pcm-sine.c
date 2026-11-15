@@ -105,7 +105,24 @@ int main(int argc, char **argv)
 
 	err = ioctl(fd, SNDRV_PCM_IOCTL_HW_PARAMS, p);
 	if (err < 0) {
+		static const char *in[] = {
+			"SAMPLE_BITS","FRAME_BITS","CHANNELS","RATE",
+			"PERIOD_TIME","PERIOD_SIZE","PERIOD_BYTES","PERIODS",
+			"BUFFER_TIME","BUFFER_SIZE","BUFFER_BYTES","TICK_TIME"};
+		int i;
 		perror("HW_PARAMS");
+		err = ioctl(fd, SNDRV_PCM_IOCTL_HW_REFINE, p);
+		fprintf(stderr, "re-refine err=%d\n", err);
+		for (i = SNDRV_PCM_HW_PARAM_FIRST_INTERVAL;
+		     i <= SNDRV_PCM_HW_PARAM_LAST_INTERVAL; i++) {
+			struct snd_interval *v = &IVL(p, i);
+			fprintf(stderr, "  %-12s [%u,%u] int=%d empty=%d\n",
+				in[i - SNDRV_PCM_HW_PARAM_FIRST_INTERVAL],
+				v->min, v->max, v->integer, v->empty);
+		}
+		for (i = 0; i < 3; i++)
+			fprintf(stderr, "  mask%d bits0=%08x\n", i,
+				p->masks[i].bits[0]);
 		return 1;
 	}
 	err = ioctl(fd, SNDRV_PCM_IOCTL_PREPARE, 0);
