@@ -1331,6 +1331,15 @@ CONFIG_MMC_SPI=y
 CONFIG_BT=y
 CONFIG_BT_LE=y
 EOF
+	cat >>"${kernel_config_fragment}" <<EOF
+
+# bmi270 i2c probes before the rootfs is up, so its init-data blob must
+# come from the built-in firmware pool, not /lib/firmware.  The blob
+# itself still ships in rootfs-overlay-tab5 for the module-init retry
+# path and tools that read it back.
+CONFIG_EXTRA_FIRMWARE="bmi270-init-data.fw"
+CONFIG_EXTRA_FIRMWARE_DIR="${firmware_root}/linux/m3-lab/rootfs-overlay-tab5/lib/firmware"
+EOF
 fi
 if [[ -n "$pstore_identity" ]]; then
 	cat >>"${kernel_config_fragment}" <<'EOF'
