@@ -26,13 +26,14 @@ direction write happens anywhere.
 
 Signed-off-by: Devin <devin@cognition.ai>
 ---
- drivers/gpio/gpio-esp32p4.c |   77 +++++++++++++++++++++++++++++++++++------
+ drivers/gpio/gpio-esp32p4.c |   78 +++++++++++++++++++++++++++++++++++------
  1 file changed, 66 insertions(+), 11 deletions(-)
 
 diff --git a/drivers/gpio/gpio-esp32p4.c b/drivers/gpio/gpio-esp32p4.c
+index 9ae5374..90f9aac 100644
 --- a/drivers/gpio/gpio-esp32p4.c
 +++ b/drivers/gpio/gpio-esp32p4.c
-@@ -74,15 +74,23 @@ struct esp32p4_gpio_bank_regs {
+@@ -77,6 +77,14 @@ struct esp32p4_gpio_bank_regs {
  	u16 out_w1tc;
  	u16 enable_w1ts;
  	u16 enable_w1tc;
@@ -47,7 +48,7 @@ diff --git a/drivers/gpio/gpio-esp32p4.c b/drivers/gpio/gpio-esp32p4.c
  	u16 in;
  	u16 status;
  	u16 status_w1tc;
- 	u8  pin_offset;	/* PIN_REG number for hwirq 0 of this bank */
+@@ -84,8 +92,8 @@ struct esp32p4_gpio_bank_regs {
  };
  
  static const struct esp32p4_gpio_bank_regs esp32p4_gpio_banks[] = {
@@ -58,7 +59,7 @@ diff --git a/drivers/gpio/gpio-esp32p4.c b/drivers/gpio/gpio-esp32p4.c
  };
  
  struct esp32p4_gpio {
-@@ -262,6 +271,54 @@ static int esp32p4_gpio_set_config(struct gpio_chip *gc, unsigned int offset,
+@@ -264,6 +272,54 @@ static int esp32p4_gpio_set_config(struct gpio_chip *gc, unsigned int offset,
  	return 0;
  }
  
@@ -110,10 +111,11 @@ diff --git a/drivers/gpio/gpio-esp32p4.c b/drivers/gpio/gpio-esp32p4.c
 +		? GPIO_LINE_DIRECTION_OUT : GPIO_LINE_DIRECTION_IN;
 +}
 +
- static int esp32p4_gpio_probe(struct platform_device *pdev)
- {
- 	struct device *dev = &pdev->dev;
-@@ -310,25 +310,20 @@ static int esp32p4_gpio_probe(struct platform_device *pdev)
+ static int esp32p4_gpio_bank_probe(struct device *dev,
+ 				   struct device_node *np,
+ 				   void __iomem *base, void __iomem *iomux)
+@@ -287,17 +343,14 @@ static int esp32p4_gpio_bank_probe(struct device *dev,
+ 	gpio->iomux = iomux;
  
  	/*
 -	 * gpio_generic_chip_init consumes four register pointers:
@@ -138,7 +140,7 @@ diff --git a/drivers/gpio/gpio-esp32p4.c b/drivers/gpio/gpio-esp32p4.c
  	 */
  	struct gpio_generic_chip_config gcfg = {
  		.dev    = dev,
- 		.sz     = 4,
+@@ -305,8 +358,6 @@ static int esp32p4_gpio_bank_probe(struct device *dev,
  		.dat    = gpio->base + gpio->regs->in,
  		.set    = gpio->base + gpio->regs->out_w1ts,
  		.clr    = gpio->base + gpio->regs->out_w1tc,
@@ -147,7 +149,7 @@ diff --git a/drivers/gpio/gpio-esp32p4.c b/drivers/gpio/gpio-esp32p4.c
  		.flags  = 0,
  	};
  
-@@ -348,6 +396,13 @@ static int esp32p4_gpio_probe(struct platform_device *pdev)
+@@ -331,6 +382,13 @@ static int esp32p4_gpio_bank_probe(struct device *dev,
  	gpio->ggc.gc.ngpio = ESP32P4_GPIO_NGPIO;
  	gpio->ggc.gc.request = esp32p4_gpio_request;
  	gpio->ggc.gc.set_config = esp32p4_gpio_set_config;
@@ -158,6 +160,6 @@ diff --git a/drivers/gpio/gpio-esp32p4.c b/drivers/gpio/gpio-esp32p4.c
 +	gpio->ggc.gc.direction_input = esp32p4_gpio_direction_input;
 +	gpio->ggc.gc.direction_output = esp32p4_gpio_direction_output;
 +	gpio->ggc.gc.get_direction = esp32p4_gpio_get_direction;
- 
  	/*
- 	 * Wire up the irq_chip if DT gave us a parent IRQ. Optional: nodes
+ 	 * Consumer phandles must resolve to this bank's child node, not the
+ 	 * parent platform device: fwnode wins over gc->parent's node inside
