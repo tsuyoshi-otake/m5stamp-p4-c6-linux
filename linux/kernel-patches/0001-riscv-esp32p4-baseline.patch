@@ -2,7 +2,7 @@ diff --git a/arch/riscv/Kconfig.socs b/arch/riscv/Kconfig.socs
 index 429e07589306..6349a15b05f2 100644
 --- a/arch/riscv/Kconfig.socs
 +++ b/arch/riscv/Kconfig.socs
-@@ -117,4 +117,21 @@ config SOC_CANAAN_K210
+@@ -117,4 +117,20 @@ config SOC_CANAAN_K210
  	help
  	  This enables support for Canaan Kendryte K210 SoC platform hardware.
  
