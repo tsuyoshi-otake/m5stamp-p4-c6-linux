@@ -284,13 +284,16 @@
 
 		/*
 		 * I2S0 MCLK as programmed by the esp32-p4-i2s driver:
-		 * PLL_160M / 13 = 12.307692 MHz (~256 * 48 kHz).  Feeds the
-		 * ES8388's clock input so es8328 can read its sysclk rate.
+		 * PLL_160M / 13 = 12.307692 MHz (~256 * 48 kHz).  The
+		 * es8328 driver only models the canonical MCLK rates and
+		 * rejects the real value with -EINVAL, so this declares
+		 * the nominal 12.288 MHz the codec's divider table
+		 * targets (actual rate is +0.16 %, within its tolerance).
 		 */
 		es8388_mclk: es8388-mclk {
 			compatible = "fixed-clock";
 			#clock-cells = <0>;
-			clock-frequency = <12307692>;
+			clock-frequency = <12288000>;
 			clock-output-names = "es8388-mclk";
 		};
 
