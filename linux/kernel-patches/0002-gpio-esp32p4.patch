@@ -32,7 +32,7 @@
  obj-$(CONFIG_GPIO_EN7523)		+= gpio-en7523.o
 --- /dev/null	2026-05-03 14:38:22.219445125 +0200
 +++ b/drivers/gpio/gpio-esp32p4.c	2026-05-05 11:14:25.122735372 +0200
-@@ -0,0 +1,413 @@
+@@ -0,0 +1,445 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * GPIO controller driver for the Espressif ESP32-P4.
@@ -41,22 +41,23 @@
 + *   bank 0 — GPIOs 0..31 (OUT/ENABLE/IN/STATUS at 0x04/0x20/0x3C/0x44)
 + *   bank 1 — GPIOs 32..56 (OUT1/ENABLE1/IN1/STATUS1 at 0x10/0x2C/0x40/0x50)
 + *
-+ * Each DT node corresponds to one bank. The driver picks register offsets
-+ * based on the `espressif,bank-id` property (0 or 1). Both DT nodes refer
-+ * to the same MMIO page (0x500E0000 + 0x1000), so we use devm_ioremap (not
-+ * devm_ioremap_resource) to allow the second probe to map an overlapping
-+ * region.
++ * DT describes one parent node owning the shared MMIO page
++ * (0x500E0000 + 0x1000) with one child per bank carrying
++ * `espressif,bank-id` (0 or 1), `gpio-controller` and, on the
++ * interrupt-capable bank, `interrupt-controller` + `interrupts`.
++ * The parent probe maps the page once and registers a gpio_chip per
++ * child; each chip's fwnode is bound to its child node so consumer
++ * phandles resolve exactly as with per-bank platform devices.
 + *
 + * Per-pin INT_TYPE/INT_ENA registers (PIN<n>_REG at 0x74 + n*4) span both
 + * banks via `n` directly, so the IRQ chip ops accept hwirq numbers 0..31
 + * (relative to whichever bank this chip owns) and translate them via the
 + * driver-side `pin_offset` of the bank.
 + *
-+ * IO MUX lives at 0x500E1000 (not in this MMIO window). Both banks map
-+ * it independently (each bank's own devm_ioremap of the same physical
-+ * page) and address into it using the global pin number (bank_id's
-+ * pin_offset + chip-relative offset), so bank 0 and bank 1 always touch
-+ * disjoint IO_MUX slots despite sharing the mapping.
++ * IO MUX lives at 0x500E1000 (not in this MMIO window). The parent maps
++ * it once and banks address into it using the global pin number
++ * (bank_id's pin_offset + chip-relative offset), so bank 0 and bank 1
++ * always touch disjoint IO_MUX slots despite sharing the mapping.
 + *
 + * Bank 0 carries an irq_chip (handshake/data-ready inputs from the C6
 + * Wi-Fi co-processor). Bank 1 currently has no IRQ users — its DT node
@@ -71,6 +72,7 @@
 +#include <linux/irqchip/chained_irq.h>
 +#include <linux/module.h>
 +#include <linux/of.h>
++#include <linux/of_irq.h>
 +#include <linux/pinctrl/pinconf-generic.h>
 +#include <linux/platform_device.h>
 +#include <linux/spinlock.h>
@@ -297,11 +299,11 @@
 +	return 0;
 +}
 +
-+static int esp32p4_gpio_probe(struct platform_device *pdev)
++static int esp32p4_gpio_bank_probe(struct device *dev,
++				   struct device_node *np,
++				   void __iomem *base, void __iomem *iomux)
 +{
-+	struct device *dev = &pdev->dev;
 +	struct esp32p4_gpio *gpio;
-+	struct resource *res;
 +	u32 bank_id = 0;
 +	int ret, irq;
 +
@@ -311,37 +313,13 @@
 +
 +	raw_spin_lock_init(&gpio->lock);
 +
-+	of_property_read_u32(dev->of_node, "espressif,bank-id", &bank_id);
++	of_property_read_u32(np, "espressif,bank-id", &bank_id);
 +	if (bank_id >= ARRAY_SIZE(esp32p4_gpio_banks))
 +		return dev_err_probe(dev, -EINVAL,
 +				     "espressif,bank-id %u out of range\n", bank_id);
 +	gpio->regs = &esp32p4_gpio_banks[bank_id];
-+
-+	/*
-+	 * Both bank 0 and bank 1 register sets live in the same MMIO page,
-+	 * so we use devm_ioremap (no exclusive request_mem_region) instead of
-+	 * devm_ioremap_resource — otherwise the second probe would fail with
-+	 * -EBUSY trying to claim an overlapping region.
-+	 */
-+	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-+	if (!res)
-+		return dev_err_probe(dev, -EINVAL, "missing reg resource\n");
-+	gpio->base = devm_ioremap(dev, res->start, resource_size(res));
-+	if (!gpio->base)
-+		return dev_err_probe(dev, -ENOMEM, "failed to map GPIO registers\n");
-+
-+	/*
-+	 * IO MUX is a separate fixed region; not declared in DT, just map it.
-+	 * Both bank probes map the same physical page independently (see the
-+	 * file comment above), and each bank's .request/.set_config index
-+	 * into it using the *global* pin number (pin_offset + offset), so
-+	 * every instance needs the mapping to cover all banks' pins, not
-+	 * just its own ESP32P4_GPIO_NGPIO worth.
-+	 */
-+	gpio->iomux = devm_ioremap(dev, ESP32P4_IO_MUX_BASE,
-+				  ESP32P4_IO_MUX_PIN(ESP32P4_IO_MUX_NPINS - 1) + 4);
-+	if (!gpio->iomux)
-+		dev_warn(dev, "failed to map IO_MUX; pin function will not be configured per request\n");
++	gpio->base = base;
++	gpio->iomux = iomux;
 +
 +	/*
 +	 * gpio_generic_chip_init consumes four register pointers:
@@ -371,7 +349,10 @@
 +	if (ret)
 +		return dev_err_probe(dev, ret, "gpio_generic_chip_init failed\n");
 +
-+	gpio->ggc.gc.label = dev_name(dev);
++	gpio->ggc.gc.label = devm_kasprintf(dev, GFP_KERNEL,
++					    "esp32p4-gpio-bank%u", bank_id);
++	if (!gpio->ggc.gc.label)
++		return -ENOMEM;
 +	gpio->ggc.gc.parent = dev;
 +	gpio->ggc.gc.owner = THIS_MODULE;
 +	/*
@@ -385,14 +366,20 @@
 +	gpio->ggc.gc.ngpio = ESP32P4_GPIO_NGPIO;
 +	gpio->ggc.gc.request = esp32p4_gpio_request;
 +	gpio->ggc.gc.set_config = esp32p4_gpio_set_config;
++	/*
++	 * Consumer phandles must resolve to this bank's child node, not the
++	 * parent platform device: fwnode wins over gc->parent's node inside
++	 * gpiochip_choose_fwnode().
++	 */
++	gpio->ggc.gc.fwnode = of_fwnode_handle(np);
 +
 +	/*
-+	 * Wire up the irq_chip if DT gave us a parent IRQ. Optional: nodes
-+	 * like the panel-reset GPIO 17 don't need IRQs, so a missing
++	 * Wire up the irq_chip if the child has a parent IRQ. Optional:
++	 * nodes like the panel-reset GPIO 17 don't need IRQs, so a missing
 +	 * `interrupts` property is not a probe failure — the chip just
 +	 * remains output-/poll-only.
 +	 */
-+	irq = platform_get_irq_optional(pdev, 0);
++	irq = of_irq_get(np, 0);
 +	if (irq > 0) {
 +		struct gpio_irq_chip *girq = &gpio->ggc.gc.irq;
 +
@@ -403,6 +390,7 @@
 +		writel(~0u, gpio->base + gpio->regs->status_w1tc);
 +
 +		gpio_irq_chip_set_chip(girq, &esp32p4_gpio_irq_chip);
++		girq->fwnode = of_fwnode_handle(np);
 +		girq->parent_handler = esp32p4_gpio_irq_handler;
 +		girq->num_parents = 1;
 +		girq->parents = devm_kcalloc(dev, 1, sizeof(*girq->parents),
@@ -412,8 +400,8 @@
 +		girq->parents[0] = irq;
 +		girq->default_type = IRQ_TYPE_NONE;
 +		girq->handler = handle_bad_irq;
-+	} else if (irq != -ENXIO) {
-+		return dev_err_probe(dev, irq, "platform_get_irq_optional\n");
++	} else if (irq < 0 && irq != -ENXIO) {
++		return dev_err_probe(dev, irq, "of_irq_get\n");
 +	}
 +
 +	ret = devm_gpiochip_add_data(dev, &gpio->ggc.gc, gpio);
@@ -425,6 +413,50 @@
 +		 gpio->regs->pin_offset, gpio->regs->pin_offset + ESP32P4_GPIO_NGPIO - 1,
 +		 gpio->base,
 +		 irq > 0 ? ", irq enabled" : "");
++	return 0;
++}
++
++static int esp32p4_gpio_probe(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct device_node *np = dev->of_node, *child;
++	struct resource *res;
++	void __iomem *base, *iomux;
++	int ret, banks = 0;
++
++	/*
++	 * Both banks' register sets live in the same MMIO page owned by the
++	 * parent node; map it once and hand each bank the base.
++	 */
++	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
++	if (!res)
++		return dev_err_probe(dev, -EINVAL, "missing reg resource\n");
++	base = devm_ioremap(dev, res->start, resource_size(res));
++	if (!base)
++		return dev_err_probe(dev, -ENOMEM, "failed to map GPIO registers\n");
++
++	/*
++	 * IO MUX is a separate fixed region; not declared in DT, just map it.
++	 * Banks index into it using the *global* pin number (pin_offset +
++	 * offset), so the mapping has to cover all banks' pins, not just
++	 * one bank's ESP32P4_GPIO_NGPIO worth.
++	 */
++	iomux = devm_ioremap(dev, ESP32P4_IO_MUX_BASE,
++			     ESP32P4_IO_MUX_PIN(ESP32P4_IO_MUX_NPINS - 1) + 4);
++	if (!iomux)
++		dev_warn(dev, "failed to map IO_MUX; pin function will not be configured per request\n");
++
++	for_each_available_child_of_node(np, child) {
++		ret = esp32p4_gpio_bank_probe(dev, child, base, iomux);
++		if (ret) {
++			of_node_put(child);
++			return ret;
++		}
++		banks++;
++	}
++	if (!banks)
++		return dev_err_probe(dev, -ENODEV,
++				     "no gpio bank child nodes\n");
 +	return 0;
 +}
 +

@@ -167,13 +167,16 @@
 		 * init.  Bank 0 (GPIOs 0..31, needed for an irq_chip) is omitted:
 		 * nothing on this board currently requests a pin below 32.
 		 */
-		gpio1: gpio-bank1@500e0000 {
+		gpio@500e0000 {
 			compatible = "espressif,esp32p4-gpio";
 			reg = <0x500e0000 0x1000>;
-			espressif,bank-id = <1>;
-			gpio-controller;
-			#gpio-cells = <2>;
 			status = "okay";
+
+			gpio1: bank1 {
+				espressif,bank-id = <1>;
+				gpio-controller;
+				#gpio-cells = <2>;
+			};
 		};
 
 		/*
