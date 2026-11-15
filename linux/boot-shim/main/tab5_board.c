@@ -42,6 +42,7 @@
 #include "soc/gpio_sig_map.h"
 #include "soc/soc.h"
 #include "soc/interrupt_core0_reg.h"
+#include "hal/ldo_ll.h"
 #include "hal/usb_utmi_ll.h"
 #include "esp_private/periph_ctrl.h"
 #include "tab5_board.h"
@@ -647,6 +648,25 @@ void tab5_i2c_release(void)
 		 have1 ? "" : "?!", out1, out1 & 1);
 }
 
+/*
+ * microSD slot 0 power: the dedicated pads CLK43 CMD44 D0..3=39..42 are
+ * fed by the chip's LDO VO4 rail.  The kernel drives the slot over
+ * spi-gpio + mmc_spi (bit-banged); all the shim has to do is hold the
+ * rail at 3.3 V.
+ */
+static void enable_microsd_rail(void)
+{
+	const int unit = LDO_ID2UNIT(4); /* VO4 -> unit 3 */
+	uint8_t dref, mul;
+	bool use_rail;
+
+	ldo_ll_voltage_to_dref_mul(unit, 3300, &dref, &mul, &use_rail);
+	ldo_ll_set_owner(unit, LDO_LL_UNIT_OWNER_SW);
+	ldo_ll_adjust_voltage(unit, dref, mul, use_rail);
+	ldo_ll_enable(unit, true);
+	ESP_LOGI(TAG, "microSD LDO_VO4 on at 3.3V");
+}
+
 void tab5_board_init(struct tab5_fb *fb)
 {
 	fb->ok = false;
@@ -705,6 +725,8 @@ void tab5_board_init(struct tab5_fb *fb)
 			usb_utmi_ll_reset_register();
 		}
 		ESP_LOGI(TAG, "USB2.0 HS OTG clock + PHY reset done");
+
+		enable_microsd_rail();
 
 		tab5_display_init(fb);
 	}

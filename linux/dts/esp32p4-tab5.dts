@@ -547,6 +547,36 @@
 		};
 	};
 
+	/*
+	 * microSD slot 0 in SPI mode (#29): the slot is wired to SDMMC
+	 * slot 0's dedicated pads CLK43 CMD44 D0..3=39..42, but slot 0
+	 * is not reachable through the Linux dw_mmc instance (that
+	 * driver models one host per controller and slot 1 carries the
+	 * C6).  The pads are bit-banged instead via spi-gpio +
+	 * mmc_spi -- slow (hundreds of KB/s) but enough for config and
+	 * data exchange.  Card power is the on-chip LDO VO4, which the
+	 * boot shim holds at 3.3 V.  Start at 400 kHz; the slot has no
+	 * card-detect pin.
+	 */
+	spi_sd: spi-gpio {
+		compatible = "spi-gpio";
+		#address-cells = <1>;
+		#size-cells = <0>;
+		sck-gpios  = <&gpio1 11 GPIO_ACTIVE_HIGH>; /* GPIO43 CLK */
+		mosi-gpios = <&gpio1 12 GPIO_ACTIVE_HIGH>; /* GPIO44 CMD */
+		miso-gpios = <&gpio1  7 GPIO_ACTIVE_HIGH>; /* GPIO39 D0  */
+		cs-gpios   = <&gpio1 10 GPIO_ACTIVE_LOW>;  /* GPIO42 D3  */
+		num-chipselects = <1>;
+		status = "okay";
+
+		mmc-slot@0 {
+			compatible = "mmc-spi-slot";
+			reg = <0>;
+			spi-max-frequency = <400000>;
+			voltage-ranges = <3300 3300>;
+		};
+	};
+
 	reserved-memory {
 		#address-cells = <1>;
 		#size-cells = <1>;

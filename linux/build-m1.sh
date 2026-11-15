@@ -1299,6 +1299,15 @@ CONFIG_USB_STORAGE=y
 CONFIG_HID=y
 CONFIG_HID_GENERIC=y
 CONFIG_USB_HID=y
+# microSD slot 0 over bit-banged SPI (#29): the slot sits on SDMMC
+# slot-0's fixed pads (CLK43 CMD44 D0..3=39..42) which the dw_mmc
+# instance cannot reach -- it already drives slot 1 (the C6).  The
+# pads are plain GPIOs via IO_MUX, so spi-gpio + mmc_spi works.
+CONFIG_SPI=y
+CONFIG_SPI_MASTER=y
+CONFIG_SPI_BITBANG=y
+CONFIG_SPI_GPIO=y
+CONFIG_MMC_SPI=y
 EOF
 fi
 if [[ -n "$pstore_identity" ]]; then
@@ -2610,7 +2619,9 @@ if [[ "$board" == "tab5" ]]; then
 		"CONFIG_GPIO_SYSFS=y" \
 		"CONFIG_USB_DWC2_HOST=y" \
 		"CONFIG_USB_STORAGE=y" \
-		"CONFIG_USB_HID=y"; do
+		"CONFIG_USB_HID=y" \
+		"CONFIG_SPI_GPIO=y" \
+		"CONFIG_MMC_SPI=y"; do
 		grep -Fqx -- "${expected}" "${kernel_config}" || {
 			echo "Tab5 kernel config check failed: ${expected}" >&2
 			exit 1
