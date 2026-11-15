@@ -97,9 +97,16 @@ int main(int argc, char **argv)
 	ivl_set(&IVL(p, SNDRV_PCM_HW_PARAM_RATE), rate);
 	/* The DMA engine maps periods onto at most 32 lldescs of 4092 B;
 	 * 2048-frame periods (8 KiB at S16 stereo) in an 8192-frame
-	 * buffer stay well inside that.  PERIODS is derived. */
+	 * buffer stay well inside that.  PERIOD_TIME/BUFFER_TIME must
+	 * be pinned too: hw_params_choose() would otherwise take the
+	 * minimum period_time (84 us), which derives period_size 4 and
+	 * empties the pinned 2048-frame interval. */
 	ivl_set(&IVL(p, SNDRV_PCM_HW_PARAM_PERIOD_SIZE), 2048);
 	ivl_set(&IVL(p, SNDRV_PCM_HW_PARAM_BUFFER_SIZE), 8192);
+	ivl_set(&IVL(p, SNDRV_PCM_HW_PARAM_PERIOD_TIME),
+		(rate / 2048) ? (2048 * 1000000 / rate + 1) : 0);
+	ivl_set(&IVL(p, SNDRV_PCM_HW_PARAM_BUFFER_TIME),
+		(rate / 8192) ? (8192 * 1000000 / rate + 1) : 0);
 	p->rmask = ~0U;
 	p->cmask = 0;
 
