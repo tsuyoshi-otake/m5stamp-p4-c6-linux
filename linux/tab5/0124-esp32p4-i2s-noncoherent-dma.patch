@@ -8,7 +8,35 @@
  #include <linux/dma-mapping.h>
  #include <linux/err.h>
  #include <linux/interrupt.h>
-@@ -420,6 +421,11 @@
+@@ -168,12 +169,14 @@
+ #define LLDESC_OWNER		BIT(31)
+ 
+ /* ---- hp_sys_clkrst registers (offsets from 0x500e6000) ---- */
++#define CLKRST_SOC_CLK_CTRL1	0x18
+ #define CLKRST_SOC_CLK_CTRL2	0x1c
+ #define CLKRST_I2S_APB_EN_S	14	/* i2s0, i2s1, i2s2 = +0,+1,+2 */
+ #define CLKRST_PERI_CLK_CTRL11	0x44	/* i2s0 rx: clk_en 24, src 25:26 */
+ #define CLKRST_PERI_CLK_CTRL12	0x48	/* i2s0 rx divider */
+ #define CLKRST_PERI_CLK_CTRL13	0x4c	/* i2s0 tx: clk_en 10, src 11:12 */
+ #define CLKRST_PERI_CLK_CTRL14	0x50	/* i2s0 tx divider + mst_sel 19 */
++#define CLKRST_AHB_PDMA_SYS_CLK_EN BIT(3)
+ #define CLKRST_HP_RST_EN2	0xc8
+ #define CLKRST_I2S_RST_APB_S	4	/* i2s0, i2s1, i2s2 = +0,+1,+2 */
+ 
+@@ -318,6 +321,12 @@
+ 	writel(readl(i2s->lpclkrst + LP_HP_CLK_CTRL) | LP_PAD_I2S0_MCLK_EN,
+ 	       i2s->lpclkrst + LP_HP_CLK_CTRL);
+ 
++	/* The AHB PDMA block powers up with its system clock gate
++	 * closed; open it first or every MISC_CONF write below is
++	 * silently dropped (#24: engine never ran, WRITEI -EIO). */
++	clkrst_set(i2s, CLKRST_SOC_CLK_CTRL1, 0,
++		   CLKRST_AHB_PDMA_SYS_CLK_EN);
++
+ 	/* ahb gdma: clock on + global reset pulse */
+ 	dma_wr(i2s, AHB_MISC_CONF,
+ 	       dma_rd(i2s, AHB_MISC_CONF) | AHB_MISC_CLK_EN);
+@@ -420,6 +429,11 @@
  			d++;
  		}
  	}
@@ -20,7 +48,7 @@
  	return 0;
  }
  
-@@ -521,6 +527,24 @@
+@@ -521,6 +535,24 @@
  	return bytes_to_frames(runtime, pos % runtime->dma_bytes);
  }
  
@@ -45,7 +73,7 @@
  static irqreturn_t esp32p4_tx_irq(int irq, void *data)
  {
  	struct esp32_p4_i2s *i2s = data;
-@@ -662,6 +686,7 @@
+@@ -662,6 +694,7 @@
  	.open		= esp32p4_pcm_open,
  	.hw_params	= esp32p4_pcm_hw_params,
  	.trigger	= esp32p4_pcm_trigger,
