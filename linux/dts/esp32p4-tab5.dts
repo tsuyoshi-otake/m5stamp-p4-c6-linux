@@ -282,6 +282,18 @@
 			clock-output-names = "sdmmc-biu";
 		};
 
+		/*
+		 * I2S0 MCLK as programmed by the esp32-p4-i2s driver:
+		 * PLL_160M / 13 = 12.307692 MHz (~256 * 48 kHz).  Feeds the
+		 * ES8388's clock input so es8328 can read its sysclk rate.
+		 */
+		es8388_mclk: es8388-mclk {
+			compatible = "fixed-clock";
+			#clock-cells = <0>;
+			clock-frequency = <12307692>;
+			clock-output-names = "es8388-mclk";
+		};
+
 		sdmmc_ciu_clk: sdmmc-ciu-clock {
 			compatible = "fixed-clock";
 			#clock-cells = <0>;
@@ -584,11 +596,15 @@
 		 * ES8388 stereo codec at 0x10, clocked by I2S0 MCLK.
 		 * Upstream's es8328 driver claims es8388 compatibility
 		 * (everest,es8388); the parts it does not model are
-		 * bring-up work, not a different driver.
+		 * bring-up work, not a different driver.  Its probe
+		 * devm_clk_get(NULL)s the codec clock: describe the MCLK
+		 * the i2s driver programs (PLL_160M/13, ~12.3 MHz) as a
+		 * fixed-clock so the request resolves.
 		 */
 		es8388: audio-codec@10 {
 			compatible = "everest,es8388";
 			reg = <0x10>;
+			clocks = <&es8388_mclk>;
 			#sound-dai-cells = <0>;
 			status = "okay";
 		};
