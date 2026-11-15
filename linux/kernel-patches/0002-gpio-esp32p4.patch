@@ -32,7 +32,7 @@
  obj-$(CONFIG_GPIO_EN7523)		+= gpio-en7523.o
 --- /dev/null	2026-05-03 14:38:22.219445125 +0200
 +++ b/drivers/gpio/gpio-esp32p4.c	2026-05-05 11:14:25.122735372 +0200
-@@ -0,0 +1,445 @@
+@@ -0,0 +1,456 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * GPIO controller driver for the Espressif ESP32-P4.
@@ -379,7 +379,18 @@
 +	 * `interrupts` property is not a probe failure — the chip just
 +	 * remains output-/poll-only.
 +	 */
-+	irq = of_irq_get(np, 0);
++	/*
++	 * of_irq_get() does not return -ENXIO for a node that declares
++	 * no interrupt at all: of_irq_parse_one() walks up to the parent
++	 * and fails the whole lookup with -EINVAL, which wrongly kills
++	 * banks like bank1 that only carry espressif,bank-id.  Only ask
++	 * OF when the child actually declares an interrupt.
++	 */
++	if (of_property_present(np, "interrupts") ||
++	    of_property_present(np, "interrupts-extended"))
++		irq = of_irq_get(np, 0);
++	else
++		irq = 0;
 +	if (irq > 0) {
 +		struct gpio_irq_chip *girq = &gpio->ggc.gc.irq;
 +
