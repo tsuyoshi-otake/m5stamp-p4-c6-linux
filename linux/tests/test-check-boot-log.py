@@ -55,6 +55,12 @@ expect(rc == 1 and "FAIL: no init marker failure: ES_HOSTKEY GEN_FAIL" in out,
 rc, out = run(GOOD + b"sh: pidof: applet not found\r\n")
 expect(rc == 1 and "missing applet" in out, f"missing applet is caught\n{out}")
 
+# #22: an AP that never went on air must fail the check even when the
+# boot script had printed "SoftAP started" for it in an older image.
+rc, out = run(GOOD + b"M3-lab: SoftAP FAILED: no ssid in iw dev wlan0 info; beacons never went out\r\n")
+expect(rc == 1 and "FAIL: no SoftAP failure" in out,
+       f"SoftAP FAILED is caught\n{out}")
+
 rc, out = run(GOOD.replace(b"ES_HOSTKEY INETD_START\r\n", b""))
 expect(rc == 1 and "FAIL: ssh started" in out, f"missing SSH start is caught\n{out}")
 
