@@ -51,10 +51,10 @@ netstat -ltnu            # 0.0.0.0:22 LISTEN (inetd); udhcpd on :67 in SoftAP mo
 ps | grep -E 'inetd|udhcpd|wpa_supplicant|(bootsync|mdns)'
 ```
 
-In SoftAP mode the log line `SoftAP started` only says that the IP address and
-`udhcpd` are set up.  Whether the radio can transmit is a different question
-(#4: a driver built without `CONFIG_AP_MODE` printed it while the wiphy was
-station-only), so also check on the console:
+In SoftAP mode `SoftAP started` now means the script saw the ssid in
+`iw dev wlan0 info` and a clean dmesg since the attempt (#22); a dead radio
+prints `SoftAP FAILED: <reason>` instead and the status file shows
+`AP_FAILED`.  Cross-check on the console anyway:
 
 ```sh
 iw phy | grep -A4 'Supported interface modes'    # lists "managed" and "AP"

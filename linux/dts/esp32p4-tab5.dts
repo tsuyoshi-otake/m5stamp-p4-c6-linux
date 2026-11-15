@@ -393,6 +393,47 @@
 			status = "okay";
 		};
 
+		/*
+		 * I2S0 audio block.  The P4 I2S unit carries no DMA of
+		 * its own: samples move through the AHB GDMA at
+		 * 0x50085000 (out-ch0 for playback, in-ch1 for
+		 * capture), bound by peri_sel = 3 (I2S0).  The driver
+		 * also programs hp_sys_clkrst (apb gate + module
+		 * clock + MCLK select), lp_clkrst (MCLK pad), and the
+		 * GPIO matrix / IO_MUX for MCLK/BCK/WS/DOUT/DIN, so
+		 * those blocks appear as extra reg ranges.
+		 *
+		 * Pins are the board I2S pair to the ES8388 codec:
+		 * MCLK=GPIO30, BCK=GPIO27, WS=GPIO29, DOUT=GPIO26,
+		 * DIN=GPIO28.  Speaker-amp enable and headphone-detect
+		 * live on expander 0x43 P1/P7 and belong to the
+		 * expander-IC driver, not here.
+		 *
+		 * AHB_PDMA_OUT_CH0 is ETS source 59, AHB_PDMA_IN_CH1 is
+		 * 57; CLIC slots 27/28 are free on this board.
+		 */
+		i2s0: i2s@500c6000 {
+			compatible = "espressif,esp32p4-i2s";
+			reg = <0x500c6000 0x1000>, <0x50085000 0x1000>,
+				<0x500e6000 0x200>, <0x50111000 0x100>,
+				<0x500e0000 0x2000>;
+			reg-names = "i2s", "dma", "clkrst", "lpclkrst",
+				    "gpio";
+			interrupts-extended =
+				<&clic0 27 59 IRQ_TYPE_LEVEL_HIGH>,
+				<&clic0 28 57 IRQ_TYPE_LEVEL_HIGH>;
+			interrupt-names = "tx", "rx";
+			espressif,peri-sel = <3>;
+			espressif,i2s-unit = <0>;
+			espressif,mclk-gpio = <30>;
+			espressif,bck-gpio = <27>;
+			espressif,ws-gpio = <29>;
+			espressif,dout-gpio = <26>;
+			espressif,din-gpio = <28>;
+			#sound-dai-cells = <0>;
+			status = "okay";
+		};
+
 		/* Patched at runtime by boot-shim/main.c with the flash MMU VA. */
 		flash@deadbeef {
 			compatible = "mtd-rom";
@@ -517,6 +558,52 @@
 			reg = <0x41>;
 			shunt-resistor = <5000>;
 		};
+
+		/*
+		 * Alternate-panel SKU: GT911 touch controller at 0x5d,
+		 * paired with the ILI9881C display.  It shares the
+		 * ST712x wiring (INT GPIO23, TP_RST expander 0x43 P5)
+		 * and is only populated on that SKU, so the node can
+		 * stay enabled on this bus next to touch@55: only one
+		 * of the two ever answers.  INT polarity matches the
+		 * board wiring; confirm on the alternate SKU.
+		 */
+		gt911: touchscreen@5d {
+			compatible = "goodix,gt911";
+			reg = <0x5d>;
+			interrupts-extended =
+				<&gpio0 23 IRQ_TYPE_EDGE_FALLING>;
+			touchscreen-size-x = <720>;
+			touchscreen-size-y = <1280>;
+			touchscreen-swapped-x-y;
+			touchscreen-inverted-x;
+			status = "okay";
+		};
+
+		/*
+		 * ES8388 stereo codec at 0x10, clocked by I2S0 MCLK.
+		 * Upstream's es8328 driver claims es8388 compatibility
+		 * (everest,es8388); the parts it does not model are
+		 * bring-up work, not a different driver.
+		 */
+		es8388: audio-codec@10 {
+			compatible = "everest,es8388";
+			reg = <0x10>;
+			#sound-dai-cells = <0>;
+			status = "okay";
+		};
+
+		/*
+		 * ES7210 4-channel microphone ADC at 0x40.  There is
+		 * no upstream Linux driver; kept disabled so nothing
+		 * probes it.  Until one is written, mic input uses
+		 * the ES8388's own ADC.
+		 */
+		es7210: audio-adc@40 {
+			compatible = "everest,es7210";
+			reg = <0x40>;
+			status = "disabled";
+		};
 	};
 
 	/*
@@ -577,6 +664,27 @@
 			reg = <0>;
 			spi-max-frequency = <400000>;
 			voltage-ranges = <3300 3300>;
+		};
+	};
+
+	/*
+	 * ES8388 + I2S0 link.  simple-audio-card is enough here: the
+	 * amp/headphone switching through expander 0x43 is handled
+	 * by the expander-IC driver, not the machine driver.
+	 */
+	sound {
+		compatible = "simple-audio-card";
+		simple-audio-card,name = "Tab5-ES8388";
+		simple-audio-card,format = "i2s";
+		simple-audio-card,bitclock-master = <&i2s0>;
+		simple-audio-card,frame-master = <&i2s0>;
+		simple-audio-card,mclk-fs = <256>;
+
+		simple-audio-card,cpu {
+			sound-dai = <&i2s0>;
+		};
+		simple-audio-card,codec {
+			sound-dai = <&es8388>;
 		};
 	};
 

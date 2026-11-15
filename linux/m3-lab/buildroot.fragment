@@ -10,3 +10,8 @@ BR2_PACKAGE_BOOT_COMMIT=y
 # Signed regulatory.db so country= (config.txt or wpa_supplicant.conf) can
 # leave the world regdomain (#32).  The kernel verifies it with its built-in key.
 BR2_PACKAGE_WIRELESS_REGDB=y
+# aplay/arecord + amixer for the ES8388/I2S0 bring-up (#24).  Harmless on
+# Stamp builds (no audio node probes) and keeps the fragment board-shared.
+BR2_PACKAGE_ALSA_UTILS=y
+BR2_PACKAGE_ALSA_UTILS_APLAY=y
+BR2_PACKAGE_ALSA_UTILS_AMIXER=y

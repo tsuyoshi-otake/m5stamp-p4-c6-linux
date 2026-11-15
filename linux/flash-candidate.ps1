@@ -27,8 +27,30 @@ param(
 	# leaving the board in download mode.
 	[switch] $NoReset,
 
-	[string] $ExpectedStockSha256 = "229459f251eaf6222f0c07968702d72a3818e520da1788ce465027d969020c24"
+	# The board these artifacts were built for.  The default is the package's
+	# own board (the repository's release board): a Tab5 package carries
+	# esp32p4-tab5.dtb, a Stamp-P4 package esp32p4-m5stamp-p4.dtb.  An
+	# explicit -Board that disagrees with the artifact DTB's model stops the
+	# write before esptool runs.
+	[ValidateSet("stamp-p4", "tab5")]
+	[string] $Board,
+
+	# The DTB already in flash decides which board this port is.  When it
+	# disagrees with the artifacts being written, this switch is required
+	# (first write, or intentionally switching boards).
+	[switch] $AllowBoardChange,
+
+	# SHA-256 of this board's stock 16 MiB readback.  The default follows the
+	# detected or given board; an explicit value always wins.
+	[string] $ExpectedStockSha256
 )
+
+# Stock readback hashes kept per board (same table as
+# m2/ota-host/flash-ota-host.ps1): Stamp-P4 Rev0.15 and the Tab5 unit.
+$StockSha256ByBoard = @{
+	"stamp-p4" = "229459f251eaf6222f0c07968702d72a3818e520da1788ce465027d969020c24"
+	"tab5"     = "a260eda93e4e5ddc1d3abddd361b1eb326c07d4248b67d1b493feba057fde231"
+}
 
 # This is an intentionally explicit P4-only write gate.  It does not flash
 # the AddOn C6, erase NVS/PHY data, or infer a C6 programming port from COM10.
@@ -40,15 +62,35 @@ if (-not $AllowCandidateWrite) {
 $artifactRoot = (Resolve-Path -LiteralPath $ArtifactsDirectory).Path
 $stockPath = $null
 
-# The package decides the board: a Tab5 package carries esp32p4-tab5.dtb, a
-# Stamp-P4 package esp32p4-m5stamp-p4.dtb.  The flash map is the same; the
-# DTB name and the stock image the readback is checked against are not.
+# Board resolution, same shape as m2/ota-host/flash-ota-host.ps1: the
+# package marks itself, an explicit -Board wins, and without a marker the
+# default is stamp-p4.
 $dtbName = "esp32p4-m5stamp-p4.dtb"
 if (Test-Path -LiteralPath (Join-Path $artifactRoot "esp32p4-tab5.dtb") -PathType Leaf) {
 	$dtbName = "esp32p4-tab5.dtb"
-	if (-not $PSBoundParameters.ContainsKey("ExpectedStockSha256")) {
-		$ExpectedStockSha256 = "a260eda93e4e5ddc1d3abddd361b1eb326c07d4248b67d1b493feba057fde231"
+}
+if (-not $PSBoundParameters.ContainsKey("Board")) {
+	$Board = "stamp-p4"
+	if ($dtbName -eq "esp32p4-tab5.dtb") {
+		$Board = "tab5"
 	}
+}
+if (-not $PSBoundParameters.ContainsKey("ExpectedStockSha256")) {
+	$ExpectedStockSha256 = $StockSha256ByBoard[$Board]
+}
+
+function Get-DtbInfo([string] $Path) {
+	# FDT blobs keep model/compatible as NUL-terminated ASCII strings; scan
+	# the raw bytes for the board they were built for.
+	$text = [System.Text.Encoding]::ASCII.GetString(
+		[System.IO.File]::ReadAllBytes($Path))
+	$model = $null
+	$m = [regex]::Match($text, "(M5Stack Tab5|Stamp-P4[^\x00]+)")
+	if ($m.Success) { $model = $m.Groups[1].Value }
+	$found = $null
+	if ($text -match "m5stack,tab5|M5Stack Tab5") { $found = "tab5" }
+	elseif ($text -match "tsuyoshi-otake,stamp-p4|Stamp-P4") { $found = "stamp-p4" }
+	return @{ Board = $found; Model = $model }
 }
 
 # SHA-256 through .NET.  Get-FileHash is in a module that Windows PowerShell
@@ -110,6 +152,13 @@ foreach ($artifact in $artifacts) {
 	$paths[$artifact.Name] = Assert-File $artifact.Name $artifact.Max
 }
 
+# The artifact DTB names its board in the FDT model/compatible strings; an
+# explicit -Board that disagrees stops the write before esptool runs.
+$dtbInfo = Get-DtbInfo $paths[$dtbName]
+if ($dtbInfo.Board -and $dtbInfo.Board -ne $Board) {
+	throw "Artifacts are for board '$($dtbInfo.Board)' ($($dtbInfo.Model)) but -Board says '$Board'. Not writing."
+}
+
 # Written-vs-booted reconciliation: the kernel image carries its "Linux
 # version ..." banner, and the running kernel prints it again on boot.  The
 # part from '#' is what `uname -v` reports; it identifies the exact build.
@@ -140,6 +189,8 @@ if ($stockPath) {
 	Write-Host "  stock=not supplied"
 }
 Write-Host "  stock_sha256=$stockHash"
+Write-Host "  board=$Board"
+Write-Host "  dtb=$dtbName  model=$($dtbInfo.Model)"
 Write-Host "  artifacts=$artifactRoot"
 foreach ($artifact in $artifacts) {
 	$artifactHash = Get-Sha256 $paths[$artifact.Name]
@@ -170,6 +221,47 @@ $chipArgs = @(
 & $PythonPath @chipArgs
 if ($LASTEXITCODE -ne 0) {
 	throw "P4 ROM chip_id failed; no write was attempted"
+}
+
+# Read the DTB already in flash to show which board this port last ran.
+# Its offset comes from the layout file when the repo tree sits beside the
+# script, else the artifact table (the dtb lives at the same address on both
+# boards).
+$dtbOffset = "0xf10000"
+$dtbBytes = "0x010000"
+foreach ($layout in @(
+		(Join-Path $PSScriptRoot "flash-layout.json"),
+		(Join-Path $PSScriptRoot "tab5/flash-layout.json"))) {
+	if (Test-Path -LiteralPath $layout -PathType Leaf) {
+		$regions = (Get-Content -LiteralPath $layout -Raw | ConvertFrom-Json).regions
+		$dtbRegion = $regions | Where-Object { $_.name -eq "dtb" } | Select-Object -First 1
+		if ($dtbRegion) {
+			$dtbOffset = $dtbRegion.offset
+			$dtbBytes = $dtbRegion.size_bytes
+		}
+		break
+	}
+}
+$flashDtbPath = Join-Path ([System.IO.Path]::GetTempPath()) (
+	"flash-dtb-" + [guid]::NewGuid().ToString("N") + ".bin")
+$readArgs = @(
+	"-m", "esptool", "--chip", "esp32p4", "--port", $Port,
+	"--baud", "460800", "--before", "default_reset", "--after", "no_reset",
+	"read_flash", $dtbOffset, $dtbBytes, $flashDtbPath
+)
+& $PythonPath @readArgs | Out-Null
+$currentDtb = @{ Board = $null; Model = $null }
+if ($LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath $flashDtbPath -PathType Leaf)) {
+	$currentDtb = Get-DtbInfo $flashDtbPath
+}
+Remove-Item -LiteralPath $flashDtbPath -Force -ErrorAction SilentlyContinue
+if ($currentDtb.Model) {
+	Write-Host "  current DTB in flash: $($currentDtb.Model)"
+} else {
+	Write-Host "  current DTB in flash: unreadable or blank (first write?)"
+}
+if ($currentDtb.Board -and $currentDtb.Board -ne $Board -and -not $AllowBoardChange) {
+	throw "This port last ran $($currentDtb.Model) ($($currentDtb.Board)) but the artifacts are for $Board. Pass -AllowBoardChange only when switching boards on purpose."
 }
 
 $writeArgs = @(

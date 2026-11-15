@@ -39,9 +39,10 @@ void tab5_c6_power_off(void);
  * reads 1 on an ST7121 and 3 on an ST7123.
  */
 enum tab5_panel {
-	TAB5_PANEL_NONE = 0, /* nothing answers at 0x55: not an ST712x unit */
+	TAB5_PANEL_NONE = 0, /* neither ST712x (0x55) nor GT911 (0x5d) answers */
 	TAB5_PANEL_ST7121,
 	TAB5_PANEL_ST7123,
+	TAB5_PANEL_ILI9881C, /* GT911 touch answers at 0x5d: ILI9881C display */
 };
 
 /*
