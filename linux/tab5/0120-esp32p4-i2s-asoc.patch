@@ -1,0 +1,887 @@
+From: Tab5 bring-up
+Subject: [PATCH] ASoC: esp32p4-i2s CPU DAI driver via AHB GDMA
+
+ESP32-P4 has three I2S units at 0x500c6000+0x1000*n but none owns a
+DMA engine: sample data moves through the AHB GDMA at 0x50085000, a
+linked-list DMA with 3 TX / 3 RX channels bound to peripherals by the
+peri_sel register (I2S0 = 3).
+
+This adds a single-file ASoC driver under sound/soc/espressif that
+registers the I2S unit as a CPU DAI and drives one AHB channel per
+stream (TX out-ch0, RX in-ch1).  The ring is one lldesc per 4092-byte
+chunk with eof on the last chunk of each period, giving one interrupt
+per period for snd_pcm_period_elapsed.  Philips/I2S mode runs the TDM
+engine with 2 slots + msb_shift like esp-idf does.
+
+Clocks are programmed directly in hp_sys_clkrst: apb gate + module
+reset, PLL_160M through an integer divider into the TX/RX module
+clocks, mst_clk_sel binds MCLK to the TX clock, and lp_clkrst enables
+the MCLK pad.  BCK/WS/DOUT/DIN route through the GPIO matrix from the
+espressif,*-pin DT properties.
+
+Only staged for ES_BOARD=tab5 builds (linux/build-m1.sh).
+
+--- a/sound/soc/Kconfig
++++ b/sound/soc/Kconfig
+@@ -110,6 +110,7 @@
+ source "sound/soc/bcm/Kconfig"
+ source "sound/soc/cirrus/Kconfig"
+ source "sound/soc/dwc/Kconfig"
++source "sound/soc/espressif/Kconfig"
+ source "sound/soc/fsl/Kconfig"
+ source "sound/soc/google/Kconfig"
+ source "sound/soc/hisilicon/Kconfig"
+--- a/sound/soc/Makefile
++++ b/sound/soc/Makefile
+@@ -52,6 +52,7 @@
+ obj-$(CONFIG_SND_SOC)	+= bcm/
+ obj-$(CONFIG_SND_SOC)	+= cirrus/
+ obj-$(CONFIG_SND_SOC)	+= dwc/
++obj-$(CONFIG_SND_SOC)	+= espressif/
+ obj-$(CONFIG_SND_SOC)	+= fsl/
+ obj-$(CONFIG_SND_SOC)	+= google/
+ obj-$(CONFIG_SND_SOC)	+= hisilicon/
+diff --git a/sound/soc/espressif/Kconfig b/sound/soc/espressif/Kconfig
+new file mode 100644
+index 0000000..73b92bc
+--- /dev/null
++++ b/sound/soc/espressif/Kconfig
+@@ -0,0 +1,16 @@
++# SPDX-License-Identifier: GPL-2.0-only
++
++config SND_SOC_ESPRESSIF
++	tristate "SoC Audio for Espressif chips"
++	help
++	  SoC audio support for Espressif chips.
++
++if SND_SOC_ESPRESSIF
++
++config SND_SOC_ESP32_P4_I2S
++	tristate "ESP32-P4 I2S audio support"
++	help
++	  ASoC CPU DAI driver for the ESP32-P4 I2S peripherals,
++	  using the on-chip AHB GDMA engine for PCM transport.
++
++endif
+diff --git a/sound/soc/espressif/Makefile b/sound/soc/espressif/Makefile
+new file mode 100644
+index 0000000..b4a3126
+--- /dev/null
++++ b/sound/soc/espressif/Makefile
+@@ -0,0 +1,5 @@
++# SPDX-License-Identifier: GPL-2.0-only
++
++snd-soc-esp32-p4-i2s-objs := esp32-p4-i2s.o
++
++obj-$(CONFIG_SND_SOC_ESP32_P4_I2S) += snd-soc-esp32-p4-i2s.o
+diff --git a/sound/soc/espressif/esp32-p4-i2s.c b/sound/soc/espressif/esp32-p4-i2s.c
+new file mode 100644
+index 0000000..ac7c6ab
+--- /dev/null
++++ b/sound/soc/espressif/esp32-p4-i2s.c
+@@ -0,0 +1,805 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * ESP32-P4 I2S CPU DAI + PCM platform driver for ASoC.
++ *
++ * The P4 has three I2S peripherals (I2S0..2 at 0x500c6000+0x1000*n)
++ * that carry no DMA of their own: sample data moves through the AHB
++ * GDMA engine at 0x50085000, a linked-list DMA with 3 TX and 3 RX
++ * channels that bind to a peripheral through the peri_sel register
++ * (I2S0 = trigger 3, I2S1 = 4, I2S2 = 5).
++ *
++ * This driver covers one I2S unit plus one AHB channel per stream:
++ * TX on AHB out channel 0, RX on AHB in channel 1.  The ring is one
++ * lldesc per period with eof=1, so out_eof/in_suc_eof interrupts tick
++ * once per period and feed snd_pcm_period_elapsed().
++ *
++ * Clocking lives in hp_sys_clkrst: apb gate + module reset,
++ * per-direction module clock with integer divider from PLL_160M,
++ * mst_clk_sel binds MCLK to the TX module clock, and lp_clkrst
++ * enables the MCLK pad.  Pins route through the GPIO matrix/IO_MUX
++ * from the espressif,*-pin properties.
++ */
++
++#include <linux/bitops.h>
++#include <linux/dma-mapping.h>
++#include <linux/err.h>
++#include <linux/interrupt.h>
++#include <linux/io.h>
++#include <linux/module.h>
++#include <linux/of.h>
++#include <linux/platform_device.h>
++#include <linux/rcupdate.h>
++#include <linux/slab.h>
++#include <sound/core.h>
++#include <sound/pcm.h>
++#include <sound/pcm_params.h>
++#include <sound/soc.h>
++
++#define DRV_NAME "esp32-p4-i2s"
++
++/* ---- I2S peripheral registers (offsets from unit base) ---- */
++#define I2S_INT_RAW		0x0c
++#define I2S_INT_ST		0x10
++#define I2S_INT_ENA		0x14
++#define I2S_INT_CLR		0x18
++#define I2S_RX_CONF		0x20
++#define I2S_TX_CONF		0x24
++#define I2S_RX_CONF1		0x28
++#define I2S_TX_CONF1		0x2c
++#define I2S_RX_TDM_CTRL		0x50
++#define I2S_TX_TDM_CTRL		0x54
++#define I2S_RX_TIMING		0x58
++#define I2S_TX_TIMING		0x5c
++#define I2S_LC_HUNG_CONF	0x60
++#define I2S_RXEOF_NUM		0x64
++#define I2S_STATE		0x6c
++#define I2S_CLK_GATE		0x7c
++
++/* I2S_TX_CONF / I2S_RX_CONF bits */
++#define I2S_RESET		BIT(0)
++#define I2S_FIFO_RESET		BIT(1)
++#define I2S_START		BIT(2)
++#define I2S_SLAVE_MOD		BIT(3)
++#define I2S_TX_STOP_EN		BIT(4)
++#define I2S_TX_CHAN_EQUAL	BIT(5)
++#define I2S_MONO		BIT(6)
++#define I2S_BIG_ENDIAN		BIT(7)
++#define I2S_UPDATE		BIT(8)
++#define I2S_RX_MONO_FST_VLD	BIT(9)
++#define I2S_PCM_BYPASS		BIT(12)
++#define I2S_MSB_SHIFT		BIT(13)
++#define I2S_LEFT_ALIGN		BIT(15)
++#define I2S_FILL_EN_24		BIT(16)
++#define I2S_WS_IDLE_POL		BIT(17)
++#define I2S_BIT_ORDER		BIT(18)
++#define I2S_TDM_EN		BIT(19)
++#define I2S_PDM_EN		BIT(20)
++#define I2S_BCK_DIV_NUM_S	21
++#define I2S_BCK_DIV_NUM_M	(0x3f << I2S_BCK_DIV_NUM_S)
++#define I2S_TX_CHAN_MOD_S	27
++#define I2S_TX_SIG_LOOPBACK	BIT(31)
++
++/* I2S_*_CONF1 bits */
++#define I2S_TDM_WS_WIDTH_M	0x1ff
++#define I2S_BITS_MOD_S		14
++#define I2S_BITS_MOD_M		(0x1f << I2S_BITS_MOD_S)
++#define I2S_HALF_SAMPLE_BITS_S	19
++#define I2S_HALF_SAMPLE_BITS_M	(0xff << I2S_HALF_SAMPLE_BITS_S)
++#define I2S_TDM_CHAN_BITS_S	27
++#define I2S_TDM_CHAN_BITS_M	(0x1f << I2S_TDM_CHAN_BITS_S)
++
++/* I2S_*_TDM_CTRL bits */
++#define I2S_TDM_CHAN_EN_M	0xffff
++#define I2S_TDM_TOT_CHAN_NUM_S	16
++#define I2S_TDM_TOT_CHAN_NUM_M	(0x1f << I2S_TDM_TOT_CHAN_NUM_S)
++
++/* ---- AHB GDMA registers (offsets from 0x50085000) ---- */
++#define AHB_IN_INT_RAW(n)	(0x00 + (n) * 0x10)
++#define AHB_IN_INT_ST(n)	(0x04 + (n) * 0x10)
++#define AHB_IN_INT_ENA(n)	(0x08 + (n) * 0x10)
++#define AHB_IN_INT_CLR(n)	(0x0c + (n) * 0x10)
++#define AHB_OUT_INT_RAW(n)	(0x30 + (n) * 0x10)
++#define AHB_OUT_INT_ST(n)	(0x34 + (n) * 0x10)
++#define AHB_OUT_INT_ENA(n)	(0x38 + (n) * 0x10)
++#define AHB_OUT_INT_CLR(n)	(0x3c + (n) * 0x10)
++
++#define AHB_IN_DONE		BIT(0)
++#define AHB_IN_SUC_EOF		BIT(1)
++#define AHB_IN_ERR_EOF		BIT(2)
++#define AHB_IN_DSCR_ERR		BIT(3)
++#define AHB_IN_DSCR_EMPTY	BIT(4)
++#define AHB_OUT_DONE		BIT(0)
++#define AHB_OUT_EOF		BIT(1)
++#define AHB_OUT_DSCR_ERR	BIT(2)
++#define AHB_OUT_TOTAL_EOF	BIT(3)
++
++#define AHB_MISC_CONF		0x64
++#define AHB_MISC_RST_INTER	BIT(0)
++#define AHB_MISC_CLK_EN		BIT(3)
++
++/* Per-channel windows: in @0x70+n*0xc0, out @0xd0+n*0xc0 */
++#define AHB_CH_IN(n)		(0x70 + (n) * 0xc0)
++#define AHB_CH_OUT(n)		(0xd0 + (n) * 0xc0)
++#define AHB_CONF0		0x00
++#define AHB_CONF1		0x04
++#define AHB_IN_FIFO_STATUS	0x08
++#define AHB_IN_POP		0x0c
++#define AHB_LINK		0x10
++#define AHB_STATE		0x14
++#define AHB_IN_SUC_EOF_DES	0x18
++#define AHB_IN_ERR_EOF_DES	0x1c
++#define AHB_OUT_EOF_DES		0x18
++#define AHB_OUT_EOF_BFR_DES	0x1c
++#define AHB_DSCR		0x20
++#define AHB_DSCR_BF0		0x24
++#define AHB_DSCR_BF1		0x28
++#define AHB_PRI			0x2c
++#define AHB_PERI_SEL		0x30
++
++#define AHB_IN_LINK_ADDR(n)	(0x3ac + (n) * 4)
++#define AHB_OUT_LINK_ADDR(n)	(0x3b8 + (n) * 4)
++
++/* AHB_*_CONF0 bits */
++#define AHB_IN_RST		BIT(0)
++#define AHB_IN_DATA_BURST_EN	BIT(3)
++#define AHB_MEM_TRANS_EN	BIT(4)
++#define AHB_OUT_RST		BIT(0)
++#define AHB_OUT_AUTO_WRBACK	BIT(2)
++#define AHB_OUT_EOF_MODE	BIT(3)
++#define AHB_OUT_DATA_BURST_EN	BIT(5)
++
++/* AHB_*_LINK bits */
++#define AHB_INLINK_START	BIT(2)
++#define AHB_INLINK_STOP		BIT(1)
++#define AHB_OUTLINK_STOP	BIT(0)
++#define AHB_OUTLINK_START	BIT(1)
++
++/* lldesc: dw0 = size[11:0] | length[23:12] | sosf[29] | eof[30] |
++ * owner[31]; dw1 = buffer phys; dw2 = next descriptor phys. */
++struct ahb_lldesc {
++	u32 dw0;
++	u32 buf;
++	u32 next;
++};
++
++#define LLDESC_SIZE_S		0
++#define LLDESC_LENGTH_S		12
++#define LLDESC_EOF		BIT(30)
++#define LLDESC_OWNER		BIT(31)
++
++/* ---- hp_sys_clkrst registers (offsets from 0x500e6000) ---- */
++#define CLKRST_SOC_CLK_CTRL2	0x1c
++#define CLKRST_I2S_APB_EN_S	14	/* i2s0, i2s1, i2s2 = +0,+1,+2 */
++#define CLKRST_PERI_CLK_CTRL11	0x44	/* i2s0 rx: clk_en 24, src 25:26 */
++#define CLKRST_PERI_CLK_CTRL12	0x48	/* i2s0 rx divider */
++#define CLKRST_PERI_CLK_CTRL13	0x4c	/* i2s0 tx: clk_en 10, src 11:12 */
++#define CLKRST_PERI_CLK_CTRL14	0x50	/* i2s0 tx divider + mst_sel 19 */
++#define CLKRST_HP_RST_EN2	0xc8
++#define CLKRST_I2S_RST_APB_S	4	/* i2s0, i2s1, i2s2 = +0,+1,+2 */
++
++#define CLKRST_RX_CLK_EN	BIT(24)
++#define CLKRST_RX_CLK_SRC_S	25
++#define CLKRST_TX_CLK_EN	BIT(10)
++#define CLKRST_TX_CLK_SRC_S	11
++#define CLKRST_MST_CLK_SEL	BIT(19)	/* CTRL14: 1 = mclk on tx clk */
++
++/* ---- lp_clkrst (offsets from 0x50111000) ---- */
++#define LP_HP_CLK_CTRL		0x40
++#define LP_PAD_I2S0_MCLK_EN	BIT(12)
++
++/* ---- GPIO matrix / IO_MUX (one reg region, base 0x500e0000) ---- */
++#define IOMUX_OFF		0x1000	/* IO_MUX inside the same map */
++#define GPIO_FUNC_IN_SEL(s)	(0x158 + (s) * 4)
++#define GPIO_FUNC_IN_SEL_M	0x3f
++#define GPIO_SIG_IN_SEL		BIT(7)
++#define GPIO_FUNC_OUT_SEL(p)	(0x558 + (p) * 4)
++#define GPIO_FUNC_OUT_SEL_M	0x1ff
++#define IOMUX_MCU_SEL_GPIO	(1 << 12)
++#define IOMUX_MCU_SEL_M		(0x7 << 12)
++
++/* I2S0 signal indices in the P4 GPIO matrix */
++#define I2S0_O_BCK		25
++#define I2S0_MCLK		26
++#define I2S0_O_WS		27
++#define I2S0_SD			28	/* I_SD_PAD_IN / O_SD_PAD_OUT */
++
++/* module clock: PLL_160M / 13 = 12.307 MHz, close to 256*48k */
++#define ESP32P4_MOD_DIV		13
++#define ESP32P4_MOD_CLK		(160000000UL / ESP32P4_MOD_DIV)
++#define ESP32P4_MAX_DESCS	32
++
++struct esp32_p4_i2s {
++	struct device *dev;
++	void __iomem *i2s;	/* i2s unit regs */
++	void __iomem *dma;	/* ahb gdma regs */
++	void __iomem *clkrst;	/* hp_sys_clkrst */
++	void __iomem *lpclkrst;	/* lp_clkrst (mclk pad) */
++	void __iomem *gpio;	/* gpio matrix + iomux (0x500e0000) */
++	int irq_tx;		/* ahb out ch irq */
++	int irq_rx;		/* ahb in ch irq */
++	u8 tx_chan, rx_chan;	/* ahb channel numbers */
++	u8 peri;		/* peri_sel trigger for this i2s unit */
++	u8 unit;		/* i2s unit index 0..2 */
++
++	/* pin numbers (-1 = unused) */
++	int mclk_pin, bck_pin, ws_pin, dout_pin, din_pin;
++
++	/* dma rings */
++	struct ahb_lldesc *tx_descs, *rx_descs;
++	dma_addr_t tx_descs_phys, rx_descs_phys;
++	u32 period_bytes;
++
++	struct snd_pcm_substream *tx_sub, *rx_sub;
++	atomic_t tx_pos, rx_pos;	/* byte position in ring */
++	unsigned int fmt;
++};
++
++static inline u32 i2s_rd(struct esp32_p4_i2s *i2s, u32 reg)
++{
++	return readl(i2s->i2s + reg);
++}
++
++static inline void i2s_wr(struct esp32_p4_i2s *i2s, u32 reg, u32 val)
++{
++	writel(val, i2s->i2s + reg);
++}
++
++static inline u32 dma_rd(struct esp32_p4_i2s *i2s, u32 reg)
++{
++	return readl(i2s->dma + reg);
++}
++
++static inline void dma_wr(struct esp32_p4_i2s *i2s, u32 reg, u32 val)
++{
++	writel(val, i2s->dma + reg);
++}
++
++static void clkrst_set(struct esp32_p4_i2s *i2s, u32 reg, u32 clr, u32 set)
++{
++	writel((readl(i2s->clkrst + reg) & ~clr) | set,
++	       i2s->clkrst + reg);
++}
++
++static void pin_out(struct esp32_p4_i2s *i2s, int pin, u32 sig)
++{
++	u32 v;
++
++	if (pin < 0)
++		return;
++	/* IO_MUX mcu_sel=1 routes the pad through the GPIO matrix. */
++	v = readl(i2s->gpio + IOMUX_OFF + pin * 4);
++	writel((v & ~IOMUX_MCU_SEL_M) | IOMUX_MCU_SEL_GPIO,
++	       i2s->gpio + IOMUX_OFF + pin * 4);
++	writel(sig & GPIO_FUNC_OUT_SEL_M,
++	       i2s->gpio + GPIO_FUNC_OUT_SEL(pin));
++}
++
++static void pin_in(struct esp32_p4_i2s *i2s, int pin, u32 sig)
++{
++	u32 v;
++
++	if (pin < 0)
++		return;
++	v = readl(i2s->gpio + IOMUX_OFF + pin * 4);
++	writel((v & ~IOMUX_MCU_SEL_M) | IOMUX_MCU_SEL_GPIO,
++	       i2s->gpio + IOMUX_OFF + pin * 4);
++	writel((pin & GPIO_FUNC_IN_SEL_M) | GPIO_SIG_IN_SEL,
++	       i2s->gpio + GPIO_FUNC_IN_SEL(sig));
++}
++
++static void esp32p4_i2s_hw_init(struct esp32_p4_i2s *i2s)
++{
++	u32 u = i2s->unit;
++
++	/* apb clock gate on, module reset pulse */
++	clkrst_set(i2s, CLKRST_SOC_CLK_CTRL2, 0,
++		   BIT(CLKRST_I2S_APB_EN_S + u));
++	clkrst_set(i2s, CLKRST_HP_RST_EN2, 0,
++		   BIT(CLKRST_I2S_RST_APB_S + u));
++	clkrst_set(i2s, CLKRST_HP_RST_EN2,
++		   BIT(CLKRST_I2S_RST_APB_S + u), 0);
++
++	/* module clocks: src_sel 1 = PLL_160M, integer div n in the
++	 * companion reg.  Only i2s0 is wired; other units need their
++	 * own CTRL reg mapping. */
++	if (u == 0) {
++		clkrst_set(i2s, CLKRST_PERI_CLK_CTRL11,
++			   CLKRST_RX_CLK_EN | (3 << CLKRST_RX_CLK_SRC_S),
++			   CLKRST_RX_CLK_EN | (1 << CLKRST_RX_CLK_SRC_S));
++		writel(ESP32P4_MOD_DIV,
++		       i2s->clkrst + CLKRST_PERI_CLK_CTRL12);
++		clkrst_set(i2s, CLKRST_PERI_CLK_CTRL13,
++			   CLKRST_TX_CLK_EN | (3 << CLKRST_TX_CLK_SRC_S),
++			   CLKRST_TX_CLK_EN | (1 << CLKRST_TX_CLK_SRC_S));
++		/* tx divider + bind mclk to the tx module clock */
++		writel(ESP32P4_MOD_DIV | CLKRST_MST_CLK_SEL,
++		       i2s->clkrst + CLKRST_PERI_CLK_CTRL14);
++	}
++	writel(readl(i2s->lpclkrst + LP_HP_CLK_CTRL) | LP_PAD_I2S0_MCLK_EN,
++	       i2s->lpclkrst + LP_HP_CLK_CTRL);
++
++	/* ahb gdma: clock on + global reset pulse */
++	dma_wr(i2s, AHB_MISC_CONF,
++	       dma_rd(i2s, AHB_MISC_CONF) | AHB_MISC_CLK_EN);
++	dma_wr(i2s, AHB_MISC_CONF,
++	       dma_rd(i2s, AHB_MISC_CONF) | AHB_MISC_RST_INTER);
++	dma_wr(i2s, AHB_MISC_CONF,
++	       dma_rd(i2s, AHB_MISC_CONF) & ~AHB_MISC_RST_INTER);
++
++	/* i2s reset + fifo reset */
++	i2s_wr(i2s, I2S_TX_CONF, I2S_RESET | I2S_FIFO_RESET);
++	i2s_wr(i2s, I2S_TX_CONF, 0);
++	i2s_wr(i2s, I2S_RX_CONF, I2S_RESET | I2S_FIFO_RESET);
++	i2s_wr(i2s, I2S_RX_CONF, 0);
++}
++
++static int esp32p4_i2s_startup(struct snd_pcm_substream *substream,
++			       struct snd_soc_dai *dai)
++{
++	struct esp32_p4_i2s *i2s = dev_get_drvdata(dai->dev);
++
++	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK)
++		rcu_assign_pointer(i2s->tx_sub, substream);
++	else
++		rcu_assign_pointer(i2s->rx_sub, substream);
++	return 0;
++}
++
++static void esp32p4_i2s_shutdown(struct snd_pcm_substream *substream,
++				 struct snd_soc_dai *dai)
++{
++	struct esp32_p4_i2s *i2s = dev_get_drvdata(dai->dev);
++
++	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK)
++		rcu_assign_pointer(i2s->tx_sub, NULL);
++	else
++		rcu_assign_pointer(i2s->rx_sub, NULL);
++}
++
++static int esp32p4_i2s_set_fmt(struct snd_soc_dai *dai, unsigned int fmt)
++{
++	struct esp32_p4_i2s *i2s = dev_get_drvdata(dai->dev);
++
++	switch (fmt & SND_SOC_DAIFMT_FORMAT_MASK) {
++	case SND_SOC_DAIFMT_I2S:
++	case SND_SOC_DAIFMT_LEFT_J:
++		break;
++	default:
++		return -EINVAL;
++	}
++	i2s->fmt = fmt;
++	return 0;
++}
++
++/*
++ * Build a ring of lldescs over the PCM buffer.  One descriptor
++ * covers at most 4092 bytes (12-bit size, 0 means 4096 which the
++ * hardware handles poorly), so a period may span several descs;
++ * only the last desc of a period gets eof=1 to tick the irq.
++ */
++#define LLDESC_MAX_BYTES 4092
++
++static int esp32p4_dma_setup(struct esp32_p4_i2s *i2s,
++			     struct snd_pcm_runtime *runtime,
++			     struct snd_pcm_hw_params *params, bool tx)
++{
++	struct ahb_lldesc *descs;
++	dma_addr_t descs_phys;
++	/* runtime->period_size/periods are only filled by the core
++	 * after hw_params returns, so take them from params here. */
++	u32 periods = params_periods(params);
++	u32 pbytes = params_period_bytes(params);
++	u32 chunks = DIV_ROUND_UP(pbytes, LLDESC_MAX_BYTES);
++	u32 total = periods * chunks;
++	dma_addr_t buf = runtime->dma_addr;
++	u32 i, j, d = 0;
++
++	if (periods < 2 || !pbytes || total > ESP32P4_MAX_DESCS)
++		return -EINVAL;
++	descs = tx ? i2s->tx_descs : i2s->rx_descs;
++	descs_phys = tx ? i2s->tx_descs_phys : i2s->rx_descs_phys;
++	if (!descs)
++		return -ENOMEM;
++	i2s->period_bytes = pbytes;
++
++	for (i = 0; i < periods; i++) {
++		u32 off = 0;
++
++		for (j = 0; j < chunks; j++) {
++			u32 len = min(pbytes - off, (u32)LLDESC_MAX_BYTES);
++
++			descs[d].dw0 = LLDESC_OWNER |
++				       (len << LLDESC_SIZE_S) |
++				       (len << LLDESC_LENGTH_S);
++			if (j == chunks - 1)
++				descs[d].dw0 |= LLDESC_EOF;
++			descs[d].buf = buf + i * pbytes + off;
++			descs[d].next = descs_phys +
++					((d + 1) % total) * sizeof(*descs);
++			off += len;
++			d++;
++		}
++	}
++	return 0;
++}
++
++static void esp32p4_dma_start(struct esp32_p4_i2s *i2s, bool tx)
++{
++	u32 ch;
++
++	if (tx) {
++		ch = AHB_CH_OUT(i2s->tx_chan);
++		dma_wr(i2s, ch + AHB_CONF0, AHB_OUT_RST);
++		dma_wr(i2s, ch + AHB_CONF0,
++		       AHB_OUT_AUTO_WRBACK | AHB_OUT_DATA_BURST_EN);
++		dma_wr(i2s, ch + AHB_PERI_SEL, i2s->peri);
++		dma_wr(i2s, AHB_OUT_LINK_ADDR(i2s->tx_chan),
++		       i2s->tx_descs_phys);
++		dma_wr(i2s, AHB_OUT_INT_CLR(i2s->tx_chan), 0xff);
++		dma_wr(i2s, AHB_OUT_INT_ENA(i2s->tx_chan), AHB_OUT_EOF);
++		dma_wr(i2s, ch + AHB_LINK, AHB_OUTLINK_START);
++	} else {
++		ch = AHB_CH_IN(i2s->rx_chan);
++		dma_wr(i2s, ch + AHB_CONF0, AHB_IN_RST);
++		dma_wr(i2s, ch + AHB_CONF0, AHB_IN_DATA_BURST_EN);
++		dma_wr(i2s, ch + AHB_PERI_SEL, i2s->peri);
++		dma_wr(i2s, AHB_IN_LINK_ADDR(i2s->rx_chan),
++		       i2s->rx_descs_phys);
++		dma_wr(i2s, AHB_IN_INT_CLR(i2s->rx_chan), 0xff);
++		dma_wr(i2s, AHB_IN_INT_ENA(i2s->rx_chan), AHB_IN_SUC_EOF);
++		dma_wr(i2s, ch + AHB_LINK, AHB_INLINK_START);
++	}
++}
++
++static void esp32p4_dma_stop(struct esp32_p4_i2s *i2s, bool tx)
++{
++	if (tx) {
++		dma_wr(i2s, AHB_OUT_INT_ENA(i2s->tx_chan), 0);
++		dma_wr(i2s, AHB_CH_OUT(i2s->tx_chan) + AHB_LINK,
++		       AHB_OUTLINK_STOP);
++	} else {
++		dma_wr(i2s, AHB_IN_INT_ENA(i2s->rx_chan), 0);
++		dma_wr(i2s, AHB_CH_IN(i2s->rx_chan) + AHB_LINK,
++		       AHB_INLINK_STOP);
++	}
++}
++
++static int esp32p4_pcm_hw_params(struct snd_soc_component *component,
++				 struct snd_pcm_substream *substream,
++				 struct snd_pcm_hw_params *params)
++{
++	struct esp32_p4_i2s *i2s = dev_get_drvdata(component->dev);
++	bool tx = substream->stream == SNDRV_PCM_STREAM_PLAYBACK;
++
++	return esp32p4_dma_setup(i2s, substream->runtime, params, tx);
++}
++
++static int esp32p4_pcm_trigger(struct snd_soc_component *component,
++			       struct snd_pcm_substream *substream, int cmd)
++{
++	struct esp32_p4_i2s *i2s = dev_get_drvdata(component->dev);
++	bool tx = substream->stream == SNDRV_PCM_STREAM_PLAYBACK;
++
++	switch (cmd) {
++	case SNDRV_PCM_TRIGGER_START:
++	case SNDRV_PCM_TRIGGER_RESUME:
++	case SNDRV_PCM_TRIGGER_PAUSE_RELEASE:
++		if (tx)
++			atomic_set(&i2s->tx_pos, 0);
++		else
++			atomic_set(&i2s->rx_pos, 0);
++		esp32p4_dma_start(i2s, tx);
++		i2s_wr(i2s, tx ? I2S_TX_CONF : I2S_RX_CONF,
++		       (i2s_rd(i2s, tx ? I2S_TX_CONF : I2S_RX_CONF) &
++			~I2S_UPDATE) | I2S_START | I2S_UPDATE);
++		break;
++	case SNDRV_PCM_TRIGGER_STOP:
++	case SNDRV_PCM_TRIGGER_SUSPEND:
++	case SNDRV_PCM_TRIGGER_PAUSE_PUSH:
++		i2s_wr(i2s, tx ? I2S_TX_CONF : I2S_RX_CONF,
++		       i2s_rd(i2s, tx ? I2S_TX_CONF : I2S_RX_CONF) &
++		       ~I2S_START);
++		esp32p4_dma_stop(i2s, tx);
++		break;
++	default:
++		return -EINVAL;
++	}
++	return 0;
++}
++
++static snd_pcm_uframes_t esp32p4_pcm_pointer(struct snd_soc_component *component,
++					   struct snd_pcm_substream *substream)
++{
++	struct esp32_p4_i2s *i2s = dev_get_drvdata(component->dev);
++	struct snd_pcm_runtime *runtime = substream->runtime;
++	u32 pos;
++
++	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK)
++		pos = atomic_read(&i2s->tx_pos);
++	else
++		pos = atomic_read(&i2s->rx_pos);
++	return bytes_to_frames(runtime, pos % runtime->dma_bytes);
++}
++
++static irqreturn_t esp32p4_tx_irq(int irq, void *data)
++{
++	struct esp32_p4_i2s *i2s = data;
++	struct snd_pcm_substream *sub;
++	u32 st = dma_rd(i2s, AHB_OUT_INT_ST(i2s->tx_chan));
++
++	dma_wr(i2s, AHB_OUT_INT_CLR(i2s->tx_chan), st);
++	if (st & AHB_OUT_EOF) {
++		atomic_add(i2s->period_bytes, &i2s->tx_pos);
++		sub = rcu_dereference(i2s->tx_sub);
++		if (sub)
++			snd_pcm_period_elapsed(sub);
++	}
++	return IRQ_HANDLED;
++}
++
++static irqreturn_t esp32p4_rx_irq(int irq, void *data)
++{
++	struct esp32_p4_i2s *i2s = data;
++	struct snd_pcm_substream *sub;
++	u32 st = dma_rd(i2s, AHB_IN_INT_ST(i2s->rx_chan));
++
++	dma_wr(i2s, AHB_IN_INT_CLR(i2s->rx_chan), st);
++	if (st & AHB_IN_SUC_EOF) {
++		atomic_add(i2s->period_bytes, &i2s->rx_pos);
++		sub = rcu_dereference(i2s->rx_sub);
++		if (sub)
++			snd_pcm_period_elapsed(sub);
++	}
++	return IRQ_HANDLED;
++}
++
++static const struct snd_pcm_hardware esp32p4_pcm_hardware = {
++	.info = SNDRV_PCM_INFO_INTERLEAVED |
++		SNDRV_PCM_INFO_PAUSE |
++		SNDRV_PCM_INFO_RESUME,
++	.formats = SNDRV_PCM_FMTBIT_S16_LE |
++		   SNDRV_PCM_FMTBIT_S24_LE |
++		   SNDRV_PCM_FMTBIT_S32_LE,
++	.rates = SNDRV_PCM_RATE_8000_96000,
++	.channels_min = 1,
++	.channels_max = 2,
++	.buffer_bytes_max = 64 * 1024,
++	.period_bytes_min = 64,
++	/* A 16 KiB period takes 5 lldescs of 4092 B, so periods must
++	 * stay at 6 for the 32-desc ring (esp32p4_dma_setup rejects
++	 * anything above). */
++	.period_bytes_max = 16 * 1024,
++	.periods_min = 2,
++	.periods_max = 6,
++};
++
++static int esp32p4_pcm_open(struct snd_soc_component *component,
++			    struct snd_pcm_substream *substream)
++{
++	struct snd_pcm_runtime *runtime = substream->runtime;
++
++	snd_soc_set_runtime_hwparams(substream, &esp32p4_pcm_hardware);
++	return 0;
++}
++
++static int esp32p4_pcm_new(struct snd_soc_component *component,
++			   struct snd_soc_pcm_runtime *rtd)
++{
++	struct snd_card *card = rtd->card->snd_card;
++	struct esp32_p4_i2s *i2s = dev_get_drvdata(component->dev);
++	size_t size = 64 * 1024;
++
++	i2s->tx_descs = dmam_alloc_coherent(card->dev,
++				ESP32P4_MAX_DESCS * sizeof(*i2s->tx_descs),
++				&i2s->tx_descs_phys, GFP_KERNEL);
++	i2s->rx_descs = dmam_alloc_coherent(card->dev,
++				ESP32P4_MAX_DESCS * sizeof(*i2s->rx_descs),
++				&i2s->rx_descs_phys, GFP_KERNEL);
++	if (!i2s->tx_descs || !i2s->rx_descs)
++		return -ENOMEM;
++
++	snd_pcm_set_managed_buffer_all(rtd->pcm, SNDRV_DMA_TYPE_DEV,
++				       card->dev, size, size);
++	return 0;
++}
++
++static int esp32p4_i2s_hw_params(struct snd_pcm_substream *substream,
++				 struct snd_pcm_hw_params *params,
++				 struct snd_soc_dai *dai)
++{
++	struct esp32_p4_i2s *i2s = dev_get_drvdata(dai->dev);
++	unsigned int data_bits, chan_bits = 32, bck_div;
++	u32 conf, conf1;
++	bool tx = substream->stream == SNDRV_PCM_STREAM_PLAYBACK;
++
++	switch (params_format(params)) {
++	case SNDRV_PCM_FORMAT_S16_LE:
++		data_bits = 16;
++		break;
++	case SNDRV_PCM_FORMAT_S24_LE:
++		data_bits = 24;
++		break;
++	case SNDRV_PCM_FORMAT_S32_LE:
++		data_bits = 32;
++		break;
++	default:
++		return -EINVAL;
++	}
++	bck_div = DIV_ROUND_CLOSEST(ESP32P4_MOD_CLK,
++			params_rate(params) * params_channels(params) *
++			chan_bits);
++	if (!bck_div || bck_div > 63)
++		return -EINVAL;
++
++	/* std/philips on P4 runs the TDM engine with 2 slots;
++	 * msb_shift gives the 1-BCK data delay I2S expects. */
++	conf = I2S_TDM_EN | I2S_MSB_SHIFT;
++	conf |= (bck_div << I2S_BCK_DIV_NUM_S) & I2S_BCK_DIV_NUM_M;
++	conf1 = (chan_bits - 1)
++		| (((data_bits - 1) << I2S_BITS_MOD_S) & I2S_BITS_MOD_M)
++		| (((chan_bits - 1) << I2S_HALF_SAMPLE_BITS_S) &
++		   I2S_HALF_SAMPLE_BITS_M)
++		| (((chan_bits - 1) << I2S_TDM_CHAN_BITS_S) &
++		   I2S_TDM_CHAN_BITS_M);
++
++	if (tx) {
++		conf |= I2S_TX_STOP_EN;
++		i2s_wr(i2s, I2S_TX_CONF, conf);
++		i2s_wr(i2s, I2S_TX_CONF1, conf1);
++		i2s_wr(i2s, I2S_TX_TDM_CTRL,
++		       (1 << I2S_TDM_TOT_CHAN_NUM_S) | 0x3);
++	} else {
++		i2s_wr(i2s, I2S_RX_CONF, conf);
++		i2s_wr(i2s, I2S_RX_CONF1, conf1);
++		i2s_wr(i2s, I2S_RX_TDM_CTRL,
++		       (1 << I2S_TDM_TOT_CHAN_NUM_S) | 0x3);
++	}
++	return 0;
++}
++
++static const struct snd_soc_component_driver esp32p4_component = {
++	.name		= DRV_NAME,
++	.open		= esp32p4_pcm_open,
++	.hw_params	= esp32p4_pcm_hw_params,
++	.trigger	= esp32p4_pcm_trigger,
++	.pointer	= esp32p4_pcm_pointer,
++	.pcm_new	= esp32p4_pcm_new,
++	.legacy_dai_naming = 1,
++};
++
++static const struct snd_soc_dai_ops esp32p4_dai_ops = {
++	.startup	= esp32p4_i2s_startup,
++	.shutdown	= esp32p4_i2s_shutdown,
++	.hw_params	= esp32p4_i2s_hw_params,
++	.set_fmt	= esp32p4_i2s_set_fmt,
++};
++
++static struct snd_soc_dai_driver esp32p4_dai = {
++	.name = DRV_NAME,
++	.id = 0,
++	.playback = {
++		.stream_name = "Playback",
++		.channels_min = 1,
++		.channels_max = 2,
++		.rates = SNDRV_PCM_RATE_8000_96000,
++		.formats = SNDRV_PCM_FMTBIT_S16_LE |
++			   SNDRV_PCM_FMTBIT_S24_LE |
++			   SNDRV_PCM_FMTBIT_S32_LE,
++	},
++	.capture = {
++		.stream_name = "Capture",
++		.channels_min = 1,
++		.channels_max = 2,
++		.rates = SNDRV_PCM_RATE_8000_96000,
++		.formats = SNDRV_PCM_FMTBIT_S16_LE |
++			   SNDRV_PCM_FMTBIT_S24_LE |
++			   SNDRV_PCM_FMTBIT_S32_LE,
++	},
++	.ops = &esp32p4_dai_ops,
++};
++
++static int esp32p4_i2s_probe(struct platform_device *pdev)
++{
++	struct esp32_p4_i2s *i2s;
++	u32 v;
++	int ret;
++
++	i2s = devm_kzalloc(&pdev->dev, sizeof(*i2s), GFP_KERNEL);
++	if (!i2s)
++		return -ENOMEM;
++	i2s->dev = &pdev->dev;
++	platform_set_drvdata(pdev, i2s);
++
++	i2s->i2s = devm_platform_ioremap_resource(pdev, 0);
++	if (IS_ERR(i2s->i2s))
++		return PTR_ERR(i2s->i2s);
++	i2s->dma = devm_platform_ioremap_resource(pdev, 1);
++	if (IS_ERR(i2s->dma))
++		return PTR_ERR(i2s->dma);
++	i2s->clkrst = devm_platform_ioremap_resource(pdev, 2);
++	if (IS_ERR(i2s->clkrst))
++		return PTR_ERR(i2s->clkrst);
++	i2s->lpclkrst = devm_platform_ioremap_resource(pdev, 3);
++	if (IS_ERR(i2s->lpclkrst))
++		return PTR_ERR(i2s->lpclkrst);
++	i2s->gpio = devm_platform_ioremap_resource(pdev, 4);
++	if (IS_ERR(i2s->gpio))
++		return PTR_ERR(i2s->gpio);
++
++	i2s->irq_tx = platform_get_irq(pdev, 0);
++	if (i2s->irq_tx < 0)
++		return i2s->irq_tx;
++	i2s->irq_rx = platform_get_irq(pdev, 1);
++	if (i2s->irq_rx < 0)
++		return i2s->irq_rx;
++
++	i2s->peri = 3;
++	i2s->unit = 0;
++	of_property_read_u32(pdev->dev.of_node, "espressif,peri-sel", &v);
++	if (v)
++		i2s->peri = v;
++	of_property_read_u32(pdev->dev.of_node, "espressif,i2s-unit", &v);
++	if (v)
++		i2s->unit = v;
++	i2s->tx_chan = 0;
++	i2s->rx_chan = 1;
++	i2s->mclk_pin = -1;
++	i2s->bck_pin = -1;
++	i2s->ws_pin = -1;
++	i2s->dout_pin = -1;
++	i2s->din_pin = -1;
++	of_property_read_u32(pdev->dev.of_node, "espressif,mclk-pin", &v);
++	i2s->mclk_pin = (int)v;
++	of_property_read_u32(pdev->dev.of_node, "espressif,bck-pin", &v);
++	i2s->bck_pin = (int)v;
++	of_property_read_u32(pdev->dev.of_node, "espressif,ws-pin", &v);
++	i2s->ws_pin = (int)v;
++	of_property_read_u32(pdev->dev.of_node, "espressif,dout-pin", &v);
++	i2s->dout_pin = (int)v;
++	of_property_read_u32(pdev->dev.of_node, "espressif,din-pin", &v);
++	i2s->din_pin = (int)v;
++
++	ret = devm_request_irq(&pdev->dev, i2s->irq_tx, esp32p4_tx_irq, 0,
++			       pdev->name, i2s);
++	if (ret)
++		return ret;
++	ret = devm_request_irq(&pdev->dev, i2s->irq_rx, esp32p4_rx_irq, 0,
++			       pdev->name, i2s);
++	if (ret)
++		return ret;
++
++	esp32p4_i2s_hw_init(i2s);
++	pin_out(i2s, i2s->mclk_pin, I2S0_MCLK);
++	pin_out(i2s, i2s->bck_pin, I2S0_O_BCK);
++	pin_out(i2s, i2s->ws_pin, I2S0_O_WS);
++	pin_out(i2s, i2s->dout_pin, I2S0_SD);
++	pin_in(i2s, i2s->din_pin, I2S0_SD);
++
++	ret = devm_snd_soc_register_component(&pdev->dev, &esp32p4_component,
++					      &esp32p4_dai, 1);
++	if (ret)
++		return ret;
++
++	dev_info(&pdev->dev, "ESP32-P4 I2S%u registered\n", i2s->unit);
++	return 0;
++}
++
++static const struct of_device_id esp32p4_i2s_of_match[] = {
++	{ .compatible = "espressif,esp32p4-i2s", },
++	{},
++};
++MODULE_DEVICE_TABLE(of, esp32p4_i2s_of_match);
++
++static struct platform_driver esp32p4_i2s_driver = {
++	.probe = esp32p4_i2s_probe,
++	.driver = {
++		.name = DRV_NAME,
++		.of_match_table = esp32p4_i2s_of_match,
++	},
++};
++
++module_platform_driver(esp32p4_i2s_driver);
++
++MODULE_AUTHOR("Devin");
++MODULE_DESCRIPTION("ESP32-P4 I2S ASoC CPU DAI driver");
++MODULE_LICENSE("GPL v2");

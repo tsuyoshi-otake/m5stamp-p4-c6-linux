@@ -42,6 +42,9 @@
 #include "soc/gpio_sig_map.h"
 #include "soc/soc.h"
 #include "soc/interrupt_core0_reg.h"
+#include "hal/ldo_ll.h"
+#include "hal/usb_utmi_ll.h"
+#include "esp_private/periph_ctrl.h"
 #include "tab5_board.h"
 #include "tab5_display.h"
 
@@ -237,6 +240,25 @@ static esp_err_t expander_write(i2c_master_dev_handle_t dev, uint8_t reg,
 }
 
 /*
+ * Expander register read used by the panel-reset sequence.  A 100 ms
+ * timeout per call would stall boot for almost half a second if the
+ * bus wedges mid-sequence (four reads sit in tab5_panel_reset), and a
+ * single transient NACK would abort the reset entirely.  Keep each
+ * attempt at 20 ms -- generous for a 9-byte-timescale transaction at
+ * the bus rate -- and retry once so a momentary stretch does not drop
+ * the reset pulse.
+ */
+static esp_err_t expander_read(i2c_master_dev_handle_t dev, uint8_t reg,
+			       uint8_t *val)
+{
+	esp_err_t err = i2c_master_transmit_receive(dev, &reg, 1, val, 1, 20);
+
+	if (err != ESP_OK)
+		err = i2c_master_transmit_receive(dev, &reg, 1, val, 1, 20);
+	return err;
+}
+
+/*
  * Program both expanders following the stock sequence in
  * bsp_io_expander_pi4ioe_init (m5stack_tab5.c:245-330), with only the
  * output levels changed for the Linux power profile.
@@ -351,7 +373,7 @@ static esp_err_t expanders_init(void)
  */
 void tab5_panel_reset(void)
 {
-	uint8_t reg, val;
+	uint8_t val;
 
 	if (!s_exp0) {
 		ESP_LOGW(TAG, "panel reset: expander 0x43 not up, skipped");
@@ -359,29 +381,25 @@ void tab5_panel_reset(void)
 	}
 	gpio_reset_pin(GPIO_NUM_23);
 
-	reg = PI4IO_REG_OUT_SET;
-	if (i2c_master_transmit_receive(s_exp0, &reg, 1, &val, 1, 100) != ESP_OK)
+	if (expander_read(s_exp0, PI4IO_REG_OUT_SET, &val) != ESP_OK)
 		goto fail;
 	val &= (uint8_t)~((1u << 4) | (1u << 5));
 	if (expander_write(s_exp0, PI4IO_REG_OUT_SET, val) != ESP_OK)
 		goto fail;
-	reg = PI4IO_REG_IO_DIR;
-	if (i2c_master_transmit_receive(s_exp0, &reg, 1, &val, 1, 100) != ESP_OK)
+	if (expander_read(s_exp0, PI4IO_REG_IO_DIR, &val) != ESP_OK)
 		goto fail;
 	val |= (1u << 4);
 	if (expander_write(s_exp0, PI4IO_REG_IO_DIR, val) != ESP_OK)
 		goto fail;
 	esp_rom_delay_us(100000);
 
-	reg = PI4IO_REG_OUT_SET;
-	if (i2c_master_transmit_receive(s_exp0, &reg, 1, &val, 1, 100) != ESP_OK)
+	if (expander_read(s_exp0, PI4IO_REG_OUT_SET, &val) != ESP_OK)
 		goto fail;
 	val &= (uint8_t)~(1u << 4);
 	val |= (1u << 5);
 	if (expander_write(s_exp0, PI4IO_REG_OUT_SET, val) != ESP_OK)
 		goto fail;
-	reg = PI4IO_REG_IO_DIR;
-	if (i2c_master_transmit_receive(s_exp0, &reg, 1, &val, 1, 100) != ESP_OK)
+	if (expander_read(s_exp0, PI4IO_REG_IO_DIR, &val) != ESP_OK)
 		goto fail;
 	val &= (uint8_t)~(1u << 4);
 	if (expander_write(s_exp0, PI4IO_REG_IO_DIR, val) != ESP_OK)
@@ -400,9 +418,40 @@ fail:
  * 400 ms before calling it absent.
  */
 #define TAB5_TOUCH_ADDR 0x55u
+#define TAB5_TOUCH_GT911_ADDR 0x5du
 #define TAB5_TOUCH_HZ 100000u
 #define TAB5_FW_ST7121 1u
 #define TAB5_FW_ST7123 3u
+
+/* True when a device ACKs 7-bit address `addr` on the internal bus. */
+static bool touch_answers(uint8_t addr)
+{
+	i2c_device_config_t dev_cfg = {
+		.dev_addr_length = I2C_ADDR_BIT_LEN_7,
+		.device_address = addr,
+		.scl_speed_hz = TAB5_TOUCH_HZ,
+	};
+	i2c_master_dev_handle_t tp = NULL;
+	uint8_t reg[2] = { 0x81u, 0x40u };
+	uint8_t id[3] = { 0 };
+	bool answered = false;
+
+	if (!s_i2c_bus ||
+	    i2c_master_bus_add_device(s_i2c_bus, &dev_cfg, &tp) != ESP_OK)
+		return false;
+	for (int i = 0; i < 5 && !answered; ++i) {
+		if (i2c_master_transmit_receive(tp, reg, sizeof(reg), id,
+						sizeof(id), 100) == ESP_OK)
+			answered = true;
+		else
+			esp_rom_delay_us(20000);
+	}
+	i2c_master_bus_rm_device(tp);
+	if (answered)
+		ESP_LOGI(TAG, "panel detect: 0x%02x reg 0x8140 -> "
+			 "\"%c%c%c\"", addr, id[0], id[1], id[2]);
+	return answered;
+}
 
 enum tab5_panel tab5_detect_panel(uint8_t *fw_out)
 {
@@ -436,6 +485,11 @@ enum tab5_panel tab5_detect_panel(uint8_t *fw_out)
 	if (!answered) {
 		ESP_LOGW(TAG, "panel detect: nothing answers at 0x%02x (reg 0x0000)",
 			 TAB5_TOUCH_ADDR);
+		if (touch_answers(TAB5_TOUCH_GT911_ADDR)) {
+			ESP_LOGI(TAG, "panel detect: GT911 at 0x%02x -> "
+				 "ILI9881C", TAB5_TOUCH_GT911_ADDR);
+			return TAB5_PANEL_ILI9881C;
+		}
 		return TAB5_PANEL_NONE;
 	}
 	if (fw_out)
@@ -630,6 +684,25 @@ void tab5_i2c_release(void)
 		 have1 ? "" : "?!", out1, out1 & 1);
 }
 
+/*
+ * microSD slot 0 power: the dedicated pads CLK43 CMD44 D0..3=39..42 are
+ * fed by the chip's LDO VO4 rail.  The kernel drives the slot over
+ * spi-gpio + mmc_spi (bit-banged); all the shim has to do is hold the
+ * rail at 3.3 V.
+ */
+static void enable_microsd_rail(void)
+{
+	const int unit = LDO_ID2UNIT(4); /* VO4 -> unit 3 */
+	uint8_t dref, mul;
+	bool use_rail;
+
+	ldo_ll_voltage_to_dref_mul(unit, 3300, &dref, &mul, &use_rail);
+	ldo_ll_set_owner(unit, LDO_LL_UNIT_OWNER_SW);
+	ldo_ll_adjust_voltage(unit, dref, mul, use_rail);
+	ldo_ll_enable(unit, true);
+	ESP_LOGI(TAG, "microSD LDO_VO4 on at 3.3V");
+}
+
 void tab5_board_init(struct tab5_fb *fb)
 {
 	fb->ok = false;
@@ -674,6 +747,22 @@ void tab5_board_init(struct tab5_fb *fb)
 
 		pulse_c6_reset();
 		ESP_LOGI(TAG, "Slot 1 SDIO ready on GPIO8-13; C6 reset done");
+
+		/*
+		 * USB-A port: the USB2.0 HS DWC core (USB_DWC_HS) needs the
+		 * otg20 sys clock + 48 MHz PHY ref clock and one shared
+		 * otg20/PHY reset pulse before the kernel's dwc2 driver
+		 * can touch registers.  Host-session signaling is left to
+		 * the core; the port's VBUS is expander 0x44 P3 which the
+		 * expander default state already drives high.
+		 */
+		PERIPH_RCC_ATOMIC() {
+			usb_utmi_ll_enable_bus_clock(true);
+			usb_utmi_ll_reset_register();
+		}
+		ESP_LOGI(TAG, "USB2.0 HS OTG clock + PHY reset done");
+
+		enable_microsd_rail();
 
 		tab5_display_init(fb);
 	}

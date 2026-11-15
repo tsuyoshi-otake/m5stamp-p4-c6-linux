@@ -1031,6 +1031,12 @@ if $network_profile; then
 	# CMD_DONE, arm the same timer from the write CMD_DONE IRQ instead.
 	patches+=(0061-dw-mmc-tx-dto-on-cmd-done.patch)
 fi
+# Diodes PI4IOE5V6408 8-bit I2C GPIO expander (Tab5 has two at
+# 0x43/0x44).  Board-agnostic: the patch applies to every build but
+# only lights up where a DT node claims the chip.
+patches+=(0100-gpio-pi4ioe5v6408.patch)
+# ESP32-P4 LEDC PWM (Tab5 uses channel 0 for the LCD backlight boost).
+patches+=(0101-pwm-esp32p4-ledc.patch)
 for patch_name in "${patches[@]}"; do
 	if [[ "$patch_name" == 0000-esp32-serial-resurrect.patch ||
 	      "$patch_name" == 0022-esp32p4-systimer-level-trigger.patch ||
@@ -1075,6 +1081,8 @@ for patch_name in "${patches[@]}"; do
 	      "$patch_name" == 0085-dw-mmc-fiford-mode.patch ||
 	      "$patch_name" == 0086-dw-mmc-dma-threshold.patch ||
 	      "$patch_name" == 0087-dw-mmc-fifo-bounce.patch ||
+	      "$patch_name" == 0100-gpio-pi4ioe5v6408.patch ||
+	      "$patch_name" == 0101-pwm-esp32p4-ledc.patch ||
 	      "$patch_name" == 0056-wdt-stacktrace.patch ||
 	      "$patch_name" == 0055-sdio-clock-attest.patch ||
 	      "$patch_name" == 0060-dw-mmc-tx-software-dto.patch ||
@@ -1244,12 +1252,93 @@ CONFIG_INPUT=y
 CONFIG_INPUT_EVDEV=y
 CONFIG_INPUT_TOUCHSCREEN=y
 CONFIG_TOUCHSCREEN_ST7123=y
+# Alternate panel SKU: GT911 touch at 0x5d on the same internal bus
+# (in-tree goodix.c; the node sits next to touch@55 and only one of the
+# two is ever populated).
+CONFIG_TOUCHSCREEN_GOODIX=y
 # Ext.Port1 A164 keyboard: STM32 at 0x6d on the dedicated hw GPIO0/1
 # pair (linux/tab5/0098); polled -- its bank-1 INT has no irq_chip.
 # INPUT_KEYBOARD is spelled out because CONFIG_EXPERT drops its
 # default y.
 CONFIG_INPUT_KEYBOARD=y
 CONFIG_KEYBOARD_TAB5=y
+# PI4IOE5V6408 I2C expanders at 0x43/0x44 (linux/kernel-patches/0100):
+# registered through gpio-regmap with no probe-time writes so the
+# shim-programmed rails survive.  REGMAP_I2C and GPIO_REGMAP come in
+# via Kconfig select.
+CONFIG_GPIO_PI4IOE5V6408=y
+# INA226 power monitor at 0x41 on the battery rail (5 mOhm shunt,
+# see the DTS node).  HWMON is already on.
+CONFIG_SENSORS_INA2XX=y
+# BMI270 IMU at 0x68: probe request_firmware()s the Bosch init
+# blob (/lib/firmware/bmi270-init-data.fw, shipped in the Tab5
+# rootfs overlay).  BMI270 selects IIO_BUFFER/TRIGGERED_BUFFER.
+CONFIG_IIO=y
+CONFIG_BMI270=y
+CONFIG_BMI270_I2C=y
+# RX8130CE RTC at 0x32 (epson,rx8130 is handled by rtc-ds1307).
+CONFIG_RTC_CLASS=y
+CONFIG_RTC_DRV_DS1307=y
+# Deprecated sysfs GPIO ABI so expander rails (EXT5V_EN, EXT_ANT_EN
+# and friends) can be driven from the shell without shipping
+# libgpiod tools on this minimal image (#35).
+CONFIG_GPIO_SYSFS=y
+# LCD backlight: LEDC channel 0 on GPIO22 via pwm-backlight (#32).
+CONFIG_PWM=y
+CONFIG_PWM_ESP32P4_LEDC=y
+CONFIG_BACKLIGHT_CLASS_DEVICE=y
+CONFIG_BACKLIGHT_PWM=y
+# Safe poweroff through expander 0x44 P4 (PWROFF) (#31).
+CONFIG_POWER_RESET=y
+CONFIG_POWER_RESET_GPIO=y
+# USB-A host on the USB2.0 HS DWC @0x50000000 (#30): dwc2 in
+# host-only mode (patch 0063 forces PIO -- no coherent DMA under
+# NOMMU).  usb-storage + hid cover the first bring-up devices.
+# The m3-lab fragment selects USB_DWC2_PERIPHERAL for the FS OTG
+# gadget, but on Tab5 that node's FSLS PHY shares the I2S audio
+# pads and stays disabled -- HOST is the only mode this board
+# uses, so the choice is forced here (PERIPHERAL stays for
+# Stamp-P4, where the gadget node is enabled).
+CONFIG_USB_SUPPORT=y
+CONFIG_USB=y
+# CONFIG_USB_DWC2_PERIPHERAL is not set
+CONFIG_USB_DWC2_HOST=y
+CONFIG_SCSI=y
+CONFIG_BLK_DEV_SD=y
+CONFIG_USB_STORAGE=y
+# The m2 fragment disables HID_SUPPORT outright ("nothing here speaks
+# ethtool netlink" size trim); without it every HID_* option is
+# invisible and USB_HID drops out of olddefconfig.
+CONFIG_HID_SUPPORT=y
+CONFIG_HID=y
+CONFIG_HID_GENERIC=y
+CONFIG_USB_HID=y
+# microSD slot 0 over bit-banged SPI (#29): the slot sits on SDMMC
+# slot-0's fixed pads (CLK43 CMD44 D0..3=39..42) which the dw_mmc
+# instance cannot reach -- it already drives slot 1 (the C6).  The
+# pads are plain GPIOs via IO_MUX, so spi-gpio + mmc_spi works.
+CONFIG_SPI=y
+CONFIG_SPI_MASTER=y
+CONFIG_SPI_BITBANG=y
+CONFIG_SPI_GPIO=y
+CONFIG_MMC_SPI=y
+# BLE HCI over SDIO (#34): the C6 firmware image already ships
+# CONFIG_BT_ENABLED/CONTROLLER_ONLY/BLE_ONLY (C6_BT=1 default, C6_BT=0
+# to opt out) and esp-hosted-ng's esp32_sdio.ko registers an hci_dev
+# when the slave advertises ESP_BT_SDIO_SUPPORT.  Enabling the BT core
+# is all the kernel needs; BlueZ userland is out of reach on NOMMU
+# (bluez5_utils depends on BR2_USE_MMU), so hci0 is raw-socket only.
+CONFIG_BT=y
+CONFIG_BT_LE=y
+EOF
+	cat >>"${kernel_config_fragment}" <<EOF
+
+# bmi270 i2c probes before the rootfs is up, so its init-data blob must
+# come from the built-in firmware pool, not /lib/firmware.  The blob
+# itself still ships in rootfs-overlay-tab5 for the module-init retry
+# path and tools that read it back.
+CONFIG_EXTRA_FIRMWARE="bmi270-init-data.fw"
+CONFIG_EXTRA_FIRMWARE_DIR="${firmware_root}/linux/m3-lab/rootfs-overlay-tab5/lib/firmware"
 EOF
 fi
 if [[ -n "$pstore_identity" ]]; then
@@ -1284,6 +1373,17 @@ CONFIG_PREEMPT_NONE=y
 EOF
 if $c68_profile; then
 	cat "${firmware_root}/linux/c68/linux.config.fragment" >>"${kernel_config_fragment}"
+	if [[ "$board" == "tab5" ]]; then
+		cat >>"${kernel_config_fragment}" <<'EOF'
+
+# Tab5: the C68 fragment above re-selects USB_DWC2_PERIPHERAL for the
+# boot-FS gadget, but on this board the FS OTG node stays disabled
+# (FSLS PHY shares the I2S pads) and the Type-A port @0x50000000 is
+# the only dwc2 user -- it needs HOST.  Keep this override last.
+# CONFIG_USB_DWC2_PERIPHERAL is not set
+CONFIG_USB_DWC2_HOST=y
+EOF
+	fi
 	if $c68_top_profile; then
 		cat >>"${kernel_config_fragment}" <<'EOF'
 
@@ -1722,26 +1822,27 @@ c68_fail_closed_after_linux() {
 			echo "C68_GATE_FAIL: dtc missing for DTB decompile" >&2
 			exit 1
 		}
-		"$dtc" -I dtb -O dts "$dtb" | grep -q 'cpu@1' || {
+		# Decompile once: `dtc | grep -q` races under pipefail (grep -q
+		# exits on an early match and dtc dies on SIGPIPE).
+		dtb_dts=$("$dtc" -I dtb -O dts "$dtb")
+		grep -q 'cpu@1' <<<"$dtb_dts" || {
 			echo "C68_GATE_FAIL: decompiled DTB has no cpu@1" >&2
 			exit 1
 		}
-		"$dtc" -I dtb -O dts "$dtb" | grep -q 'interrupt-controller' || {
+		grep -q 'interrupt-controller' <<<"$dtb_dts" || {
 			echo "C68_GATE_FAIL: decompiled DTB has no interrupt-controller" >&2
 			exit 1
 		}
-		"$dtc" -I dtb -O dts "$dtb" | grep -q 'espressif,esp32p4-ipi' || {
+		grep -q 'espressif,esp32p4-ipi' <<<"$dtb_dts" || {
 			echo "C68_GATE_FAIL: decompiled DTB has no ESP32-P4 IPI provider" >&2
 			exit 1
 		}
-		"$dtc" -I dtb -O dts "$dtb" |
-			grep -A 10 'timer@500e2000' | grep -Fq '0x17 0x36' || {
+		grep -A 10 'timer@500e2000' <<<"$dtb_dts" | grep -Fq '0x17 0x36' || {
 			echo "C68_GATE_FAIL: decompiled DTB has no CPU1 SYSTIMER route" >&2
 			exit 1
 		}
 		if [[ "${TSENS_LINUX:-0}" == "1" ]]; then
-			"$dtc" -I dtb -O dts "$dtb" |
-				grep -Fq 'espressif,esp32p4-tsens' || {
+			grep -Fq 'espressif,esp32p4-tsens' <<<"$dtb_dts" || {
 				echo "C68_GATE_FAIL: decompiled DTB has no ESP32-P4 TSENS node" >&2
 				exit 1
 			}
@@ -2319,6 +2420,11 @@ if $ssh_profile; then
 		post_build_scripts="${post_build_scripts} ${lab_stage}/post-build.sh"
 		users_table="${lab_stage}/users.txt"
 		busybox_fragments="${busybox_fragments} ${lab_stage}/busybox.fragment"
+		if [[ "$board" == tab5 ]]; then
+			# Last fragment wins: keep the tab5 additions after the
+			# shared m3-lab fragment that disables hwclock.
+			busybox_fragments="${busybox_fragments} ${lab_stage}/busybox-tab5.fragment"
+		fi
 		localoptions="${lab_stage}/dropbear-localoptions.h"
 	fi
 	set_config_value "${br_output}/.config" BR2_ROOTFS_OVERLAY "\"${rootfs_overlay}\""
@@ -2376,16 +2482,21 @@ if $lab_profile; then
 	# PR_SET_SYSTEM_WORK wrapper so system scripts keep system-side
 	# NOMMU classification when a user starts them (#50 round 4).
 	set_config_value "${br_output}/.config" BR2_PACKAGE_RUN_SYSTEM y
-	# First-boot SoftAP credentials QR on the Tab5 panel (#4).  The
-	# package only exists on Tab5 builds.
+	# First-boot SoftAP credentials QR on the Tab5 panel (#4), and the
+	# evdev-to-panel touch demo (#33).  Both packages only exist on
+	# Tab5 builds.
 	if [[ "$board" == tab5 ]]; then
 		set_config_value "${br_output}/.config" BR2_PACKAGE_WIFI_QR y
+		set_config_value "${br_output}/.config" BR2_PACKAGE_TOUCH_DOTS y
+		set_config_value "${br_output}/.config" BR2_PACKAGE_PCM_SINE y
 	else
 		set_config_value "${br_output}/.config" BR2_PACKAGE_WIFI_QR "# BR2_PACKAGE_WIFI_QR is not set"
+		set_config_value "${br_output}/.config" BR2_PACKAGE_TOUCH_DOTS "# BR2_PACKAGE_TOUCH_DOTS is not set"
 	fi
 else
 	set_config_value "${br_output}/.config" BR2_PACKAGE_BOOT_COMMIT "# BR2_PACKAGE_BOOT_COMMIT is not set"
 	set_config_value "${br_output}/.config" BR2_PACKAGE_WIFI_QR "# BR2_PACKAGE_WIFI_QR is not set"
+	set_config_value "${br_output}/.config" BR2_PACKAGE_TOUCH_DOTS "# BR2_PACKAGE_TOUCH_DOTS is not set"
 fi
 set_config_value "${br_output}/.config" BR2_ROOTFS_OVERLAY "\"${rootfs_overlay}\""
 set_config_value "${br_output}/.config" BR2_ROOTFS_POST_BUILD_SCRIPT "\"${post_build_scripts}\""
@@ -2550,7 +2661,20 @@ if [[ "$board" == "tab5" ]]; then
 		"CONFIG_FB_SIMPLE=y" \
 		"CONFIG_FB_PROVIDE_GET_FB_UNMAPPED_AREA=y" \
 		"CONFIG_TOUCHSCREEN_ST7123=y" \
-		"CONFIG_KEYBOARD_TAB5=y"; do
+		"CONFIG_KEYBOARD_TAB5=y" \
+		"CONFIG_GPIO_PI4IOE5V6408=y" \
+		"CONFIG_SENSORS_INA2XX=y" \
+		"CONFIG_BMI270_I2C=y" \
+		"CONFIG_RTC_DRV_DS1307=y" \
+		"CONFIG_PWM_ESP32P4_LEDC=y" \
+		"CONFIG_BACKLIGHT_PWM=y" \
+		"CONFIG_POWER_RESET_GPIO=y" \
+		"CONFIG_GPIO_SYSFS=y" \
+		"CONFIG_USB_DWC2_HOST=y" \
+		"CONFIG_USB_STORAGE=y" \
+		"CONFIG_USB_HID=y" \
+		"CONFIG_SPI_GPIO=y" \
+		"CONFIG_MMC_SPI=y"; do
 		grep -Fqx -- "${expected}" "${kernel_config}" || {
 			echo "Tab5 kernel config check failed: ${expected}" >&2
 			exit 1
@@ -2656,6 +2780,14 @@ if $ssh_profile; then
 			}
 			[[ -x "${br_output}/target/usr/bin/wifi-qr" ]] || {
 				echo "m3-lab check failed: wifi-qr missing" >&2
+				exit 1
+			}
+			grep -Fqx -- "BR2_PACKAGE_TOUCH_DOTS=y" "${br_output}/.config" || {
+				echo "m3-lab config check failed: BR2_PACKAGE_TOUCH_DOTS=y" >&2
+				exit 1
+			}
+			[[ -x "${br_output}/target/usr/bin/touch-dots" ]] || {
+				echo "m3-lab check failed: touch-dots missing" >&2
 				exit 1
 			}
 		fi

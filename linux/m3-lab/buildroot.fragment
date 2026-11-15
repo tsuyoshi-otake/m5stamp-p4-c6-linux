@@ -10,3 +10,7 @@ BR2_PACKAGE_BOOT_COMMIT=y
 # Signed regulatory.db so country= (config.txt or wpa_supplicant.conf) can
 # leave the world regdomain (#32).  The kernel verifies it with its built-in key.
 BR2_PACKAGE_WIRELESS_REGDB=y
+# aplay/arecord would come from alsa-utils, but the package depends on
+# BR2_USE_MMU (fork) so these selects silently drop on this NOMMU build.
+# The ES8388/I2S0 probe instead uses the pcm-sine package, which speaks
+# the raw SNDRV_PCM ioctl ABI and needs no libasound (#24).

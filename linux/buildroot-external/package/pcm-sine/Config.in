@@ -1,0 +1,7 @@
+config BR2_PACKAGE_PCM_SINE
+	bool "Tab5 raw-ioctl sine player"
+	help
+	  Plays a short sine through /dev/snd/pcmC0D0p using only the
+	  SNDRV_PCM ioctl ABI -- the NOMMU-static aplay stand-in for the
+	  ES8388/I2S0 bring-up (#24), since alsa-utils needs fork() and
+	  tinyalsa needs dynamic linking.

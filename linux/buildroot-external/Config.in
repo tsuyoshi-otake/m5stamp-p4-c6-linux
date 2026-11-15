@@ -13,6 +13,8 @@ source "$BR2_EXTERNAL_STAMP_P4_PATH/package/busybox-su/Config.in"
 source "$BR2_EXTERNAL_STAMP_P4_PATH/package/busybox-tools/Config.in"
 source "$BR2_EXTERNAL_STAMP_P4_PATH/package/busybox-udhcpc/Config.in"
 source "$BR2_EXTERNAL_STAMP_P4_PATH/package/wifi-qr/Config.in"
+source "$BR2_EXTERNAL_STAMP_P4_PATH/package/touch-dots/Config.in"
+source "$BR2_EXTERNAL_STAMP_P4_PATH/package/pcm-sine/Config.in"
 
 config BR2_PACKAGE_STAMP_P4_M1
 	bool "M1 minimal native Linux profile"

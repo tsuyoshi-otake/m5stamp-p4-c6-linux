@@ -1,0 +1,170 @@
+From: Devin <devin@cognition.ai>
+Subject: [PATCH tab5] gpio: Diodes PI4IOE5V6408 I2C expander
+
+Tab5 carries two PI4IOE5V6408 expanders at 0x43/0x44 on the internal
+I2C bus; the boot shim programs their rails (C6 power, USB-A 5 V,
+TP/LCD reset release, charger enables) before jumping to Linux.  This
+driver registers each chip as an 8-line gpio_chip via gpio-regmap so
+Linux consumers can use them without clobbering shim state: probe
+writes nothing, REGCACHE_NONE keeps reads live, and every line change
+is a read-modify-write of a single byte.
+
+IO_DIR polarity is 1=output / 0=input (opposite of pca953x), mapped
+to reg_dir_out_base.  The expander INT output is not wired to an
+irq-capable pad, so no irq_chip is registered.  Do not add gpio-hogs
+to these nodes: a hog would reprogram direction at bind time and can
+drop the C6 rail or re-assert LCD_RST.
+
+Signed-off-by: Devin <devin@cognition.ai>
+---
+ drivers/gpio/Kconfig              |  14 ++++
+ drivers/gpio/Makefile             |   1 +
+ drivers/gpio/gpio-pi4ioe5v6408.c  | 109 +++
+ 3 files changed, 124 insertions(+)
+
+diff --git a/drivers/gpio/Kconfig b/drivers/gpio/Kconfig
+--- a/drivers/gpio/Kconfig
++++ b/drivers/gpio/Kconfig
+@@ -1283,6 +1283,20 @@ config GPIO_PCF857X
+ 	  This driver provides an in-kernel interface to those GPIOs using
+ 	  platform-neutral GPIO calls.
+ 
++config GPIO_PI4IOE5V6408
++	tristate "Diodes PI4IOE5V6408 I2C GPIO expander"
++	depends on I2C
++	select GPIO_REGMAP
++	select REGMAP_I2C
++	help
++	  Support for the Diodes PI4IOE5V6408 8-bit I2C GPIO expander.
++	  The driver performs no register writes at probe time; output
++	  states programmed by earlier boot stages are preserved until a
++	  GPIO consumer drives a line.
++
++	  To compile this driver as a module, choose M here: the module
++	  will be called gpio-pi4ioe5v6408.
++
+ config GPIO_TPIC2810
+ 	tristate "TPIC2810 8-Bit I2C GPO expander"
+ 	help
+diff --git a/drivers/gpio/Makefile b/drivers/gpio/Makefile
+--- a/drivers/gpio/Makefile
++++ b/drivers/gpio/Makefile
+@@ -144,3 +144,4 @@ obj-$(CONFIG_GPIO_PALMAS)		+= gpio-palmas.o
+ obj-$(CONFIG_GPIO_PCF857X)		+= gpio-pcf857x.o
++obj-$(CONFIG_GPIO_PI4IOE5V6408)		+= gpio-pi4ioe5v6408.o
+ obj-$(CONFIG_GPIO_PCH)			+= gpio-pch.o
+ obj-$(CONFIG_GPIO_PCIE_IDIO_24)		+= gpio-pcie-idio-24.o
+diff --git a/drivers/gpio/gpio-pi4ioe5v6408.c b/drivers/gpio/gpio-pi4ioe5v6408.c
+new file mode 100644
+--- /dev/null
++++ b/drivers/gpio/gpio-pi4ioe5v6408.c
+@@ -0,0 +1,109 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Diodes PI4IOE5V6408 8-bit I2C GPIO expander, via gpio-regmap.
++ *
++ * Registers (odd addresses):
++ *   0x01  CHIP_RESET   0x03  IO_DIR      0x05  OUT_SET
++ *   0x07  OUT_H_IM     0x09  IN_DEF_STA  0x0b  PULL_EN
++ *   0x0d  PULL_SEL     0x0f  IN_STATUS   0x11  INT_MASK
++ *   0x13  IRQ_STATUS
++ *
++ * IO_DIR is 1=output / 0=input, so it maps to gpio-regmap's
++ * reg_dir_out_base.  OUT_H_IM, PULL_*, IN_DEF_STA, INT_MASK and
++ * IRQ_STATUS have no GPIO-line consumers and are left alone.
++ *
++ * Boards can power their logic through these outputs: on the Tab5
++ * the boot shim owns the reset/pull/direction/output programming
++ * (C6 rail, USB-A 5 V, TP/LCD reset release, charger enables).  To
++ * keep that state intact this driver performs no register writes at
++ * probe -- REGCACHE_NONE makes every access a live bus transaction
++ * and gpio-regmap touches hardware only when a consumer drives a
++ * line, and even then with read-modify-write.  For the same reason
++ * gpio-hogs must not be attached to this chip's nodes: a hog would
++ * reprogram direction at bind time.  The expander INT line is not
++ * wired to an irq-capable pad, so no interrupt support is offered.
++ */
++
++#include <linux/gpio/regmap.h>
++#include <linux/i2c.h>
++#include <linux/mod_devicetable.h>
++#include <linux/module.h>
++#include <linux/regmap.h>
++
++#define PI4IOE5V6408_REG_IO_DIR		0x03	/* 1=output, 0=input */
++#define PI4IOE5V6408_REG_OUT_SET	0x05
++#define PI4IOE5V6408_REG_IN_STATUS	0x0f
++
++static const struct regmap_config pi4ioe5v6408_regmap_config = {
++	.reg_bits = 8,
++	.val_bits = 8,
++	.cache_type = REGCACHE_NONE,
++};
++
++static int pi4ioe5v6408_probe(struct i2c_client *client)
++{
++	struct gpio_regmap_config config = { };
++	unsigned int dir = 0, out = 0, in = 0;
++	struct regmap *regmap;
++	int ret;
++
++	regmap = devm_regmap_init_i2c(client, &pi4ioe5v6408_regmap_config);
++	if (IS_ERR(regmap))
++		return dev_err_probe(&client->dev, PTR_ERR(regmap),
++				     "regmap init failed\n");
++
++	config.parent = &client->dev;
++	config.regmap = regmap;
++	config.ngpio = 8;
++	config.label = dev_name(&client->dev);
++	config.reg_dat_base = PI4IOE5V6408_REG_IN_STATUS;
++	config.reg_set_base = PI4IOE5V6408_REG_OUT_SET;
++	config.reg_dir_out_base = PI4IOE5V6408_REG_IO_DIR;
++
++	ret = PTR_ERR_OR_ZERO(devm_gpio_regmap_register(&client->dev,
++							&config));
++	if (ret)
++		return dev_err_probe(&client->dev, ret,
++				     "gpio-regmap register failed\n");
++
++	/*
++	 * Read-only snapshot for the boot log: proves the chip answers
++	 * and shows the state the boot loader left, without writing a
++	 * single bit.
++	 */
++	ret = regmap_read(regmap, PI4IOE5V6408_REG_IO_DIR, &dir);
++	if (ret)
++		return dev_err_probe(&client->dev, ret,
++				     "chip does not answer\n");
++	regmap_read(regmap, PI4IOE5V6408_REG_OUT_SET, &out);
++	regmap_read(regmap, PI4IOE5V6408_REG_IN_STATUS, &in);
++	dev_info(&client->dev, "registered, dir=0x%02x out=0x%02x in=0x%02x\n",
++		 dir, out, in);
++	return 0;
++}
++
++static const struct of_device_id pi4ioe5v6408_of_match[] = {
++	{ .compatible = "diodes,pi4ioe5v6408" },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, pi4ioe5v6408_of_match);
++
++static const struct i2c_device_id pi4ioe5v6408_id[] = {
++	{ "pi4ioe5v6408" },
++	{ }
++};
++MODULE_DEVICE_TABLE(i2c, pi4ioe5v6408_id);
++
++static struct i2c_driver pi4ioe5v6408_driver = {
++	.driver = {
++		.name = "pi4ioe5v6408",
++		.of_match_table = pi4ioe5v6408_of_match,
++	},
++	.probe = pi4ioe5v6408_probe,
++	.id_table = pi4ioe5v6408_id,
++};
++module_i2c_driver(pi4ioe5v6408_driver);
++
++MODULE_AUTHOR("Devin <devin@cognition.ai>");
++MODULE_DESCRIPTION("Diodes PI4IOE5V6408 I2C GPIO expander");
++MODULE_LICENSE("GPL");

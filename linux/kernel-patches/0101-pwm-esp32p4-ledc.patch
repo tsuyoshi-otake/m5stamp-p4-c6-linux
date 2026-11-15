@@ -1,0 +1,227 @@
+LED PWM: ESP32-P4 LEDC controller driver
+
+The ESP32-P4 LEDC block provides 8 PWM channels over 4 timers with a
+shared clock selector.  This driver programs the timer divider (Q10.8)
+and per-channel duty, leaving pin routing to whatever configured it
+(on Tab5 the boot shim routes channel 0 to GPIO22 for the LCD
+backlight).  Clock source is fixed to XTAL 40 MHz, which the shim
+already selected and Linux never gates.
+
+ drivers/pwm/Kconfig            | 10 ++++++++++
+ drivers/pwm/Makefile           |  1 +
+ drivers/pwm/pwm-esp32p4-ledc.c | 183 +++++++++++++++
+
+--- a/drivers/pwm/Kconfig
++++ b/drivers/pwm/Kconfig
+@@ -259,6 +259,16 @@
+ 	  To compile this driver as a module, choose M here: the module
+ 	  will be called pwm-ep93xx.
+ 
++config PWM_ESP32P4_LEDC
++	tristate "ESP32-P4 LEDC PWM support"
++	depends on HAS_IOMEM
++	help
++	  PWM framework driver for the LEDC block in the ESP32-P4 (8
++	  channels, 4 timers).  Used for the M5Stack Tab5 LCD backlight.
++
++	  To compile this driver as a module, choose M here: the module
++	  will be called pwm-esp32p4-ledc.
++
+ config PWM_FSL_FTM
+ 	tristate "Freescale FlexTimer Module (FTM) PWM support"
+ 	depends on HAS_IOMEM
+--- a/drivers/pwm/Makefile
++++ b/drivers/pwm/Makefile
+@@ -23,5 +23,6 @@
+ obj-$(CONFIG_PWM_DWC)		+= pwm-dwc.o
+ obj-$(CONFIG_PWM_EP93XX)	+= pwm-ep93xx.o
++obj-$(CONFIG_PWM_ESP32P4_LEDC)	+= pwm-esp32p4-ledc.o
+ obj-$(CONFIG_PWM_FSL_FTM)	+= pwm-fsl-ftm.o
+ obj-$(CONFIG_PWM_GPIO)		+= pwm-gpio.o
+ obj-$(CONFIG_PWM_HIBVT)		+= pwm-hibvt.o
+--- /dev/null
++++ b/drivers/pwm/pwm-esp32p4-ledc.c
+@@ -0,0 +1,183 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * ESP32-P4 LEDC PWM driver -- the subset needed for the Tab5 LCD
++ * backlight (and any other LEDC channel a board describes).
++ *
++ * Register layout from esp-idf soc/esp32p4/register/hw_ver3/ledc_reg.h.
++ * The boot shim already routes the LEDC channel-0 output signal to
++ * GPIO22 and runs timer0 at 5 kHz/10-bit on the XTAL clock, so this
++ * driver only has to program channel/timer registers; pin routing
++ * through the GPIO matrix is left as the shim configured it.
++ *
++ * Clocking follows the shim: all four timers share one source chosen
++ * in LEDC_CONF.APB_CLK_SEL, XTAL (40 MHz) is always on under Linux.
++ */
++
++#include <linux/err.h>
++#include <linux/io.h>
++#include <linux/math64.h>
++#include <linux/module.h>
++#include <linux/of.h>
++#include <linux/platform_device.h>
++#include <linux/pwm.h>
++
++#define LEDC_CH_CONF0(ch)	((ch) * 0x14)
++#define LEDC_CH_HPOINT(ch)	(0x04 + (ch) * 0x14)
++#define LEDC_CH_DUTY(ch)	(0x08 + (ch) * 0x14)
++
++#define LEDC_TIMER_SEL(ch)	((ch) & 0x3)	/* CONF0[1:0] */
++#define LEDC_SIG_OUT_EN		BIT(2)		/* CONF0[2] */
++#define LEDC_CH_PARA_UP		BIT(4)		/* CONF0[4] */
++
++#define LEDC_TIMER_CONF(t)	(0xa0 + (t) * 0x08)
++#define LEDC_TIMER_DUTY_RES_S	0
++#define LEDC_TIMER_CLK_DIV_S	5
++#define LEDC_TIMER_CLK_DIV_MASK	0x3ffffU
++#define LEDC_TIMER_RST		BIT(24)
++#define LEDC_TIMER_PARA_UP	BIT(26)
++
++#define LEDC_CONF		0x170
++#define LEDC_APB_CLK_SEL_XTAL	2
++#define LEDC_CLK_EN		BIT(31)
++
++#define LEDC_NUM_CHANNELS	8
++#define LEDC_DUTY_RES		10		/* bits, matches the shim */
++#define LEDC_DUTY_MAX		(1 << LEDC_DUTY_RES)
++#define LEDC_XTAL_HZ		40000000UL
++/* Duty register holds the counter compare in Q(duty_res).4. */
++#define LEDC_DUTY_FRAC		4
++
++struct esp32p4_ledc {
++	void __iomem *base;
++};
++
++static int esp32p4_ledc_apply(struct pwm_chip *chip, struct pwm_device *pwm,
++			      const struct pwm_state *state)
++{
++	struct esp32p4_ledc *ledc = pwmchip_get_drvdata(chip);
++	unsigned int ch = pwm->hwpwm;
++	unsigned int timer = LEDC_TIMER_SEL(ch);
++	unsigned long long div;
++	u32 conf0, duty_cnt = 0;
++
++	if (!state->enabled) {
++		conf0 = readl(ledc->base + LEDC_CH_CONF0(ch));
++		conf0 &= ~LEDC_SIG_OUT_EN;
++		writel(conf0 | LEDC_CH_PARA_UP, ledc->base + LEDC_CH_CONF0(ch));
++		return 0;
++	}
++
++	/*
++	 * div is Q10.8 over the timer clock: ledc freq =
++	 * XTAL * 256 / (div * 2^duty_res).  Reject periods the
++	 * 18-bit divider cannot reach.
++	 */
++	div = (unsigned long long)LEDC_XTAL_HZ * 256 * state->period;
++	div = div64_u64(div, (u64)NSEC_PER_SEC * LEDC_DUTY_MAX);
++	if (!div || div > LEDC_TIMER_CLK_DIV_MASK)
++		return -EINVAL;
++
++	duty_cnt = mul_u64_u64_div_u64(state->duty_cycle,
++				       LEDC_DUTY_MAX, state->period);
++	if (duty_cnt > LEDC_DUTY_MAX)
++		duty_cnt = LEDC_DUTY_MAX;
++
++	writel(LEDC_TIMER_RST, ledc->base + LEDC_TIMER_CONF(timer));
++	writel((div << LEDC_TIMER_CLK_DIV_S) |
++	       (LEDC_DUTY_RES << LEDC_TIMER_DUTY_RES_S) |
++	       LEDC_TIMER_PARA_UP,
++	       ledc->base + LEDC_TIMER_CONF(timer));
++
++	writel(0, ledc->base + LEDC_CH_HPOINT(ch));
++	writel(duty_cnt << LEDC_DUTY_FRAC, ledc->base + LEDC_CH_DUTY(ch));
++	writel(timer | LEDC_SIG_OUT_EN | LEDC_CH_PARA_UP,
++	       ledc->base + LEDC_CH_CONF0(ch));
++	return 0;
++}
++
++static int esp32p4_ledc_get_state(struct pwm_chip *chip,
++				  struct pwm_device *pwm,
++				  struct pwm_state *state)
++{
++	struct esp32p4_ledc *ledc = pwmchip_get_drvdata(chip);
++	unsigned int ch = pwm->hwpwm;
++	u32 conf0, tconf, div, duty_reg;
++
++	conf0 = readl(ledc->base + LEDC_CH_CONF0(ch));
++	tconf = readl(ledc->base + LEDC_TIMER_CONF(LEDC_TIMER_SEL(ch)));
++	div = (tconf >> LEDC_TIMER_CLK_DIV_S) & LEDC_TIMER_CLK_DIV_MASK;
++	duty_reg = readl(ledc->base + LEDC_CH_DUTY(ch));
++
++	state->polarity = PWM_POLARITY_NORMAL;
++	state->enabled = !!(conf0 & LEDC_SIG_OUT_EN);
++	if (div) {
++		unsigned long long period =
++			(u64)NSEC_PER_SEC * LEDC_DUTY_MAX * div;
++
++		state->period = div64_u64(period,
++					  (u64)LEDC_XTAL_HZ * 256);
++		state->duty_cycle = div64_u64(
++			(u64)(duty_reg >> LEDC_DUTY_FRAC) * state->period,
++			LEDC_DUTY_MAX);
++	} else {
++		state->period = 0;
++		state->duty_cycle = 0;
++	}
++	return 0;
++}
++
++static const struct pwm_ops esp32p4_ledc_ops = {
++	.apply = esp32p4_ledc_apply,
++	.get_state = esp32p4_ledc_get_state,
++};
++
++static int esp32p4_ledc_probe(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct pwm_chip *chip;
++	struct esp32p4_ledc *ledc;
++	u32 conf;
++	int ret;
++
++	chip = devm_pwmchip_alloc(dev, LEDC_NUM_CHANNELS, sizeof(*ledc));
++	if (IS_ERR(chip))
++		return PTR_ERR(chip);
++	ledc = pwmchip_get_drvdata(chip);
++
++	ledc->base = devm_platform_ioremap_resource(pdev, 0);
++	if (IS_ERR(ledc->base))
++		return PTR_ERR(ledc->base);
++
++	/* Keep the shim's clocking: XTAL for all timers, regs clocked. */
++	conf = readl(ledc->base + LEDC_CONF);
++	conf &= ~0x3;
++	conf |= LEDC_APB_CLK_SEL_XTAL | LEDC_CLK_EN;
++	writel(conf, ledc->base + LEDC_CONF);
++
++	chip->ops = &esp32p4_ledc_ops;
++	ret = devm_pwmchip_add(dev, chip);
++	if (ret)
++		return dev_err_probe(dev, ret, "failed to register pwm chip");
++
++	dev_info(dev, "registered %d LEDC channels (XTAL clock)\n",
++		 LEDC_NUM_CHANNELS);
++	return 0;
++}
++
++static const struct of_device_id esp32p4_ledc_of_match[] = {
++	{ .compatible = "espressif,esp32p4-ledc" },
++	{ /* sentinel */ }
++};
++MODULE_DEVICE_TABLE(of, esp32p4_ledc_of_match);
++
++static struct platform_driver esp32p4_ledc_driver = {
++	.probe = esp32p4_ledc_probe,
++	.driver = {
++		.name = "esp32p4-ledc",
++		.of_match_table = esp32p4_ledc_of_match,
++	},
++};
++module_platform_driver(esp32p4_ledc_driver);
++
++MODULE_DESCRIPTION("ESP32-P4 LEDC PWM driver");
++MODULE_LICENSE("GPL");

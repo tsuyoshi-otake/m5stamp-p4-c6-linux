@@ -118,6 +118,32 @@
 		status = "reserved-fb";
 	};
 
+	/*
+	 * LCD backlight through the ME2212 boost on GPIO22, driven by
+	 * LEDC channel 0 at 5 kHz.  Levels map 0..1024 onto the duty;
+	 * 307 = the shim's ~30% boot default so handoff is invisible.
+	 * Console blanking goes through the usual backlight notifier.
+	 */
+	backlight: backlight {
+		compatible = "pwm-backlight";
+		pwms = <&ledc 0 200000>;
+		brightness-levels = <0 1024>;
+		num-interpolated-steps = <1024>;
+		default-brightness-level = <307>;
+	};
+
+	/*
+	 * Safe poweroff: expander 0x44 P4 (PWROFF) requests the board
+	 * power controller to cut the rails.  The driver probes with
+	 * GPIOD_OUT_LOW which is a no-op against the shim state (pin
+	 * already output-low), and only pulses the line in the
+	 * sys_off handler at real poweroff time.
+	 */
+	gpio-poweroff {
+		compatible = "gpio-poweroff";
+		gpios = <&exp1 4 GPIO_ACTIVE_HIGH>;
+	};
+
 	soc: soc {
 		#address-cells = <1>;
 		#size-cells = <1>;
@@ -186,42 +212,58 @@
 		};
 
 		/*
-		 * GPIO bank 0 (hw pins 0..31), driven by the espressif,esp32p4-gpio
-		 * controller (patch 0002-gpio-esp32p4.patch, reused verbatim from the
-		 * WHY2025 reference).  Needed for the touch stack: hw GPIO23 is the
-		 * ST712x INT line (a GPIO_INT0 child interrupt) and hw GPIO31 is the
-		 * bit-banged SDA below.  Bank 0 also owns the GPIO_INT0 parent line,
-		 * so this node doubles as the pin-interrupt controller.
+		 * GPIO controller (patch 0002-gpio-esp32p4.patch): one parent
+		 * owns the shared MMIO page and each child is one bank with
+		 * its own gpio_chip.  Bank 0 (hw pins 0..31) is needed for the
+		 * touch stack: hw GPIO23 is the ST712x INT line (a GPIO_INT0
+		 * child interrupt) and hw GPIO31 is the bit-banged SDA below.
+		 * Bank 0 also owns the GPIO_INT0 parent line, so its node
+		 * doubles as the pin-interrupt controller.
 		 *
-		 * Exposing bank 0 does not revive the C6-reset hazard the phase-1
-		 * notes guarded against: the hazard was never the node itself but a
-		 * Linux driver asserting GPIO15 (C6 EN/reset).  Nothing in DT claims
-		 * GPIO15, and esp-hosted-ng still runs with resetpin =
-		 * HOST_GPIO_PIN_INVALID (its stamp-p4 defaults patch), so no Linux
-		 * consumer ever requests that pin; the reset pulse stays shim-owned.
-		 * GPIO_INT0 is ETS source 74 (INTMTX map reg +0x128); CLIC slot 26
-		 * is free on this board.
+		 * Exposing bank 0 does not revive the C6-reset hazard the
+		 * phase-1 notes guarded against: the hazard was never the node
+		 * itself but a Linux driver asserting GPIO15 (C6 EN/reset).
+		 * Nothing in DT claims GPIO15, and esp-hosted-ng still runs
+		 * with resetpin = HOST_GPIO_PIN_INVALID (its stamp-p4
+		 * defaults patch), so no Linux consumer ever requests that
+		 * pin; the reset pulse stays shim-owned.
+		 * GPIO_INT0 is ETS source 74 (INTMTX map reg +0x128); CLIC
+		 * slot 26 is free on this board.
 		 */
-		gpio0: gpio-bank0@500e0000 {
+		gpio@500e0000 {
 			compatible = "espressif,esp32p4-gpio";
 			reg = <0x500e0000 0x1000>;
-			espressif,bank-id = <0>;
-			gpio-controller;
-			#gpio-cells = <2>;
-			interrupt-controller;
-			#interrupt-cells = <2>;
-			interrupts-extended = <&clic0 26 74 IRQ_TYPE_LEVEL_HIGH>;
 			status = "okay";
+
+			gpio0: bank0 {
+				espressif,bank-id = <0>;
+				gpio-controller;
+				#gpio-cells = <2>;
+				interrupt-controller;
+				#interrupt-cells = <2>;
+				interrupts-extended =
+					<&clic0 26 74 IRQ_TYPE_LEVEL_HIGH>;
+			};
+
+			/* GPIO bank 1 (hw pins 32..56): SCL lives on hw GPIO32. */
+			gpio1: bank1 {
+				espressif,bank-id = <1>;
+				gpio-controller;
+				#gpio-cells = <2>;
+			};
 		};
 
-		/* GPIO bank 1 (hw pins 32..56): SCL lives on hw GPIO32. */
-		gpio1: gpio-bank1@500e0000 {
-			compatible = "espressif,esp32p4-gpio";
-			reg = <0x500e0000 0x1000>;
-			espressif,bank-id = <1>;
-			gpio-controller;
-			#gpio-cells = <2>;
-			status = "okay";
+		/*
+		 * LEDC PWM: the shim routes channel 0 to GPIO22 (LCD
+		 * backlight boost EN) and runs timer0 at 5 kHz/10-bit
+		 * on XTAL (~30% duty).  This node registers the whole
+		 * block; pwm-backlight below keeps that state until
+		 * userspace changes it.
+		 */
+		ledc: pwm@500d3000 {
+			compatible = "espressif,esp32p4-ledc";
+			reg = <0x500d3000 0x1000>;
+			#pwm-cells = <2>;
 		};
 
 		/*
@@ -238,6 +280,21 @@
 			#clock-cells = <0>;
 			clock-frequency = <40000000>;
 			clock-output-names = "sdmmc-biu";
+		};
+
+		/*
+		 * I2S0 MCLK as programmed by the esp32-p4-i2s driver:
+		 * PLL_160M / 13 = 12.307692 MHz (~256 * 48 kHz).  The
+		 * es8328 driver only models the canonical MCLK rates and
+		 * rejects the real value with -EINVAL, so this declares
+		 * the nominal 12.288 MHz the codec's divider table
+		 * targets (actual rate is +0.16 %, within its tolerance).
+		 */
+		es8388_mclk: es8388-mclk {
+			compatible = "fixed-clock";
+			#clock-cells = <0>;
+			clock-frequency = <12288000>;
+			clock-output-names = "es8388-mclk";
 		};
 
 		sdmmc_ciu_clk: sdmmc-ciu-clock {
@@ -282,11 +339,33 @@
 		};
 
 		/*
+		 * USB-A port: the USB2.0 HS DWC controller (USB_DWC_HS,
+		 * 0x50000000) with its dedicated UTMI PHY pads.  The boot
+		 * shim's Tab5 path enables the otg20 sys clock + 48 MHz
+		 * PHY ref clock and pulses the shared otg20/PHY reset;
+		 * VBUS on the connector is expander 0x44 P3 (USB5V_EN),
+		 * which the boot shim leaves driven high.  dr_mode host:
+		 * the port is a hardwired Type-A receptacle.  ETS_USB_OTG
+		 * interrupt source is 93, routed to free CLIC slot 27.
+		 * PIO mode is forced by kernel patch 0063 (the NOMMU
+		 * port has no coherent DMA for this core).
+		 */
+		usb_otg: usb@50000000 {
+			compatible = "espressif,esp32p4-otg", "snps,dwc2";
+			reg = <0x50000000 0x10000>;
+			interrupts-extended = <&clic0 27 93 IRQ_TYPE_LEVEL_HIGH>;
+			dr_mode = "host";
+			hnp-disable;
+			srp-disable;
+			status = "okay";
+		};
+
+		/*
 		 * Full-Speed USB OTG (DWC2) is disabled on Tab5: its internal
 		 * FSLS PHY is wired to GPIO26/27, which are the board's I2S
 		 * audio pins -- there is no connector on this controller.
-		 * (The USB-A port sits on the USB2.0 HS controller @0x50000000
-		 * with dedicated pads, not modeled yet.)
+		 * (The USB-A port sits on the HS controller @0x50000000
+		 * above.)
 		 */
 		usb_otg11: usb@50040000 {
 			compatible = "espressif,esp32p4-otg11", "snps,dwc2";
@@ -329,6 +408,47 @@
 			status = "okay";
 		};
 
+		/*
+		 * I2S0 audio block.  The P4 I2S unit carries no DMA of
+		 * its own: samples move through the AHB GDMA at
+		 * 0x50085000 (out-ch0 for playback, in-ch1 for
+		 * capture), bound by peri_sel = 3 (I2S0).  The driver
+		 * also programs hp_sys_clkrst (apb gate + module
+		 * clock + MCLK select), lp_clkrst (MCLK pad), and the
+		 * GPIO matrix / IO_MUX for MCLK/BCK/WS/DOUT/DIN, so
+		 * those blocks appear as extra reg ranges.
+		 *
+		 * Pins are the board I2S pair to the ES8388 codec:
+		 * MCLK=GPIO30, BCK=GPIO27, WS=GPIO29, DOUT=GPIO26,
+		 * DIN=GPIO28.  Speaker-amp enable and headphone-detect
+		 * live on expander 0x43 P1/P7 and belong to the
+		 * expander-IC driver, not here.
+		 *
+		 * AHB_PDMA_OUT_CH0 is ETS source 59, AHB_PDMA_IN_CH1 is
+		 * 57; CLIC slots 27/28 are free on this board.
+		 */
+		i2s0: i2s@500c6000 {
+			compatible = "espressif,esp32p4-i2s";
+			reg = <0x500c6000 0x1000>, <0x50085000 0x1000>,
+				<0x500e6000 0x200>, <0x50111000 0x100>,
+				<0x500e0000 0x2000>;
+			reg-names = "i2s", "dma", "clkrst", "lpclkrst",
+				    "gpio";
+			interrupts-extended =
+				<&clic0 29 59 IRQ_TYPE_LEVEL_HIGH>,
+				<&clic0 28 57 IRQ_TYPE_LEVEL_HIGH>;
+			interrupt-names = "tx", "rx";
+			espressif,peri-sel = <3>;
+			espressif,i2s-unit = <0>;
+			espressif,mclk-pin = <30>;
+			espressif,bck-pin = <27>;
+			espressif,ws-pin = <29>;
+			espressif,dout-pin = <26>;
+			espressif,din-pin = <28>;
+			#sound-dai-cells = <0>;
+			status = "okay";
+		};
+
 		/* Patched at runtime by boot-shim/main.c with the flash MMU VA. */
 		flash@deadbeef {
 			compatible = "mtd-rom";
@@ -343,25 +463,27 @@
 	 * image puts on SDA=GPIO31 (bank 0) / SCL=GPIO32 (bank 1).
 	 * The boot shim releases the IDF I2C master and returns both
 	 * pads to plain GPIO before the jump (tab5_i2c_release), so
-	 * this driver finds clean inputs to toggle.  Direction-toggle
-	 * open-drain emulation is used (no *-open-drain props):
-	 * Tab5 carries the stock external pull-ups and the P4 pads
-	 * are not declared hardware open-drain to gpiolib here.
-	 * ~100 kHz like the stock touch transactions.
+	 * this driver finds clean inputs to toggle.  Both lines are
+	 * declared GPIO_OPEN_DRAIN: the esp32p4 gpiochip has no
+	 * hardware open-drain set_config, so gpiolib emulates it by
+	 * direction toggling -- exactly the drive pattern i2c-gpio
+	 * wants, and the named sda/scl props replace the deprecated
+	 * 'gpios' form.  ~100 kHz like the stock touch transactions.
 	 *
-	 * Other chips live on this bus (expanders 0x43/0x44, codec,
-	 * RTC, fuel gauge) but are intentionally unclaimed: the
-	 * expanders are shim-programmed rails (TP_RST stays
-	 * released) and the rest is out of scope for v1.  The node
-	 * sits at root level: i2c-gpio is a software adapter with no
-	 * register window, not an soc unit.
+	 * Other chips live on this bus too (codec, RTC, fuel gauge,
+	 * IMU, power monitor).  The two expanders are shim-programmed
+	 * rails claimed below: their driver writes nothing at probe,
+	 * so the shim state survives, and direction changes belong to
+	 * consumers, never to gpio-hogs.  The node sits at root
+	 * level: i2c-gpio is a software adapter with no register
+	 * window, not an soc unit.
 	 */
 	i2c0: i2c-gpio {
 		compatible = "i2c-gpio";
 		#address-cells = <1>;
 		#size-cells = <0>;
-		gpios = <&gpio0 31 GPIO_ACTIVE_HIGH>,	/* SDA */
-			<&gpio1 0 GPIO_ACTIVE_HIGH>;	/* SCL */
+		sda-gpios = <&gpio0 31 (GPIO_ACTIVE_HIGH|GPIO_OPEN_DRAIN)>;
+		scl-gpios = <&gpio1 0 (GPIO_ACTIVE_HIGH|GPIO_OPEN_DRAIN)>;
 		i2c-gpio,delay-us = <5>;
 		status = "okay";
 
@@ -385,6 +507,122 @@
 			touchscreen-inverted-x;
 			status = "okay";
 		};
+
+		/*
+		 * PI4IOE5V6408 8-bit expanders; line names from
+		 * board-contract.json.  The shim owns their
+		 * reset/pull/direction/output programming (C6 rail,
+		 * USB-A 5 V, TP/LCD reset release, charger enables);
+		 * the driver registers the chips without writing at
+		 * probe, and no gpio-hogs may sit here because a hog
+		 * would reprogram direction at bind time -- 0x44 P0
+		 * is the C6 rail and dropping it kills Wi-Fi.
+		 */
+		exp0: gpio@43 {
+			compatible = "diodes,pi4ioe5v6408";
+			reg = <0x43>;
+			gpio-controller;
+			#gpio-cells = <2>;
+			gpio-line-names =
+				"EXT_ANT_EN", "SPK_EN", "EXT5V_EN", "RESERVED_P3",
+				"LCD_RST", "TP_RST", "CAM_RST", "HP_DET";
+		};
+
+		exp1: gpio@44 {
+			compatible = "diodes,pi4ioe5v6408";
+			reg = <0x44>;
+			gpio-controller;
+			#gpio-cells = <2>;
+			gpio-line-names =
+				"WLAN_PWR_EN", "PWR_GOOD", "CHG_STA", "USB5V_EN",
+				"PWROFF", "nCHG_QC_EN", "USBC_DET", "CHG_EN";
+		};
+
+		/*
+		 * Bosch BMI270 6-axis IMU; INT1/INT2 routing to P4 is
+		 * unconfirmed so no interrupts property -- polled
+		 * data only.  Probe uploads the Bosch init blob from
+		 * /lib/firmware/bmi270-init-data.fw (shipped in the
+		 * Tab5 rootfs overlay).
+		 */
+		bmi270@68 {
+			compatible = "bosch,bmi270";
+			reg = <0x68>;
+		};
+
+		/*
+		 * RX8130CE RTC at 0x32 (the M5 docs' 0x51 is a PCF8563-
+		 * family value; the datasheet slave address is 0x32).
+		 * Seconds register confirmed counting on-device.  The
+		 * supercap-backed clock persists across power-off; no
+		 * wakeup interrupt is routed to the P4 in this design.
+		 */
+		rtc@32 {
+			compatible = "epson,rx8130";
+			reg = <0x32>;
+		};
+
+		/*
+		 * INA226 power monitor on the battery rail: Tab5
+		 * schematic U31 with R39 = R005 (5 mOhm, 1%).  Bus
+		 * voltage = battery voltage; positive current means
+		 * discharging, negative means charging.
+		 */
+		ina226@41 {
+			compatible = "ti,ina226";
+			reg = <0x41>;
+			shunt-resistor = <5000>;
+		};
+
+		/*
+		 * Alternate-panel SKU: GT911 touch controller at 0x5d,
+		 * paired with the ILI9881C display.  It shares the
+		 * ST712x wiring (INT GPIO23, TP_RST expander 0x43 P5)
+		 * and is only populated on that SKU, so the node can
+		 * stay enabled on this bus next to touch@55: only one
+		 * of the two ever answers.  INT polarity matches the
+		 * board wiring; confirm on the alternate SKU.
+		 */
+		gt911: touchscreen@5d {
+			compatible = "goodix,gt911";
+			reg = <0x5d>;
+			interrupts-extended =
+				<&gpio0 23 IRQ_TYPE_EDGE_FALLING>;
+			touchscreen-size-x = <720>;
+			touchscreen-size-y = <1280>;
+			touchscreen-swapped-x-y;
+			touchscreen-inverted-x;
+			status = "okay";
+		};
+
+		/*
+		 * ES8388 stereo codec at 0x10, clocked by I2S0 MCLK.
+		 * Upstream's es8328 driver claims es8388 compatibility
+		 * (everest,es8388); the parts it does not model are
+		 * bring-up work, not a different driver.  Its probe
+		 * devm_clk_get(NULL)s the codec clock: describe the MCLK
+		 * the i2s driver programs (PLL_160M/13, ~12.3 MHz) as a
+		 * fixed-clock so the request resolves.
+		 */
+		es8388: audio-codec@10 {
+			compatible = "everest,es8388";
+			reg = <0x10>;
+			clocks = <&es8388_mclk>;
+			#sound-dai-cells = <0>;
+			status = "okay";
+		};
+
+		/*
+		 * ES7210 4-channel microphone ADC at 0x40.  There is
+		 * no upstream Linux driver; kept disabled so nothing
+		 * probes it.  Until one is written, mic input uses
+		 * the ES8388's own ADC.
+		 */
+		es7210: audio-adc@40 {
+			compatible = "everest,es7210";
+			reg = <0x40>;
+			status = "disabled";
+		};
 	};
 
 	/*
@@ -400,8 +638,8 @@
 		compatible = "i2c-gpio";
 		#address-cells = <1>;
 		#size-cells = <0>;
-		gpios = <&gpio0 0 GPIO_ACTIVE_HIGH>,	/* SDA */
-			<&gpio0 1 GPIO_ACTIVE_HIGH>;	/* SCL */
+		sda-gpios = <&gpio0 0 (GPIO_ACTIVE_HIGH|GPIO_OPEN_DRAIN)>;
+		scl-gpios = <&gpio0 1 (GPIO_ACTIVE_HIGH|GPIO_OPEN_DRAIN)>;
 		i2c-gpio,delay-us = <5>;
 		status = "okay";
 
@@ -415,6 +653,57 @@
 			 */
 			m5stack,led-brightness = <20>;
 			status = "okay";
+		};
+	};
+
+	/*
+	 * microSD slot 0 in SPI mode (#29): the slot is wired to SDMMC
+	 * slot 0's dedicated pads CLK43 CMD44 D0..3=39..42, but slot 0
+	 * is not reachable through the Linux dw_mmc instance (that
+	 * driver models one host per controller and slot 1 carries the
+	 * C6).  The pads are bit-banged instead via spi-gpio +
+	 * mmc_spi -- slow (hundreds of KB/s) but enough for config and
+	 * data exchange.  Card power is the on-chip LDO VO4, which the
+	 * boot shim holds at 3.3 V.  Start at 400 kHz; the slot has no
+	 * card-detect pin.
+	 */
+	spi_sd: spi-gpio {
+		compatible = "spi-gpio";
+		#address-cells = <1>;
+		#size-cells = <0>;
+		sck-gpios  = <&gpio1 11 GPIO_ACTIVE_HIGH>; /* GPIO43 CLK */
+		mosi-gpios = <&gpio1 12 GPIO_ACTIVE_HIGH>; /* GPIO44 CMD */
+		miso-gpios = <&gpio1  7 GPIO_ACTIVE_HIGH>; /* GPIO39 D0  */
+		cs-gpios   = <&gpio1 10 GPIO_ACTIVE_LOW>;  /* GPIO42 D3  */
+		num-chipselects = <1>;
+		status = "okay";
+
+		mmc-slot@0 {
+			compatible = "mmc-spi-slot";
+			reg = <0>;
+			spi-max-frequency = <400000>;
+			voltage-ranges = <3300 3300>;
+		};
+	};
+
+	/*
+	 * ES8388 + I2S0 link.  simple-audio-card is enough here: the
+	 * amp/headphone switching through expander 0x43 is handled
+	 * by the expander-IC driver, not the machine driver.
+	 */
+	sound {
+		compatible = "simple-audio-card";
+		simple-audio-card,name = "Tab5-ES8388";
+		simple-audio-card,format = "i2s";
+		simple-audio-card,bitclock-master = <&i2s0>;
+		simple-audio-card,frame-master = <&i2s0>;
+		simple-audio-card,mclk-fs = <256>;
+
+		simple-audio-card,cpu {
+			sound-dai = <&i2s0>;
+		};
+		simple-audio-card,codec {
+			sound-dai = <&es8388>;
 		};
 	};
 
