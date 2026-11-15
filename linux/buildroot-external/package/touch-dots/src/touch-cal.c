@@ -9,9 +9,11 @@
  *	fb_x = a*x + b*y + c
  *	fb_y = d*x + e*y + f
  *
- * and writes the six coefficients to CAL_FILE in the boot drive's
- * key=value style ("touch_cal=a,b,c,d,e,f").  touch-dots reads the
- * same file and applies the map when it exists.
+ * and saves the six coefficients to touch-cal.txt on the boot drive
+ * (via boot-edit --put; /boot itself may be read-only after boot)
+ * in the key=value style ("touch_cal=a,b,c,d,e,f").  bootsyncd then
+ * publishes it as /tmp/touch-cal.txt, which touch-dots reads and
+ * applies when it exists.
  *
  * Prints the coefficients and the residual error in px per point,
  * then restores the text console and exits.
@@ -23,19 +25,23 @@
 #include <linux/input.h>
 #include <linux/kd.h>
 #include <math.h>
+#include <poll.h>
 #include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <time.h>
 #include <unistd.h>
 
 #define INPUT_DEV "/dev/input/event0"
 #define FB0 "/dev/fb0"
 #define TTY0 "/dev/tty0"
 #define TTYCON "/dev/console"
-#define CAL_FILE "/boot/touch-cal.txt"
+#define CAL_NAME "touch-cal.txt"
+#define CAL_TMP "/tmp/touch-cal.txt"
+#define CAL_PUT "boot-edit --put " CAL_NAME
 
 #define N_TARGETS 5
 #define MARGIN 40
@@ -131,6 +137,48 @@ static void draw_target(int i, int tx, int ty)
 	ioctl(fbfd, FBIOPAN_DISPLAY, &var);
 }
 
+/* Discard input until the finger has been up for 300 ms.  A tap is
+ * often followed by a second, spurious contact (or the tail of the
+ * same press), which would otherwise advance the next target to the
+ * same place. */
+static void wait_release_quiet(int infd)
+{
+	struct input_event evs[16];
+	struct timespec rel;
+	ssize_t n;
+
+	clock_gettime(CLOCK_MONOTONIC, &rel);
+	for (;;) {
+		struct timespec now;
+		long ms;
+		struct pollfd p = { .fd = infd, .events = POLLIN };
+		int r = poll(&p, 1, 350);
+
+		if (stopped)
+			return;
+		if (r <= 0)
+			return;
+		n = read(infd, evs, sizeof(evs));
+		if (n <= 0)
+			continue;
+		for (int off = 0; off + (int)sizeof(*evs) <= n;
+		     off += (int)sizeof(*evs)) {
+			const struct input_event *e =
+				(const struct input_event *)
+				((const char *)evs + off);
+			if ((e->type == EV_KEY && e->code == BTN_TOUCH) ||
+			    (e->type == EV_ABS &&
+			     e->code == ABS_MT_TRACKING_ID))
+				clock_gettime(CLOCK_MONOTONIC, &rel);
+		}
+		clock_gettime(CLOCK_MONOTONIC, &now);
+		ms = (now.tv_sec - rel.tv_sec) * 1000 +
+		     (now.tv_nsec - rel.tv_nsec) / 1000000;
+		if (ms >= 300)
+			return;
+	}
+}
+
 /* Wait for one tap; returns the averaged reported position. */
 static int read_tap(int infd, int *ox, int *oy)
 {
@@ -139,6 +187,7 @@ static int read_tap(int infd, int *ox, int *oy)
 	int ax = -1, ay = -1, touching = 0;
 	ssize_t n;
 
+	wait_release_quiet(infd);
 	for (;;) {
 		n = read(infd, evs, sizeof(evs));
 		if (n <= 0) {
@@ -245,11 +294,11 @@ static int fit_affine(const int rx[N_TARGETS], const int ry[N_TARGETS],
 static int write_cal(const double co[6],
 		     const int raw_x[N_TARGETS], const int raw_y[N_TARGETS])
 {
-	FILE *f = fopen(CAL_FILE, "w");
-	int i;
+	FILE *f = fopen(CAL_TMP, "w"), *put;
+	int i, rc;
 
 	if (!f) {
-		fprintf(stderr, "touch-cal: %s: %s\n", CAL_FILE,
+		fprintf(stderr, "touch-cal: %s: %s\n", CAL_TMP,
 			strerror(errno));
 		return -1;
 	}
@@ -260,6 +309,22 @@ static int write_cal(const double co[6],
 		fprintf(f, "# point%d raw=(%d,%d)\n", i + 1,
 			raw_x[i], raw_y[i]);
 	fclose(f);
+
+	/* /boot may be unmounted or read-only after boot; the boot
+	 * drive's files are changed through boot-edit instead (#20). */
+	put = popen(CAL_PUT " < " CAL_TMP, "w");
+	if (!put) {
+		fprintf(stderr, "touch-cal: boot-edit: %s\n",
+			strerror(errno));
+		return -1;
+	}
+	rc = pclose(put);
+	if (rc != 0) {
+		fprintf(stderr, "touch-cal: %s failed (rc=%d)\n",
+			CAL_PUT, rc);
+		return -1;
+	}
+	printf("touch-cal: saved %s on the boot drive\n", CAL_NAME);
 	return 0;
 }
 
@@ -275,7 +340,8 @@ int main(int argc, char *argv[])
 		if (strcmp(argv[i], "-h") == 0 ||
 		    strcmp(argv[i], "--help") == 0) {
 			fputs("usage: touch-cal [/dev/input/eventN]\n"
-			      "  5-point touch calibration; writes " CAL_FILE "\n",
+			      "  5-point touch calibration; writes " CAL_NAME
+			      " on the boot drive\n",
 			      stderr);
 			return 0;
 		}
