@@ -231,12 +231,24 @@ static void enable_sdmmc_clock(void)
 static i2c_master_bus_handle_t s_i2c_bus;
 static i2c_master_dev_handle_t s_exp0;
 static i2c_master_dev_handle_t s_exp1;
+/* Last OUT_SET value written to each expander; the release log prints
+ * these instead of re-reading the bus (a readback there has nothing
+ * new to say and can only fail). */
+static uint8_t s_out_set0, s_out_set1;
 
 static esp_err_t expander_write(i2c_master_dev_handle_t dev, uint8_t reg,
 				uint8_t value)
 {
 	uint8_t buf[2] = { reg, value };
-	return i2c_master_transmit(dev, buf, sizeof(buf), 100);
+	esp_err_t err = i2c_master_transmit(dev, buf, sizeof(buf), 100);
+
+	if (err == ESP_OK && reg == PI4IO_REG_OUT_SET) {
+		if (dev == s_exp0)
+			s_out_set0 = value;
+		else if (dev == s_exp1)
+			s_out_set1 = value;
+	}
+	return err;
 }
 
 /*
@@ -595,18 +607,7 @@ void tab5_i2c_release(void)
 	esp_err_t rm0 = ESP_OK, rm1 = ESP_OK, del = ESP_OK;
 	uint32_t route, i2c_slot, route_rb;
 	uint32_t outsel31, outsel32, en31, en32;
-	uint8_t rd = PI4IO_REG_OUT_SET, out0 = 0, out1 = 0;
-
-	/*
-	 * Read the expander output latches first: the blocking I2C API
-	 * still needs the I2C0 interrupt route live, so this must happen
-	 * before the detach below.  P5 of expander 0x43 is TP_RST (held
-	 * high); P0 of expander 0x44 is the C6 rail.
-	 */
-	bool have0 = s_exp0 &&
-		i2c_master_transmit_receive(s_exp0, &rd, 1, &out0, 1, 100) == ESP_OK;
-	bool have1 = s_exp1 &&
-		i2c_master_transmit_receive(s_exp1, &rd, 1, &out1, 1, 100) == ESP_OK;
+	uint8_t out0 = s_out_set0, out1 = s_out_set1;
 
 	unsigned long mie = RV_CLEAR_CSR(mstatus, MSTATUS_MIE) & MSTATUS_MIE;
 
@@ -678,10 +679,9 @@ void tab5_i2c_release(void)
 		 esp_err_to_name(del), i2c_slot, route_rb & 0x3f, i2c_slot,
 		 outsel31, outsel32, en31, en32,
 		 gpio_get_level(GPIO_NUM_23));
-	ESP_LOGI(TAG, "i2c release: exp0 out=%s0x%02x P5/TP_RST=%d, "
-		 "exp1 out=%s0x%02x P0/C6rail=%d -- touch rail left on",
-		 have0 ? "" : "?!", out0, (out0 >> 5) & 1,
-		 have1 ? "" : "?!", out1, out1 & 1);
+	ESP_LOGI(TAG, "i2c release: exp0 last-write out=0x%02x P5/TP_RST=%d, "
+		 "exp1 last-write out=0x%02x P0/C6rail=%d -- touch rail "
+		 "left on", out0, (out0 >> 5) & 1, out1, out1 & 1);
 }
 
 /*
