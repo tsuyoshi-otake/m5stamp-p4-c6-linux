@@ -324,6 +324,10 @@ installation whose A/B slots and metadata are already initialized.
 `-PreserveBoot` is still accepted for compatibility and is a no-op.
 The script verifies the writes and resets the board so Linux boots; pass
 `-NoReset` to leave it in download mode.
+It also checks the board twice (#23): the artifact DTB's model must match
+`-Board` (default: the package's own board — Stamp-P4 here), and it reads
+the DTB already in flash so writing a Stamp-P4 image over a board that last
+ran Tab5 stops unless you pass `-AllowBoardChange`.
 
 #### Option C: Manual Multi-Partition Flash
 ```bash
