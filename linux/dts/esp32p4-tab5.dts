@@ -347,8 +347,9 @@
 		 * which the boot shim leaves driven high.  dr_mode host:
 		 * the port is a hardwired Type-A receptacle.  ETS_USB_OTG
 		 * interrupt source is 93, routed to free CLIC slot 27.
-		 * PIO mode is forced by kernel patch 0063 (the NOMMU
-		 * port has no coherent DMA for this core).
+		 * The 0063 force-PIO only names the FS core
+		 * (espressif,esp32p4-otg11); this HS core runs the
+		 * auto-detected internal-buffer-DMA host mode.
 		 */
 		usb_otg: usb@50000000 {
 			compatible = "espressif,esp32p4-otg", "snps,dwc2";
@@ -357,6 +358,15 @@
 			dr_mode = "host";
 			hnp-disable;
 			srp-disable;
+			/*
+			 * This core is internal-DMA only (GHWCFG2.ARCH=2):
+			 * no slave mode exists to force, so transfers go
+			 * through the core's own DMA engine and every
+			 * buffer hand-off needs dcache maintenance --
+			 * without dma-noncoherent the engine reads stale
+			 * setup/data and enumeration dies with -32/-71.
+			 */
+			dma-noncoherent;
 			status = "okay";
 		};
 
