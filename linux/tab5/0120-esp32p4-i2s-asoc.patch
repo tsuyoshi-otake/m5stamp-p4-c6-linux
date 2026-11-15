@@ -462,12 +462,15 @@ index 0000000..ac7c6ab
 +#define LLDESC_MAX_BYTES 4092
 +
 +static int esp32p4_dma_setup(struct esp32_p4_i2s *i2s,
-+			     struct snd_pcm_runtime *runtime, bool tx)
++			     struct snd_pcm_runtime *runtime,
++			     struct snd_pcm_hw_params *params, bool tx)
 +{
 +	struct ahb_lldesc *descs;
 +	dma_addr_t descs_phys;
-+	u32 periods = runtime->periods;
-+	u32 pbytes = frames_to_bytes(runtime, runtime->period_size);
++	/* runtime->period_size/periods are only filled by the core
++	 * after hw_params returns, so take them from params here. */
++	u32 periods = params_periods(params);
++	u32 pbytes = params_period_bytes(params);
 +	u32 chunks = DIV_ROUND_UP(pbytes, LLDESC_MAX_BYTES);
 +	u32 total = periods * chunks;
 +	dma_addr_t buf = runtime->dma_addr;
@@ -550,7 +553,7 @@ index 0000000..ac7c6ab
 +	struct esp32_p4_i2s *i2s = dev_get_drvdata(component->dev);
 +	bool tx = substream->stream == SNDRV_PCM_STREAM_PLAYBACK;
 +
-+	return esp32p4_dma_setup(i2s, substream->runtime, tx);
++	return esp32p4_dma_setup(i2s, substream->runtime, params, tx);
 +}
 +
 +static int esp32p4_pcm_trigger(struct snd_soc_component *component,
