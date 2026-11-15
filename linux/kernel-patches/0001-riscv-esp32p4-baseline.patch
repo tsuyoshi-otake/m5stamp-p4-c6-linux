@@ -16,7 +16,6 @@ index 429e07589306..6349a15b05f2 100644
 +	depends on !MMU && ARCH_ESPRESSIF
 +	select RISCV_DMA_NONCOHERENT
 +	select RISCV_NONSTANDARD_CACHE_OPS
-+	select DMA_GLOBAL_POOL
 +	select NOMMU_USERSPACE_POOL
 +	help
 +	  This enables support for the Espressif ESP32-P4 SoC.

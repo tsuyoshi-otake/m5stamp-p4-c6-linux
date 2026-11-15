@@ -748,20 +748,6 @@
 			no-map;
 		};
 
-		/*
-		 * Global coherent pool backing dma_alloc_coherent() for
-		 * noncoherent devices (the USB-A DWC2 status buffer,
-		 * descriptor lists and the USB core's transfer-buffer
-		 * pools).  Without it the driver's dma_alloc_coherent
-		 * calls return NULL and dwc2_hcd_init fails -ENOMEM.
-		 */
-		dma_pool: dma-pool@494af000 {
-			compatible = "shared-dma-pool";
-			reg = <0x494af000 0x00100000>;
-			no-map;
-			linux,dma-default;
-		};
-
 		/* Second pool region: same layout as the Stamp image. */
 		linux_nommu_pool_low: nommu-userspace-pool@495af000 {
 			compatible = "linux,nommu-userspace-pool";
