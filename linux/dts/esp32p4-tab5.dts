@@ -416,6 +416,18 @@
 				"WLAN_PWR_EN", "PWR_GOOD", "CHG_STA", "USB5V_EN",
 				"PWROFF", "nCHG_QC_EN", "USBC_DET", "CHG_EN";
 		};
+
+		/*
+		 * INA226 power monitor on the battery rail: Tab5
+		 * schematic U31 with R39 = R005 (5 mOhm, 1%).  Bus
+		 * voltage = battery voltage; positive current means
+		 * discharging, negative means charging.
+		 */
+		ina226@41 {
+			compatible = "ti,ina226";
+			reg = <0x41>;
+			shunt-resistor = <5000>;
+		};
 	};
 
 	/*

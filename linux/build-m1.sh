@@ -1260,6 +1260,9 @@ CONFIG_KEYBOARD_TAB5=y
 # shim-programmed rails survive.  REGMAP_I2C and GPIO_REGMAP come in
 # via Kconfig select.
 CONFIG_GPIO_PI4IOE5V6408=y
+# INA226 power monitor at 0x41 on the battery rail (5 mOhm shunt,
+# see the DTS node).  HWMON is already on.
+CONFIG_SENSORS_INA2XX=y
 EOF
 fi
 if [[ -n "$pstore_identity" ]]; then
@@ -2561,7 +2564,8 @@ if [[ "$board" == "tab5" ]]; then
 		"CONFIG_FB_PROVIDE_GET_FB_UNMAPPED_AREA=y" \
 		"CONFIG_TOUCHSCREEN_ST7123=y" \
 		"CONFIG_KEYBOARD_TAB5=y" \
-		"CONFIG_GPIO_PI4IOE5V6408=y"; do
+		"CONFIG_GPIO_PI4IOE5V6408=y" \
+		"CONFIG_SENSORS_INA2XX=y"; do
 		grep -Fqx -- "${expected}" "${kernel_config}" || {
 			echo "Tab5 kernel config check failed: ${expected}" >&2
 			exit 1
