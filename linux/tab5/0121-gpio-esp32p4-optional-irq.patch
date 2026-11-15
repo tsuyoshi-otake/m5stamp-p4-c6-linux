@@ -1,0 +1,27 @@
+From: Devin <devin@cognition.ai>
+Subject: [PATCH tab5] gpio: esp32p4: treat a missing interrupt as absent, not as EINVAL
+
+diff --git a/drivers/gpio/gpio-esp32p4.c b/drivers/gpio/gpio-esp32p4.c
+index 90f9aac..bee0dbc 100644
+--- a/drivers/gpio/gpio-esp32p4.c
++++ b/drivers/gpio/gpio-esp32p4.c
+@@ -402,7 +402,18 @@ static int esp32p4_gpio_bank_probe(struct device *dev,
+ 	 * `interrupts` property is not a probe failure — the chip just
+ 	 * remains output-/poll-only.
+ 	 */
+-	irq = of_irq_get(np, 0);
++	/*
++	 * of_irq_get() does not return -ENXIO for a node that declares
++	 * no interrupt at all: of_irq_parse_one() walks up to the parent
++	 * and fails the whole lookup with -EINVAL, which wrongly kills
++	 * banks like bank1 that only carry espressif,bank-id.  Only ask
++	 * OF when the child actually declares an interrupt.
++	 */
++	if (of_property_present(np, "interrupts") ||
++	    of_property_present(np, "interrupts-extended"))
++		irq = of_irq_get(np, 0);
++	else
++		irq = 0;
+ 	if (irq > 0) {
+ 		struct gpio_irq_chip *girq = &gpio->ggc.gc.irq;
+ 
