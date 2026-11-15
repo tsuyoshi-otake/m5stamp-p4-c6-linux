@@ -49,9 +49,7 @@ diff --git a/drivers/gpio/Kconfig b/drivers/gpio/Kconfig
 diff --git a/drivers/gpio/Makefile b/drivers/gpio/Makefile
 --- a/drivers/gpio/Makefile
 +++ b/drivers/gpio/Makefile
-@@ -144,5 +144,6 @@ obj-$(CONFIG_GPIO_PALMAS)		+= gpio-palmas.o
- obj-$(CONFIG_GPIO_PCA953X)		+= gpio-pca953x.o
- obj-$(CONFIG_GPIO_PCA9570)		+= gpio-pca9570.o
+@@ -144,3 +144,4 @@ obj-$(CONFIG_GPIO_PALMAS)		+= gpio-palmas.o
  obj-$(CONFIG_GPIO_PCF857X)		+= gpio-pcf857x.o
 +obj-$(CONFIG_GPIO_PI4IOE5V6408)		+= gpio-pi4ioe5v6408.o
  obj-$(CONFIG_GPIO_PCH)			+= gpio-pch.o

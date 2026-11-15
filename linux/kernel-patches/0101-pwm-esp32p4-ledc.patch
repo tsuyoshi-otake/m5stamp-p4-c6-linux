@@ -29,7 +29,7 @@ already selected and Linux never gates.
 +
  config PWM_FSL_FTM
  	tristate "Freescale FlexTimer Module (FTM) PWM support"
- 	depends on FSL_SOC || ARCH_LAYERSCAPE || COMPILE_TEST
+ 	depends on HAS_IOMEM
 --- a/drivers/pwm/Makefile
 +++ b/drivers/pwm/Makefile
 @@ -23,5 +23,6 @@
