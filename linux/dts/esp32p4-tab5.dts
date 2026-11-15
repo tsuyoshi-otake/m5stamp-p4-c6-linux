@@ -349,12 +349,13 @@
 	 * are not declared hardware open-drain to gpiolib here.
 	 * ~100 kHz like the stock touch transactions.
 	 *
-	 * Other chips live on this bus (expanders 0x43/0x44, codec,
-	 * RTC, fuel gauge) but are intentionally unclaimed: the
-	 * expanders are shim-programmed rails (TP_RST stays
-	 * released) and the rest is out of scope for v1.  The node
-	 * sits at root level: i2c-gpio is a software adapter with no
-	 * register window, not an soc unit.
+	 * Other chips live on this bus too (codec, RTC, fuel gauge,
+	 * IMU, power monitor).  The two expanders are shim-programmed
+	 * rails claimed below: their driver writes nothing at probe,
+	 * so the shim state survives, and direction changes belong to
+	 * consumers, never to gpio-hogs.  The node sits at root
+	 * level: i2c-gpio is a software adapter with no register
+	 * window, not an soc unit.
 	 */
 	i2c0: i2c-gpio {
 		compatible = "i2c-gpio";
@@ -384,6 +385,36 @@
 			touchscreen-swapped-x-y;
 			touchscreen-inverted-x;
 			status = "okay";
+		};
+
+		/*
+		 * PI4IOE5V6408 8-bit expanders; line names from
+		 * board-contract.json.  The shim owns their
+		 * reset/pull/direction/output programming (C6 rail,
+		 * USB-A 5 V, TP/LCD reset release, charger enables);
+		 * the driver registers the chips without writing at
+		 * probe, and no gpio-hogs may sit here because a hog
+		 * would reprogram direction at bind time -- 0x44 P0
+		 * is the C6 rail and dropping it kills Wi-Fi.
+		 */
+		exp0: gpio@43 {
+			compatible = "diodes,pi4ioe5v6408";
+			reg = <0x43>;
+			gpio-controller;
+			#gpio-cells = <2>;
+			gpio-line-names =
+				"EXT_ANT_EN", "SPK_EN", "EXT5V_EN", "RESERVED_P3",
+				"LCD_RST", "TP_RST", "CAM_RST", "HP_DET";
+		};
+
+		exp1: gpio@44 {
+			compatible = "diodes,pi4ioe5v6408";
+			reg = <0x44>;
+			gpio-controller;
+			#gpio-cells = <2>;
+			gpio-line-names =
+				"WLAN_PWR_EN", "PWR_GOOD", "CHG_STA", "USB5V_EN",
+				"PWROFF", "nCHG_QC_EN", "USBC_DET", "CHG_EN";
 		};
 	};
 

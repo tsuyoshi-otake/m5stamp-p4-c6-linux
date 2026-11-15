@@ -1031,6 +1031,10 @@ if $network_profile; then
 	# CMD_DONE, arm the same timer from the write CMD_DONE IRQ instead.
 	patches+=(0061-dw-mmc-tx-dto-on-cmd-done.patch)
 fi
+# Diodes PI4IOE5V6408 8-bit I2C GPIO expander (Tab5 has two at
+# 0x43/0x44).  Board-agnostic: the patch applies to every build but
+# only lights up where a DT node claims the chip.
+patches+=(0100-gpio-pi4ioe5v6408.patch)
 for patch_name in "${patches[@]}"; do
 	if [[ "$patch_name" == 0000-esp32-serial-resurrect.patch ||
 	      "$patch_name" == 0022-esp32p4-systimer-level-trigger.patch ||
@@ -1075,6 +1079,7 @@ for patch_name in "${patches[@]}"; do
 	      "$patch_name" == 0085-dw-mmc-fiford-mode.patch ||
 	      "$patch_name" == 0086-dw-mmc-dma-threshold.patch ||
 	      "$patch_name" == 0087-dw-mmc-fifo-bounce.patch ||
+	      "$patch_name" == 0100-gpio-pi4ioe5v6408.patch ||
 	      "$patch_name" == 0056-wdt-stacktrace.patch ||
 	      "$patch_name" == 0055-sdio-clock-attest.patch ||
 	      "$patch_name" == 0060-dw-mmc-tx-software-dto.patch ||
@@ -1250,6 +1255,11 @@ CONFIG_TOUCHSCREEN_ST7123=y
 # default y.
 CONFIG_INPUT_KEYBOARD=y
 CONFIG_KEYBOARD_TAB5=y
+# PI4IOE5V6408 I2C expanders at 0x43/0x44 (linux/kernel-patches/0100):
+# registered through gpio-regmap with no probe-time writes so the
+# shim-programmed rails survive.  REGMAP_I2C and GPIO_REGMAP come in
+# via Kconfig select.
+CONFIG_GPIO_PI4IOE5V6408=y
 EOF
 fi
 if [[ -n "$pstore_identity" ]]; then
@@ -2550,7 +2560,8 @@ if [[ "$board" == "tab5" ]]; then
 		"CONFIG_FB_SIMPLE=y" \
 		"CONFIG_FB_PROVIDE_GET_FB_UNMAPPED_AREA=y" \
 		"CONFIG_TOUCHSCREEN_ST7123=y" \
-		"CONFIG_KEYBOARD_TAB5=y"; do
+		"CONFIG_KEYBOARD_TAB5=y" \
+		"CONFIG_GPIO_PI4IOE5V6408=y"; do
 		grep -Fqx -- "${expected}" "${kernel_config}" || {
 			echo "Tab5 kernel config check failed: ${expected}" >&2
 			exit 1
