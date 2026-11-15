@@ -374,28 +374,84 @@ ap_live() {
 	return 0
 }
 
-# #22: a wiped-out C6 boot leaves the SDIO link half-up; reloading the host
-# driver re-runs the probe and the C6 handshake.  One retry only: a link
-# that needs a second reload needs a hardware reset, not another loop.
+# The ssid can take several seconds to show in iw depending on the C6 and
+# the SDIO clock.  Poll ap_live once a second for up to ten; bail early on
+# fresh SDIO errors -- the link is dead, more waiting cannot fix this
+# attempt.  $1 = dmesg line marker passed through to ap_live.
+ap_wait_ready() {
+	w=0
+	while [ "$w" -lt 10 ]; do
+		ap_live "$1" && return 0
+		case "$AP_WHY" in
+		*SDIO*) return 1 ;;
+		esac
+		net_tick 1
+		w=$((w + 1))
+	done
+	return 1
+}
+
+# Pulse the C6 EN/reset pin low then high through the GPIO block.
+# Tab5 GPIO15 is on bank 0, Stamp-P4 GPIO42 on bank 1; no DT consumer
+# claims either (the documented hazard was a driver asserting it at
+# probe time) -- this is a deliberate recovery action.
+c6_reset_regs() {
+	case "$1" in
+	*Tab5*)
+		# GPIO15, bank 0: ENABLE_W1TS / OUT_W1TC / OUT_W1TS
+		echo "0x500e0024 0x500e000c 0x500e0008 0x8000" ;;
+	*Stamp*)
+		# GPIO42 = bank 1 bit 10: ENABLE1/OUT1 W1TS/W1TC
+		echo "0x500e0030 0x500e0018 0x500e0014 0x400" ;;
+	*) return 1 ;;
+	esac
+}
+c6_reset_pulse() {
+	model_file=${C6_MODEL_FILE:-/sys/firmware/devicetree/base/model}
+	regs=$(c6_reset_regs "$(tr -d '\0' < "$model_file" 2>/dev/null)") || return 1
+	set -- $regs
+	devmem "$1" 32 "$4" 2>/dev/null || return 1
+	devmem "$2" 32 "$4" 2>/dev/null || return 1
+	sleep 1
+	devmem "$3" 32 "$4" 2>/dev/null || return 1
+	return 0
+}
+
+# #22: a wiped-out C6 boot leaves the SDIO link half-up.  The module
+# cannot be unloaded (see the sdio_mhz note above), so rmmod/insmod is
+# not an option; the real re-init is: unbind the sdio function from its
+# driver, pulse the C6 reset, wait for it to boot, then re-probe so
+# esp_probe/ esp_init runs the handshake again.  esp_remove() exists, so
+# the unbind is a clean teardown.  One retry only.
 c6_reinit() {
-	echo "M3-lab: retrying SoftAP once after C6 re-init (esp32_sdio reload)"
-	stop_wpa
-	ifconfig wlan0 down 2>/dev/null || true
-	if ! rmmod esp32_sdio 2>/dev/null; then
-		echo "M3-lab: esp32_sdio rmmod failed"
+	bus=${C6_SDIO_BUS:-/sys/bus/sdio}
+	fdev=${C6_SDIO_DEV:-}
+	if [ -z "$fdev" ]; then
+		for d in "$bus"/devices/mmc*:0001:1; do
+			[ -e "$d" ] && { fdev=$d; break; }
+		done
+	fi
+	if [ -z "$fdev" ]; then
+		echo "M3-lab: C6 re-init skipped: no sdio function device"
 		return 1
 	fi
-	insmod "$KO" "clockspeed=$WANT_MHZ" 2>/dev/null || {
-		echo "M3-lab: esp32_sdio insmod failed"
-		return 1
-	}
+	fname=${fdev##*/}
+	echo "M3-lab: retrying SoftAP once after C6 re-init (reset pulse + sdio re-probe of $fname)"
+	stop_wpa
+	ifconfig wlan0 down 2>/dev/null || true
+	[ -w "$fdev/driver/unbind" ] &&
+		echo "$fname" > "$fdev/driver/unbind" 2>/dev/null || true
+	c6_reset_pulse ||
+		echo "M3-lab: C6 reset GPIO unknown on this board; re-probing anyway"
+	sleep 2
+	echo "$fname" > "$bus/drivers_probe" 2>/dev/null || true
 	r=0
 	while [ "$r" -lt 15 ]; do
 		ifconfig wlan0 >/dev/null 2>&1 && return 0
 		net_tick 1
 		r=$((r + 1))
 	done
-	echo "M3-lab: wlan0 did not return after esp32_sdio reload"
+	echo "M3-lab: wlan0 did not return after C6 re-init"
 	return 1
 }
 
@@ -535,8 +591,7 @@ start() {
 					rm -rf /var/run/wpa_supplicant* 2>/dev/null || true
 					apply_channel || true
 					start_wpa
-					net_tick 2
-					if ap_live "$((pre_dmesg + 1))"; then
+					if ap_wait_ready "$((pre_dmesg + 1))"; then
 						ap_up=1
 						break
 					fi
