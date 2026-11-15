@@ -17,7 +17,7 @@ Clocks are programmed directly in hp_sys_clkrst: apb gate + module
 reset, PLL_160M through an integer divider into the TX/RX module
 clocks, mst_clk_sel binds MCLK to the TX clock, and lp_clkrst enables
 the MCLK pad.  BCK/WS/DOUT/DIN route through the GPIO matrix from the
-espressif,*-gpio DT properties.
+espressif,*-pin DT properties.
 
 Only staged for ES_BOARD=tab5 builds (linux/build-m1.sh).
 
@@ -99,7 +99,7 @@ index 0000000..ac7c6ab
 + * per-direction module clock with integer divider from PLL_160M,
 + * mst_clk_sel binds MCLK to the TX module clock, and lp_clkrst
 + * enables the MCLK pad.  Pins route through the GPIO matrix/IO_MUX
-+ * from the espressif,*-gpio properties.
++ * from the espressif,*-pin properties.
 + */
 +
 +#include <linux/bitops.h>
@@ -824,15 +824,15 @@ index 0000000..ac7c6ab
 +	i2s->ws_pin = -1;
 +	i2s->dout_pin = -1;
 +	i2s->din_pin = -1;
-+	of_property_read_u32(pdev->dev.of_node, "espressif,mclk-gpio", &v);
++	of_property_read_u32(pdev->dev.of_node, "espressif,mclk-pin", &v);
 +	i2s->mclk_pin = (int)v;
-+	of_property_read_u32(pdev->dev.of_node, "espressif,bck-gpio", &v);
++	of_property_read_u32(pdev->dev.of_node, "espressif,bck-pin", &v);
 +	i2s->bck_pin = (int)v;
-+	of_property_read_u32(pdev->dev.of_node, "espressif,ws-gpio", &v);
++	of_property_read_u32(pdev->dev.of_node, "espressif,ws-pin", &v);
 +	i2s->ws_pin = (int)v;
-+	of_property_read_u32(pdev->dev.of_node, "espressif,dout-gpio", &v);
++	of_property_read_u32(pdev->dev.of_node, "espressif,dout-pin", &v);
 +	i2s->dout_pin = (int)v;
-+	of_property_read_u32(pdev->dev.of_node, "espressif,din-gpio", &v);
++	of_property_read_u32(pdev->dev.of_node, "espressif,din-pin", &v);
 +	i2s->din_pin = (int)v;
 +
 +	ret = devm_request_irq(&pdev->dev, i2s->irq_tx, esp32p4_tx_irq, 0,

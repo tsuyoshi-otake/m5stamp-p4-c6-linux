@@ -425,11 +425,11 @@
 			interrupt-names = "tx", "rx";
 			espressif,peri-sel = <3>;
 			espressif,i2s-unit = <0>;
-			espressif,mclk-gpio = <30>;
-			espressif,bck-gpio = <27>;
-			espressif,ws-gpio = <29>;
-			espressif,dout-gpio = <26>;
-			espressif,din-gpio = <28>;
+			espressif,mclk-pin = <30>;
+			espressif,bck-pin = <27>;
+			espressif,ws-pin = <29>;
+			espressif,dout-pin = <26>;
+			espressif,din-pin = <28>;
 			#sound-dai-cells = <0>;
 			status = "okay";
 		};
