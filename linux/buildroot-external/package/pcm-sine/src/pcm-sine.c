@@ -97,16 +97,21 @@ int main(int argc, char **argv)
 	ivl_set(&IVL(p, SNDRV_PCM_HW_PARAM_RATE), rate);
 	/* The DMA engine maps periods onto at most 32 lldescs of 4092 B;
 	 * 2048-frame periods (8 KiB at S16 stereo) in an 8192-frame
-	 * buffer stay well inside that.  PERIOD_TIME/BUFFER_TIME must
-	 * be pinned too: hw_params_choose() would otherwise take the
-	 * minimum period_time (84 us), which derives period_size 4 and
-	 * empties the pinned 2048-frame interval. */
+	 * buffer stay well inside that.  Every related derived param
+	 * must be pinned too: hw_params_choose() picks min/max for any
+	 * unfixed interval (e.g. period_time min 84us derives
+	 * period_size 4; periods min 2 derives buffer_size 4096), which
+	 * empties a pinned interval and fails the whole ioctl.  Use
+	 * values that derive back to the pinned frames at this rate:
+	 * period_time = 2048/rate rounded up, buffer_time = 8192/rate,
+	 * periods = 8192/2048.  64-bit math: frames*1e6 overflows u32. */
 	ivl_set(&IVL(p, SNDRV_PCM_HW_PARAM_PERIOD_SIZE), 2048);
 	ivl_set(&IVL(p, SNDRV_PCM_HW_PARAM_BUFFER_SIZE), 8192);
+	ivl_set(&IVL(p, SNDRV_PCM_HW_PARAM_PERIODS), 4);
 	ivl_set(&IVL(p, SNDRV_PCM_HW_PARAM_PERIOD_TIME),
-		(rate / 2048) ? (2048 * 1000000 / rate + 1) : 0);
+		(unsigned int)((2048ULL * 1000000) / rate + 1));
 	ivl_set(&IVL(p, SNDRV_PCM_HW_PARAM_BUFFER_TIME),
-		(rate / 8192) ? (8192 * 1000000 / rate + 1) : 0);
+		(unsigned int)((8192ULL * 1000000) / rate + 1));
 	p->rmask = ~0U;
 	p->cmask = 0;
 
