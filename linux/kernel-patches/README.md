@@ -231,6 +231,22 @@ or not) stopped the core, on one CPU as on two.  0081 is the exception-side
 counterpart of 0079: one mret to the next instruction once the frame is
 saved (INT=0, MPP=M, MPIE=0), so the bit is clear before the handler runs.
 
+`0098-esp32p4-clic-drop-boot-routes.patch` (Tab5 #6, every C68 build) clears the
+interrupt matrix and the CLIC when the CLIC driver initializes.  The boot shim
+is an ESP-IDF application and hands Linux its own routes: the brown-out
+detector (source 8, `LP_ANAPERI`) on CLIC slot 16, which is the CPU0 IPI slot,
+the cache-error and assist-debug sources on slots 41 and 43, and every source
+it freed again parked on slot 22 (the SDIO host's).  The brown-out interrupt
+is a latch (`LP_ANALOG_PERI` `INT_RAW` bit 31, cleared only by a write to
+`INT_CLR`).  When the supply dips under load on USB power it stays asserted,
+slot 16 never drops, the IPI handler clears only `CPU_INT_FROM_CPU_0`, and
+CPU0 takes about 226,000 interrupts a second until RCU stalls and the MWDT
+resets the chip.  The patch unroutes all 128 sources in both banks and clears
+IE and IP on slots 16 to 239 while interrupts are still off; drivers route
+their own sources on map and unmask, so nothing in the DT changes.  The
+dropped routes are logged as `dropped boot-shim route: matrix N source S ->
+slot T`.
+
 `0083-esp32p4-sigreturn-in-kernel.patch` (#44, every build) makes
 a signal handler return through the kernel's own `__user_rt_sigreturn`
 (`li a7, __NR_rt_sigreturn; ecall` in `.rodata`).  Without a vDSO the NOMMU

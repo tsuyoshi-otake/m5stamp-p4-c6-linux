@@ -51,6 +51,22 @@ netstat -ltnu            # 0.0.0.0:22 LISTEN (inetd); udhcpd on :67 in SoftAP mo
 ps | grep -E 'inetd|udhcpd|wpa_supplicant|(bootsync|mdns)'
 ```
 
+In SoftAP mode the log line `SoftAP started` only says that the IP address and
+`udhcpd` are set up.  Whether the radio can transmit is a different question
+(#4: a driver built without `CONFIG_AP_MODE` printed it while the wiphy was
+station-only), so also check on the console:
+
+```sh
+iw phy | grep -A4 'Supported interface modes'    # lists "managed" and "AP"
+iw dev wlan0 info                                # "type AP" and the ssid
+cat /sys/kernel/board/nommu_pool                 # note used / alloc_fail, again after 30 min:
+                                                 # used must stay flat (#3)
+```
+
+and look for the SSID on a phone (nothing on the board can prove it is on
+air).  `iw dev wlan0 station dump` is always empty with this driver (it has no
+`dump_station`), so it says nothing about connected clients.
+
 Then from a Wi-Fi client: `ssh m5@192.168.4.1` (SoftAP) and
 `ssh m5@stamp-p4.local` (mDNS, #25; the `hostname=` value if set).
 

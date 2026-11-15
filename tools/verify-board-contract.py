@@ -17,7 +17,9 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-CONTRACT = ROOT / "board-contract.json"
+# The Rev0.15 netlist this tool checks is the Stamp carrier's; its contract
+# moved to a board-named file when the Tab5 port added its own contract.
+CONTRACT = ROOT / "board-contract-stamp-p4.json"
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 

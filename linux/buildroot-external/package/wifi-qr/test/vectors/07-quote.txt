@@ -1,0 +1,2 @@
+ssid=m5-AB12
+psk=pa"ssword12345

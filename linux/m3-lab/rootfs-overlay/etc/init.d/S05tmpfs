@@ -69,6 +69,13 @@ generate_credentials() {
 		update_config=0
 		ap_scan=1
 
+		# Issue #4 experiment for Android joins (not for v0.1.0): uncomment
+		# to retry a phone against a plainer AP.  country= adds a Country IE
+		# to beacons and pushes the regdom to the C6.  The pairwise=/group=
+		# lines at the end of network={} come after CCMP and win, forcing
+		# WPA2-TKIP, which also drops 802.11n and bisects the C6 CCMP/HT path.
+		#country=JP
+
 		network={
 		$(printf '\t')ssid="m5-$id"
 		$(printf '\t')mode=2
@@ -78,6 +85,9 @@ generate_credentials() {
 		$(printf '\t')pairwise=CCMP
 		$(printf '\t')group=CCMP
 		$(printf '\t')psk="$psk"
+		$(printf '\t')# issue #4 experiment: see the comment above network={}.
+		$(printf '\t')#pairwise=TKIP
+		$(printf '\t')#group=TKIP
 		}
 		EOF
 		{
@@ -349,11 +359,21 @@ start() {
 			cp -f /etc/board/wpa_supplicant.conf /boot/wpa_supplicant.conf 2>/dev/null || true
 		fi
 		if [ ! -f /boot/config.txt ]; then
-			cat << 'EOF' > /boot/config.txt 2>/dev/null || true
-# Stamp-P4 Boot & Hardware Configuration
-# Device: M5Stamp ESP32-P4 + C6 SDIO (Stamp-P4)
+			# /etc/board/default-hostname exists only in the Tab5 overlay; a
+			# Stamp rootfs keeps the Stamp header and stamp-p4 byte-identical.
+			def_host=stamp-p4
+			dev_hdr='# Stamp-P4 Boot & Hardware Configuration
+# Device: M5Stamp ESP32-P4 + C6 SDIO (Stamp-P4)'
+			if [ -r /etc/board/default-hostname ]; then
+				read -r def_host < /etc/board/default-hostname 2>/dev/null || true
+				def_host=${def_host:-tab5}
+				dev_hdr='# Tab5 Boot & Hardware Configuration
+# Device: M5Stack Tab5 (ESP32-P4 + C6 SDIO)'
+			fi
+			cat << EOF > /boot/config.txt 2>/dev/null || true
+${dev_hdr}
 # hostname is applied at boot by S40network.
-hostname=stamp-p4
+hostname=${def_host}
 # wifi_mode: ap or sta.  Leave unset to auto-detect from mode=2 in wpa_supplicant.conf.
 #wifi_mode=ap
 # wifi_ssid/wifi_psk replace wpa_supplicant.conf (station, or SoftAP with wifi_mode=ap).
@@ -391,6 +411,12 @@ EOF
 			else
 				es_log "ES_CREDENTIALS FAIL: could not add root_password= to /boot/credentials.txt"
 			fi
+		fi
+		# default-hostname exists only in the Tab5 overlay (#1): the
+		# marker lets Tab5's S50wifiqr show the SoftAP QR on the panel
+		# only when this boot generated credentials (#4).
+		if [ "$CRED_NEW" = 1 ] && [ -e /etc/board/default-hostname ]; then
+			: > /run/.es-creds-new
 		fi
 		apply_password /boot/credentials.txt || true
 		apply_root_password /boot/credentials.txt || true
@@ -471,8 +497,18 @@ EOF
 	# this point (bootsyncd, SEEN_REF).
 	touch -r /tmp/boot.img /run/.bootsync-seen 2>/dev/null || true
 
+	# A board whose device tree enables no USB device controller (the Tab5)
+	# has no port to show the drive on: there is nothing to load and no
+	# D+ pull-up to switch.  Its drive is changed with boot-edit instead.
+	HAVE_UDC=0
+	for c in /sys/class/udc/*; do
+		[ -e "$c" ] && HAVE_UDC=1
+	done
+
 	# Start USB Mass Storage Gadget on Full-Speed DWC2 (Type-A port)
-	if [ -f /tmp/boot.img ]; then
+	if [ "$HAVE_UDC" -eq 0 ]; then
+		es_log "ES_USB_GADGET SKIP: no USB device controller; use boot-edit for the drive's files"
+	elif [ -f /tmp/boot.img ]; then
 		es_log "ES_USB_GADGET STARTING"
 		USB_SERIAL=$(tr -d : 2>/dev/null < /sys/class/net/wlan0/address || true)
 		if [ -z "$USB_SERIAL" ]; then

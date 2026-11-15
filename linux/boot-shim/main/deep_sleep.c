@@ -50,6 +50,9 @@
 #include "boot_ab.h"
 #include "deep_sleep.h"
 #include "lp_monitor.h"
+#if defined(BOARD_TAB5)
+#include "tab5_board.h"
+#endif
 
 extern const uint8_t lp_monitor_bin_start[] asm("_binary_lp_monitor_bin_start");
 extern const uint8_t lp_monitor_bin_end[] asm("_binary_lp_monitor_bin_end");
@@ -152,6 +155,13 @@ static bool button_held(void)
 	return gpio_get_level(BOARD_SLEEP_BUTTON_GPIO) == 0;
 }
 
+#if defined(BOARD_TAB5)
+/* Tab5 has no GPIO latch: the C6 rail is expander 0x44 P0. */
+static void c6_power_off(void)
+{
+	tab5_c6_power_off();
+}
+#else
 /* GPIO42 latches the C6 rail; a low pulse turns it off and it stays off. */
 static void c6_power_off(void)
 {
@@ -166,6 +176,7 @@ static void c6_power_off(void)
 	c.mode = GPIO_MODE_INPUT;
 	gpio_config(&c);
 }
+#endif
 
 static int32_t raw_to_mc(uint32_t raw, int32_t base)
 {

@@ -1,0 +1,8 @@
+# Tab5 only (ES_BOARD=tab5): the display path needs a PSRAM heap for the DPI
+# framebuffer.  The Stamp build keeps plain memory-mapped PSRAM (no heap).
+# CONFIG_SPIRAM_USE_MEMMAP is not set
+CONFIG_SPIRAM_USE_CAPS_ALLOC=y
+# The kernel/DTB load windows are a linker-placed array at the start of PSRAM
+# (tab5_display.c s_load_windows), so the PSRAM heap and its metadata begin
+# above them and the kernel copy cannot overwrite live shim allocations.
+CONFIG_SPIRAM_ALLOW_NOINIT_SEG_EXTERNAL_MEMORY=y

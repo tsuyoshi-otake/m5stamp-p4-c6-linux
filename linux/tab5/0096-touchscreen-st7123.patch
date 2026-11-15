@@ -1,0 +1,333 @@
+From: Devin <devin@cognition.ai>
+Subject: [PATCH tab5] input: touchscreen: Sitronix ST7123-family I2C
+ touch driver for M5Stack Tab5
+
+Tab5's touch controller sits on the internal I2C bus at 0x55 (bit-banged
+through i2c-gpio in this tree: no P4 I2C controller driver exists).
+Protocol mirrors Espressif's esp_lcd_touch_st7123 (esp-iot-solution,
+Apache-2.0): 16-bit big-endian register addresses, a 5-byte geometry
+block at 0x0005, a with_coord flag in the advanced-info byte at 0x0010
+and up to ten 7-byte point records at 0x0014.  Register reads are a
+single repeated-START transaction (reg hi/lo write, then data read) --
+the form the IDF master uses and this unit answers.
+
+Events go through evdev as input-mt Protocol B slots.  Geometry, axis
+inversion and swap come from the standard touchscreen DT properties via
+touchscreen_parse_properties(); pins and the interrupt line come from
+the i2c-gpio parent and the node's interrupts-extended, never from the
+driver.  The chip is left running by the boot shim (TP_RST is an
+expander line the DT does not model), so probe only reads firmware and
+geometry registers -- no reset, no init sequence, matching the stock
+BSP which also leaves the controller to free-run.
+
+The INT line (GPIO23) is wired through the P4 GPIO bank-0 irq_chip,
+which supports all five trigger types; this driver uses the stock
+active-low falling edge.  If the IRQ is absent or request_threaded_irq
+fails, a delayed_work poll at 20 Hz keeps the device usable -- stated
+plainly in the probe log.
+
+Signed-off-by: Devin <devin@cognition.ai>
+---
+ drivers/input/touchscreen/Kconfig  |   9 +
+ drivers/input/touchscreen/Makefile |   1 +
+ drivers/input/touchscreen/st7123.c | 267 +++++++++++++++++++++++++++++
+ 3 files changed, 276 insertions(+)
+
+diff --git a/drivers/input/touchscreen/Kconfig b/drivers/input/touchscreen/Kconfig
+--- a/drivers/input/touchscreen/Kconfig
++++ b/drivers/input/touchscreen/Kconfig
+@@ -875,6 +875,14 @@ config TOUCHSCREEN_PIXCIR
+ 	  To compile this driver as a module, choose M here: the
+ 	  module will be called pixcir_i2c_ts.
+ 
++config TOUCHSCREEN_ST7123
++	tristate "Sitronix ST7123 family I2C touchscreen"
++	depends on I2C
++	help
++	  ST7121/ST7123 combined display+touch controllers as fitted to
++	  the M5Stack Tab5: 16-bit register addresses at 0x55, up to ten
++	  multitouch points reported as input-mt Protocol B slots.
++
+ config TOUCHSCREEN_WDT87XX_I2C
+ 	tristate "Weida HiTech I2C touchscreen"
+ 	depends on I2C
+diff --git a/drivers/input/touchscreen/Makefile b/drivers/input/touchscreen/Makefile
+--- a/drivers/input/touchscreen/Makefile
++++ b/drivers/input/touchscreen/Makefile
+@@ -132,3 +132,4 @@ obj-$(CONFIG_TOUCHSCREEN_IQS5XX)	+= iqs5xx.o
+ obj-$(CONFIG_TOUCHSCREEN_IQS7211)	+= iqs7211.o
+ obj-$(CONFIG_TOUCHSCREEN_ZINITIX)	+= zinitix.o
+ obj-$(CONFIG_TOUCHSCREEN_HIMAX_HX83112B)	+= himax_hx83112b.o
++obj-$(CONFIG_TOUCHSCREEN_ST7123)	+= st7123.o
+diff --git a/drivers/input/touchscreen/st7123.c b/drivers/input/touchscreen/st7123.c
+new file mode 100644
+--- /dev/null
++++ b/drivers/input/touchscreen/st7123.c
+@@ -0,0 +1,267 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Sitronix ST7123-family (ST7121/ST7123) I2C touchscreen driver.
++ *
++ * Written for the M5Stack Tab5 (ESP32-P4 NOMMU) where the controller
++ * sits on the bit-banged internal bus at 0x55.  Protocol derived from
++ * Espressif's esp_lcd_touch_st7123 (esp-iot-solution, Apache-2.0):
++ *
++ *   0x0000  1B  firmware byte (1=ST7121, 3=ST7123, other=ST7123-family)
++ *   0x0005  5B  geometry: max_x hi/lo, max_y hi/lo, max touches
++ *   0x000C  4B  firmware revision
++ *   0x0010  1B  advanced info: bit3 = coordinates pending
++ *   0x0014  7B*point report, max 10 points:
++ *           b0 = x[13:8] in bits[5:0], bit7 = point valid
++ *           b1 = x[7:0]   b2 = y[13:8]   b3 = y[7:0]
++ *           b4 = area     b5 = intensity b6 = reserved
++ *
++ * Register reads are a single repeated-START transaction: two address
++ * bytes (big-endian register) then the data, no STOP between.  The chip
++ * asserts INT low while a report is pending and releases it once the
++ * report is read; the stock BSP uses NEGEDGE, so does this driver.
++ *
++ * The chip is not reset or initialised here: the boot shim pulses
++ * TP_RST (an IO-expander line not modelled in DT) and leaves the
++ * controller running, and the stock BSP issues no init sequence either.
++ */
++
++#include <linux/delay.h>
++#include <linux/i2c.h>
++#include <linux/input.h>
++#include <linux/input/mt.h>
++#include <linux/input/touchscreen.h>
++#include <linux/interrupt.h>
++#include <linux/module.h>
++#include <linux/of.h>
++#include <linux/workqueue.h>
++
++#define ST7123_REG_FW_VER	0x0000
++#define ST7123_REG_GEOMETRY	0x0005
++#define ST7123_REG_FW_REV	0x000c
++#define ST7123_REG_ADV_INFO	0x0010
++#define ST7123_REG_REPORT	0x0014
++
++#define ST7123_ADV_WITH_COORD	0x08
++
++#define ST7123_MAX_POINTS	10
++#define ST7123_POINT_LEN	7
++#define ST7123_POLL_MS		50 /* 20 Hz poll fallback */
++#define ST7123_DRAIN_MAX	4 /* INT-drain re-reads per trigger */
++
++struct st7123_ts {
++	struct i2c_client *client;
++	struct input_dev *input;
++	struct touchscreen_properties prop;
++	struct delayed_work work;
++	u8 max_touches;
++	u8 buf[ST7123_MAX_POINTS * ST7123_POINT_LEN];
++};
++
++static int st7123_read(struct i2c_client *client, u16 reg,
++		       u8 *data, u8 len)
++{
++	u8 addr[2] = { reg >> 8, reg & 0xff };
++	struct i2c_msg msgs[] = {
++		{
++			.addr = client->addr,
++			.flags = 0,
++			.len = sizeof(addr),
++			.buf = addr,
++		}, {
++			.addr = client->addr,
++			.flags = I2C_M_RD,
++			.len = len,
++			.buf = data,
++		},
++	};
++
++	if (i2c_transfer(client->adapter, msgs, ARRAY_SIZE(msgs)) !=
++	    ARRAY_SIZE(msgs))
++		return -EIO;
++	return 0;
++}
++
++static void st7123_report(struct st7123_ts *ts)
++{
++	struct input_dev *input = ts->input;
++	u8 adv;
++	u8 n = ts->max_touches;
++	unsigned int i;
++	int guard = ST7123_DRAIN_MAX;
++
++	/*
++	 * INT is an edge on the wire but effectively level-qualified:
++	 * the chip holds it low while reports queue.  With a pure
++	 * falling-edge request a low-held line yields no more edges, so
++	 * drain the pending flag each trigger, bounded so a stuck flag
++	 * cannot wedge the IRQ thread (the 20 Hz poll also covers it).
++	 */
++	do {
++		if (st7123_read(ts->client, ST7123_REG_ADV_INFO, &adv, 1) < 0)
++			return;
++		if (adv & ST7123_ADV_WITH_COORD) {
++			if (st7123_read(ts->client, ST7123_REG_REPORT,
++					ts->buf, n * ST7123_POINT_LEN) < 0)
++				return;
++		} else {
++			memset(ts->buf, 0, n * ST7123_POINT_LEN);
++		}
++
++		for (i = 0; i < n; i++) {
++			const u8 *r = &ts->buf[i * ST7123_POINT_LEN];
++			bool down = r[0] & 0x80;
++			unsigned int x = ((r[0] & 0x3f) << 8) | r[1];
++			unsigned int y = (r[2] << 8) | r[3];
++
++			input_mt_slot(input, i);
++			if (!input_mt_report_slot_state(input, MT_TOOL_FINGER,
++							down))
++				continue;
++			if (!down)
++				continue;
++			touchscreen_report_pos(input, &ts->prop, x, y, true);
++			input_report_abs(input, ABS_MT_PRESSURE, r[4]);
++		}
++		input_mt_sync_frame(input);
++		input_sync(input);
++	} while ((adv & ST7123_ADV_WITH_COORD) && --guard > 0);
++}
++
++static irqreturn_t st7123_irq(int irq, void *data)
++{
++	st7123_report(data);
++	return IRQ_HANDLED;
++}
++
++static void st7123_poll(struct work_struct *work)
++{
++	struct st7123_ts *ts = container_of(to_delayed_work(work),
++					    struct st7123_ts, work);
++
++	st7123_report(ts);
++	schedule_delayed_work(&ts->work, msecs_to_jiffies(ST7123_POLL_MS));
++}
++
++static int st7123_probe(struct i2c_client *client)
++{
++	struct st7123_ts *ts;
++	struct input_dev *input;
++	u8 fw = 0, rev[4] = { 0 }, geo[5] = { 0 };
++	u16 max_x, max_y;
++	int error;
++
++	if (!i2c_check_functionality(client->adapter, I2C_FUNC_I2C))
++		return dev_err_probe(&client->dev, -ENXIO,
++				     "adapter lacks plain I2C\n");
++
++	/* Probe is read-only: absent/malformed device simply fails here. */
++	error = st7123_read(client, ST7123_REG_FW_VER, &fw, 1);
++	if (error)
++		return dev_err_probe(&client->dev, error,
++				     "no ST712x answer at 0x%02x\n",
++				     client->addr);
++	error = st7123_read(client, ST7123_REG_FW_REV, rev, sizeof(rev));
++	if (error)
++		return dev_err_probe(&client->dev, error,
++				     "firmware revision read failed\n");
++	error = st7123_read(client, ST7123_REG_GEOMETRY, geo, sizeof(geo));
++	if (error)
++		return dev_err_probe(&client->dev, error,
++				     "geometry read failed\n");
++
++	max_x = (geo[0] << 8) | geo[1];
++	max_y = (geo[2] << 8) | geo[3];
++	if (!max_x || !max_y)
++		return dev_err_probe(&client->dev, -ENODEV,
++				     "controller reports 0x0 geometry\n");
++
++	ts = devm_kzalloc(&client->dev, sizeof(*ts), GFP_KERNEL);
++	if (!ts)
++		return -ENOMEM;
++	ts->client = client;
++	ts->max_touches = clamp_val(geo[4], 1, ST7123_MAX_POINTS);
++	i2c_set_clientdata(client, ts);
++	/* Unconditional: remove() may cancel it whichever path ran. */
++	INIT_DELAYED_WORK(&ts->work, st7123_poll);
++
++	dev_info(&client->dev,
++		 "st7123: fw %u rev %u.%u.%u.%u max %ux%u touches %u\n",
++		 fw, rev[0], rev[1], rev[2], rev[3], max_x, max_y,
++		 ts->max_touches);
++
++	input = devm_input_allocate_device(&client->dev);
++	if (!input)
++		return -ENOMEM;
++	ts->input = input;
++	input->name = "st7123-touch";
++	input->id.bustype = BUS_I2C;
++	input->dev.parent = &client->dev;
++	input_set_drvdata(input, ts);
++
++	input_set_abs_params(input, ABS_MT_PRESSURE, 0, 255, 0, 0);
++	input_set_abs_params(input, ABS_MT_POSITION_X, 0, max_x, 0, 0);
++	input_set_abs_params(input, ABS_MT_POSITION_Y, 0, max_y, 0, 0);
++	error = input_mt_init_slots(input, ts->max_touches,
++				    INPUT_MT_DIRECT | INPUT_MT_DROP_UNUSED);
++	if (error)
++		return error;
++	touchscreen_parse_properties(input, true, &ts->prop);
++
++	error = input_register_device(input);
++	if (error)
++		return dev_err_probe(&client->dev, error,
++				     "input device registration failed\n");
++
++	/*
++	 * Start the IRQ/poll only after registration: an early touch must
++	 * never report into an unregistered input_dev.  Teardown relies
++	 * on devm LIFO: remove() cancels the (always-initialised) work,
++	 * then devm frees the IRQ requested last, then devm_input
++	 * unregisters the device, then ts is released.
++	 */
++	if (client->irq > 0) {
++		error = devm_request_threaded_irq(&client->dev, client->irq,
++						  NULL, st7123_irq,
++						  IRQF_ONESHOT,
++						  "st7123", ts);
++		if (error)
++			dev_warn(&client->dev,
++				 "irq %d request failed (%d); polling at "
++				 "%d Hz\n", client->irq, error,
++				 1000 / ST7123_POLL_MS);
++	}
++	if (client->irq <= 0 || error) {
++		dev_info(&client->dev, "st7123: polling at %d Hz\n",
++			 1000 / ST7123_POLL_MS);
++		schedule_delayed_work(&ts->work,
++				      msecs_to_jiffies(ST7123_POLL_MS));
++	}
++	return 0;
++}
++
++static void st7123_remove(struct i2c_client *client)
++{
++	struct st7123_ts *ts = i2c_get_clientdata(client);
++
++	cancel_delayed_work_sync(&ts->work);
++}
++
++static const struct of_device_id st7123_of_match[] = {
++	{ .compatible = "sitronix,st7123" },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, st7123_of_match);
++
++static struct i2c_driver st7123_driver = {
++	.driver = {
++		.name = "st7123-touch",
++		.of_match_table = st7123_of_match,
++	},
++	.probe = st7123_probe,
++	.remove = st7123_remove,
++};
++module_i2c_driver(st7123_driver);
++
++MODULE_AUTHOR("Devin <devin@cognition.ai>");
++MODULE_DESCRIPTION("Sitronix ST7123-family I2C touchscreen driver");
++MODULE_LICENSE("GPL");

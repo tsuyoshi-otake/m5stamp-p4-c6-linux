@@ -1,0 +1,16 @@
+#!/bin/sh
+
+# First boot only (#4): S05tmpfs writes /run/.es-creds-new when this boot
+# generated the credentials.  Show the SoftAP QR on the panel for fifteen
+# minutes, then it clears itself.  Later boots have no marker, so a stored
+# PSK is never drawn again.
+
+case "$1" in
+start)
+	[ -e /run/.es-creds-new ] || exit 0
+	[ -x /usr/bin/wifi-qr ] || exit 0
+	/usr/bin/wifi-qr --panel --for 900 >/dev/null 2>&1 &
+	;;
+esac
+
+exit 0

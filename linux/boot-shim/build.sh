@@ -5,6 +5,10 @@ usage() {
 	cat >&2 <<'EOF'
 Usage: build.sh <output-directory> [--profile m1|m2|c68]
 
+Set ES_BOARD=tab5 to build the M5Stack Tab5 board layer instead of the
+Stamp-AddOn one.  The board choice is orthogonal to the profile: the C68
+SMP release shim builds with the same board code as --profile c68.
+
 Requires IDF_PATH to point at the locked ESP-IDF checkout and idf.py to be
 available in that environment. The script only builds the ESP-IDF shim; it
 never invokes esptool or writes a target. Use a separate output directory so
@@ -31,6 +35,11 @@ while [[ $# -gt 0 ]]; do
 	esac
 done
 case "$profile" in m1|m2|c68) ;; *) echo "unsupported profile: $profile" >&2; exit 2 ;; esac
+case "${ES_BOARD:-stamp-p4}" in
+	stamp-p4|tab5) ;;
+	*) echo "unsupported board: ${ES_BOARD}" >&2; exit 2 ;;
+esac
+export ES_BOARD="${ES_BOARD:-stamp-p4}"
 if [[ "${TSENS_ORACLE:-0}" == "1" && "$profile" != "c68" ]]; then
 	echo "TSENS_ORACLE requires the C68 single-core profile" >&2
 	exit 2
@@ -67,6 +76,10 @@ if [[ "$profile" == m2 || "$profile" == c68 ]]; then
 	export SDKCONFIG_DEFAULTS="${project_dir}/sdkconfig.defaults;${project_dir}/sdkconfig-m2.defaults"
 else
 	export SDKCONFIG_DEFAULTS="${project_dir}/sdkconfig.defaults"
+fi
+if [[ "${ES_BOARD}" == tab5 ]]; then
+	SDKCONFIG_DEFAULTS="${SDKCONFIG_DEFAULTS};${project_dir}/sdkconfig-tab5.defaults"
+	export SDKCONFIG_DEFAULTS
 fi
 
 rm -f "${output}/sdkconfig" "${output}/sdkconfig.old"

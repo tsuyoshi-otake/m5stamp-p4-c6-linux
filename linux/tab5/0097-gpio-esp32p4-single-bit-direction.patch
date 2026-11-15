@@ -1,0 +1,163 @@
+From: Devin <devin@cognition.ai>
+Subject: [PATCH tab5] gpio: esp32p4: drive direction with single-bit
+ strobes, not the generic shadow scheme
+
+gpio-esp32p4.c hands the output-enable W1TS/W1TC registers to
+gpio-mmio as .dirout/.dirin.  The generic library keeps a bank-wide
+shadow (sdir) and, on every single-pin direction change, writes ~sdir
+into the clear register and sdir into the set register
+(gpio_mmio_dir_in/dir_out).  Worse, gpio_generic_chip_init() seeds sdir
+by reading the direction-SET register -- which is write-only on this
+SoC -- and then writes ~sdir into W1TC at probe.
+
+Measured on the board: GPIO_ENABLE_W1TS reads 0 with real outputs
+enabled, so sdir starts at 0 and the init write alone clears every
+output-enable of the bank.  On Tab5 that floats GPIO15 (the C6
+EN/reset line the boot shim leaves driven, OUT_SEL=0x100 so its OE is
+the ENABLE bit) and any other shim-owned bank-0 output the first time
+the gpio0 node probes -- even before i2c-gpio's first SDA toggle.
+
+The data path (dat/set/clr) already uses the correct single-bit
+strobes, so keep the library for it and handle direction ourselves:
+each op writes exactly one strobe bit, and get_direction reads the
+real, readable ENABLE register (offsets verified in esp-idf
+soc/esp32p4/register/hw_ver3/soc/gpio_reg.h).  No init-time bank-wide
+direction write happens anywhere.
+
+Signed-off-by: Devin <devin@cognition.ai>
+---
+ drivers/gpio/gpio-esp32p4.c |   77 +++++++++++++++++++++++++++++++++++------
+ 1 file changed, 66 insertions(+), 11 deletions(-)
+
+diff --git a/drivers/gpio/gpio-esp32p4.c b/drivers/gpio/gpio-esp32p4.c
+--- a/drivers/gpio/gpio-esp32p4.c
++++ b/drivers/gpio/gpio-esp32p4.c
+@@ -74,15 +74,23 @@ struct esp32p4_gpio_bank_regs {
+ 	u16 out_w1tc;
+ 	u16 enable_w1ts;
+ 	u16 enable_w1tc;
++	/*
++	 * Readable output-enable register mirroring the write-only
++	 * W1TS/W1TC pair (GPIO_ENABLE_REG bank0 +0x20, GPIO_ENABLE1_REG
++	 * bank1 +0x2C; esp-idf soc/esp32p4/register/hw_ver3/soc/gpio_reg.h).
++	 * The strobes themselves read 0 on this SoC, so this is the
++	 * only way to report a pin's real direction.
++	 */
++	u16 enable;
+ 	u16 in;
+ 	u16 status;
+ 	u16 status_w1tc;
+ 	u8  pin_offset;	/* PIN_REG number for hwirq 0 of this bank */
+ };
+ 
+ static const struct esp32p4_gpio_bank_regs esp32p4_gpio_banks[] = {
+-	[0] = { 0x08, 0x0C, 0x24, 0x28, 0x3C, 0x44, 0x4C,  0 },
+-	[1] = { 0x14, 0x18, 0x30, 0x34, 0x40, 0x50, 0x58, 32 },
++	[0] = { 0x08, 0x0C, 0x24, 0x28, 0x20, 0x3C, 0x44, 0x4C,  0 },
++	[1] = { 0x14, 0x18, 0x30, 0x34, 0x2C, 0x40, 0x50, 0x58, 32 },
+ };
+ 
+ struct esp32p4_gpio {
+@@ -262,6 +271,54 @@ static int esp32p4_gpio_set_config(struct gpio_chip *gc, unsigned int offset,
+ 	return 0;
+ }
+ 
++/*
++ * Direction handled with single-bit strobe writes.
++ *
++ * gpio-mmio's generic direction scheme is wrong for this SoC: its
++ * dir_in/dir_out ops keep a bank-wide software shadow (sdir) and
++ * write ~sdir into the clear register plus sdir into the set
++ * register on every single-pin change, and gpio_generic_chip_init()
++ * seeds sdir by reading the W1TS direction register -- write-only
++ * here (marked WT in gpio_reg.h, reads 0 on the board) -- then
++ * writes ~sdir into W1TC at probe.  That init write alone clears the
++ * output-enable of every pin in the bank gpiolib did not itself
++ * drive, including the C6 reset line and the backlight the boot
++ * shim left driven, and every later direction change repeats the
++ * bank-wide clobber.  i2c-gpio toggles SDA/SCL direction on every
++ * bit, so the breakage is constant.
++ *
++ * The library's data path already uses the right single-bit
++ * W1TS/W1TC strobes, so it stays for dat/set/clr; direction is done
++ * here with the same single-bit writes the IDF driver performs.
++ */
++static int esp32p4_gpio_direction_input(struct gpio_chip *gc,
++					unsigned int offset)
++{
++	struct esp32p4_gpio *gpio = gpiochip_get_data(gc);
++
++	writel(BIT(offset), gpio->base + gpio->regs->enable_w1tc);
++	return 0;
++}
++
++static int esp32p4_gpio_direction_output(struct gpio_chip *gc,
++					 unsigned int offset, int val)
++{
++	struct esp32p4_gpio *gpio = gpiochip_get_data(gc);
++
++	gc->set(gc, offset, val);
++	writel(BIT(offset), gpio->base + gpio->regs->enable_w1ts);
++	return 0;
++}
++
++static int esp32p4_gpio_get_direction(struct gpio_chip *gc,
++				      unsigned int offset)
++{
++	struct esp32p4_gpio *gpio = gpiochip_get_data(gc);
++
++	return (readl(gpio->base + gpio->regs->enable) & BIT(offset))
++		? GPIO_LINE_DIRECTION_OUT : GPIO_LINE_DIRECTION_IN;
++}
++
+ static int esp32p4_gpio_probe(struct platform_device *pdev)
+ {
+ 	struct device *dev = &pdev->dev;
+@@ -310,25 +310,20 @@ static int esp32p4_gpio_probe(struct platform_device *pdev)
+ 
+ 	/*
+-	 * gpio_generic_chip_init consumes four register pointers:
+-	 *   dat    — readable level (GPIO_IN for input, or GPIO_OUT for
+-	 *            reading back driven output if dat==set)
+-	 *   set    — write-1-to-set for output levels
+-	 *   clr    — write-1-to-clear for output levels
+-	 *   dirout — write-1-to-set for output enables
+-	 *   dirin  — write-1-to-set for output disables (using the W1TC reg)
+-	 *
+-	 * GPIO_GENERIC_READ_OUTPUT_REG_SET is useful when we want reads to
+-	 * report what we last drove on outputs (matches gpiolib expectations).
+-	 * But we have a proper input register, so use that.
++	 * gpio_generic_chip_init gets only the data path registers:
++	 *   dat — readable level (GPIO_IN for input)
++	 *   set — write-1-to-set for output levels
++	 *   clr — write-1-to-clear for output levels
++	 * dirout/dirin stay unset: the generic shadow-register scheme
++	 * cannot express the write-only W1TS/W1TC enable pair and
++	 * would clobber unrelated pins' output enable (see the comment
++	 * above esp32p4_gpio_direction_input).
+ 	 */
+ 	struct gpio_generic_chip_config gcfg = {
+ 		.dev    = dev,
+ 		.sz     = 4,
+ 		.dat    = gpio->base + gpio->regs->in,
+ 		.set    = gpio->base + gpio->regs->out_w1ts,
+ 		.clr    = gpio->base + gpio->regs->out_w1tc,
+-		.dirout = gpio->base + gpio->regs->enable_w1ts,
+-		.dirin  = gpio->base + gpio->regs->enable_w1tc,
+ 		.flags  = 0,
+ 	};
+ 
+@@ -348,6 +396,13 @@ static int esp32p4_gpio_probe(struct platform_device *pdev)
+ 	gpio->ggc.gc.ngpio = ESP32P4_GPIO_NGPIO;
+ 	gpio->ggc.gc.request = esp32p4_gpio_request;
+ 	gpio->ggc.gc.set_config = esp32p4_gpio_set_config;
++	/*
++	 * Direction through the single-bit strobes above -- installed
++	 * after generic init so the library's ops are replaced outright.
++	 */
++	gpio->ggc.gc.direction_input = esp32p4_gpio_direction_input;
++	gpio->ggc.gc.direction_output = esp32p4_gpio_direction_output;
++	gpio->ggc.gc.get_direction = esp32p4_gpio_get_direction;
+ 
+ 	/*
+ 	 * Wire up the irq_chip if DT gave us a parent IRQ. Optional: nodes

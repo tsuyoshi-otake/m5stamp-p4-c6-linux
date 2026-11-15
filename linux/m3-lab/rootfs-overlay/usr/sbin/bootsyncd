@@ -65,6 +65,16 @@ udc_present() {
 	return 1
 }
 
+# No LUN file: a board without a USB gadget (the Tab5), or a gadget that is being
+# re-attached.  $LUN_CTL can only say why, so it is run at most once per
+# LUN_RETRY_TICKS polls and its answer is read back from a file.  $(...) must
+# not be used here: the NOMMU hush leaks 8-12 KB of heap on every command
+# substitution, which used to exhaust the 10 MB pool within hours on a board
+# that never has a LUN file (Tab5 #3).  The glob above still runs every tick, so
+# a gadget that appears later is noticed at once.
+LUN_RETRY=0
+LUN_RETRY_TICKS=30
+LUN_OUT=/run/.lunout
 lun_state() {
 	[ -n "$LUN_FILE" ] && [ -f "$LUN_FILE" ] || find_lun_file
 	if [ -z "$LUN_FILE" ]; then
@@ -72,11 +82,22 @@ lun_state() {
 			# No USB drive exists on this board; that is not an error,
 			# and $LUN_CTL is not needed to know it.
 			LUN_STATE="no-drive"
+			LUN_RETRY=0
 			return
 		fi
-		LUN_STATE=$($LUN_CTL state 2>/dev/null) || LUN_STATE="error"
+		if [ "$LUN_RETRY" -gt 0 ]; then
+			LUN_RETRY=$((LUN_RETRY - 1))
+			return
+		fi
+		LUN_RETRY=$LUN_RETRY_TICKS
+		if $LUN_CTL state > "$LUN_OUT" 2>/dev/null; then
+			read -r LUN_STATE < "$LUN_OUT" 2>/dev/null || LUN_STATE="error"
+		else
+			LUN_STATE="error"
+		fi
 		return
 	fi
+	LUN_RETRY=0
 	b=""
 	read -r b < "$LUN_FILE" 2>/dev/null || true
 	case "$b" in
@@ -414,7 +435,7 @@ NO_DRIVE_LOGGED=""
 if udc_present; then
 	log "Daemon started; drive changes are saved ${SETTLE_SECONDS} s after the host stops writing"
 else
-	log "Daemon started"
+	log "Daemon started; boot-edit changes are saved ${SETTLE_SECONDS} s after they are written"
 fi
 
 while true; do
@@ -429,7 +450,7 @@ while true; do
 	if [ "$LUN_STATE" != "$LAST_STATE" ]; then
 		if [ "$LUN_STATE" = "no-drive" ]; then
 			if [ -z "$NO_DRIVE_LOGGED" ]; then
-				log "No USB drive on this board; network requests and autorun are still served"
+				log "No USB drive on this board; change its files with boot-edit"
 				NO_DRIVE_LOGGED=1
 			fi
 		else
@@ -441,7 +462,10 @@ while true; do
 		device-owned)
 			IMPORT_MODE=eject
 			;;
-		host-owned)
+		host-owned|no-drive)
+			# no-drive: boot-edit swaps a new image in, which moves
+			# the mtime the same way a host's write does, so a board
+			# without a drive is saved and applied by the same path.
 			if [ "$BOOT_IMG" -nt "$SEEN_REF" ]; then
 				touch -r "$BOOT_IMG" "$SEEN_REF"
 				# deepsleep waits while this exists (#56).

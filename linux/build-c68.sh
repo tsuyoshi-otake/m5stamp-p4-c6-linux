@@ -53,6 +53,7 @@ command -v riscv32-esp-elf-nm >/dev/null || {
 }
 
 export C68_CLEAN_RELEASE=1
+echo "build-c68: ES_BOARD=${ES_BOARD:-stamp-p4}"
 "${shim_src}/build.sh" "$shim_out" --profile c68
 [[ -f "$elf" ]] || {
 	echo "C68_GATE_FAIL: missing $elf" >&2
@@ -88,6 +89,19 @@ echo "C68_NM release=$release_pa stage=$stage_pa entry=$entry_pa"
 
 rm -rf -- "$rendered"
 python3 "${c68_dir}/render_patches.py" "$patch_src" "$rendered" "$release_pa" "$stage_pa"
+
+# The CPU1 release patches only fire on the Stamp machine compatible.  Other
+# boards get the same patches with their own compatible string; the checked-in
+# Stamp patches (and so the Stamp build) stay untouched.
+if [[ "${ES_BOARD:-stamp-p4}" == tab5 ]]; then
+	for p in 0038-c68-clean-release-spinwait.patch 0039-c68-clean-release-smpboot.patch; do
+		[[ $(grep -c 'of_machine_is_compatible("tsuyoshi-otake,stamp-p4")' "${rendered}/${p}") == 1 ]] || {
+			echo "C68_GATE_FAIL: ${p}: expected exactly one Stamp machine compatible" >&2
+			exit 1
+		}
+		sed -i 's/of_machine_is_compatible("tsuyoshi-otake,stamp-p4")/of_machine_is_compatible("m5stack,tab5")/' "${rendered}/${p}"
+	done
+fi
 
 printf '%s\n' "$release_pa" >"${output}/c68-release.pa"
 printf '%s\n' "$stage_pa" >"${output}/c68-stage.pa"

@@ -1,0 +1,54 @@
+# Temporary P4 host used only to update the Tab5 on-board C6 over its existing SDIO
+# link. This is deliberately separate from the Linux image and is never
+# flashed by the normal Linux candidate script.
+
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
+CONFIG_ESP32P4_SELECTS_REV_LESS_V3=y
+CONFIG_ESP32P4_REV_MIN_100=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+CONFIG_PARTITION_TABLE_FILENAME="partitions.csv"
+
+CONFIG_ESP_HOSTED_ENABLED=y
+CONFIG_ESP_WIFI_REMOTE_ENABLED=y
+CONFIG_ESP_HOSTED_CP_TARGET_ESP32C6=y
+CONFIG_ESP_HOSTED_P4_DEV_BOARD_NONE=y
+CONFIG_ESP_HOSTED_SDIO_HOST_INTERFACE=y
+CONFIG_ESP_HOSTED_SDIO_SLOT_1=y
+CONFIG_ESP_HOSTED_SDIO_4_BIT_BUS=y
+CONFIG_ESP_HOSTED_SDIO_CLOCK_FREQ_KHZ=20000
+# Tab5 wires its on-board C6 through the GPIO matrix on slot 1. The
+# ESP-Hosted defaults select a different P4 evaluation-board wiring; the pins below are the stock-firmware map, so set
+# the slot-specific values explicitly rather than relying on derived symbols.
+CONFIG_ESP_HOSTED_PRIV_SDIO_PIN_CLK_SLOT_1=12
+CONFIG_ESP_HOSTED_PRIV_SDIO_PIN_CMD_SLOT_1=13
+CONFIG_ESP_HOSTED_PRIV_SDIO_PIN_D0_SLOT_1=11
+CONFIG_ESP_HOSTED_PRIV_SDIO_PIN_D1_4BIT_BUS_SLOT_1=10
+CONFIG_ESP_HOSTED_PRIV_SDIO_PIN_D2_4BIT_BUS_SLOT_1=9
+CONFIG_ESP_HOSTED_PRIV_SDIO_PIN_D3_4BIT_BUS_SLOT_1=8
+CONFIG_ESP_HOSTED_SDIO_PIN_CLK=12
+CONFIG_ESP_HOSTED_SDIO_PIN_CMD=13
+CONFIG_ESP_HOSTED_SDIO_PIN_D0=11
+CONFIG_ESP_HOSTED_SDIO_PIN_D1=10
+CONFIG_ESP_HOSTED_SDIO_PIN_D2=9
+CONFIG_ESP_HOSTED_SDIO_PIN_D3=8
+CONFIG_ESP_HOSTED_SDIO_GPIO_RESET_SLAVE=15
+# C6 EN is GPIO15 -> 1 k -> EN with a 10 k pull-up (low = reset).  ESP-Hosted
+# names the polarity after the idle level: "active high" pulses High->Low->High
+# and ends with EN high, so the C6 runs.  The Tab5 board option in
+# ESP-Hosted-MCU defaults to the other choice, which ends with EN low and
+# keeps the C6 in reset (sdmmc send_op_cond 0x107).  Checked on a Tab5 by
+# Riti0208/tab5-linux on 2026-10-18; the Linux shim also ends with EN high.
+CONFIG_ESP_HOSTED_SDIO_RESET_ACTIVE_HIGH=y
+# CONFIG_ESP_HOSTED_SDIO_RESET_ACTIVE_LOW is not set
+
+# The factory C6 image is an older MCU-host image. Do not refuse the
+# migration on a version mismatch; the OTA API itself validates the image.
+# The example skips activation for old factory firmware and restarts the host.
+# CONFIG_OTA_VERSION_CHECK_HOST_SLAVE is not set
+# CONFIG_OTA_VERSION_CHECK_SLAVEFW_SLAVE is not set
+CONFIG_OTA_METHOD_PARTITION=y
+# CONFIG_OTA_METHOD_HTTPS is not set
+# CONFIG_OTA_METHOD_LITTLEFS is not set
+CONFIG_OTA_PARTITION_LABEL="slave_fw"

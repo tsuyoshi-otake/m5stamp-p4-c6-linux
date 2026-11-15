@@ -104,6 +104,28 @@ case "$profile" in
 	m3-lab) network_profile=true; ssh_profile=true; lab_profile=true ;;
 	*) echo "unsupported profile: $profile" >&2; exit 2 ;;
 esac
+
+# Board selection (ES_BOARD): every Stamp hardware name in this script is
+# driven by these four variables so the M-profile machinery stays shared.
+# ES_BOARD=tab5 swaps in the Tab5 DTS/kernel-config/defconfig; the matching
+# boot shim is built separately with linux/boot-shim/build.sh --profile tab5.
+board="${ES_BOARD:-stamp-p4}"
+case "$board" in
+	stamp-p4)
+		dts_base=esp32p4-m5stamp-p4
+		kernel_config_src=linux.config
+		br_defconfig=stamp_p4_defconfig
+		intree_dts="espressif/stamp-p4"
+		;;
+	tab5)
+		dts_base=esp32p4-tab5
+		kernel_config_src=linux-tab5.config
+		br_defconfig=tab5_defconfig
+		intree_dts="espressif/tab5"
+		;;
+	*) echo "unsupported board: $board" >&2; exit 2 ;;
+esac
+board_dir="board/${board}"
 # m3-lab is the release profile, so it defaults to the SDIO transport the
 # shipped v0.2.1 image was validated with: IDMAC DMA with the noncoherent
 # descriptor ring.  With the PIO default the C6 boot-up event arrives garbled
@@ -344,9 +366,9 @@ rm -rf -- "$external_root"
 mkdir -p -- "$external_root"
 cp -a -- "${external_source_root}/." "$external_root/"
 if $network_profile; then
-	mkdir -p -- "${external_root}/board/stamp-p4/rootfs-overlay/etc/board"
+	mkdir -p -- "${external_root}/${board_dir}/rootfs-overlay/etc/board"
 	printf '%s\n' "$sdio_default_mhz" \
-		>"${external_root}/board/stamp-p4/rootfs-overlay/etc/board/sdio-clock-mhz"
+		>"${external_root}/${board_dir}/rootfs-overlay/etc/board/sdio-clock-mhz"
 	python3 - "${external_root}/package/esp-hosted-ng/0002-stamp-p4-sdio-defaults.patch" "$sdio_default_mhz" <<'PY'
 from pathlib import Path
 import re
@@ -375,11 +397,16 @@ if ! $network_profile; then
 	# non-network profile.  Also remove them in post-build: an old shared
 	# Buildroot target directory can retain files after its overlay input is
 	# gone.
-	rm -f -- \
-		"${external_root}/board/stamp-p4/rootfs-overlay/etc/init.d/S40network" \
-		"${external_root}/board/stamp-p4/rootfs-overlay/etc/init.d/S41timesync" \
-		"${external_root}/board/stamp-p4/rootfs-overlay/usr/sbin/sdio-diag"
-	cat >>"${external_root}/board/stamp-p4/post-build.sh" <<'EOF'
+	# Tab5 shares the Stamp overlay via BR2_ROOTFS_OVERLAY, so the
+	# network files must be removed from every board overlay that can
+	# feed this image, not only the selected one.
+	for rm_board in stamp-p4 tab5; do
+		rm -f -- \
+			"${external_root}/board/${rm_board}/rootfs-overlay/etc/init.d/S40network" \
+			"${external_root}/board/${rm_board}/rootfs-overlay/etc/init.d/S41timesync" \
+			"${external_root}/board/${rm_board}/rootfs-overlay/usr/sbin/sdio-diag"
+	done
+	cat >>"${external_root}/${board_dir}/post-build.sh" <<'EOF'
 
 # Non-network profile boundary: do not let a reused Buildroot target retain
 # network-only files from an earlier M2/M3 build.
@@ -554,6 +581,12 @@ if mode == "ap":
     conf = (
         "update_config=0\n"
         "ap_scan=1\n\n"
+        "# Issue #4 experiment for Android joins (not for v0.1.0): uncomment\n"
+        "# to retry a phone against a plainer AP.  country= adds a Country IE\n"
+        "# to beacons and pushes the regdom to the C6.  The pairwise=/group=\n"
+        "# lines at the end of network={} come after CCMP and win, forcing\n"
+        "# WPA2-TKIP, which also drops 802.11n and bisects the C6 CCMP/HT path.\n"
+        "#country=JP\n\n"
         "network={\n"
         f"\tssid={json.dumps(ssid, ensure_ascii=False)}\n"
         "\tmode=2\n"
@@ -563,6 +596,9 @@ if mode == "ap":
         "\tpairwise=CCMP\n"
         "\tgroup=CCMP\n"
         f"\tpsk={json.dumps(psk, ensure_ascii=False)}\n"
+        "\t# issue #4 experiment: see the comment above network={}.\n"
+        "\t#pairwise=TKIP\n"
+        "\t#group=TKIP\n"
         "}\n"
     )
 else:
@@ -845,6 +881,10 @@ if [[ "${C68_CLEAN_RELEASE:-0}" == "1" ]]; then
 	patches+=(0041-esp32p4-ipi-driver.patch)
 	patches+=(0042-esp32p4-systimer-cpu1.patch)
 	patches+=(0066-esp32p4-clic-smp-routing.patch)
+	# Tab5 #6: the boot shim leaves its own interrupt routes behind (the
+	# brown-out detector on slot 16, the CPU0 IPI slot); drop them when the
+	# CLIC initializes.  Builds on 0066's two matrix banks.
+	patches+=(0098-esp32p4-clic-drop-boot-routes.patch)
 	patches+=(0067-esp32p4-cache-sync-smp-lock.patch)
 	# #5 diagnostic: report a CPU that stops taking interrupts (ES_DEAF).
 	if [[ "${C68_DEAF_TRACE:-0}" == "1" ]]; then
@@ -1086,8 +1126,23 @@ for patch_name in "${patches[@]}"; do
 		}
 	fi
 done
+# Tab5 board kernel patches (linux/tab5/*.patch) apply only to the
+# Tab5 kernel: the DSI-scanout GDMA re-arm driver, the simplefb
+# cache-flush ops, the ST7123 touch driver, and the esp32p4-gpio
+# single-bit-direction fix (0097) are meaningless on Stamp boards and
+# must not leak into the shared patch stage.  They stage in glob
+# order, so they apply after kernel-patches/0002-gpio-esp32p4.patch.
+if [[ "${ES_BOARD:-stamp-p4}" == "tab5" ]]; then
+	tab5_patches=()
+	for p in "${script_dir}/tab5/"*.patch; do
+		[[ -f "$p" ]] || continue
+		cp -- "$p" "${patch_stage}/$(basename "$p")"
+		tab5_patches+=("$(basename "$p")")
+	done
+fi
 printf '%s\n' "why2025 reference commit: $(git -C "$why_root" rev-parse HEAD)" >"${patch_stage}/SOURCE.txt"
 printf '%s\n' "selected baseline patches: ${patches[*]}" >>"${patch_stage}/SOURCE.txt"
+printf '%s\n' "tab5 board patches: ${tab5_patches[*]:-none}" >>"${patch_stage}/SOURCE.txt"
 printf '%s\n' "sdio-default-mhz: ${sdio_default_mhz}" >>"${patch_stage}/SOURCE.txt"
 printf '%s\n' "wdt-test-timeout-s: ${wdt_test_timeout_s}" >>"${patch_stage}/SOURCE.txt"
 printf '%s\n' "wdt-test-no-feed: ${wdt_test_no_feed}" >>"${patch_stage}/SOURCE.txt"
@@ -1106,10 +1161,10 @@ printf '%s\n' "c68-expt-clear: ${C68_EXPT_CLEAR:-1}" >>"${patch_stage}/SOURCE.tx
 # materialize that tiny vendor tree in generated output for Buildroot.
 rm -rf -- "$dts_stage"
 mkdir -p -- "${dts_stage}/espressif"
-cp -- "${firmware_root}/linux/dts/esp32p4-m5stamp-p4.dts" \
-	"${dts_stage}/espressif/esp32p4-m5stamp-p4.dts"
+cp -- "${firmware_root}/linux/dts/${dts_base}.dts" \
+	"${dts_stage}/espressif/${dts_base}.dts"
 if [[ "$wdt_test_timeout_s" != "0" ]]; then
-	python3 - "${dts_stage}/espressif/esp32p4-m5stamp-p4.dts" \
+	python3 - "${dts_stage}/espressif/${dts_base}.dts" \
 		"$wdt_test_timeout_s" "$wdt_test_no_feed" <<'PY'
 from pathlib import Path
 import sys
@@ -1130,7 +1185,7 @@ path.write_text(text.replace(needle, replacement, 1), encoding="utf-8", newline=
 PY
 fi
 if [[ -n "$sdio_max_identity" ]]; then
-	dts_file="${dts_stage}/espressif/esp32p4-m5stamp-p4.dts"
+	dts_file="${dts_stage}/espressif/${dts_base}.dts"
 	[[ $(grep -c 'max-frequency = <40000000>;' "$dts_file") == 1 ]] || {
 		echo "SDIO_MAX_GATE_FAIL: expected exactly one 40 MHz max-frequency in the DTS" >&2
 		exit 1
@@ -1141,7 +1196,7 @@ if [[ -n "$pstore_identity" ]]; then
 	# 64 KB just below the boot-update request page; the boot-shim does not
 	# load anything there (kernel 0x48000000, DTB 0x48800000, boot FAT
 	# 0x499c0000).
-	dts_file="${dts_stage}/espressif/esp32p4-m5stamp-p4.dts"
+	dts_file="${dts_stage}/espressif/${dts_base}.dts"
 	[[ $(grep -c 'linux_nommu_pool: nommu-userspace-pool@49a00000 {' "$dts_file") == 1 ]] || {
 		echo "PSTORE_GATE_FAIL: nommu pool node not found in the DTS" >&2
 		exit 1
@@ -1156,13 +1211,13 @@ if [[ -n "$pstore_identity" ]]; then
 		};\
 ' "$dts_file"
 fi
-cp -- "${firmware_root}/linux/linux.config" "${kernel_config_fragment}"
-grep -Fqx -- "CONFIG_SMP=n" "${firmware_root}/linux/linux.config" || {
+cp -- "${firmware_root}/linux/${kernel_config_src}" "${kernel_config_fragment}"
+grep -Fqx -- "CONFIG_SMP=n" "${firmware_root}/linux/${kernel_config_src}" || {
 	echo "UP kernel config gate failed: source linux.config must keep CONFIG_SMP=n" >&2
 	exit 1
 }
-if grep -q 'cpu@1' "${firmware_root}/linux/dts/esp32p4-m5stamp-p4.dts"; then
-	echo "UP DTS gate failed: source esp32p4-m5stamp-p4.dts must not contain cpu@1" >&2
+if grep -q 'cpu@1' "${firmware_root}/linux/dts/${dts_base}.dts"; then
+	echo "UP DTS gate failed: source ${dts_base}.dts must not contain cpu@1" >&2
 	exit 1
 fi
 if $network_profile; then
@@ -1170,6 +1225,32 @@ if $network_profile; then
 fi
 if $lab_profile; then
 	cat "${firmware_root}/linux/m3-lab/kernel.config.fragment" >>"${kernel_config_fragment}"
+fi
+if [[ "$board" == "tab5" ]]; then
+	cat >>"${kernel_config_fragment}" <<'EOF'
+
+# Tab5 internal touch (appended after the profile fragments so it wins
+# over their `# CONFIG_INPUT is not set`): GPIO bank 0 owns the touch INT
+# (GPIO23) and SDA (GPIO31); the internal bus is bit-banged because this
+# tree has no P4 I2C controller driver, and the ST712x controller is an
+# evdev multitouch device (linux/tab5/0096).  GPIOLIB/GPIO_ESP32P4 repeat
+# the m2 fragment lines so non-network Tab5 profiles work too.
+CONFIG_GPIOLIB=y
+CONFIG_GPIO_ESP32P4=y
+CONFIG_I2C=y
+CONFIG_I2C_GPIO=y
+CONFIG_I2C_CHARDEV=y
+CONFIG_INPUT=y
+CONFIG_INPUT_EVDEV=y
+CONFIG_INPUT_TOUCHSCREEN=y
+CONFIG_TOUCHSCREEN_ST7123=y
+# Ext.Port1 A164 keyboard: STM32 at 0x6d on the dedicated hw GPIO0/1
+# pair (linux/tab5/0098); polled -- its bank-1 INT has no irq_chip.
+# INPUT_KEYBOARD is spelled out because CONFIG_EXPERT drops its
+# default y.
+CONFIG_INPUT_KEYBOARD=y
+CONFIG_KEYBOARD_TAB5=y
+EOF
 fi
 if [[ -n "$pstore_identity" ]]; then
 	cat >>"${kernel_config_fragment}" <<'EOF'
@@ -1226,7 +1307,7 @@ CONFIG_ESP32P4_TSENS=y
 EOF
 	fi
 	python3 "${firmware_root}/linux/c68/insert_cpu1.py" \
-		"${dts_stage}/espressif/esp32p4-m5stamp-p4.dts" \
+		"${dts_stage}/espressif/${dts_base}.dts" \
 		"${firmware_root}/linux/c68/cpu1.dts.inc" \
 		"${firmware_root}/linux/c68/ipi.dts.inc"
 	if [[ "${C68_MAXCPUS:-1}" == "2" ]]; then
@@ -1235,7 +1316,7 @@ EOF
 		# unchanged.  Update both sources: the DT bootargs win on this
 		# kernel (CONFIG_CMDLINE_FORCE is unset); the CONFIG_CMDLINE
 		# copy stays in sync.
-		[[ $(grep -c 'maxcpus=1' "${dts_stage}/espressif/esp32p4-m5stamp-p4.dts") == 1 ]] || {
+		[[ $(grep -c 'maxcpus=1' "${dts_stage}/espressif/${dts_base}.dts") == 1 ]] || {
 			echo "MAXCPUS_GATE_FAIL: expected exactly one maxcpus=1 in the staged DTS" >&2
 			exit 1
 		}
@@ -1244,11 +1325,11 @@ EOF
 			exit 1
 		}
 		sed -i 's/maxcpus=1/maxcpus=2/' \
-			"${dts_stage}/espressif/esp32p4-m5stamp-p4.dts"
+			"${dts_stage}/espressif/${dts_base}.dts"
 		sed -i 's/maxcpus=1/maxcpus=2/' "${kernel_config_fragment}"
 	fi
 else
-	if grep -q 'cpu@1' "${dts_stage}/espressif/esp32p4-m5stamp-p4.dts"; then
+	if grep -q 'cpu@1' "${dts_stage}/espressif/${dts_base}.dts"; then
 		echo "UP DTS gate failed: staged DTB source contains cpu@1" >&2
 		exit 1
 	fi
@@ -1257,9 +1338,9 @@ else
 		exit 1
 	fi
 fi
-cat >"${dts_stage}/espressif/Makefile" <<'EOF'
+cat >"${dts_stage}/espressif/Makefile" <<EOF
 # SPDX-License-Identifier: GPL-2.0-only
-dtb-$(CONFIG_ARCH_ESPRESSIF) += esp32p4-m5stamp-p4.dtb
+dtb-\$(CONFIG_ARCH_ESPRESSIF) += ${dts_base}.dtb
 EOF
 
 make_args=(
@@ -1579,7 +1660,7 @@ PY
 c68_fail_closed_after_linux() {
 	local kernel_config="${br_output}/build/linux-custom/.config"
 	local image="${br_output}/images/Image"
-	local dtb="${br_output}/images/esp32p4-m5stamp-p4.dtb"
+	local dtb="${br_output}/images/${dts_base}.dtb"
 	local vmlinux="${br_output}/build/linux-custom/vmlinux"
 	local dtc="${br_output}/host/bin/dtc"
 	[[ -f "$kernel_config" ]] || {
@@ -1823,7 +1904,7 @@ c68_fail_closed_after_linux() {
 			}
 		fi
 		grep -Fq '<&clic0 23 54 IRQ_TYPE_LEVEL_HIGH>' \
-			"${dts_stage}/espressif/esp32p4-m5stamp-p4.dts" || {
+			"${dts_stage}/espressif/${dts_base}.dts" || {
 			echo "C68_GATE_FAIL: staged DTS has no CPU1 SYSTIMER target1 route" >&2
 			exit 1
 		}
@@ -1923,7 +2004,7 @@ PY
 			"$timer_observe_manifest" \
 			"$l3_smoke_manifest" \
 			"$tsens_linux_manifest" \
-			"${dts_stage}/espressif/esp32p4-m5stamp-p4.dts" \
+			"${dts_stage}/espressif/${dts_base}.dts" \
 			"${kernel_config_fragment}" <<'PY'
 import json, os, sys
 from pathlib import Path
@@ -2095,7 +2176,7 @@ profile_fail_closed_after_rootfs() {
 
 if $print_only; then
 	echo "${profile^^} preflight passed; would run:"
-	printf '  make'; printf ' %q' "${make_args[@]}"; echo " stamp_p4_defconfig"
+	printf '  make'; printf ' %q' "${make_args[@]}"; echo " ${br_defconfig}"
 	printf '  make'; printf ' %q' "${make_args[@]}"; echo " olddefconfig"
 	printf '  make'; printf ' %q' "${make_args[@]}"; echo " all"
 	exit 0
@@ -2138,7 +2219,7 @@ if [[ "${CMD53_BB_SKIP_BR_CLEAN:-0}" != "1" && -f "$profile_stamp" ]]; then
 	fi
 fi
 
-make "${make_args[@]}" stamp_p4_defconfig
+make "${make_args[@]}" ${br_defconfig}
 # Buildroot's defconfig intentionally contains the board defaults only.  Lock
 # the source revision and patch staging path in the generated output so the
 # repository does not duplicate a moving hash or vendor reference patches.
@@ -2148,9 +2229,14 @@ set_config_value "${br_output}/.config" BR2_LINUX_KERNEL_CUSTOM_TARBALL y
 set_config_value "${br_output}/.config" BR2_LINUX_KERNEL_CUSTOM_TARBALL_LOCATION "\"file://${linux_tarball}\""
 set_config_value "${br_output}/.config" BR2_LINUX_KERNEL_PATCH "\"${patch_stage}\""
 set_config_value "${br_output}/.config" BR2_LINUX_KERNEL_USE_CUSTOM_CONFIG y
-set_config_value "${br_output}/.config" BR2_LINUX_KERNEL_CUSTOM_CONFIG_FILE "\"${firmware_root}/linux/linux.config\""
+set_config_value "${br_output}/.config" BR2_LINUX_KERNEL_CUSTOM_CONFIG_FILE "\"${firmware_root}/linux/${kernel_config_src}\""
 set_config_value "${br_output}/.config" BR2_LINUX_KERNEL_DTS_SUPPORT y
-set_config_value "${br_output}/.config" BR2_LINUX_KERNEL_INTREE_DTS_NAME '\"espressif/stamp-p4\"'
+# No in-tree DTS name: the board DTB comes from the staged DTS directory
+# (BR2_LINUX_KERNEL_CUSTOM_DTS_DIR and its Makefile).  main wrote an
+# over-escaped name here that olddefconfig reset to "", so "" is what the
+# released Stamp images were built with; a real name such as
+# espressif/tab5 makes Buildroot ask for a .dtb that has no rule.
+set_config_value "${br_output}/.config" BR2_LINUX_KERNEL_INTREE_DTS_NAME '""'
 set_config_value "${br_output}/.config" BR2_LINUX_KERNEL_CUSTOM_DTS_PATH "# BR2_LINUX_KERNEL_CUSTOM_DTS_PATH is not set"
 set_config_value "${br_output}/.config" BR2_LINUX_KERNEL_CUSTOM_DTS_DIR "\"${dts_stage}\""
 set_config_value "${br_output}/.config" BR2_RISCV_USE_MMU "# BR2_RISCV_USE_MMU is not set"
@@ -2200,9 +2286,14 @@ if [[ "${C68_L3_SMOKE:-0}" != "1" ]]; then
 	set_config_value "${br_output}/.config" BR2_PACKAGE_M5STAMP_SMP_SMOKE "# BR2_PACKAGE_M5STAMP_SMP_SMOKE is not set"
 fi
 
+# Tab5 builds on the Stamp userland: the Stamp overlay (S00mounts, init
+# scripts, ...) always comes first and the Tab5 overlay on top of it.
 rootfs_overlay="${external_root}/board/stamp-p4/rootfs-overlay"
-post_build_scripts="${external_root}/board/stamp-p4/post-build.sh"
-users_table="${external_root}/board/stamp-p4/users.txt"
+if [[ "$board" != stamp-p4 ]]; then
+	rootfs_overlay="${rootfs_overlay} ${external_root}/${board_dir}/rootfs-overlay"
+fi
+post_build_scripts="${external_root}/${board_dir}/post-build.sh"
+users_table="${external_root}/${board_dir}/users.txt"
 busybox_fragments=""
 if $network_profile; then
 	# M2 loads esp32_sdio.ko from S40network.  Keep the module-loader
@@ -2220,6 +2311,11 @@ if $ssh_profile; then
 	if $lab_profile; then
 		rootfs_overlay="${rootfs_overlay} ${lab_stage}/rootfs-overlay"
 		rootfs_overlay="${rootfs_overlay} ${lab_provision_stage}"
+		# The generic lab login banner describes the Stamp's USB drive
+		# (credentials.txt, autorun), which the Tab5 does not have.
+		if [[ "$board" == tab5 ]]; then
+			rootfs_overlay="${rootfs_overlay} ${lab_stage}/rootfs-overlay-tab5"
+		fi
 		post_build_scripts="${post_build_scripts} ${lab_stage}/post-build.sh"
 		users_table="${lab_stage}/users.txt"
 		busybox_fragments="${busybox_fragments} ${lab_stage}/busybox.fragment"
@@ -2280,8 +2376,16 @@ if $lab_profile; then
 	# PR_SET_SYSTEM_WORK wrapper so system scripts keep system-side
 	# NOMMU classification when a user starts them (#50 round 4).
 	set_config_value "${br_output}/.config" BR2_PACKAGE_RUN_SYSTEM y
+	# First-boot SoftAP credentials QR on the Tab5 panel (#4).  The
+	# package only exists on Tab5 builds.
+	if [[ "$board" == tab5 ]]; then
+		set_config_value "${br_output}/.config" BR2_PACKAGE_WIFI_QR y
+	else
+		set_config_value "${br_output}/.config" BR2_PACKAGE_WIFI_QR "# BR2_PACKAGE_WIFI_QR is not set"
+	fi
 else
 	set_config_value "${br_output}/.config" BR2_PACKAGE_BOOT_COMMIT "# BR2_PACKAGE_BOOT_COMMIT is not set"
+	set_config_value "${br_output}/.config" BR2_PACKAGE_WIFI_QR "# BR2_PACKAGE_WIFI_QR is not set"
 fi
 set_config_value "${br_output}/.config" BR2_ROOTFS_OVERLAY "\"${rootfs_overlay}\""
 set_config_value "${br_output}/.config" BR2_ROOTFS_POST_BUILD_SCRIPT "\"${post_build_scripts}\""
@@ -2438,6 +2542,21 @@ if $network_profile; then
 		}
 	done
 fi
+if [[ "$board" == "tab5" ]]; then
+	# olddefconfig drops a line without a word when a dependency is
+	# missing, so the panel, its mmap on a kernel without an MMU (#15),
+	# the touch panel and the keyboard are checked in the result.
+	for expected in \
+		"CONFIG_FB_SIMPLE=y" \
+		"CONFIG_FB_PROVIDE_GET_FB_UNMAPPED_AREA=y" \
+		"CONFIG_TOUCHSCREEN_ST7123=y" \
+		"CONFIG_KEYBOARD_TAB5=y"; do
+		grep -Fqx -- "${expected}" "${kernel_config}" || {
+			echo "Tab5 kernel config check failed: ${expected}" >&2
+			exit 1
+		}
+	done
+fi
 if [[ "$stacktrace_diagnostics" == "1" ]]; then
 	for expected in \
 		"CONFIG_STACKTRACE=y" \
@@ -2530,6 +2649,16 @@ if $ssh_profile; then
 				exit 1
 			}
 		done
+		if [[ "$board" == tab5 ]]; then
+			grep -Fqx -- "BR2_PACKAGE_WIFI_QR=y" "${br_output}/.config" || {
+				echo "m3-lab config check failed: BR2_PACKAGE_WIFI_QR=y" >&2
+				exit 1
+			}
+			[[ -x "${br_output}/target/usr/bin/wifi-qr" ]] || {
+				echo "m3-lab check failed: wifi-qr missing" >&2
+				exit 1
+			}
+		fi
 		for opt in INETD SYSLOGD UDHCPD; do
 			grep -Fqx -- "# CONFIG_${opt} is not set" \
 				"${br_output}"/build/busybox-[0-9]*/.config || {

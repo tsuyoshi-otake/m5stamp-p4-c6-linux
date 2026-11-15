@@ -2,13 +2,13 @@
   "schema": 1,
   "status": "candidate_not_for_flash",
   "board": "Stamp-P4 carrier Rev0.15 WIP",
-  "board_contract": "../board-contract.json",
+  "board_contract": "../board-contract-stamp-p4.json",
   "flash_bytes": 16777216,
   "alignment_bytes": 4096,
   "write_gate": "blocked_until_m0_rom_recovery_cycles",
   "evidence": {
     "stock_partition_map": "../tests/m0-serial-observation-2026-08-09.md",
-    "stock_readback": "../board-contract.json",
+    "stock_readback": "../board-contract-stamp-p4.json",
     "note": "The candidate regions fit the measured 16 MiB device but have not been written or accepted as the final boot map."
   },
   "load_addresses": {

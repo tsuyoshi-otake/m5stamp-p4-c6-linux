@@ -1,0 +1,7 @@
+config BR2_PACKAGE_WIFI_QR
+	bool "Tab5 first-boot Wi-Fi QR helper"
+	help
+	  Shows the SoftAP ssid/psk from /tmp/credentials.txt as a QR
+	  code: UTF-8 or ASCII text on stdout, or drawn onto /dev/fb0
+	  on the Tab5 panel.  Installed only on Tab5 builds, where the
+	  first boot shows it on the panel for fifteen minutes.

@@ -1,0 +1,6 @@
+M5Stack Tab5 NOMMU Linux (WIP port)
+
+Initial account: m5
+Initial password: tab5-linux-wip
+Change the password immediately with: passwd
+Network/SSH is ready via on-board C6 SDIO Wi-Fi (ESP-Hosted-NG).

@@ -1,0 +1,3 @@
+# Deliberate M5Stack first-boot account for the image.
+# Change this password immediately after the first successful login.
+m5 1000 m5 1000 $1$tab5x$KFfHZ3abPpDHbDccLbsb3. /home/m5 /bin/sh - M5Stack initial user

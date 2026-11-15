@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import gzip
 import hashlib
+import os
 import re
 import tarfile
 import stat
@@ -22,7 +23,24 @@ ARTIFACTS = {
     "boot-shim.bin": (0x010000, 0x080000, "{shim}/build/stamp_p4_boot_shim.bin"),
     "Image": (0x090000, 0x780000, "buildroot/images/Image"),
     "rootfs.squashfs": (0x810000, 0x700000, "buildroot/images/rootfs.squashfs"),
-    "esp32p4-m5stamp-p4.dtb": (0xF10000, 0x010000, "buildroot/images/esp32p4-m5stamp-p4.dtb"),
+}
+# Everything that differs per board (ES_BOARD, the switch build-m1.sh uses): the
+# DTB the build emits (flashed at 0xF10000), the release file prefix, and the
+# flash map that is checked before packaging.  The flash map is the same on
+# both boards.
+DTB_OFFSET = 0xF10000
+DTB_BYTES = 0x010000
+BOARDS = {
+    "stamp-p4": {
+        "dtb": "esp32p4-m5stamp-p4.dtb",
+        "prefix": "m5stamp-p4-c6-linux-smp",
+        "layout": "linux/m2/flash-layout.json",
+    },
+    "tab5": {
+        "dtb": "esp32p4-tab5.dtb",
+        "prefix": "m5stack-tab5-linux-smp",
+        "layout": "linux/tab5/flash-layout.json",
+    },
 }
 # Debug material (#22): needed to resolve crash-capsule epc/ra of the exact image.
 DEBUG_FILES = {
@@ -70,14 +88,19 @@ def main() -> int:
     parser.add_argument("--boot-image", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--version", required=True, help="release version such as v0.2.1")
+    parser.add_argument("--board", choices=sorted(BOARDS), default=os.environ.get("ES_BOARD", "stamp-p4"),
+                        help="board the image was built for (default: $ES_BOARD, else stamp-p4)")
     args = parser.parse_args()
+    board = BOARDS[args.board]
+    artifacts = dict(ARTIFACTS)
+    artifacts[board["dtb"]] = (DTB_OFFSET, DTB_BYTES, "buildroot/images/" + board["dtb"])
 
     if not re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", args.version):
         raise SystemExit("--version must have the form vMAJOR.MINOR.PATCH")
 
     repo_root = Path(__file__).resolve().parents[2]
     verifier = Path(__file__).with_name("verify-images.py")
-    layout = repo_root / "linux" / "m2" / "flash-layout.json"
+    layout = repo_root / board["layout"]
     partitions = repo_root / "linux" / "boot-shim" / "partitions-m2.csv"
     subprocess.run(
         [sys.executable, str(verifier), "--layout", str(layout),
@@ -87,14 +110,14 @@ def main() -> int:
     )
 
     args.output.mkdir(parents=True, exist_ok=True)
-    prefix = f"m5stamp-p4-c6-linux-smp-{args.version}"
+    prefix = f"{board['prefix']}-{args.version}"
     raw_path = args.output / f"{prefix}-16mb.bin"
     gzip_path = args.output / f"{prefix}-16mb.bin.gz"
     zip_path = args.output / f"{prefix}.zip"
 
     members: dict[str, bytes] = {}
     flash = bytearray(b"\xff") * FLASH_BYTES
-    for name, (offset, maximum, relative) in ARTIFACTS.items():
+    for name, (offset, maximum, relative) in artifacts.items():
         source = args.build_output / relative.format(shim=args.boot_shim_directory)
         data = checked_file(source, maximum)
         members[name] = data

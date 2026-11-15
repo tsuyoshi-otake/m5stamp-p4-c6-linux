@@ -31,6 +31,7 @@ for path in \
 	"${TARGET_DIR}/usr/sbin/update-status" \
 	"${TARGET_DIR}/usr/sbin/autorun" \
 	"${TARGET_DIR}/usr/sbin/deepsleep" \
+	"${TARGET_DIR}/usr/sbin/boot-edit" \
 	"${TARGET_DIR}/usr/lib/micropython/deepsleep.py" \
 	"${TARGET_DIR}/usr/lib/micropython/lpcore.py" \
 	"${TARGET_DIR}/usr/lib/board/autorun.sh" \
@@ -53,6 +54,7 @@ chmod 0755 "${TARGET_DIR}/usr/sbin/update-status"
 chmod 0755 "${TARGET_DIR}/usr/sbin/sysinfo"
 chmod 0755 "${TARGET_DIR}/usr/sbin/autorun"
 chmod 0755 "${TARGET_DIR}/usr/sbin/deepsleep"
+chmod 0755 "${TARGET_DIR}/usr/sbin/boot-edit"
 chmod 0644 "${TARGET_DIR}/usr/lib/micropython/deepsleep.py"
 chmod 0644 "${TARGET_DIR}/usr/lib/micropython/lpcore.py"
 # Overrides Buildroot's udhcpc script: the m3-lab copy sources its *.d
@@ -176,7 +178,8 @@ if [ -x "${FLTHDR}" ]; then
 		fi
 	done
 	# Small helpers only need BusyBox's floor.
-	for bin in usr/sbin/respawn usr/sbin/mdnsd usr/sbin/run-system; do
+	for bin in usr/sbin/respawn usr/sbin/mdnsd usr/sbin/run-system \
+		usr/bin/wifi-qr; do
 		if [ -f "${TARGET_DIR}/${bin}" ]; then
 			"${FLTHDR}" -s 16384 "${TARGET_DIR}/${bin}"
 		fi
@@ -202,11 +205,22 @@ make_boot_template() {
 	[ -f "${wpa}" ] || { echo "M3-lab: ${wpa} missing" >&2; exit 1; }
 	mkfs=$(command -v mkfs.vfat || command -v mkfs.fat || echo /sbin/mkfs.vfat)
 	stage=$(mktemp -d)
-	cat > "${stage}/config.txt" <<'EOF'
-# Stamp-P4 Boot & Hardware Configuration
-# Device: M5Stamp ESP32-P4 + C6 SDIO (Stamp-P4)
+	# The Tab5 overlay ships etc/board/default-hostname; its presence marks a
+	# Tab5 build.  Stamp overlays do not ship it, so their config.txt stays
+	# byte-identical.
+	def_host=stamp-p4
+	dev_hdr='# Stamp-P4 Boot & Hardware Configuration
+# Device: M5Stamp ESP32-P4 + C6 SDIO (Stamp-P4)'
+	if [ -r "${TARGET_DIR}/etc/board/default-hostname" ]; then
+		read -r def_host < "${TARGET_DIR}/etc/board/default-hostname" || true
+		def_host=${def_host:-tab5}
+		dev_hdr='# Tab5 Boot & Hardware Configuration
+# Device: M5Stack Tab5 (ESP32-P4 + C6 SDIO)'
+	fi
+	cat > "${stage}/config.txt" <<EOF
+${dev_hdr}
 # hostname is applied at boot by S40network.
-hostname=stamp-p4
+hostname=${def_host}
 # wifi_mode: ap or sta.  Leave unset to auto-detect from mode=2 in wpa_supplicant.conf.
 #wifi_mode=ap
 # wifi_ssid/wifi_psk replace wpa_supplicant.conf (station, or SoftAP with wifi_mode=ap).

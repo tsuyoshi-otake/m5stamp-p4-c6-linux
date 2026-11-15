@@ -1,0 +1,2 @@
+ssid=m5-AB12
+psk=pass,word1234

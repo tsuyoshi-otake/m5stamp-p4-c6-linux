@@ -40,6 +40,17 @@ if (-not $AllowCandidateWrite) {
 $artifactRoot = (Resolve-Path -LiteralPath $ArtifactsDirectory).Path
 $stockPath = $null
 
+# The package decides the board: a Tab5 package carries esp32p4-tab5.dtb, a
+# Stamp-P4 package esp32p4-m5stamp-p4.dtb.  The flash map is the same; the
+# DTB name and the stock image the readback is checked against are not.
+$dtbName = "esp32p4-m5stamp-p4.dtb"
+if (Test-Path -LiteralPath (Join-Path $artifactRoot "esp32p4-tab5.dtb") -PathType Leaf) {
+	$dtbName = "esp32p4-tab5.dtb"
+	if (-not $PSBoundParameters.ContainsKey("ExpectedStockSha256")) {
+		$ExpectedStockSha256 = "a260eda93e4e5ddc1d3abddd361b1eb326c07d4248b67d1b493feba057fde231"
+	}
+}
+
 # SHA-256 through .NET.  Get-FileHash is in a module that Windows PowerShell
 # cannot load when it is started from a PowerShell 7 shell: it inherits that
 # shell's PSModulePath and finds the wrong Microsoft.PowerShell.Utility.
@@ -89,7 +100,7 @@ $artifacts = @(
 	@{ Address = "0x10000"; Name = "boot-shim.bin"; Max = 0x80000 },
 	@{ Address = "0x90000"; Name = "Image"; Max = 0x780000 },
 	@{ Address = "0x810000"; Name = "rootfs.squashfs"; Max = 0x700000 },
-	@{ Address = "0xf10000"; Name = "esp32p4-m5stamp-p4.dtb"; Max = 0x10000 }
+	@{ Address = "0xf10000"; Name = $dtbName; Max = 0x10000 }
 )
 if ($WriteBoot) {
 	$artifacts += @{ Address = "0xf40000"; Name = "boot.img"; Max = 0x40000 }

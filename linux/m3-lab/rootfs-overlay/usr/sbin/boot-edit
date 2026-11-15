@@ -1,0 +1,148 @@
+#!/bin/sh
+# Change the files on the boot drive from the board itself.
+#
+# config.txt, credentials.txt, wpa_supplicant.conf, the authorized_keys files
+# and the autorun program live in a 256 KB FAT image.  A board with a USB
+# device port shows that image to a PC as a drive.  A board without one (the
+# Tab5) has no way in, so this command is its drive: it mounts a working copy,
+# lets you change one file, and swaps the copy in.  bootsyncd then treats the
+# swap exactly like a PC's write -- it checks the image, saves it to flash and
+# applies what changed -- so the files and keys mean the same on both boards.
+#
+#   boot-edit FILE          edit FILE with vi (creates it if it is missing)
+#   boot-edit --put FILE    write standard input to FILE
+#   boot-edit --cat FILE    print FILE
+#   boot-edit --rm FILE     delete FILE
+#   boot-edit --ls          list the drive
+
+BOOT_IMG="${BOOT_IMG:-/tmp/boot.img}"
+UDC_ROOT="${RUN_SYSTEM_CLASS_UDC_ROOT:-/sys/class/udc}"
+RUN_DIR="${BOOT_EDIT_RUN_DIR:-/run}"
+FLASH_HASH_FILE="$RUN_DIR/.boot-flash-md5"
+LOCK="$RUN_DIR/.boot-edit.lock"
+# Next to the image, so the final rename stays inside one filesystem.
+WORK="${BOOT_IMG%/*}/.boot-edit.$$"
+SAVE_WAIT="${BOOT_EDIT_SAVE_WAIT:-20}"
+
+die() {
+	echo "boot-edit: $1" >&2
+	exit 1
+}
+
+usage() {
+	sed -n 's/^#   //p' "$0" >&2
+	exit 2
+}
+
+img_hash() {
+	HASH=""
+	line=$(md5sum "$1" 2>/dev/null) || return 1
+	HASH=${line%% *}
+	[ -n "$HASH" ]
+}
+
+mode=edit
+case "${1:-}" in
+	--put) mode=put; shift ;;
+	--cat) mode=cat; shift ;;
+	--rm) mode=rm; shift ;;
+	--ls) mode=ls; shift ;;
+	-*|"") usage ;;
+esac
+name="${1:-}"
+if [ "$mode" = ls ]; then
+	[ -z "$name" ] || usage
+else
+	[ -n "$name" ] && [ $# -eq 1 ] || usage
+	# One file in the drive's top directory: no path, no dot names.
+	case "$name" in
+		*/*|.*) die "FILE is a plain name on the drive, not a path" ;;
+	esac
+fi
+
+[ -f "$BOOT_IMG" ] || die "$BOOT_IMG is missing"
+# The image is root's alone (it holds the passwords and the Wi-Fi key).
+[ -r "$BOOT_IMG" ] || die "only root can change the boot drive (use su)"
+# With a USB device port the PC owns the image while the drive is attached;
+# a second writer here would corrupt what the PC sees.
+for c in "$UDC_ROOT"/*; do
+	[ -e "$c" ] && die "this board has a USB drive; change the files there"
+done
+
+umask 077
+if ! mkdir "$LOCK" 2>/dev/null; then
+	# A lock whose owner is gone (killed before its cleanup) is stale.
+	owner=""
+	[ -f "$LOCK/pid" ] && read -r owner < "$LOCK/pid"
+	if [ -n "$owner" ] && kill -0 "$owner" 2>/dev/null; then
+		die "another boot-edit is running (pid $owner)"
+	fi
+	rm -rf "$LOCK"
+	mkdir "$LOCK" 2>/dev/null || die "another boot-edit is running"
+fi
+echo "$$" > "$LOCK/pid"
+MOUNTED=0
+cleanup() {
+	[ "$MOUNTED" -eq 1 ] && umount "$WORK/mnt" 2>/dev/null
+	rm -rf "$WORK" "$LOCK"
+}
+trap cleanup EXIT
+trap 'exit 1' HUP INT TERM
+
+mkdir -p "$WORK/mnt" || die "could not create $WORK"
+cp -f "$BOOT_IMG" "$WORK/img" || die "no room in /tmp for a working copy"
+
+# Reads never write, so a look at the drive cannot change the image.
+opts="loop,ro"
+case "$mode" in
+	edit|put|rm) opts="loop,rw,noatime,umask=0077" ;;
+esac
+mount -t vfat -o "$opts" "$WORK/img" "$WORK/mnt" 2>/dev/null ||
+	die "the boot image is not a mountable FAT volume"
+MOUNTED=1
+
+rc=0
+case "$mode" in
+	ls) ls -l "$WORK/mnt" || rc=$? ;;
+	cat) cat "$WORK/mnt/$name" || rc=$? ;;
+	rm) rm -f "$WORK/mnt/$name" || rc=$? ;;
+	put) cat > "$WORK/mnt/$name" || rc=$? ;;
+	edit) ${EDITOR:-vi} "$WORK/mnt/$name" || rc=$? ;;
+esac
+
+sync
+if ! umount "$WORK/mnt"; then
+	die "could not unmount the working copy; nothing was changed"
+fi
+MOUNTED=0
+case "$mode" in
+	ls|cat) exit "$rc" ;;
+esac
+[ "$rc" -eq 0 ] || die "the change failed; the drive is as it was"
+
+img_hash "$WORK/img" || die "could not hash the working copy; nothing was changed"
+new=$HASH
+img_hash "$BOOT_IMG" || die "could not hash $BOOT_IMG; nothing was changed"
+if [ "$new" = "$HASH" ]; then
+	echo "boot-edit: no change"
+	exit 0
+fi
+
+# Same directory, so the rename is atomic: bootsyncd copies either the old
+# image or the new one, never half of each.
+mv -f "$WORK/img" "$BOOT_IMG" || die "could not replace $BOOT_IMG"
+echo "boot-edit: changed; waiting for bootsync to save it to flash"
+
+i=0
+while [ "$i" -lt "$SAVE_WAIT" ]; do
+	sleep 1
+	saved=""
+	[ -f "$FLASH_HASH_FILE" ] && read -r saved < "$FLASH_HASH_FILE"
+	if [ "$saved" = "$new" ]; then
+		echo "boot-edit: saved to flash"
+		exit 0
+	fi
+	i=$((i + 1))
+done
+echo "boot-edit: not confirmed after ${SAVE_WAIT} s; read the [bootsync] lines on the console" >&2
+exit 1

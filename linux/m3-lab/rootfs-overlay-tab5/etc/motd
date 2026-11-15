@@ -1,0 +1,18 @@
+M5Stack Tab5 ESP32-P4 + C6 SDIO Linux  (NOMMU, BusyBox)
+
+Account m5.  Its password is password= in /tmp/credentials.txt (read it as
+root on the serial console); the first boot also prints it once as
+ES_CREDENTIALS.  The Tab5 has no USB drive, so there is no credentials.txt to
+edit and no autorun.  su asks for root_password= from the same file.
+
+Commands
+  files    ls cp mv rm mkdir find xargs stat tree du df tar gzip unzip
+  text     cat less head tail grep sed awk cut sort uniq wc tr diff vi
+  system   ps top free uptime dmesg kill pkill pgrep watch timeout lsmod
+  network  ifconfig ip ping nslookup traceroute netstat nc wget arp
+  users    id whoami who w last su passwd
+  other    python3 (MicroPython)  hexdump xxd md5sum sha256sum date bc
+
+Full list: busybox --list ; busybox-tools --list
+
+wifi-qr (root) draws the SoftAP QR on the panel -- first boot shows it.

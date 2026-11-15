@@ -1,0 +1,2 @@
+ssid=caf\e-wifi
+psk=FkePsk12AB34

@@ -6,9 +6,15 @@ usage() {
 Usage: build-ota-host.sh <external-source-root> <c6-network-adapter.bin> <output-directory>
 
 Builds a disposable ESP-IDF ESP32-P4 host that uses ESP-Hosted-MCU over the
-Stamp-AddOn C6 SDIO link to update the C6 firmware partition. It never flashes
-the P4 or C6. The ESP-Hosted-MCU source is copied from the external cache; no
-third-party source is vendored into this repository.
+C6 SDIO link to update the C6 firmware partition. It never flashes the P4 or
+C6. The ESP-Hosted-MCU source is copied from the external cache
+(<external-source-root>/esp_hosted_mcu, v2.13.0 or newer); no third-party
+source is vendored into this repository.
+
+ES_BOARD selects the wiring. The default, stamp-p4, is the Stamp-AddOn C6.
+ES_BOARD=tab5 uses ota-host/sdkconfig-tab5.defaults (the Tab5 SDIO pins, C6
+reset on GPIO15) and adds the tab5_c6_power component, which switches the C6
+supply on through the IO expander before ESP-Hosted resets it.
 EOF
 }
 
@@ -32,7 +38,22 @@ rm -rf -- "${output}/build"
 mkdir -p -- "${output}/project/components"
 cp -a "${host_source}/examples/host_performs_slave_ota/." "${output}/project/"
 cp -a "${host_source}/." "${output}/project/components/esp_hosted/"
-cp -- "${script_dir}/ota-host/sdkconfig.defaults" "${output}/project/sdkconfig.defaults"
+case "${ES_BOARD:-stamp-p4}" in
+	stamp-p4)
+		cp -- "${script_dir}/ota-host/sdkconfig.defaults" "${output}/project/sdkconfig.defaults"
+		;;
+	tab5)
+		cp -- "${script_dir}/ota-host/sdkconfig-tab5.defaults" "${output}/project/sdkconfig.defaults"
+		mkdir -p -- "${output}/project/components/tab5_c6_power"
+		cp -- "${script_dir}/ota-host/tab5/CMakeLists.txt" \
+			"${script_dir}/ota-host/tab5/tab5_c6_power.c" \
+			"${output}/project/components/tab5_c6_power/"
+		;;
+	*)
+		echo "unsupported ES_BOARD: ${ES_BOARD}" >&2
+		exit 2
+		;;
+esac
 cp -- "${script_dir}/ota-host/partitions.csv" "${output}/project/partitions.csv"
 mkdir -p -- "${output}/project/components/ota_partition/slave_fw_bin"
 cp -- "$c6_image" "${output}/project/components/ota_partition/slave_fw_bin/network_adapter.bin"

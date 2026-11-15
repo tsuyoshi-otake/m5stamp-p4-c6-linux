@@ -1,0 +1,2 @@
+ssid=net;work
+psk=FkePsk12AB34

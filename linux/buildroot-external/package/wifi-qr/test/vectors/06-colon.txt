@@ -1,0 +1,2 @@
+ssid=wi:fi
+psk=FkePsk12AB34

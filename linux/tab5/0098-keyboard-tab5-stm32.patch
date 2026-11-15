@@ -1,0 +1,828 @@
+From: Devin <devin@cognition.ai>
+Subject: [PATCH tab5] input: keyboard: M5Stack Tab5 Keyboard (A164)
+ I2C driver
+
+Tab5's Ext.Port1 keyboard is an STM32F030C8T6 matrix scanner at I2C
+0x6d on a dedicated hw GPIO0 (SDA) / GPIO1 (SCL) pair -- a bus of its
+own, independent of the bit-banged internal bus on GPIO31/32.
+
+KEY mode is used: the MCU reports raw {press, row, col} events and
+the driver does what the MCU's HID layer does with them.  The reason
+is the Aa key.  In HID mode the MCU decides upper case itself and
+never tells the host, so the host cannot show that state; the only
+indicator is the MCU's own LED 0, which shares its brightness
+register with the always-lit mode LED 1.  With the keys handled here
+the driver knows the state and drives LED 0 alone.
+
+What the keys do is what the firmware does:
+
+  sym   held: the symbol keys give their second character.
+  ctrl, alt:  ordinary modifier keys.
+  Aa    held: letters are upper case, like a Shift key.
+        one tap: the next letter is upper case (LED 0 blinks).
+        two taps: upper case stays on until the next tap (LED 0 lit).
+
+Aa is not a key Linux sees.  An upper-case letter is the letter's key
+with Shift pressed around it, as a symbol such as '!' is KEY_1 with
+Shift.  That Shift belongs to the most recent key: it goes down
+before a key that needs it and comes up before one that does not, so
+'(' and 'f' typed overlapping are "(f", not "(F".  '1' and '!' are
+one keycode on two keys; when both are down the earlier one lets go.
+
+Two things differ from the firmware on purpose.  ctrl and alt reach
+every key (the firmware dropped them from the keys that have a sym
+character, so Ctrl-[ was a plain '[').  And Aa used as a Shift key --
+a letter typed while it is down -- leaves nothing switched on when it
+is let go, however short the hold was; the firmware armed the next
+letter too.
+
+The key-ready interrupt is hw GPIO50 on gpio bank 1, which the
+esp32p4 gpio driver does not wire to an irq_chip, so the driver polls
+the chip FIFO at 40 Hz; the MCU queues events until drained.  An idle
+poll is one three-byte read.
+
+The unit may be attached after boot, so the driver keeps the input
+device registered at all times and tracks presence itself: while the
+MCU does not answer it asks for VERSION once a second, and a unit
+that replies gets the full configure sequence before polling starts;
+eight consecutive I/O failures mean detached, in which case every
+held key is released (a gone keyboard reports no releases) and the
+one-a-second watch resumes.
+
+An MCU whose power dipped keeps answering I2C but restarts with its
+reset values.  KB_MODE cannot show that, because key mode is the
+reset value; INT_CFG can (reset 0x07, configured 0x01), and it is the
+first byte of the read every poll already does.  On a mismatch the
+keys are released and the configure sequence is replayed.
+
+m5stack,led-brightness is how bright LED 0 is when lit, 0..100 (the
+MCU ignores a larger value); 0 keeps it dark.
+
+Wire protocol from m5stack M5Tab5-Keyboard-Internal-FW (MIT licensed):
+
+  0x00  INT_CFG    bit0/1/2 = key/hid/char event enables
+  0x01  INT_STA    pending event types; write 0 clears + releases INT
+  0x02  EVENT_NUM  queued event count; write 0 flushes the FIFO
+  0x03  BRIGHTNESS level of the two indicator LEDs, 0..100
+  0x10  KB_MODE    0=key, 1=hid, 2=char
+  0x11  RGB_MODE   0=bind (firmware owns LEDs), 1=user registers
+  0x20  KEY_EVENT  pops one raw event per read:
+                   bit7=pressed, bit6-4=row, bit3-0=col; 0xff = empty
+  0x60..0x67      LED n at +n*4: [B, G, R, reserved]
+  0xfe  VERSION    firmware byte
+
+linux/tests/test-tab5-kbd.py builds this file on the host and runs it
+against a model of the MCU.
+
+Signed-off-by: Devin <devin@cognition.ai>
+---
+ drivers/input/keyboard/Kconfig    |   8 +
+ drivers/input/keyboard/Makefile   |   1 +
+ drivers/input/keyboard/tab5-kbd.c | 716 +++++++++++++++++++++++++++++
+ 3 files changed, 725 insertions(+)
+
+diff --git a/drivers/input/keyboard/Kconfig b/drivers/input/keyboard/Kconfig
+--- a/drivers/input/keyboard/Kconfig
++++ b/drivers/input/keyboard/Kconfig
+@@ -806,4 +806,12 @@
+ 	  To compile this driver as a module, choose M here: the
+ 	  module will be called cypress-sf.
+ 
++config KEYBOARD_TAB5
++	tristate "M5Stack Tab5 Keyboard (A164)"
++	depends on I2C
++	help
++	  STM32F030C8T6-based 70-key keyboard module on Tab5's Ext.Port1
++	  header; I2C slave at 0x6d, read in its raw key mode.  The
++	  driver handles the sym and Aa keys and the Aa indicator LED.
++
+ endif
+diff --git a/drivers/input/keyboard/Makefile b/drivers/input/keyboard/Makefile
+--- a/drivers/input/keyboard/Makefile
++++ b/drivers/input/keyboard/Makefile
+@@ -71,3 +71,4 @@
+ obj-$(CONFIG_KEYBOARD_TM2_TOUCHKEY)	+= tm2-touchkey.o
+ obj-$(CONFIG_KEYBOARD_TWL4030)		+= twl4030_keypad.o
+ obj-$(CONFIG_KEYBOARD_XTKBD)		+= xtkbd.o
++obj-$(CONFIG_KEYBOARD_TAB5)		+= tab5-kbd.o
+diff --git a/drivers/input/keyboard/tab5-kbd.c b/drivers/input/keyboard/tab5-kbd.c
+new file mode 100644
+--- /dev/null
++++ b/drivers/input/keyboard/tab5-kbd.c
+@@ -0,0 +1,716 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * M5Stack Tab5 Keyboard (A164) I2C driver.
++ *
++ * The unit is an STM32F030C8T6 matrix scanner behind Tab5's Ext.Port1
++ * header: I2C slave at 0x6d on the dedicated hw GPIO0 (SDA) / GPIO1
++ * (SCL) pair -- a bus of its own, independent of the bit-banged
++ * internal bus on GPIO31/32.  Its key-ready interrupt is hw GPIO50 on
++ * gpio bank 1, which the esp32p4 gpio driver does not wire to an
++ * irq_chip, so events are polled from the chip FIFO at 40 Hz; the
++ * queue holds events until drained, so polling loses nothing.
++ *
++ * Wire protocol (m5stack M5Tab5-Keyboard-Internal-FW, MIT licensed):
++ *
++ *   0x00  INT_CFG    bit0/1/2 = key/hid/char event enables (reset: 0x07)
++ *   0x01  INT_STA    pending event types; write 0 clears + releases INT
++ *   0x02  EVENT_NUM  queued event count; write 0 flushes the FIFO
++ *   0x03  BRIGHTNESS level of the two indicator LEDs, 0..100 (reset: 20)
++ *   0x10  KB_MODE    0=key, 1=hid, 2=char (reset: key)
++ *   0x11  RGB_MODE   0=bind (firmware owns LEDs), 1=user (reset: bind)
++ *   0x20  KEY_EVENT  pops one raw event per read:
++ *                    bit7=pressed, bit6-4=row, bit3-0=col; 0xff = empty
++ *   0x60..0x67      LED n at +n*4: [B, G, R, reserved]
++ *   0xfe  VERSION    firmware byte
++ *
++ * KEY mode is used.  The firmware's HID mode decides upper case inside
++ * the MCU and never tells the host, so a host that wants to show that
++ * state has to take the key handling over; in KEY mode every position
++ * reports a raw press and release and this driver does what the MCU's
++ * HID layer does with them:
++ *
++ *   sym   held: the symbol keys give their second character.
++ *   ctrl, alt:  ordinary modifier keys.
++ *   Aa    held: letters are upper case, like a Shift key.
++ *         one tap: the next letter is upper case.
++ *         two taps: upper case stays on until the next tap.
++ *         Aa is not a key Linux sees: an upper-case letter is the
++ *         letter's key with Shift pressed around it, as a symbol such
++ *         as '!' is KEY_1 with Shift.  That Shift belongs to the most
++ *         recent key, so a symbol and a letter typed overlapping still
++ *         come out as typed.
++ *
++ * Two things differ from the firmware on purpose.  ctrl and alt reach
++ * every key (the firmware dropped them from the keys that have a sym
++ * character, so Ctrl-[ was a plain '[').  And Aa used as a Shift key
++ * -- a letter typed while it is down -- leaves nothing switched on
++ * when it is let go, however short the hold was.
++ *
++ * LED 0 shows the Aa state the way the firmware's own indicator does:
++ * blinking while one letter is pending or Aa is down, steady while
++ * upper case is locked.  LED 1, the firmware's mode colour, stays
++ * dark.  The LEDs are driven through the user registers.
++ *
++ * Presence tracking: the unit can be attached after boot, and its
++ * MCU restarts with its reset values whenever its power drops.  The
++ * driver therefore registers the input device unconditionally and
++ * lets the poll work own the attach/detach state machine:
++ *
++ *   absent:  once a second, read VERSION; a unit that answers gets
++ *            the configure sequence and moves to present.
++ *   present: the 25 ms drain.  Eight consecutive I/O failures mean the
++ *            unit is gone, so every key is released (a detached
++ *            keyboard can never report a release) and the driver
++ *            returns to absent.  Every drain also reads INT_CFG back:
++ *            a restarted MCU still answers but has its reset value
++ *            there, so the keys are released and the configure
++ *            sequence is replayed.
++ *
++ * The STM32 runs its I2C pins with no pull and the stock design
++ * relies on the host's internal pad pull-ups (the ESP-IDF demo sets
++ * enable_internal_pullup).  i2c-gpio only toggles direction, so the
++ * probe enables WPU on the two IO_MUX pads itself; the pad indices
++ * are fixed by the board wiring (hw GPIO0 = SDA, hw GPIO1 = SCL).
++ */
++
++#include <linux/bits.h>
++#include <linux/i2c.h>
++#include <linux/input.h>
++#include <linux/io.h>
++#include <linux/jiffies.h>
++#include <linux/module.h>
++#include <linux/of.h>
++#include <linux/workqueue.h>
++
++#define TAB5KBD_REG_INT_CFG	0x00
++#define TAB5KBD_REG_INT_STA	0x01
++#define TAB5KBD_REG_EVENT_NUM	0x02
++#define TAB5KBD_REG_BRIGHTNESS	0x03
++#define TAB5KBD_REG_KB_MODE	0x10
++#define TAB5KBD_REG_RGB_MODE	0x11
++#define TAB5KBD_REG_KEY_EVENT	0x20
++#define TAB5KBD_REG_LED_BASE	0x60
++#define TAB5KBD_REG_VERSION	0xfe
++
++#define TAB5KBD_CFG_KEY_EN	0x01
++#define TAB5KBD_MODE_KEY	0x00
++#define TAB5KBD_RGB_USER	0x01
++#define TAB5KBD_KEY_EMPTY	0xff
++#define TAB5KBD_BRIGHTNESS_MAX	100	/* the MCU ignores a larger value */
++
++#define TAB5KBD_DRAIN_MAX	32
++#define TAB5KBD_POLL_MS		25
++#define TAB5KBD_PROBE_MS	1000	/* absent: ask for the MCU once a second */
++#define TAB5KBD_ERR_MAX		8	/* I/O failures that mean detached */
++#define TAB5KBD_AA_TAP_MS	500	/* firmware AA_DOUBLE_CLICK_MS */
++#define TAB5KBD_BLINK_MS	200	/* firmware indicator half period */
++
++#define TAB5KBD_ROWS		5
++#define TAB5KBD_COLS		14
++#define TAB5KBD_POS_MAX		(TAB5KBD_ROWS * TAB5KBD_COLS)
++#define TAB5KBD_POS_SYM		(3 * TAB5KBD_COLS + 0)
++#define TAB5KBD_POS_AA		(3 * TAB5KBD_COLS + 1)
++#define TAB5KBD_POS_CTRL	(4 * TAB5KBD_COLS + 0)
++#define TAB5KBD_POS_ALT		(4 * TAB5KBD_COLS + 1)
++#define TAB5KBD_NO_POS		TAB5KBD_POS_MAX
++/* MSC_SCAN of the Shift the driver adds; positions end at 0x4d. */
++#define TAB5KBD_SCAN_SHIFT	0x70
++
++#define TAB5KBD_IOMUX_BASE	0x500e1000
++#define TAB5KBD_IOMUX_PIN(n)	(0x4 + (n) * 0x4)
++#define TAB5KBD_IOMUX_WPU	BIT(8)
++#define TAB5KBD_IOMUX_IE	BIT(9)
++
++/* tab5kbd_drain(): the MCU answered with its reset configuration. */
++#define TAB5KBD_RESTARTED	1
++
++enum tab5kbd_aa {
++	TAB5KBD_AA_OFF,
++	TAB5KBD_AA_ONCE,	/* the next letter is upper case */
++	TAB5KBD_AA_LOCK,	/* letters are upper case until the next tap */
++};
++
++struct tab5kbd {
++	struct i2c_client *client;
++	struct input_dev *input;
++	struct delayed_work work;
++	bool present;
++	bool absence_reported;
++	unsigned int io_errors;
++	u8 brightness;
++	bool have_brightness;
++
++	bool sym_held;
++	bool aa_held;
++	bool aa_used;		/* a letter was typed while Aa was down */
++	enum tab5kbd_aa aa_mode;
++	unsigned int aa_taps;	/* taps in the run that may become a lock */
++	unsigned long aa_pressed_at;
++	unsigned long aa_released_at;
++	unsigned int shift_pos;	/* position whose key holds the added Shift */
++	bool led_on;		/* what LED 0 was last told */
++	u8 pos_code[TAB5KBD_POS_MAX];	/* keycode each held position reported */
++};
++
++#define TAB5KBD_F_SHIFT		BIT(0)	/* the character needs Shift */
++#define TAB5KBD_F_SYM_SHIFT	BIT(1)	/* the sym character needs Shift */
++#define TAB5KBD_F_LETTER	BIT(2)	/* follows Aa, has no sym character */
++#define TAB5KBD_F_MOD		BIT(3)	/* ctrl, alt */
++
++struct tab5kbd_key {
++	u8 code;	/* Linux keycode of the character on the key */
++	u8 sym_code;	/* ... and of the one typed with sym held */
++	u8 flags;
++};
++
++/* One character, the same with sym held. */
++#define T5_K(c)		{ KEY_##c, KEY_##c, 0 }
++/* One character that needs Shift, the same with sym held. */
++#define T5_S(c)		{ KEY_##c, KEY_##c, \
++			  TAB5KBD_F_SHIFT | TAB5KBD_F_SYM_SHIFT }
++/* A letter. */
++#define T5_L(c)		{ KEY_##c, KEY_##c, TAB5KBD_F_LETTER }
++/* Two characters; f says which of them need Shift. */
++#define T5_K2(c, sc, f)	{ KEY_##c, KEY_##sc, f }
++#define T5_P		TAB5KBD_F_SHIFT
++#define T5_Y		TAB5KBD_F_SYM_SHIFT
++
++/*
++ * The MCU's key_value_map, by logical (row, col).  Its HID usage names
++ * are the Linux keycode names, so the rows read the same as the
++ * firmware source.  sym and Aa have no key of their own.
++ */
++static const struct tab5kbd_key tab5kbd_map[TAB5KBD_ROWS][TAB5KBD_COLS] = {
++	{ /* esc 1 2 3 4 5 6 7 8 9 0 - + del */
++		T5_K(ESC), T5_K(1), T5_K(2), T5_K(3), T5_K(4), T5_K(5),
++		T5_K(6), T5_K(7), T5_K(8), T5_K(9), T5_K(0), T5_K(MINUS),
++		T5_S(EQUAL), T5_K(DELETE),
++	}, { /* `~ !? @ # $ % ^ & * / (< )> [{ ]} \| */
++		T5_K2(GRAVE, GRAVE, T5_Y), T5_K2(1, SLASH, T5_P | T5_Y),
++		T5_S(2), T5_S(3), T5_S(4), T5_S(5), T5_S(6), T5_S(7),
++		T5_K2(8, SLASH, T5_P), T5_K2(9, COMMA, T5_P | T5_Y),
++		T5_K2(0, DOT, T5_P | T5_Y),
++		T5_K2(LEFTBRACE, LEFTBRACE, T5_Y),
++		T5_K2(RIGHTBRACE, RIGHTBRACE, T5_Y),
++		T5_K2(BACKSLASH, BACKSLASH, T5_Y),
++	}, { /* tab q w e r t y u i o p ;: '" backspace */
++		T5_K(TAB), T5_L(Q), T5_L(W), T5_L(E), T5_L(R), T5_L(T),
++		T5_L(Y), T5_L(U), T5_L(I), T5_L(O), T5_L(P),
++		T5_K2(SEMICOLON, SEMICOLON, T5_Y),
++		T5_K2(APOSTROPHE, APOSTROPHE, T5_Y), T5_K(BACKSPACE),
++	}, { /* sym Aa a s d f g h j k l up _= enter */
++		{ 0 }, { 0 }, T5_L(A), T5_L(S), T5_L(D), T5_L(F), T5_L(G),
++		T5_L(H), T5_L(J), T5_L(K), T5_L(L), T5_K(UP),
++		T5_K2(MINUS, EQUAL, T5_P), T5_K(ENTER),
++	}, { /* ctrl alt z x c v b n m ., left down right space */
++		{ KEY_LEFTCTRL, KEY_LEFTCTRL, TAB5KBD_F_MOD },
++		{ KEY_LEFTALT, KEY_LEFTALT, TAB5KBD_F_MOD },
++		T5_L(Z), T5_L(X), T5_L(C), T5_L(V), T5_L(B), T5_L(N),
++		T5_L(M), T5_K2(DOT, COMMA, 0), T5_K(LEFT), T5_K(DOWN),
++		T5_K(RIGHT), T5_K(SPACE),
++	},
++};
++
++#undef T5_K
++#undef T5_S
++#undef T5_L
++#undef T5_K2
++#undef T5_P
++#undef T5_Y
++
++/*
++ * Enable the host-side pad pull-ups the keyboard's bus design
++ * expects.  Must run before the first transaction on the bus.
++ */
++static void tab5kbd_pull_up_pads(struct device *dev)
++{
++	static const u8 pads[2] = { 0, 1 }; /* hw GPIO0 SDA, GPIO1 SCL */
++	void __iomem *iomux;
++	int i;
++
++	iomux = devm_ioremap(dev, TAB5KBD_IOMUX_BASE, 0x100);
++	if (!iomux) {
++		dev_warn(dev, "iomux map failed; bus relies on stray pulls\n");
++		return;
++	}
++	for (i = 0; i < ARRAY_SIZE(pads); i++) {
++		u32 v = readl(iomux + TAB5KBD_IOMUX_PIN(pads[i]));
++
++		writel(v | TAB5KBD_IOMUX_WPU | TAB5KBD_IOMUX_IE,
++		       iomux + TAB5KBD_IOMUX_PIN(pads[i]));
++	}
++}
++
++static int tab5kbd_read(struct i2c_client *client, u8 reg,
++			u8 *data, u8 len)
++{
++	struct i2c_msg msgs[] = {
++		{
++			.addr = client->addr,
++			.flags = 0,
++			.len = 1,
++			.buf = &reg,
++		}, {
++			.addr = client->addr,
++			.flags = I2C_M_RD,
++			.len = len,
++			.buf = data,
++		},
++	};
++
++	if (i2c_transfer(client->adapter, msgs, ARRAY_SIZE(msgs)) !=
++	    ARRAY_SIZE(msgs))
++		return -EIO;
++	return 0;
++}
++
++static int tab5kbd_write(struct i2c_client *client, u8 reg, u8 val)
++{
++	u8 buf[2] = { reg, val };
++
++	return i2c_master_send(client, buf, sizeof(buf)) == sizeof(buf) ?
++	       0 : -EIO;
++}
++
++/* LED 0 is register 0x60..0x63 as [B, G, R, reserved]; LED 1 follows. */
++static int tab5kbd_write_leds(struct tab5kbd *kbd, bool on, bool both)
++{
++	/* The firmware's AA_INDICATOR_LIGHT colour; LED 1 dark. */
++	u8 buf[9] = { TAB5KBD_REG_LED_BASE, on ? 0xff : 0 };
++	int len = both ? 9 : 5;
++
++	if (i2c_master_send(kbd->client, buf, len) != len)
++		return -EIO;
++	kbd->led_on = on;
++	return 0;
++}
++
++static bool tab5kbd_led_wanted(const struct tab5kbd *kbd)
++{
++	unsigned long half = msecs_to_jiffies(TAB5KBD_BLINK_MS);
++
++	/* Counted from the Aa press, so the tap itself lights the LED. */
++	if (kbd->aa_held || kbd->aa_mode == TAB5KBD_AA_ONCE)
++		return !(((jiffies - kbd->aa_pressed_at) / half) & 1);
++	return kbd->aa_mode == TAB5KBD_AA_LOCK;
++}
++
++static int tab5kbd_led_sync(struct tab5kbd *kbd)
++{
++	bool on = tab5kbd_led_wanted(kbd);
++
++	return on == kbd->led_on ? 0 : tab5kbd_write_leds(kbd, on, false);
++}
++
++/* MSC_SCAN of a position: the raw event without its pressed bit. */
++static unsigned int tab5kbd_scan(unsigned int pos)
++{
++	return ((pos / TAB5KBD_COLS) << 4) | (pos % TAB5KBD_COLS);
++}
++
++static void tab5kbd_report(struct tab5kbd *kbd, unsigned int scan,
++			   unsigned int code, int value)
++{
++	input_event(kbd->input, EV_MSC, MSC_SCAN, scan);
++	input_report_key(kbd->input, code, value);
++}
++
++/*
++ * The Shift the driver adds belongs to the key pressed last: it goes
++ * down before a key that needs it, comes up before a key that does
++ * not, and comes up when the key it went down for is released.
++ */
++static void tab5kbd_set_shift(struct tab5kbd *kbd, unsigned int pos)
++{
++	bool was = kbd->shift_pos != TAB5KBD_NO_POS;
++	bool now = pos != TAB5KBD_NO_POS;
++
++	if (was != now)
++		tab5kbd_report(kbd, TAB5KBD_SCAN_SHIFT, KEY_LEFTSHIFT, now);
++	kbd->shift_pos = pos;
++}
++
++static void tab5kbd_aa_event(struct tab5kbd *kbd, bool pressed)
++{
++	unsigned long tap = msecs_to_jiffies(TAB5KBD_AA_TAP_MS);
++	unsigned long now = jiffies;
++
++	if (pressed == kbd->aa_held)
++		return;
++	kbd->aa_held = pressed;
++
++	if (pressed) {
++		if (kbd->aa_taps && time_before(now, kbd->aa_released_at + tap))
++			kbd->aa_taps++;
++		else
++			kbd->aa_taps = 1;
++		kbd->aa_pressed_at = now;
++		kbd->aa_used = false;
++		return;
++	}
++
++	kbd->aa_released_at = now;
++	if (kbd->aa_used || !time_before(now, kbd->aa_pressed_at + tap)) {
++		/* It was a Shift key this time: nothing stays on. */
++		kbd->aa_mode = TAB5KBD_AA_OFF;
++		kbd->aa_taps = 0;
++	} else if (kbd->aa_taps >= 2) {
++		kbd->aa_mode = TAB5KBD_AA_LOCK;
++		kbd->aa_taps = 0;
++	} else if (kbd->aa_mode == TAB5KBD_AA_LOCK) {
++		kbd->aa_mode = TAB5KBD_AA_OFF;
++	} else {
++		kbd->aa_mode = TAB5KBD_AA_ONCE;
++	}
++}
++
++/* Whether this letter press is upper case; uses up a pending tap. */
++static bool tab5kbd_upper(struct tab5kbd *kbd)
++{
++	/* As in the firmware, Ctrl-c and Alt-c stay plain letters. */
++	if (kbd->pos_code[TAB5KBD_POS_CTRL] || kbd->pos_code[TAB5KBD_POS_ALT])
++		return false;
++	if (!kbd->aa_held && kbd->aa_mode == TAB5KBD_AA_OFF)
++		return false;
++	if (kbd->aa_held)
++		kbd->aa_used = true;
++	if (kbd->aa_mode == TAB5KBD_AA_ONCE)
++		kbd->aa_mode = TAB5KBD_AA_OFF;
++	return true;
++}
++
++/*
++ * One raw event: bit7 pressed, bit6-4 row, bit3-0 col of the logical
++ * 5x14 matrix.  A release reports the keycode its press reported,
++ * whatever sym and Aa have done since.
++ */
++static void tab5kbd_key_event(struct tab5kbd *kbd, u8 raw)
++{
++	bool pressed = raw & 0x80;
++	unsigned int row = (raw >> 4) & 0x7;
++	unsigned int col = raw & 0xf;
++	unsigned int scan = raw & 0x7f;
++	const struct tab5kbd_key *key;
++	unsigned int pos, other, code;
++	bool shift;
++
++	if (row >= TAB5KBD_ROWS || col >= TAB5KBD_COLS)
++		return;
++	pos = row * TAB5KBD_COLS + col;
++
++	if (pos == TAB5KBD_POS_SYM) {
++		kbd->sym_held = pressed;
++		return;
++	}
++	if (pos == TAB5KBD_POS_AA) {
++		tab5kbd_aa_event(kbd, pressed);
++		return;
++	}
++
++	if (!pressed) {
++		code = kbd->pos_code[pos];
++		if (!code)
++			return;
++		kbd->pos_code[pos] = 0;
++		tab5kbd_report(kbd, scan, code, 0);
++		if (kbd->shift_pos == pos)
++			tab5kbd_set_shift(kbd, TAB5KBD_NO_POS);
++		return;
++	}
++	if (kbd->pos_code[pos])
++		return;		/* already down: its release was lost */
++
++	key = &tab5kbd_map[row][col];
++	if (key->flags & TAB5KBD_F_MOD) {
++		kbd->pos_code[pos] = key->code;
++		tab5kbd_report(kbd, scan, key->code, 1);
++		return;
++	}
++	if (key->flags & TAB5KBD_F_LETTER) {
++		code = key->code;
++		shift = tab5kbd_upper(kbd);
++	} else if (kbd->sym_held) {
++		code = key->sym_code;
++		shift = key->flags & TAB5KBD_F_SYM_SHIFT;
++	} else {
++		code = key->code;
++		shift = key->flags & TAB5KBD_F_SHIFT;
++	}
++
++	/*
++	 * '1' and '!' are one keycode on two keys, and Linux cannot hold a
++	 * key down twice: the key pressed earlier lets go first.
++	 */
++	for (other = 0; other < TAB5KBD_POS_MAX; other++) {
++		if (kbd->pos_code[other] != code)
++			continue;
++		kbd->pos_code[other] = 0;
++		tab5kbd_report(kbd, tab5kbd_scan(other), code, 0);
++	}
++	tab5kbd_set_shift(kbd, shift ? pos : TAB5KBD_NO_POS);
++	kbd->pos_code[pos] = code;
++	tab5kbd_report(kbd, scan, code, 1);
++}
++
++/*
++ * Drop every held key and forget sym and Aa: a detached or restarted
++ * keyboard can never report the releases, so nothing may be left held.
++ */
++static void tab5kbd_release_all(struct tab5kbd *kbd)
++{
++	unsigned int pos;
++
++	for (pos = 0; pos < TAB5KBD_POS_MAX; pos++) {
++		if (!kbd->pos_code[pos])
++			continue;
++		tab5kbd_report(kbd, tab5kbd_scan(pos), kbd->pos_code[pos], 0);
++		kbd->pos_code[pos] = 0;
++	}
++	tab5kbd_set_shift(kbd, TAB5KBD_NO_POS);
++	kbd->sym_held = false;
++	kbd->aa_held = false;
++	kbd->aa_used = false;
++	kbd->aa_mode = TAB5KBD_AA_OFF;
++	kbd->aa_taps = 0;
++	input_sync(kbd->input);
++}
++
++/*
++ * Push the whole MCU setup: KEY mode, FIFO flushed, only key events
++ * raise the interrupt status, status cleared so INT drops, LEDs handed
++ * to the user registers, the DT-requested brightness, then both LEDs.
++ * Idempotent -- called on probe, on every re-attach and after an MCU
++ * restart.
++ */
++static int tab5kbd_configure(struct tab5kbd *kbd)
++{
++	struct i2c_client *client = kbd->client;
++	int error;
++
++	error = tab5kbd_write(client, TAB5KBD_REG_KB_MODE,
++			      TAB5KBD_MODE_KEY);
++	if (!error)
++		error = tab5kbd_write(client, TAB5KBD_REG_EVENT_NUM, 0);
++	if (!error)
++		error = tab5kbd_write(client, TAB5KBD_REG_INT_CFG,
++				      TAB5KBD_CFG_KEY_EN);
++	if (!error)
++		error = tab5kbd_write(client, TAB5KBD_REG_INT_STA, 0);
++	if (!error)
++		error = tab5kbd_write(client, TAB5KBD_REG_RGB_MODE,
++				      TAB5KBD_RGB_USER);
++	if (!error && kbd->have_brightness)
++		error = tab5kbd_write(client, TAB5KBD_REG_BRIGHTNESS,
++				      kbd->brightness);
++	if (!error)
++		error = tab5kbd_write_leds(kbd, tab5kbd_led_wanted(kbd), true);
++	return error;
++}
++
++/* Returns true once a unit answered and accepted the configuration. */
++static bool tab5kbd_try_attach(struct tab5kbd *kbd)
++{
++	u8 version = 0;
++
++	if (tab5kbd_read(kbd->client, TAB5KBD_REG_VERSION, &version, 1) < 0)
++		return false;
++	if (tab5kbd_configure(kbd) < 0)
++		return false;
++
++	kbd->present = true;
++	kbd->absence_reported = false;
++	kbd->io_errors = 0;
++	kbd->input->id.version = version;
++	dev_info(&kbd->client->dev,
++		 "tab5-keyboard: attached, fw 0x%02x, polling at %d Hz\n",
++		 version, 1000 / TAB5KBD_POLL_MS);
++	return true;
++}
++
++/* Returns 0, -EIO, or TAB5KBD_RESTARTED with nothing drained. */
++static int tab5kbd_drain(struct tab5kbd *kbd)
++{
++	struct i2c_client *client = kbd->client;
++	u8 sys[3], ev;
++	unsigned int i;
++	int error = 0;
++
++	/* 0x00 reads [INT_CFG, INT_STA, EVENT_NUM] in one transaction. */
++	if (tab5kbd_read(client, TAB5KBD_REG_INT_CFG, sys, sizeof(sys)) < 0)
++		return -EIO;
++	if (sys[0] != TAB5KBD_CFG_KEY_EN)
++		return TAB5KBD_RESTARTED;
++	if (!sys[2])
++		return 0;
++	if (sys[2] > TAB5KBD_DRAIN_MAX)
++		sys[2] = TAB5KBD_DRAIN_MAX;
++	for (i = 0; i < sys[2]; i++) {
++		if (tab5kbd_read(client, TAB5KBD_REG_KEY_EVENT, &ev, 1) < 0) {
++			error = -EIO;
++			break;
++		}
++		if (ev == TAB5KBD_KEY_EMPTY)
++			break;
++		tab5kbd_key_event(kbd, ev);
++	}
++	/* Clears pending bits and releases the INT line. */
++	if (sys[1] && tab5kbd_write(client, TAB5KBD_REG_INT_STA, 0) < 0)
++		error = -EIO;
++	input_sync(kbd->input);
++	return error;
++}
++
++static void tab5kbd_poll(struct work_struct *work)
++{
++	struct tab5kbd *kbd = container_of(to_delayed_work(work),
++					   struct tab5kbd, work);
++	unsigned int delay;
++	int ret;
++
++	if (!kbd->present) {
++		delay = TAB5KBD_PROBE_MS;
++		if (tab5kbd_try_attach(kbd)) {
++			delay = TAB5KBD_POLL_MS;
++		} else if (!kbd->absence_reported) {
++			kbd->absence_reported = true;
++			dev_info(&kbd->client->dev,
++				 "tab5-keyboard: absent, watching for attach\n");
++		}
++	} else {
++		delay = TAB5KBD_POLL_MS;
++		ret = tab5kbd_drain(kbd);
++		if (ret == TAB5KBD_RESTARTED) {
++			/*
++			 * It answers but has lost its setup: its power
++			 * dipped.  Its key state is gone with it.
++			 */
++			dev_warn_ratelimited(&kbd->client->dev,
++					     "tab5-keyboard: MCU restarted, configuring it again\n");
++			tab5kbd_release_all(kbd);
++			ret = tab5kbd_configure(kbd);
++		}
++		if (!ret)
++			ret = tab5kbd_led_sync(kbd);
++		if (!ret) {
++			kbd->io_errors = 0;
++		} else if (++kbd->io_errors >= TAB5KBD_ERR_MAX) {
++			kbd->present = false;
++			kbd->io_errors = 0;
++			kbd->absence_reported = true;
++			tab5kbd_release_all(kbd);
++			dev_info(&kbd->client->dev,
++				 "tab5-keyboard: detached, watching for attach\n");
++			delay = TAB5KBD_PROBE_MS;
++		}
++	}
++	schedule_delayed_work(&kbd->work, msecs_to_jiffies(delay));
++}
++
++static int tab5kbd_probe(struct i2c_client *client)
++{
++	struct tab5kbd *kbd;
++	struct input_dev *input;
++	u32 brightness;
++	int error, row, col;
++
++	if (!i2c_check_functionality(client->adapter, I2C_FUNC_I2C))
++		return dev_err_probe(&client->dev, -ENXIO,
++				     "adapter lacks plain I2C\n");
++
++	tab5kbd_pull_up_pads(&client->dev);
++
++	kbd = devm_kzalloc(&client->dev, sizeof(*kbd), GFP_KERNEL);
++	if (!kbd)
++		return -ENOMEM;
++	kbd->client = client;
++	kbd->shift_pos = TAB5KBD_NO_POS;
++	i2c_set_clientdata(client, kbd);
++	INIT_DELAYED_WORK(&kbd->work, tab5kbd_poll);
++
++	/*
++	 * How bright LED 0 is when it is lit, 0..100; 0 keeps it dark.
++	 * Cached so a re-attach replays it on the freshly powered MCU.
++	 * Without the property the MCU keeps its own level.
++	 */
++	if (!of_property_read_u32(client->dev.of_node,
++				  "m5stack,led-brightness", &brightness)) {
++		kbd->brightness = min_t(u32, brightness,
++					TAB5KBD_BRIGHTNESS_MAX);
++		kbd->have_brightness = true;
++	}
++
++	input = devm_input_allocate_device(&client->dev);
++	if (!input)
++		return -ENOMEM;
++	kbd->input = input;
++	input->name = "tab5-keyboard";
++	input->phys = "tab5-kbd/input0";
++	input->id.bustype = BUS_I2C;
++	input->id.vendor = 0x06d;
++	/* id.version is filled by tab5kbd_try_attach once a unit answers. */
++	input->dev.parent = &client->dev;
++
++	__set_bit(EV_KEY, input->evbit);
++	__set_bit(EV_REP, input->evbit);
++	input_set_capability(input, EV_MSC, MSC_SCAN);
++	__set_bit(KEY_LEFTSHIFT, input->keybit);
++	for (row = 0; row < TAB5KBD_ROWS; row++) {
++		for (col = 0; col < TAB5KBD_COLS; col++) {
++			const struct tab5kbd_key *key = &tab5kbd_map[row][col];
++
++			if (!key->code)
++				continue;
++			__set_bit(key->code, input->keybit);
++			__set_bit(key->sym_code, input->keybit);
++		}
++	}
++
++	error = input_register_device(input);
++	if (error)
++		return dev_err_probe(&client->dev, error,
++				     "input device registration failed\n");
++
++	/*
++	 * The unit may not be attached at boot: the input device
++	 * registers regardless, and the poll work keeps asking for the
++	 * MCU until one answers, so a later attach works without a
++	 * manual rebind.
++	 */
++	if (!tab5kbd_try_attach(kbd)) {
++		kbd->absence_reported = true;
++		dev_info(&client->dev,
++			 "tab5-keyboard: absent, watching for attach\n");
++	}
++	schedule_delayed_work(&kbd->work,
++			      msecs_to_jiffies(kbd->present ?
++					       TAB5KBD_POLL_MS :
++					       TAB5KBD_PROBE_MS));
++	return 0;
++}
++
++static void tab5kbd_remove(struct i2c_client *client)
++{
++	struct tab5kbd *kbd = i2c_get_clientdata(client);
++
++	cancel_delayed_work_sync(&kbd->work);
++}
++
++static const struct of_device_id tab5kbd_of_match[] = {
++	{ .compatible = "m5stack,tab5-keyboard" },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, tab5kbd_of_match);
++
++static struct i2c_driver tab5kbd_driver = {
++	.driver = {
++		.name = "tab5-keyboard",
++		.of_match_table = tab5kbd_of_match,
++	},
++	.probe = tab5kbd_probe,
++	.remove = tab5kbd_remove,
++};
++module_i2c_driver(tab5kbd_driver);
++
++MODULE_AUTHOR("Devin <devin@cognition.ai>");
++MODULE_DESCRIPTION("M5Stack Tab5 Keyboard (A164) I2C driver");
++MODULE_LICENSE("GPL");

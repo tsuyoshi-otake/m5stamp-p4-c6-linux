@@ -61,6 +61,11 @@
 #include "m2_sdmmc.h"
 #endif
 
+#ifdef BOARD_TAB5
+#include "tab5_board.h"
+#include "tab5_display.h"
+#endif
+
 #include "hal/usb_wrap_ll.h"
 #include "soc/usb_wrap_struct.h"
 #include "esp_rom_gpio.h"
@@ -70,6 +75,9 @@
 #include "boot_ab.h"
 #include "deep_sleep.h"
 
+/* Tab5's FS OTG PHY shares the I2S audio pins and is not wired to a
+ * connector, so this is compiled out for BOARD_TAB5 (see the call site). */
+#ifndef BOARD_TAB5
 static void usb_otg_init(void)
 {
 	ESP_LOGI("otg", "enabling USB OTG 1.1 (FS GPIO26/27) clock and PHY...");
@@ -93,6 +101,7 @@ static void usb_otg_init(void)
 	USB_WRAP.otg_conf.dp_pullup = 0;
 	gpio_pullup_dis(GPIO_NUM_27);
 }
+#endif /* BOARD_TAB5 */
 
 static const char *TAG = "boot";
 
@@ -434,6 +443,113 @@ static bool patch_rootfs_window(uint8_t *dtb, uint32_t total,
 	return false;
 }
 
+#ifdef BOARD_TAB5
+/*
+ * The Tab5 DTS carries three display placeholders patched here after a
+ * successful panel (ST7121/ST7123) bring-up:
+ *   - framebuffer0 reg      <0x0dfb0000 0x001c2000> -> fb PA/size
+ *   - display_fb_res reg    <0x49fdf000 0x00001000> -> fb PA/size
+ *   - framebuffer0 status   "reserved-fb" -> "okay" (custom placeholder
+ *     keeps simplefb off the node when the panel never came up; the
+ *     value is unique in the strings block so no other node is hit)
+ */
+/* Count then patch: a placeholder that matches more than once (or not
+ * at all) means the DTB does not look like the one this shim was built
+ * for; fail closed rather than corrupting an unrelated cell. */
+static bool patch_reg_pair_once(uint8_t *dtb, uint32_t total,
+				uint32_t magic, uint32_t pa, uint32_t bytes)
+{
+	uint8_t want[4] = {
+		(uint8_t)(magic >> 24), (uint8_t)(magic >> 16),
+		(uint8_t)(magic >> 8), (uint8_t)magic,
+	};
+	uint32_t hits = 0, at = 0;
+	for (uint32_t i = 0; i + 8 <= total; ++i) {
+		if (!memcmp(dtb + i, want, sizeof(want))) {
+			hits++;
+			at = i;
+		}
+	}
+	if (hits != 1)
+		return false;
+	uint8_t replacement[8] = {
+		(uint8_t)(pa >> 24), (uint8_t)(pa >> 16),
+		(uint8_t)(pa >> 8), (uint8_t)pa,
+		(uint8_t)(bytes >> 24), (uint8_t)(bytes >> 16),
+		(uint8_t)(bytes >> 8), (uint8_t)bytes,
+	};
+	memcpy(dtb + at, replacement, sizeof(replacement));
+	return true;
+}
+
+/* Single-cell variant of patch_reg_pair_once for the dsi-scanout
+ * node's scalar properties. */
+static bool patch_u32_once(uint8_t *dtb, uint32_t total,
+			   uint32_t magic, uint32_t value)
+{
+	uint8_t want[4] = {
+		(uint8_t)(magic >> 24), (uint8_t)(magic >> 16),
+		(uint8_t)(magic >> 8), (uint8_t)magic,
+	};
+	uint8_t repl[4] = {
+		(uint8_t)(value >> 24), (uint8_t)(value >> 16),
+		(uint8_t)(value >> 8), (uint8_t)value,
+	};
+	uint32_t hits = 0, at = 0;
+	for (uint32_t i = 0; i + 4 <= total; ++i) {
+		if (!memcmp(dtb + i, want, sizeof(want))) {
+			hits++;
+			at = i;
+		}
+	}
+	if (hits != 1)
+		return false;
+	memcpy(dtb + at, repl, sizeof(repl));
+	return true;
+}
+
+/* Write the scan-out LLI address and channel into the dsi-scanout
+ * node.  When the scan-out facts are unknown the placeholders stay and
+ * the kernel driver fails closed. */
+static bool patch_scanout_node(uint8_t *dtb, uint32_t total)
+{
+	uint32_t lli = tab5_scanout_lli();
+	int chan = tab5_scanout_chan();
+	if (!lli || chan < 0)
+		return false;
+	bool ok = patch_u32_once(dtb, total, 0x5ca11000u, lli);
+	ok &= patch_u32_once(dtb, total, 0x5ca12000u, (uint32_t)chan);
+	return ok;
+}
+
+static bool patch_display_window(uint8_t *dtb, uint32_t total,
+				 uint32_t fb_pa, uint32_t fb_bytes)
+{
+	bool ok = patch_reg_pair_once(dtb, total, 0x0dfb0000u,
+				      fb_pa, fb_bytes);
+	/* The reserved-memory placeholder already carries a valid PSRAM
+	 * address; patching rewrites both cells to the real buffer. */
+	/* The reserved-memory node is page aligned (the framebuffer itself is
+	 * only cache-line aligned, and the bytes below it hold heap metadata). */
+	uint32_t res_pa = fb_pa & ~0xfffu;
+	uint32_t res_end = (fb_pa + fb_bytes + 0xfffu) & ~0xfffu;
+	if (!patch_reg_pair_once(dtb, total, 0x49fdf000u, res_pa, res_end - res_pa))
+		ok = false;
+	static const char status_needle[] = "reserved-fb";
+	uint32_t status_hits = 0, status_at = 0;
+	for (uint32_t i = 0; i + sizeof(status_needle) <= total; ++i) {
+		if (!memcmp(dtb + i, status_needle, sizeof(status_needle) - 1)) {
+			status_hits++;
+			status_at = i;
+		}
+	}
+	if (status_hits != 1)
+		return false;
+	memcpy(dtb + status_at, "okay", 5);
+	return ok;
+}
+#endif /* BOARD_TAB5 */
+
 static void IRAM_ATTR jump_to_linux(uint32_t entry, uint32_t dtb_pa)
 {
 	__asm__ volatile("csrci mstatus, 0x8\n"
@@ -741,8 +857,19 @@ void app_main(void)
 	/* M2 opts in to the raw Slot 1 bootstrap; M1 keeps the proven path. */
 	m2_sdmmc_init();
 	#endif
+	#ifdef BOARD_TAB5
+	/*
+	 * Tab5 owns its expander rails, C6 power/reset, SDIO routing and the
+	 * panel in one place.  The FS OTG PHY that usb_otg_init() enables is
+	 * on the I2S audio pins here and is not wired to a connector, so the
+	 * OTG init must not run.
+	 */
+	static struct tab5_fb s_tab5_fb;
+	tab5_board_init(&s_tab5_fb);
+	#else
 	/* Enable Full-Speed USB OTG (DWC2) for Type-A USB Gadget */
 	usb_otg_init();
+	#endif
 	const esp_partition_t *kernel = esp_partition_find_first(
 		ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_ANY, "kernel");
 	const esp_partition_t *dtb_part = esp_partition_find_first(
@@ -793,6 +920,18 @@ void app_main(void)
 	if (!patch_rootfs_window(dtb, total, (uint32_t)(uintptr_t)rootfs_va,
 					 rootfs->size))
 		fatal_restart("mtd-rom placeholder missing from DTB");
+#ifdef BOARD_TAB5
+	if (s_tab5_fb.ok &&
+	    !patch_display_window(dtb, total, s_tab5_fb.pa, s_tab5_fb.bytes))
+		ESP_LOGW(TAG, "display DTB patch failed; Linux boots headless");
+	if (s_tab5_fb.ok &&
+	    !patch_scanout_node(dtb, total))
+		ESP_LOGW(TAG, "scanout DTB patch failed; dsi-scanout driver "
+			 "fails closed");
+	if (s_tab5_fb.ok)
+		tab5_display_status();
+	tab5_i2c_release();
+#endif
 	cache_hal_writeback_addr(DTB_LOAD_PA, total);
 
 	ESP_LOGI(TAG, "Linux artifacts valid; kernel=%" PRIu32 " bytes, rootfs=%" PRIu32 " bytes", image_bytes, rootfs->size);

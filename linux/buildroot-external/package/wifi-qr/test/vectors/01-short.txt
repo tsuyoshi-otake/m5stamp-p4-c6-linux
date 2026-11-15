@@ -1,0 +1,5 @@
+device_id=AB12
+password=TestUserPw12
+root_password=TestRootPw12
+ssid=m5-AB12
+psk=FkePsk12AB34

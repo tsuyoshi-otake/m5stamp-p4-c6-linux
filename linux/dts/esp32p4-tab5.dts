@@ -1,0 +1,461 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * M5Stack Tab5 — WIP Linux board description (phase-1 port of the Stamp-P4
+ * project; see board-contract.json for the measured hardware facts).
+ *
+ * One HP hart, UART0 fallback, the P4 CLIC/SYSTIMER pair, the read-only
+ * flash window populated by the ESP-IDF boot shim, and the SDMMC Slot 1
+ * carrying the on-board ESP32-C6 over the GPIO matrix
+ * (CLK=12 CMD=13 D0-3={11,10,9,8}; C6 reset = GPIO15; C6 power =
+ * IO-expander 0x44 P0, driven by the boot shim).
+ *
+ * UART0 remains the deterministic fixture fallback (M5-Bus TXD0/RXD0 =
+ * GPIO37/38).  The module USB-C USB-Serial/JTAG controller is exposed as
+ * ttyGS1 by the board-local ACM driver; it is a device-mode console and
+ * never a USB host/VBUS source.
+ */
+/dts-v1/;
+
+#include <dt-bindings/interrupt-controller/irq.h>
+#include <dt-bindings/gpio/gpio.h>
+
+/ {
+	#address-cells = <1>;
+	#size-cells = <1>;
+	model = "M5Stack Tab5";
+	compatible = "m5stack,tab5", "espressif,esp32p4";
+
+	cpus {
+		#address-cells = <1>;
+		#size-cells = <0>;
+		timebase-frequency = <16000000>;
+
+		CPU0: cpu@0 {
+			device_type = "cpu";
+			compatible = "riscv";
+			reg = <0>;
+			riscv,isa = "rv32imafc";
+			mmu-type = "riscv,none";
+			status = "okay";
+
+			CPU0_intc: interrupt-controller {
+				compatible = "riscv,cpu-intc";
+				#interrupt-cells = <1>;
+				interrupt-controller;
+			};
+		};
+	};
+
+	memory@48000000 {
+		device_type = "memory";
+		reg = <0x48000000 0x02000000>;
+	};
+
+	xtal_clk: xtal-clock {
+		compatible = "fixed-clock";
+		#clock-cells = <0>;
+		clock-frequency = <40000000>;
+		clock-output-names = "xtal";
+	};
+
+	aliases {
+		serial0 = &uart0;
+		serial1 = &usb_serial_jtag;
+	};
+
+	chosen {
+		/*
+		 * Keep early USB-JTAG output during probe, then hand the console
+		 * to the board-local ACM driver as ttyGS1, as on the Stamp build.
+		 * console=tty0 comes first so ttyGS1 stays /dev/console (the last
+		 * console= wins) while kernel messages also reach the panel through
+		 * fbcon.  consoleblank=0: the framebuffer has no blank op, so fbcon
+		 * would just paint the panel black after 10 minutes and the device
+		 * would look dead.  fbcon=font:TER16x32: the 8x16 default makes
+		 * 90 x 80 cells on 720x1280, too small to read; the 16x32 font
+		 * (45 x 40) must be named because fbcon prefers 8x16 by default.
+		 * fbcon=rotate:3 draws the console 90 deg CCW -- the keyboard
+		 * dock holds the panel in landscape, so an 80 x 22 cell
+		 * console reads upright (the ST712x MADCTL only mirrors; the
+		 * 90 deg turn has to be done in fbcon, the panel cannot).
+		 */
+		bootargs = "earlycon=esp32p4usbjtag,mmio32,0x500d2000 console=tty0 console=ttyGS1,115200n8 loglevel=4 consoleblank=0 fbcon=font:TER16x32 fbcon=rotate:3 root=/dev/mtdblock0 rootfstype=squashfs ro init=/sbin/init maxcpus=1";
+	};
+
+	/*
+	 * Framebuffer handed over by the boot shim.  "reserved-fb" is not an
+	 * upstream status value: the node is inert (not "okay") until the
+	 * shim, after a successful DSI bring-up, rewrites the string to
+	 * "okay" in place and patches the 0xdfb00000 reg placeholder with
+	 * the real PSRAM framebuffer address.  On a display failure the
+	 * node stays disabled and Linux boots headless.
+	 * espressif,flush-cache marks that the CPU-side console writes need
+	 * a dcache writeback before the DW-GDMA reader sees them; consumed
+	 * by the optional simplefb patch under linux/tab5/.
+	 */
+	framebuffer0: framebuffer@dfb0000 {
+		compatible = "simple-framebuffer";
+		reg = <0x0dfb0000 0x001c2000>;
+		width = <720>;
+		height = <1280>;
+		stride = <1440>;
+		format = "r5g6b5";
+		espressif,flush-cache;
+		/*
+		 * Period for the mmap writeback ticker: while a mapping of
+		 * /dev/fb0 is alive the whole scan is republished this often,
+		 * so apps that never signal a finished frame still reach the
+		 * panel.  0 (or absent) disables the ticker.
+		 */
+		espressif,flush-interval-ms = <50>;
+		/*
+		 * RISC-V defaults OF devices to DMA-coherent, and the DMA core
+		 * skips dma_sync_* for coherent devices -- without this the
+		 * flush-cache writeback is a silent no-op and glyphs reach the
+		 * panel only as cache lines happen to be evicted.
+		 */
+		dma-noncoherent;
+		status = "reserved-fb";
+	};
+
+	soc: soc {
+		#address-cells = <1>;
+		#size-cells = <1>;
+		compatible = "simple-bus";
+		ranges;
+
+		clic0: interrupt-controller@20801000 {
+			compatible = "espressif,esp32p4-clic";
+			reg = <0x20801000 0x3c0>, <0x500d6000 0x200>,
+			      <0x500d6800 0x200>;
+			interrupt-controller;
+			#interrupt-cells = <3>;
+		};
+
+		systimer: timer@500e2000 {
+			compatible = "espressif,esp32p4-systimer";
+			reg = <0x500e2000 0x100>;
+			/*
+			 * Target0/source53 services CPU0; target1/source54 is the
+			 * independent CPU1 clockevent. The CLIC driver maps both
+			 * sources into both INTMTX banks, while the timer driver
+			 * enables each parent IRQ only on its owning CPU.
+			 */
+			interrupts-extended = <&clic0 17 53 IRQ_TYPE_LEVEL_HIGH>,
+					      <&clic0 23 54 IRQ_TYPE_LEVEL_HIGH>;
+			status = "okay";
+		};
+
+		/*
+		 * ESP32-P4 LP-TSENS.  The bring-up driver maps the companion
+		 * LP_PERI, LP_I2C_ANA_MST, PMU, and eFuse windows because this
+		 * vendor tree has no clock/reset/nvmem provider for them yet.
+		 * The node is inert unless CONFIG_ESP32P4_TSENS=y is selected.
+		 */
+		tsens: temperature-sensor@5012f000 {
+			compatible = "espressif,esp32p4-tsens";
+			reg = <0x5012f000 0x2c>,
+			      <0x50120000 0x1000>,
+			      <0x50124000 0x40>,
+			      <0x50115000 0x200>,
+			      <0x5012d000 0x200>;
+			reg-names = "tsens", "lpperi", "ana-mst", "pmu", "efuse";
+			#thermal-sensor-cells = <0>;
+			status = "okay";
+		};
+
+		uart0: serial@500ca000 {
+			compatible = "esp,esp32p4-uart";
+			reg = <0x500ca000 0x1000>;
+			interrupts-extended = <&clic0 18 31 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&xtal_clk>;
+			status = "okay";
+		};
+
+		/*
+		 * P4 USB Serial/JTAG register block.  IDF assigns interrupt source
+		 * 22 (ETS_USB_SERIAL_JTAG_INTR_SOURCE); CLIC slot 19 is unused by
+		 * this board.  The existing esp32_acm driver uses the same EP1
+		 * register layout as P4, with the P4 compatible added by patch 0028.
+		 */
+		usb_serial_jtag: serial@500d2000 {
+			compatible = "espressif,esp32p4-usb-serial-jtag";
+			reg = <0x500d2000 0x1000>;
+			interrupts-extended = <&clic0 19 22 IRQ_TYPE_LEVEL_HIGH>;
+			status = "okay";
+		};
+
+		/*
+		 * GPIO bank 0 (hw pins 0..31), driven by the espressif,esp32p4-gpio
+		 * controller (patch 0002-gpio-esp32p4.patch, reused verbatim from the
+		 * WHY2025 reference).  Needed for the touch stack: hw GPIO23 is the
+		 * ST712x INT line (a GPIO_INT0 child interrupt) and hw GPIO31 is the
+		 * bit-banged SDA below.  Bank 0 also owns the GPIO_INT0 parent line,
+		 * so this node doubles as the pin-interrupt controller.
+		 *
+		 * Exposing bank 0 does not revive the C6-reset hazard the phase-1
+		 * notes guarded against: the hazard was never the node itself but a
+		 * Linux driver asserting GPIO15 (C6 EN/reset).  Nothing in DT claims
+		 * GPIO15, and esp-hosted-ng still runs with resetpin =
+		 * HOST_GPIO_PIN_INVALID (its stamp-p4 defaults patch), so no Linux
+		 * consumer ever requests that pin; the reset pulse stays shim-owned.
+		 * GPIO_INT0 is ETS source 74 (INTMTX map reg +0x128); CLIC slot 26
+		 * is free on this board.
+		 */
+		gpio0: gpio-bank0@500e0000 {
+			compatible = "espressif,esp32p4-gpio";
+			reg = <0x500e0000 0x1000>;
+			espressif,bank-id = <0>;
+			gpio-controller;
+			#gpio-cells = <2>;
+			interrupt-controller;
+			#interrupt-cells = <2>;
+			interrupts-extended = <&clic0 26 74 IRQ_TYPE_LEVEL_HIGH>;
+			status = "okay";
+		};
+
+		/* GPIO bank 1 (hw pins 32..56): SCL lives on hw GPIO32. */
+		gpio1: gpio-bank1@500e0000 {
+			compatible = "espressif,esp32p4-gpio";
+			reg = <0x500e0000 0x1000>;
+			espressif,bank-id = <1>;
+			gpio-controller;
+			#gpio-cells = <2>;
+			status = "okay";
+		};
+
+		/*
+		 * Tab5 on-board C6 SDIO.  The P4 controller's Slot 1 uses the
+		 * GPIO matrix: CLK=12, CMD=13, DAT0..3={11,10,9,8}.  The boot
+		 * shim powers the C6 via IO-expander 0x44 P0, pulses GPIO15,
+		 * enables the raw P4 clock/reset and routes these signals before
+		 * jumping to Linux; this node describes the already-running bus.
+		 * `snps,slot-id` is consumed by the local dw_mmc fix because the
+		 * P4 CMD register selects the physical card in bits [20:16].
+		 */
+		sdmmc_biu_clk: sdmmc-biu-clock {
+			compatible = "fixed-clock";
+			#clock-cells = <0>;
+			clock-frequency = <40000000>;
+			clock-output-names = "sdmmc-biu";
+		};
+
+		sdmmc_ciu_clk: sdmmc-ciu-clock {
+			compatible = "fixed-clock";
+			#clock-cells = <0>;
+			clock-frequency = <40000000>;
+			clock-output-names = "sdmmc-ciu";
+		};
+
+		sdmmc1: mmc@50083000 {
+			compatible = "snps,dw-mshc";
+			reg = <0x50083000 0x1000>;
+			interrupts-extended = <&clic0 22 23 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&sdmmc_biu_clk>, <&sdmmc_ciu_clk>;
+			clock-names = "biu", "ciu";
+			bus-width = <4>;
+			max-frequency = <40000000>;
+			clock-frequency = <40000000>;
+			non-removable;
+			broken-cd;
+			disable-wp;
+			cap-sdio-irq;
+			dma-noncoherent;
+			espressif,force-pio;
+			/* The P4 FIFO does not pop on CPU reads (#35); patches
+			 * 0087/0088 send multi-word PIO transfers through IDMAC
+			 * instead.
+			 */
+			espressif,fifo-no-pop;
+			snps,slot-id = <1>;
+			status = "okay";
+		};
+
+		/* MWDT0 stage-0 system reset; Linux feeds it after probe.
+		 * See the Stamp DTS for the 120s reasoning; keep identical. */
+		wdt0: watchdog@500c2000 {
+			compatible = "espressif,esp32p4-wdt";
+			reg = <0x500c2000 0x100>;
+			/* CLIC slot 20 is reserved for the C68 CPU1 IPI source 80. */
+			interrupts-extended = <&clic0 21 48 IRQ_TYPE_LEVEL_HIGH>;
+			timeout-sec = <120>;
+		};
+
+		/*
+		 * Full-Speed USB OTG (DWC2) is disabled on Tab5: its internal
+		 * FSLS PHY is wired to GPIO26/27, which are the board's I2S
+		 * audio pins -- there is no connector on this controller.
+		 * (The USB-A port sits on the USB2.0 HS controller @0x50000000
+		 * with dedicated pads, not modeled yet.)
+		 */
+		usb_otg11: usb@50040000 {
+			compatible = "espressif,esp32p4-otg11", "snps,dwc2";
+			reg = <0x50040000 0x10000>;
+			interrupts-extended = <&clic0 24 103 IRQ_TYPE_LEVEL_HIGH>;
+			dr_mode = "peripheral";
+			maximum-speed = "full-speed";
+			hnp-disable;
+			srp-disable;
+			g-rx-fifo-size = <64>;
+			g-np-tx-fifo-size = <16>;
+			g-tx-fifo-size = <32 20 16 16 16 16>;
+			status = "disabled";
+		};
+
+		/*
+		 * DW-GDMA scanout channel handed over by the boot shim.  The
+		 * hardware clears the LLI valid bit in memory on every
+		 * block end (there is no free-run -- the channel stalls one
+		 * frame after the last re-arm), so a kernel driver re-arms
+		 * it in IRQ context, the same contract ESP-IDF's trans-done
+		 * callback and upstream dw-axi-dmac cyclic mode implement.
+		 * DW-GDMA is ETS interrupt source 24, routed to free CLIC
+		 * slot 25; the shim detaches the IDF route before the jump
+		 * and the kernel's clic_domain_map installs this one.
+		 *
+		 * espressif,scanout-lli/-chan are patched by the boot shim
+		 * (patch_scanout_node in main.c): the 64-byte link-list
+		 * item lives in internal SRAM and is found by content, not
+		 * by llp0 (which reads 0 while the channel runs).  The
+		 * placeholder values stay when the scan-out never came
+		 * up; the driver fails closed on them.
+		 */
+		dsi_scanout: dsi-scanout@50081000 {
+			compatible = "espressif,esp32p4-dsi-scanout";
+			reg = <0x50081000 0x600>;
+			interrupts-extended = <&clic0 25 24 IRQ_TYPE_LEVEL_HIGH>;
+			espressif,scanout-lli = <0x5ca11000>;
+			espressif,scanout-chan = <0x5ca12000>;
+			status = "okay";
+		};
+
+		/* Patched at runtime by boot-shim/main.c with the flash MMU VA. */
+		flash@deadbeef {
+			compatible = "mtd-rom";
+			reg = <0xdeadbeef 0xcafefade>;
+			bank-width = <4>;
+		};
+	};
+
+	/*
+	 * Internal I2C bus, bit-banged: this kernel tree has no P4 I2C
+	 * controller driver, so i2c-gpio drives the bus the stock
+	 * image puts on SDA=GPIO31 (bank 0) / SCL=GPIO32 (bank 1).
+	 * The boot shim releases the IDF I2C master and returns both
+	 * pads to plain GPIO before the jump (tab5_i2c_release), so
+	 * this driver finds clean inputs to toggle.  Direction-toggle
+	 * open-drain emulation is used (no *-open-drain props):
+	 * Tab5 carries the stock external pull-ups and the P4 pads
+	 * are not declared hardware open-drain to gpiolib here.
+	 * ~100 kHz like the stock touch transactions.
+	 *
+	 * Other chips live on this bus (expanders 0x43/0x44, codec,
+	 * RTC, fuel gauge) but are intentionally unclaimed: the
+	 * expanders are shim-programmed rails (TP_RST stays
+	 * released) and the rest is out of scope for v1.  The node
+	 * sits at root level: i2c-gpio is a software adapter with no
+	 * register window, not an soc unit.
+	 */
+	i2c0: i2c-gpio {
+		compatible = "i2c-gpio";
+		#address-cells = <1>;
+		#size-cells = <0>;
+		gpios = <&gpio0 31 GPIO_ACTIVE_HIGH>,	/* SDA */
+			<&gpio1 0 GPIO_ACTIVE_HIGH>;	/* SCL */
+		i2c-gpio,delay-us = <5>;
+		status = "okay";
+
+		/*
+		 * ST7121/ST7123-family touch controller (Sitronix).
+		 * INT is open-drain active-low on GPIO23 with the
+		 * shim leaving a pull-up; the chip pulses it low per
+		 * touch report like the stock NEGEDGE setup.
+		 * TP_RST is expander 0x43 P5 -- not modelled; the shim
+		 * keeps it released and the driver never resets.
+		 */
+		touch@55 {
+			compatible = "sitronix,st7123";
+			reg = <0x55>;
+			interrupts-extended =
+				<&gpio0 23 IRQ_TYPE_EDGE_FALLING>;
+			touchscreen-size-x = <720>;
+			touchscreen-size-y = <1280>;
+			/* Match fbcon=rotate:3 (CCW): x = ymax - y, y = x. */
+			touchscreen-swapped-x-y;
+			touchscreen-inverted-x;
+			status = "okay";
+		};
+	};
+
+	/*
+	 * Ext.Port1 keyboard bus: the A164 unit is an STM32F030C8T6
+	 * matrix scanner at 0x6d on a dedicated hw GPIO0 (SDA) /
+	 * GPIO1 (SCL) pair -- a bus of its own, independent of the
+	 * internal bus above, so a wedge there cannot strand it.
+	 * Its INT is hw GPIO50 on bank 1, which the esp32p4 gpio
+	 * driver does not wire to an irq_chip, so the driver polls
+	 * the chip FIFO instead of describing the line here.
+	 */
+	i2c1: i2c-gpio-1 {
+		compatible = "i2c-gpio";
+		#address-cells = <1>;
+		#size-cells = <0>;
+		gpios = <&gpio0 0 GPIO_ACTIVE_HIGH>,	/* SDA */
+			<&gpio0 1 GPIO_ACTIVE_HIGH>;	/* SCL */
+		i2c-gpio,delay-us = <5>;
+		status = "okay";
+
+		keyboard@6d {
+			compatible = "m5stack,tab5-keyboard";
+			reg = <0x6d>;
+			/*
+			 * How bright the Aa (upper case) LED is when lit,
+			 * 0..100; 20 is the keyboard's own default.  The
+			 * mode LED next to it is always dark.
+			 */
+			m5stack,led-brightness = <20>;
+			status = "okay";
+		};
+	};
+
+	reserved-memory {
+		#address-cells = <1>;
+		#size-cells = <1>;
+		ranges;
+		/* Kept small until NOMMU pool sizing is measured on the board. */
+		boot_partition_res: boot-partition-res@499c0000 {
+			reg = <0x499c0000 0x00040000>;
+			no-map;
+		};
+
+		/* Linux writes this last after staging a new boot image above.
+		 * The boot shim consumes and clears the request before loading Linux. */
+		boot_update_request_res: boot-update-request@499bf000 {
+			reg = <0x499bf000 0x00001000>;
+			no-map;
+		};
+
+		/* Second pool region: same layout as the Stamp image. */
+		linux_nommu_pool_low: nommu-userspace-pool@495af000 {
+			compatible = "linux,nommu-userspace-pool";
+			reg = <0x495af000 0x00400000>;
+		};
+
+		linux_nommu_pool: nommu-userspace-pool@49a00000 {
+			compatible = "linux,nommu-userspace-pool";
+			reg = <0x49a00000 0x00600000>;
+		};
+
+		/*
+		 * MIPI-DSI framebuffer reserved for the boot-shim display
+		 * stream.  The shim rewrites this reg together with the
+		 * framebuffer0 node's; the placeholder reserves only 4 KiB
+		 * at a real PSRAM address so a headless boot (no panel) is
+		 * unaffected.
+		 */
+		display_fb_res: framebuffer@49fdf000 {
+			reg = <0x49fdf000 0x00001000>;
+			no-map;
+		};
+	};
+};

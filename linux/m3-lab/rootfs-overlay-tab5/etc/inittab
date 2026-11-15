@@ -1,0 +1,11 @@
+::sysinit:/etc/init.d/rcS
+# USB-C/COM10 is the interactive lab console; UART0 remains the recovery fixture.
+ttyGS1::askfirst:-/bin/sh
+# The panel console (fbcon) gets a shell too, so the A164 keyboard dock is
+# usable without a USB cable.  Same unauthenticated lab access as ttyGS1.
+tty1::respawn:-/bin/sh
+# Supervised daemons (#29): init restarts them if they exit.
+::respawn:/usr/sbin/bootsyncd
+::respawn:/usr/sbin/mdnsd -i wlan0
+::restart:/sbin/init
+::ctrlaltdel:/sbin/reboot

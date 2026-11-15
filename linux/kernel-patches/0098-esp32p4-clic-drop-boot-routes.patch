@@ -1,0 +1,101 @@
+Subject: [PATCH] esp32p4: CLIC drops the interrupt routes the boot shim leaves behind (#6)
+
+The boot shim is an ESP-IDF application, and it hands Linux an interrupt
+matrix that still carries IDF's routes: the brown-out detector (source 8,
+LP_ANAPERI) on CPU interrupt 0 = CLIC slot 16, the cache-error (83) and
+assist-debug (127) sources on slots 41 and 43, and every source IDF freed
+again (I2C0, 44) parked on slot 22.  Slot 16 is the CPU0 IPI slot and slot
+22 is the SDIO host's, and Linux has no handler for any of those sources.
+
+The brown-out interrupt is a latch: when the supply dips under load on
+plain USB power, LP_ANALOG_PERI INT_RAW bit 31 is set and stays set until
+software writes INT_CLR.  Slot 16 then never drops.  The IPI handler clears
+only CPU_INT_FROM_CPU_0 and returns IRQ_HANDLED, so nothing flags it as a
+spurious interrupt, and CPU0 takes it about 226000 times a second until RCU
+stalls and the MWDT resets the chip some 90 s later.  Captured on a hung
+Tab5: INT_RAW/ST/ENA = 0x80000000, matrix source status bit 8 set,
+CPU_INT_FROM_CPU_0/1 = 0 (#6).
+
+Drop every route in both matrix banks and every CLIC enable and pending bit
+on slots 16 and up when the CLIC driver initializes, while interrupts are
+still off.  Drivers route their own sources in clic_domain_map() and
+clic_irq_unmask(), so nothing described in the DT changes.  The routes
+that were dropped are logged.  The boot shim is unchanged: CPU1 waits for
+Linux in a spin loop, not on an interrupt.
+
+---
+diff --git a/drivers/irqchip/irq-esp32p4-clic.c b/drivers/irqchip/irq-esp32p4-clic.c
+--- a/drivers/irqchip/irq-esp32p4-clic.c
++++ b/drivers/irqchip/irq-esp32p4-clic.c
+@@ -37,6 +37,10 @@
+ #define CLIC_INTCTL_MAX          0xFFU
+ /* INTMTX reset value: the source drives no CLIC slot. */
+ #define CLIC_INTMTX_UNROUTED     0
++/* Source map registers in each bank's 0x200-byte window (sources 0-127). */
++#define CLIC_INTMTX_NUM_SOURCES  128
++/* Slots 0-15 are the core-local interrupts; the matrix feeds 16 and up. */
++#define CLIC_FIRST_EXT_SLOT      16
+ 
+ static void __iomem *clic_base;
+ static void __iomem *clic_intmtx_base[2];
+@@ -207,6 +211,51 @@
+ 	.xlate  = clic_domain_xlate,
+ };
+ 
++/*
++ * The boot shim is an ESP-IDF application and leaves its own interrupt routes
++ * and CLIC enables behind.  Linux has no handler for any of them, so none may
++ * reach a CLIC slot.  The one that mattered on the Tab5 is the brown-out
++ * detector (source 8, LP_ANAPERI): IDF routes it to CPU interrupt 0, which is
++ * CLIC slot 16, the slot Linux uses for the CPU0 IPI.  When the supply dips
++ * under load on plain USB power the detector latches (LP analog peri INT_RAW
++ * bit 31) and stays asserted until software clears it, so slot 16 never drops:
++ * CPU0 takes the IPI handler some 200000 times a second, RCU stalls and the
++ * MWDT resets the chip about 90 s later.  IDF also routes the cache-error (83)
++ * and assist-debug (127) sources, and parks every source it freed again (I2C0,
++ * 44) on slot 22, which is the SDIO host's.
++ *
++ * Interrupts are still off here.  Drivers route their own sources in
++ * clic_domain_map() and clic_irq_unmask().  The other hart's CLIC is not
++ * reachable from this hart, and nothing ran IDF code on it.
++ */
++static void __init clic_drop_boot_routes(void)
++{
++	unsigned int cpu, src, slot, dropped = 0;
++
++	for (cpu = 0; cpu < ARRAY_SIZE(clic_intmtx_base); cpu++) {
++		if (!clic_intmtx_base[cpu])
++			continue;
++		for (src = 0; src < CLIC_INTMTX_NUM_SOURCES; src++) {
++			u32 route = readl(clic_intmtx_base[cpu] + src * 4);
++
++			if (!route)
++				continue;
++			if (dropped++ < 16)
++				pr_info("dropped boot-shim route: matrix %u source %u -> slot %u\n",
++					cpu, src, route & 0x3f);
++			writel(CLIC_INTMTX_UNROUTED,
++			       clic_intmtx_base[cpu] + src * 4);
++		}
++		/* Post the writes before any slot can be enabled. */
++		readl(clic_intmtx_base[cpu]);
++	}
++
++	for (slot = CLIC_FIRST_EXT_SLOT; slot < CLIC_NUM_IRQS; slot++) {
++		writeb(0, clic_base + slot * 4 + CLIC_INTIE_OFF);
++		writeb(0, clic_base + slot * 4 + CLIC_INTIP_OFF);
++	}
++}
++
+ static int __init esp32p4_clic_init(struct device_node *np,
+ 				     struct device_node *parent)
+ {
+@@ -219,6 +268,8 @@
+ 	clic_intmtx_base[0] = of_iomap(np, 1);
+ 	clic_intmtx_base[1] = of_iomap(np, 2);
+ 
++	clic_drop_boot_routes();
++
+ 	esp32p4_clic_domain = irq_domain_add_linear(np, CLIC_NUM_IRQS,
+ 						     &clic_domain_ops, NULL);
+ 	if (!esp32p4_clic_domain) {

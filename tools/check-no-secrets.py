@@ -16,7 +16,8 @@ PATTERNS = (
 )
 KEY_VALUE = re.compile(
     r"(?im)^\s*(?:WIFI_PASSWORD|WIFI_PSK|SSH_PRIVATE_KEY)\s*[:=]\s*(\S+)")
-SKIP_NAMES = {"README.md", "versions.lock.json", "board-contract.json"}
+SKIP_NAMES = {"README.md", "versions.lock.json", "board-contract.json",
+              "board-contract-stamp-p4.json", "board-contract-tab5.json"}
 # Test fixtures carry obviously fake credentials; they are tolerated only
 # under the directories in DUMMY_DIRS.
 DUMMY_VALUES = {"secret123"}

@@ -1,0 +1,43 @@
+{
+  "schema": 1,
+  "status": "ready_for_flash",
+  "board": "M5Stack Tab5 (m3 feature profile)",
+  "base_layout": "../m2/flash-layout.json",
+  "flash_bytes": 16777216,
+  "alignment_bytes": 4096,
+  "write_gate": "P4 only. Keep a dump of the stock flash (esptool read_flash 0 0x1000000) before the first write; the C6 is not part of this map and is never written by the image flash.",
+  "evidence": {
+    "stock_dump": "../../m5stack-tab5-linux-images/stock-2026-11-10 (SHA256SUMS.txt, boot-log.txt, live-log.txt, tab5-stock.bin)",
+    "note": "Tab5 uses the same 16 MiB flash as the validated Stamp image; offsets below mirror the Stamp M2 map byte for byte so the A/B boot and crashlog machinery is unchanged.  This map was written to a Tab5 with esptool in builds 1-9 (2026-11-12 and 2026-11-13) and Linux booted from it each time; the release image is validated in linux/tests/tab5-hardware-validation-*.md."
+  },
+  "load_addresses": {
+    "kernel_psram": "0x48000000",
+    "dtb_psram": "0x48800000",
+    "psram_bytes": 33554432
+  },
+  "regions": [
+    { "name": "rom-reserved", "offset": "0x000000", "size_bytes": "0x002000", "kind": "reserved" },
+    { "name": "bootloader", "offset": "0x002000", "size_bytes": "0x006000", "kind": "esp-idf-bootloader" },
+    { "name": "partition-table", "offset": "0x008000", "size_bytes": "0x001000", "kind": "esp-idf-partition-table" },
+    { "name": "nvs", "offset": "0x009000", "size_bytes": "0x006000", "kind": "stock-data-reference" },
+    { "name": "phy-init", "offset": "0x00f000", "size_bytes": "0x001000", "kind": "stock-data-reference" },
+    { "name": "boot-shim", "offset": "0x010000", "size_bytes": "0x080000", "kind": "esp-idf-app", "artifact": true },
+    { "name": "kernel", "offset": "0x090000", "size_bytes": "0x780000", "kind": "flat-riscv-image", "artifact": true },
+    { "name": "rootfs", "offset": "0x810000", "size_bytes": "0x700000", "kind": "squashfs-mtd-rom", "artifact": true },
+    { "name": "dtb", "offset": "0xf10000", "size_bytes": "0x010000", "kind": "flattened-device-tree", "artifact": true },
+    { "name": "crashlog", "offset": "0xf20000", "size_bytes": "0x020000", "kind": "writable-crash-capsule", "artifact": false },
+    { "name": "boot", "offset": "0xf40000", "size_bytes": "0x040000", "kind": "fat-boot-image", "artifact": true },
+    { "name": "boot_alt", "offset": "0xf80000", "size_bytes": "0x040000", "kind": "fat-boot-image-ab-slot", "artifact": false },
+    { "name": "bootmeta0", "offset": "0xfc0000", "size_bytes": "0x001000", "kind": "boot-image-ab-metadata", "artifact": false },
+    { "name": "bootmeta1", "offset": "0xfc1000", "size_bytes": "0x001000", "kind": "boot-image-ab-metadata", "artifact": false },
+    { "name": "tail-reserve", "offset": "0xfc2000", "size_bytes": "0x03e000", "kind": "reserved" }
+  ],
+  "invariants": {
+    "one_hp_core": true,
+    "mmu": false,
+    "rootfs_read_only": true,
+    "rootfs_mtd_rom_placeholder": ["0xdeadbeef", "0xcafefade"],
+    "display_fb_placeholder": ["0x0dfb0000", "0x49fdf000"],
+    "display_status_placeholder": "reserved-fb"
+  }
+}

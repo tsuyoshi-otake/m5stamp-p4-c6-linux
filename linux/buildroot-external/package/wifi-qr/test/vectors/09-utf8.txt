@@ -1,0 +1,2 @@
+ssid=café-wifi
+psk=FkePsk12AB34

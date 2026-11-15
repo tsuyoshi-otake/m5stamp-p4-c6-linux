@@ -8,9 +8,12 @@
 set -u
 
 root=$(cd "$(dirname "$0")/.." && pwd)
-# The m3-lab image also carries the board overlay (sdio-diag).
+# The m3-lab image also carries the board overlays (sdio-diag).  Both the
+# Stamp and Tab5 overlays are scanned; shadowed-file handling below uses
+# the Stamp overlay path, which is the only one the release image ships.
 board="$root/linux/buildroot-external/board/stamp-p4/rootfs-overlay"
-scripts=$(find "$root/linux/m3-lab/rootfs-overlay" "$board" \
+boards="$board $root/linux/buildroot-external/board/tab5/rootfs-overlay"
+scripts=$(find "$root/linux/m3-lab/rootfs-overlay" $boards \
 	"$root/linux/m3-lab/post-build.sh" \
 	-type f \( -path '*/init.d/*' -o -path '*/usr/sbin/*' -o -path '*/default.script.d/*' \
 	-o -name post-build.sh \) 2>/dev/null)
@@ -27,14 +30,16 @@ for f in $scripts; do
 	# post-build.sh runs on the build host and only lists applet names.
 	[ "${f##*/}" = post-build.sh ] && continue
 	# Board overlay files that m3-lab shadows, or that post-build deletes,
-	# never reach the image.
-	case "$f" in
-	"$board"/*)
-		rel=${f#"$board"/}
-		[ -e "$root/linux/m3-lab/rootfs-overlay/$rel" ] && continue
-		grep -q "TARGET_DIR}/$rel\"" "$root/linux/m3-lab/post-build.sh" && continue
-		;;
-	esac
+	# never reach the image.  Both board overlays get the same treatment.
+	for b in $boards; do
+		case "$f" in
+		"$b"/*)
+			rel=${f#"$b"/}
+			[ -e "$root/linux/m3-lab/rootfs-overlay/$rel" ] && continue 2
+			grep -q "TARGET_DIR}/$rel\"" "$root/linux/m3-lab/post-build.sh" && continue 2
+			;;
+		esac
+	done
 	for cmd in $missing; do
 		# Match the command in command position, ignoring comments.
 		if grep -v '^[[:space:]]*#' "$f" | grep -Eq "(^|[^A-Za-z0-9_./-])$cmd([[:space:];|&)]|$)"; then
@@ -72,6 +77,25 @@ if command -v shellcheck >/dev/null 2>&1; then
 	done
 else
 	echo "note: shellcheck not installed; skipped"
+fi
+
+# tab5_layout.h is the single source for the PSRAM windows the shim
+# must keep the framebuffer away from; every guarded region must appear
+# as a reserved-memory reg (or the Linux load addresses) in the Tab5
+# DTS so a layout change on one side cannot silently desync.
+layout="$root/linux/boot-shim/main/tab5_layout.h"
+dts="$root/linux/dts/esp32p4-tab5.dts"
+if [ -f "$layout" ] && [ -f "$dts" ]; then
+	grep -oE '\{ 0x[0-9a-fA-F]+u, 0x[0-9a-fA-F]+u \}' "$layout" | \
+	while read -r _ a s _; do
+		addr=${a%u,}; size=${s%u}
+		grep -q "reg = <$addr $size>" "$dts" && continue
+		# The kernel/DTB load windows are not reserved-memory nodes;
+		# they live at the memory-node base instead.
+		[ "$addr" = "0x48000000" ] || [ "$addr" = "0x48800000" ] && continue
+		echo "FAIL tab5_layout.h region $addr+$size missing from Tab5 DTS reserved-memory"
+		exit 1
+	done || fail=1
 fi
 
 [ "$fail" -eq 0 ] && echo "static checks passed"

@@ -136,8 +136,17 @@ _Static_assert(WAKE_INFO_PA + sizeof(struct wake_info) <= SLEEP_MEM_PA,
 _Static_assert(SLEEP_MEM_PA + sizeof(struct sleep_mem) <= SLEEP_MAILBOX_PA + 0x1000u,
 	       "sleep memory leaves the mailbox page");
 
-/* Board pins (Tab5 would set its own; see #56 "ボード定義"). */
-#if !defined(BOARD_SLEEP_C6_POWER_GPIO)
+/* Board pins; see #56 "ボード定義". */
+#if defined(BOARD_TAB5)
+/* Tab5: the C6 rail is IO-expander 0x44 P0, not a GPIO, so
+ * BOARD_SLEEP_C6_POWER_GPIO is left undefined and c6_power_off() calls
+ * tab5_c6_power_off() instead of pulsing a pin.  BOOT is GPIO35, same as
+ * on the Stamp board.  LP wake GPIOs 8-15 are unusable here: GPIO8-13
+ * carry the C6 SDIO bus and GPIO15 its reset, so the wake mask keeps
+ * only GPIO0-7. */
+#define BOARD_SLEEP_BUTTON_GPIO     35 /* BOOT, active low */
+#define BOARD_SLEEP_WAKE_GPIO_MASK  0x00ffu
+#elif !defined(BOARD_SLEEP_C6_POWER_GPIO)
 /* Stamp-P4 + C6 AddOn: GPIO42 is the C6 DC-DC enable, which latches on
  * through the C6 rail; a low pulse turns the C6 off until the next pulse. */
 #define BOARD_SLEEP_C6_POWER_GPIO   42
