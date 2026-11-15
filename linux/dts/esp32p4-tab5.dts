@@ -420,7 +420,7 @@
 			reg-names = "i2s", "dma", "clkrst", "lpclkrst",
 				    "gpio";
 			interrupts-extended =
-				<&clic0 27 59 IRQ_TYPE_LEVEL_HIGH>,
+				<&clic0 29 59 IRQ_TYPE_LEVEL_HIGH>,
 				<&clic0 28 57 IRQ_TYPE_LEVEL_HIGH>;
 			interrupt-names = "tx", "rx";
 			espressif,peri-sel = <3>;
