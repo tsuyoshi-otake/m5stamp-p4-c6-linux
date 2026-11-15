@@ -1284,6 +1284,9 @@ CONFIG_PWM=y
 CONFIG_PWM_ESP32P4_LEDC=y
 CONFIG_BACKLIGHT_CLASS_DEVICE=y
 CONFIG_BACKLIGHT_PWM=y
+# Safe poweroff through expander 0x44 P4 (PWROFF) (#31).
+CONFIG_POWER_RESET=y
+CONFIG_POWER_RESET_GPIO=y
 EOF
 fi
 if [[ -n "$pstore_identity" ]]; then
@@ -2591,6 +2594,7 @@ if [[ "$board" == "tab5" ]]; then
 		"CONFIG_RTC_DRV_DS1307=y" \
 		"CONFIG_PWM_ESP32P4_LEDC=y" \
 		"CONFIG_BACKLIGHT_PWM=y" \
+		"CONFIG_POWER_RESET_GPIO=y" \
 		"CONFIG_GPIO_SYSFS=y"; do
 		grep -Fqx -- "${expected}" "${kernel_config}" || {
 			echo "Tab5 kernel config check failed: ${expected}" >&2

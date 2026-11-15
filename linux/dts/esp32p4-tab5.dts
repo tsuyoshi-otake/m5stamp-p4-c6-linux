@@ -132,6 +132,18 @@
 		default-brightness-level = <307>;
 	};
 
+	/*
+	 * Safe poweroff: expander 0x44 P4 (PWROFF) requests the board
+	 * power controller to cut the rails.  The driver probes with
+	 * GPIOD_OUT_LOW which is a no-op against the shim state (pin
+	 * already output-low), and only pulses the line in the
+	 * sys_off handler at real poweroff time.
+	 */
+	gpio-poweroff {
+		compatible = "gpio-poweroff";
+		gpios = <&exp1 4 GPIO_ACTIVE_HIGH>;
+	};
+
 	soc: soc {
 		#address-cells = <1>;
 		#size-cells = <1>;
