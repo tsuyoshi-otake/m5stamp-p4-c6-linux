@@ -2487,6 +2487,7 @@ if $lab_profile; then
 	if [[ "$board" == tab5 ]]; then
 		set_config_value "${br_output}/.config" BR2_PACKAGE_WIFI_QR y
 		set_config_value "${br_output}/.config" BR2_PACKAGE_TOUCH_DOTS y
+		set_config_value "${br_output}/.config" BR2_PACKAGE_PCM_SINE y
 	else
 		set_config_value "${br_output}/.config" BR2_PACKAGE_WIFI_QR "# BR2_PACKAGE_WIFI_QR is not set"
 		set_config_value "${br_output}/.config" BR2_PACKAGE_TOUCH_DOTS "# BR2_PACKAGE_TOUCH_DOTS is not set"
