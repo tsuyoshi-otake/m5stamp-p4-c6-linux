@@ -9,7 +9,7 @@ already selected and Linux never gates.
 
  drivers/pwm/Kconfig            | 10 ++++++++++
  drivers/pwm/Makefile           |  1 +
- drivers/pwm/pwm-esp32p4-ledc.c | 183 +++++++++++++++
+ drivers/pwm/pwm-esp32p4-ledc.c | 191 +++++++++++++++
 
 --- a/drivers/pwm/Kconfig
 +++ b/drivers/pwm/Kconfig
@@ -41,7 +41,7 @@ already selected and Linux never gates.
  obj-$(CONFIG_PWM_HIBVT)		+= pwm-hibvt.o
 --- /dev/null
 +++ b/drivers/pwm/pwm-esp32p4-ledc.c
-@@ -0,0 +1,183 @@
+@@ -0,0 +1,191 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * ESP32-P4 LEDC PWM driver -- the subset needed for the Tab5 LCD
