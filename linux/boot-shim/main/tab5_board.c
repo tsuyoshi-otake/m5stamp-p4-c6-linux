@@ -237,6 +237,25 @@ static esp_err_t expander_write(i2c_master_dev_handle_t dev, uint8_t reg,
 }
 
 /*
+ * Expander register read used by the panel-reset sequence.  A 100 ms
+ * timeout per call would stall boot for almost half a second if the
+ * bus wedges mid-sequence (four reads sit in tab5_panel_reset), and a
+ * single transient NACK would abort the reset entirely.  Keep each
+ * attempt at 20 ms -- generous for a 9-byte-timescale transaction at
+ * the bus rate -- and retry once so a momentary stretch does not drop
+ * the reset pulse.
+ */
+static esp_err_t expander_read(i2c_master_dev_handle_t dev, uint8_t reg,
+			       uint8_t *val)
+{
+	esp_err_t err = i2c_master_transmit_receive(dev, &reg, 1, val, 1, 20);
+
+	if (err != ESP_OK)
+		err = i2c_master_transmit_receive(dev, &reg, 1, val, 1, 20);
+	return err;
+}
+
+/*
  * Program both expanders following the stock sequence in
  * bsp_io_expander_pi4ioe_init (m5stack_tab5.c:245-330), with only the
  * output levels changed for the Linux power profile.
@@ -351,7 +370,7 @@ static esp_err_t expanders_init(void)
  */
 void tab5_panel_reset(void)
 {
-	uint8_t reg, val;
+	uint8_t val;
 
 	if (!s_exp0) {
 		ESP_LOGW(TAG, "panel reset: expander 0x43 not up, skipped");
@@ -359,29 +378,25 @@ void tab5_panel_reset(void)
 	}
 	gpio_reset_pin(GPIO_NUM_23);
 
-	reg = PI4IO_REG_OUT_SET;
-	if (i2c_master_transmit_receive(s_exp0, &reg, 1, &val, 1, 100) != ESP_OK)
+	if (expander_read(s_exp0, PI4IO_REG_OUT_SET, &val) != ESP_OK)
 		goto fail;
 	val &= (uint8_t)~((1u << 4) | (1u << 5));
 	if (expander_write(s_exp0, PI4IO_REG_OUT_SET, val) != ESP_OK)
 		goto fail;
-	reg = PI4IO_REG_IO_DIR;
-	if (i2c_master_transmit_receive(s_exp0, &reg, 1, &val, 1, 100) != ESP_OK)
+	if (expander_read(s_exp0, PI4IO_REG_IO_DIR, &val) != ESP_OK)
 		goto fail;
 	val |= (1u << 4);
 	if (expander_write(s_exp0, PI4IO_REG_IO_DIR, val) != ESP_OK)
 		goto fail;
 	esp_rom_delay_us(100000);
 
-	reg = PI4IO_REG_OUT_SET;
-	if (i2c_master_transmit_receive(s_exp0, &reg, 1, &val, 1, 100) != ESP_OK)
+	if (expander_read(s_exp0, PI4IO_REG_OUT_SET, &val) != ESP_OK)
 		goto fail;
 	val &= (uint8_t)~(1u << 4);
 	val |= (1u << 5);
 	if (expander_write(s_exp0, PI4IO_REG_OUT_SET, val) != ESP_OK)
 		goto fail;
-	reg = PI4IO_REG_IO_DIR;
-	if (i2c_master_transmit_receive(s_exp0, &reg, 1, &val, 1, 100) != ESP_OK)
+	if (expander_read(s_exp0, PI4IO_REG_IO_DIR, &val) != ESP_OK)
 		goto fail;
 	val &= (uint8_t)~(1u << 4);
 	if (expander_write(s_exp0, PI4IO_REG_IO_DIR, val) != ESP_OK)

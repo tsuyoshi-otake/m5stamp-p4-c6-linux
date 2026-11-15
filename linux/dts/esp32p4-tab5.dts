@@ -343,11 +343,12 @@
 	 * image puts on SDA=GPIO31 (bank 0) / SCL=GPIO32 (bank 1).
 	 * The boot shim releases the IDF I2C master and returns both
 	 * pads to plain GPIO before the jump (tab5_i2c_release), so
-	 * this driver finds clean inputs to toggle.  Direction-toggle
-	 * open-drain emulation is used (no *-open-drain props):
-	 * Tab5 carries the stock external pull-ups and the P4 pads
-	 * are not declared hardware open-drain to gpiolib here.
-	 * ~100 kHz like the stock touch transactions.
+	 * this driver finds clean inputs to toggle.  Both lines are
+	 * declared GPIO_OPEN_DRAIN: the esp32p4 gpiochip has no
+	 * hardware open-drain set_config, so gpiolib emulates it by
+	 * direction toggling -- exactly the drive pattern i2c-gpio
+	 * wants, and the named sda/scl props replace the deprecated
+	 * 'gpios' form.  ~100 kHz like the stock touch transactions.
 	 *
 	 * Other chips live on this bus too (codec, RTC, fuel gauge,
 	 * IMU, power monitor).  The two expanders are shim-programmed
@@ -361,8 +362,8 @@
 		compatible = "i2c-gpio";
 		#address-cells = <1>;
 		#size-cells = <0>;
-		gpios = <&gpio0 31 GPIO_ACTIVE_HIGH>,	/* SDA */
-			<&gpio1 0 GPIO_ACTIVE_HIGH>;	/* SCL */
+		sda-gpios = <&gpio0 31 (GPIO_ACTIVE_HIGH|GPIO_OPEN_DRAIN)>;
+		scl-gpios = <&gpio1 0 (GPIO_ACTIVE_HIGH|GPIO_OPEN_DRAIN)>;
 		i2c-gpio,delay-us = <5>;
 		status = "okay";
 
@@ -455,8 +456,8 @@
 		compatible = "i2c-gpio";
 		#address-cells = <1>;
 		#size-cells = <0>;
-		gpios = <&gpio0 0 GPIO_ACTIVE_HIGH>,	/* SDA */
-			<&gpio0 1 GPIO_ACTIVE_HIGH>;	/* SCL */
+		sda-gpios = <&gpio0 0 (GPIO_ACTIVE_HIGH|GPIO_OPEN_DRAIN)>;
+		scl-gpios = <&gpio0 1 (GPIO_ACTIVE_HIGH|GPIO_OPEN_DRAIN)>;
 		i2c-gpio,delay-us = <5>;
 		status = "okay";
 
