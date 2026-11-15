@@ -79,7 +79,7 @@ new file mode 100644
 index 0000000..ac7c6ab
 --- /dev/null
 +++ b/sound/soc/espressif/esp32-p4-i2s.c
-@@ -0,0 +1,799 @@
+@@ -0,0 +1,805 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * ESP32-P4 I2S CPU DAI + PCM platform driver for ASoC.
