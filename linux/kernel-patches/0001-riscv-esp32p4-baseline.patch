@@ -2,7 +2,7 @@ diff --git a/arch/riscv/Kconfig.socs b/arch/riscv/Kconfig.socs
 index 429e07589306..6349a15b05f2 100644
 --- a/arch/riscv/Kconfig.socs
 +++ b/arch/riscv/Kconfig.socs
-@@ -117,4 +117,20 @@ config SOC_CANAAN_K210
+@@ -117,4 +117,21 @@ config SOC_CANAAN_K210
  	help
  	  This enables support for Canaan Kendryte K210 SoC platform hardware.
  
@@ -16,6 +16,7 @@ index 429e07589306..6349a15b05f2 100644
 +	depends on !MMU && ARCH_ESPRESSIF
 +	select RISCV_DMA_NONCOHERENT
 +	select RISCV_NONSTANDARD_CACHE_OPS
++	select DMA_GLOBAL_POOL
 +	select NOMMU_USERSPACE_POOL
 +	help
 +	  This enables support for the Espressif ESP32-P4 SoC.
