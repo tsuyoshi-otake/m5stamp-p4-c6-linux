@@ -149,16 +149,26 @@ int main(int argc, char **argv)
 	}
 
 	while (done < frames) {
+		static int stall;
 		xf.buf = buf + done * 2;
 		xf.frames = frames - done;
+		xf.result = 0;
 		err = ioctl(fd, SNDRV_PCM_IOCTL_WRITEI_FRAMES, &xf);
-		if (err <= 0) {
-			if (err == -EAGAIN || err == -EINTR)
+		if (err < 0) {
+			if (errno == EAGAIN || errno == EINTR)
 				continue;
 			perror("WRITEI_FRAMES");
 			return 1;
 		}
-		done += err;
+		if (xf.result <= 0) {
+			if (++stall > 400) {
+				fprintf(stderr, "WRITEI stalled\n");
+				return 1;
+			}
+			continue;
+		}
+		stall = 0;
+		done += xf.result;
 	}
 	printf("played %.0f ms of %.0f Hz sine on %s\n",
 	       seconds * 1000, freq, dev);
