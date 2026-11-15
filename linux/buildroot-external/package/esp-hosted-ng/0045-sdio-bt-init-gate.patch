@@ -1,0 +1,29 @@
+From: Devin <devin@cognition.ai>
+Subject: [PATCH] host: run esp_init_bt when the slave advertises BT
+
+diff --git a/main.c b/main.c
+index 77baca2..ba8feeb 100644
+--- a/main.c
++++ b/main.c
+@@ -235,16 +235,13 @@ void print_capabilities(u32 cap)
+ static void init_bt(struct esp_adapter *adapter)
+ {
+ 
+-	if ((adapter->capabilities & ESP_BT_SPI_SUPPORT) ||
+-		(adapter->capabilities & ESP_BT_SDIO_SUPPORT))
++	if (!(adapter->capabilities & ESP_BT_SPI_SUPPORT) &&
++	    !(adapter->capabilities & ESP_BT_SDIO_SUPPORT))
+ 		return;
+ 
+-	if ((adapter->capabilities & ESP_BT_SPI_SUPPORT) ||
+-		(adapter->capabilities & ESP_BT_SDIO_SUPPORT)) {
+-		msleep(200);
+-		esp_info("ESP Bluetooth init\n");
+-		esp_init_bt(adapter);
+-	}
++	msleep(200);
++	esp_info("ESP Bluetooth init\n");
++	esp_init_bt(adapter);
+ }
+ 
+ static int check_esp_version(struct fw_version *ver)
