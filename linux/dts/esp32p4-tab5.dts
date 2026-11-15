@@ -418,6 +418,18 @@
 		};
 
 		/*
+		 * Bosch BMI270 6-axis IMU; INT1/INT2 routing to P4 is
+		 * unconfirmed so no interrupts property -- polled
+		 * data only.  Probe uploads the Bosch init blob from
+		 * /lib/firmware/bmi270-init-data.fw (shipped in the
+		 * Tab5 rootfs overlay).
+		 */
+		bmi270@68 {
+			compatible = "bosch,bmi270";
+			reg = <0x68>;
+		};
+
+		/*
 		 * INA226 power monitor on the battery rail: Tab5
 		 * schematic U31 with R39 = R005 (5 mOhm, 1%).  Bus
 		 * voltage = battery voltage; positive current means

@@ -1263,6 +1263,12 @@ CONFIG_GPIO_PI4IOE5V6408=y
 # INA226 power monitor at 0x41 on the battery rail (5 mOhm shunt,
 # see the DTS node).  HWMON is already on.
 CONFIG_SENSORS_INA2XX=y
+# BMI270 IMU at 0x68: probe request_firmware()s the Bosch init
+# blob (/lib/firmware/bmi270-init-data.fw, shipped in the Tab5
+# rootfs overlay).  BMI270 selects IIO_BUFFER/TRIGGERED_BUFFER.
+CONFIG_IIO=y
+CONFIG_BMI270=y
+CONFIG_BMI270_I2C=y
 EOF
 fi
 if [[ -n "$pstore_identity" ]]; then
@@ -2565,7 +2571,8 @@ if [[ "$board" == "tab5" ]]; then
 		"CONFIG_TOUCHSCREEN_ST7123=y" \
 		"CONFIG_KEYBOARD_TAB5=y" \
 		"CONFIG_GPIO_PI4IOE5V6408=y" \
-		"CONFIG_SENSORS_INA2XX=y"; do
+		"CONFIG_SENSORS_INA2XX=y" \
+		"CONFIG_BMI270_I2C=y"; do
 		grep -Fqx -- "${expected}" "${kernel_config}" || {
 			echo "Tab5 kernel config check failed: ${expected}" >&2
 			exit 1
