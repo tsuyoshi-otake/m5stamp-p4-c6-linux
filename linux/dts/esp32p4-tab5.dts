@@ -502,8 +502,15 @@
 				<&gpio0 23 IRQ_TYPE_EDGE_FALLING>;
 			touchscreen-size-x = <720>;
 			touchscreen-size-y = <1280>;
-			/* Match fbcon=rotate:3 (CCW): x = ymax - y, y = x. */
-			touchscreen-swapped-x-y;
+			/*
+			 * The controller's raw axes already match the fb
+			 * pixel layout (720x1280 portrait); only +x is
+			 * mirrored against the panel's displayed +x.
+			 * The earlier swapped-x-y entry was measured
+			 * wrong (#33): it turned reported X into raw Y
+			 * (0..1279 landscape).  Verified against
+			 * five-corner taps 2026-11-15.
+			 */
 			touchscreen-inverted-x;
 			status = "okay";
 		};
@@ -590,7 +597,11 @@
 				<&gpio0 23 IRQ_TYPE_EDGE_FALLING>;
 			touchscreen-size-x = <720>;
 			touchscreen-size-y = <1280>;
-			touchscreen-swapped-x-y;
+			/*
+			 * Same orientation correction as touch@55 (#33):
+			 * portrait axes already match the fb; only +x is
+			 * mirrored.  Confirm on the alternate SKU.
+			 */
 			touchscreen-inverted-x;
 			status = "okay";
 		};

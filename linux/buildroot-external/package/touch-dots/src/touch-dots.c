@@ -32,6 +32,7 @@
 #define FB0 "/dev/fb0"
 #define TTY0 "/dev/tty0"
 #define TTYCON "/dev/console"
+#define CAL_FILE "/boot/touch-cal.txt"
 
 /* Dot is a filled square, DOT_R px to each side of the touch point. */
 #define DOT_R 4
@@ -117,6 +118,34 @@ static void put_dot(int cx, int cy)
 	fflush(stdout);
 }
 
+/* Optional 5-point affine calibration written by touch-cal (#33):
+ * touch_cal=a,b,c,d,e,f maps reported (x,y) to fb pixels. */
+static double cal[6];
+static int have_cal;
+
+static void load_cal(void)
+{
+	char line[160], *p;
+	FILE *f = fopen(CAL_FILE, "r");
+	int i;
+
+	if (!f)
+		return;
+	while (fgets(line, sizeof(line), f)) {
+		if (strncmp(line, "touch_cal=", 10))
+			continue;
+		p = line + 10;
+		for (i = 0; i < 6; i++) {
+			cal[i] = strtod(p, &p);
+			if (*p == ',')
+				p++;
+		}
+		have_cal = 1;
+		break;
+	}
+	fclose(f);
+}
+
 int main(int argc, char *argv[])
 {
 	const char *input = INPUT_DEV;
@@ -187,9 +216,11 @@ int main(int argc, char *argv[])
 		kdfd = -1;
 	}
 	install_stop_handlers();
+	load_cal();
 	setvbuf(stdout, NULL, _IOLBF, 0);
-	printf("touch-dots: %dx%d on %s (abs max %dx%d); touch the panel\n",
-	       (int)var.xres, (int)var.yres, input, max_x, max_y);
+	printf("touch-dots: %dx%d on %s (abs max %dx%d%s); touch the panel\n",
+	       (int)var.xres, (int)var.yres, input, max_x, max_y,
+	       have_cal ? ", calibrated" : "");
 	fflush(stdout);
 
 	while (!stopped && (n = read(infd, evs, sizeof(evs))) > 0) {
@@ -218,8 +249,20 @@ int main(int argc, char *argv[])
 			} else if (e->type == EV_SYN &&
 				   e->code == SYN_REPORT &&
 				   touching && ax >= 0 && ay >= 0) {
-				put_dot(ax * ((int)var.xres - 1) / max_x,
-					ay * ((int)var.yres - 1) / max_y);
+				if (have_cal) {
+					int fx = (int)(cal[0] * ax +
+						       cal[1] * ay + cal[2] +
+						       0.5);
+					int fy = (int)(cal[3] * ax +
+						       cal[4] * ay + cal[5] +
+						       0.5);
+					put_dot(fx, fy);
+				} else {
+					put_dot(ax * ((int)var.xres - 1) /
+						  max_x,
+						ay * ((int)var.yres - 1) /
+						  max_y);
+				}
 			}
 		}
 	}
