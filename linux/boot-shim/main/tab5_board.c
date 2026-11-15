@@ -42,6 +42,8 @@
 #include "soc/gpio_sig_map.h"
 #include "soc/soc.h"
 #include "soc/interrupt_core0_reg.h"
+#include "hal/usb_utmi_ll.h"
+#include "esp_private/periph_ctrl.h"
 #include "tab5_board.h"
 #include "tab5_display.h"
 
@@ -689,6 +691,20 @@ void tab5_board_init(struct tab5_fb *fb)
 
 		pulse_c6_reset();
 		ESP_LOGI(TAG, "Slot 1 SDIO ready on GPIO8-13; C6 reset done");
+
+		/*
+		 * USB-A port: the USB2.0 HS DWC core (USB_DWC_HS) needs the
+		 * otg20 sys clock + 48 MHz PHY ref clock and one shared
+		 * otg20/PHY reset pulse before the kernel's dwc2 driver
+		 * can touch registers.  Host-session signaling is left to
+		 * the core; the port's VBUS is expander 0x44 P3 which the
+		 * expander default state already drives high.
+		 */
+		PERIPH_RCC_ATOMIC() {
+			usb_utmi_ll_enable_bus_clock(true);
+			usb_utmi_ll_reset_register();
+		}
+		ESP_LOGI(TAG, "USB2.0 HS OTG clock + PHY reset done");
 
 		tab5_display_init(fb);
 	}

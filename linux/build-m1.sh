@@ -1287,6 +1287,18 @@ CONFIG_BACKLIGHT_PWM=y
 # Safe poweroff through expander 0x44 P4 (PWROFF) (#31).
 CONFIG_POWER_RESET=y
 CONFIG_POWER_RESET_GPIO=y
+# USB-A host on the USB2.0 HS DWC @0x50000000 (#30): dwc2 in
+# host-only mode (patch 0063 forces PIO -- no coherent DMA under
+# NOMMU).  usb-storage + hid cover the first bring-up devices.
+CONFIG_USB_SUPPORT=y
+CONFIG_USB=y
+CONFIG_USB_DWC2_HOST=y
+CONFIG_SCSI=y
+CONFIG_BLK_DEV_SD=y
+CONFIG_USB_STORAGE=y
+CONFIG_HID=y
+CONFIG_HID_GENERIC=y
+CONFIG_USB_HID=y
 EOF
 fi
 if [[ -n "$pstore_identity" ]]; then
@@ -2595,7 +2607,10 @@ if [[ "$board" == "tab5" ]]; then
 		"CONFIG_PWM_ESP32P4_LEDC=y" \
 		"CONFIG_BACKLIGHT_PWM=y" \
 		"CONFIG_POWER_RESET_GPIO=y" \
-		"CONFIG_GPIO_SYSFS=y"; do
+		"CONFIG_GPIO_SYSFS=y" \
+		"CONFIG_USB_DWC2_HOST=y" \
+		"CONFIG_USB_STORAGE=y" \
+		"CONFIG_USB_HID=y"; do
 		grep -Fqx -- "${expected}" "${kernel_config}" || {
 			echo "Tab5 kernel config check failed: ${expected}" >&2
 			exit 1

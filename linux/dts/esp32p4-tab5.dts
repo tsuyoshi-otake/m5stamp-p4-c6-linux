@@ -321,11 +321,33 @@
 		};
 
 		/*
+		 * USB-A port: the USB2.0 HS DWC controller (USB_DWC_HS,
+		 * 0x50000000) with its dedicated UTMI PHY pads.  The boot
+		 * shim's Tab5 path enables the otg20 sys clock + 48 MHz
+		 * PHY ref clock and pulses the shared otg20/PHY reset;
+		 * VBUS on the connector is expander 0x44 P3 (USB5V_EN),
+		 * which the boot shim leaves driven high.  dr_mode host:
+		 * the port is a hardwired Type-A receptacle.  ETS_USB_OTG
+		 * interrupt source is 93, routed to free CLIC slot 27.
+		 * PIO mode is forced by kernel patch 0063 (the NOMMU
+		 * port has no coherent DMA for this core).
+		 */
+		usb_otg: usb@50000000 {
+			compatible = "espressif,esp32p4-otg", "snps,dwc2";
+			reg = <0x50000000 0x10000>;
+			interrupts-extended = <&clic0 27 93 IRQ_TYPE_LEVEL_HIGH>;
+			dr_mode = "host";
+			hnp-disable;
+			srp-disable;
+			status = "okay";
+		};
+
+		/*
 		 * Full-Speed USB OTG (DWC2) is disabled on Tab5: its internal
 		 * FSLS PHY is wired to GPIO26/27, which are the board's I2S
 		 * audio pins -- there is no connector on this controller.
-		 * (The USB-A port sits on the USB2.0 HS controller @0x50000000
-		 * with dedicated pads, not modeled yet.)
+		 * (The USB-A port sits on the HS controller @0x50000000
+		 * above.)
 		 */
 		usb_otg11: usb@50040000 {
 			compatible = "espressif,esp32p4-otg11", "snps,dwc2";
