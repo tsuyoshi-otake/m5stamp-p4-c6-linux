@@ -1269,6 +1269,9 @@ CONFIG_SENSORS_INA2XX=y
 CONFIG_IIO=y
 CONFIG_BMI270=y
 CONFIG_BMI270_I2C=y
+# RX8130CE RTC at 0x32 (epson,rx8130 is handled by rtc-ds1307).
+CONFIG_RTC_CLASS=y
+CONFIG_RTC_DRV_DS1307=y
 # Deprecated sysfs GPIO ABI so expander rails (EXT5V_EN, EXT_ANT_EN
 # and friends) can be driven from the shell without shipping
 # libgpiod tools on this minimal image (#35).
@@ -2577,6 +2580,7 @@ if [[ "$board" == "tab5" ]]; then
 		"CONFIG_GPIO_PI4IOE5V6408=y" \
 		"CONFIG_SENSORS_INA2XX=y" \
 		"CONFIG_BMI270_I2C=y" \
+		"CONFIG_RTC_DRV_DS1307=y" \
 		"CONFIG_GPIO_SYSFS=y"; do
 		grep -Fqx -- "${expected}" "${kernel_config}" || {
 			echo "Tab5 kernel config check failed: ${expected}" >&2

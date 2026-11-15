@@ -1,0 +1,31 @@
+#!/bin/sh
+# Tab5 only: restore system time from the RX8130 RTC (0x32, rtc-ds1307)
+# early in boot, then write the clock back once the one-shot ntpd from
+# S40network has finished -- the same hwclock -s / hwclock -w pair the
+# Stamp-P4 S41timesync does inline.  Everything is best-effort and only
+# runs when /dev/rtc0 actually exists, so a board without the RTC (or
+# with it disabled) is unaffected.
+
+case "$1" in
+  start)
+	[ -c /dev/rtc0 ] && command -v hwclock >/dev/null 2>&1 || exit 0
+	hwclock -s 2>/dev/null || exit 0
+	# Persist the system clock after the backgrounded `ntpd -n -q`
+	# exits; if it never ran the write just stores the RTC-restored
+	# value back, which is a no-op.  Give up after 5 minutes.
+	(	i=0
+		while [ $i -lt 300 ] && pidof ntpd >/dev/null 2>&1; do
+			i=$((i + 1))
+			sleep 1
+		done
+		hwclock -w 2>/dev/null || true
+	) &
+	;;
+  stop) ;;
+  *)
+	echo "Usage: $0 {start|stop}" >&2
+	exit 1
+	;;
+esac
+
+exit 0

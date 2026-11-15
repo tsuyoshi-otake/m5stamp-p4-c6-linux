@@ -118,6 +118,20 @@
 		status = "reserved-fb";
 	};
 
+	/*
+	 * LCD backlight through the ME2212 boost on GPIO22, driven by
+	 * LEDC channel 0 at 5 kHz.  Levels map 0..1024 onto the duty;
+	 * 307 = the shim's ~30% boot default so handoff is invisible.
+	 * Console blanking goes through the usual backlight notifier.
+	 */
+	backlight: backlight {
+		compatible = "pwm-backlight";
+		pwms = <&ledc 0 200000>;
+		brightness-levels = <0 1024>;
+		num-interpolated-steps = <1024>;
+		default-brightness-level = <307>;
+	};
+
 	soc: soc {
 		#address-cells = <1>;
 		#size-cells = <1>;
@@ -222,6 +236,19 @@
 			gpio-controller;
 			#gpio-cells = <2>;
 			status = "okay";
+		};
+
+		/*
+		 * LEDC PWM: the shim routes channel 0 to GPIO22 (LCD
+		 * backlight boost EN) and runs timer0 at 5 kHz/10-bit
+		 * on XTAL (~30% duty).  This node registers the whole
+		 * block; pwm-backlight below keeps that state until
+		 * userspace changes it.
+		 */
+		ledc: pwm@500d3000 {
+			compatible = "espressif,esp32p4-ledc";
+			reg = <0x500d3000 0x1000>;
+			#pwm-cells = <2>;
 		};
 
 		/*
@@ -428,6 +455,18 @@
 		bmi270@68 {
 			compatible = "bosch,bmi270";
 			reg = <0x68>;
+		};
+
+		/*
+		 * RX8130CE RTC at 0x32 (the M5 docs' 0x51 is a PCF8563-
+		 * family value; the datasheet slave address is 0x32).
+		 * Seconds register confirmed counting on-device.  The
+		 * supercap-backed clock persists across power-off; no
+		 * wakeup interrupt is routed to the P4 in this design.
+		 */
+		rtc@32 {
+			compatible = "epson,rx8130";
+			reg = <0x32>;
 		};
 
 		/*
