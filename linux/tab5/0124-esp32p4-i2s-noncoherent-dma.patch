@@ -1,0 +1,55 @@
+--- a/sound/soc/espressif/esp32-p4-i2s.c
++++ b/sound/soc/espressif/esp32-p4-i2s.c
+@@ -21,6 +21,7 @@
+  */
+ 
+ #include <linux/bitops.h>
++#include <linux/dma-map-ops.h>
+ #include <linux/dma-mapping.h>
+ #include <linux/err.h>
+ #include <linux/interrupt.h>
+@@ -420,6 +421,11 @@
+ 			d++;
+ 		}
+ 	}
++	/* The descriptor ring sits in coherent-allocated (cached)
++	 * memory; write it back so the GDMA engine does not read
++	 * stale lldescs (#24: silent engine, WRITEI_FRAMES -EIO). */
++	arch_sync_dma_for_device(descs_phys, total * sizeof(*descs),
++				 DMA_TO_DEVICE);
+ 	return 0;
+ }
+ 
+@@ -521,6 +527,24 @@
+ 	return bytes_to_frames(runtime, pos % runtime->dma_bytes);
+ }
+ 
++static int esp32p4_pcm_ack(struct snd_soc_component *component,
++			   struct snd_pcm_substream *substream)
++{
++	struct snd_pcm_runtime *runtime = substream->runtime;
++
++	/* The managed PCM buffer is coherent-allocated too: write
++	 * back freshly produced playback data so the engine reads
++	 * it, or invalidate freshly captured data so the CPU does
++	 * not re-read its cached copy. */
++	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK)
++		arch_sync_dma_for_device(runtime->dma_addr,
++					 runtime->dma_bytes, DMA_TO_DEVICE);
++	else
++		arch_sync_dma_for_cpu(runtime->dma_addr, runtime->dma_bytes,
++				      DMA_FROM_DEVICE);
++	return 0;
++}
++
+ static irqreturn_t esp32p4_tx_irq(int irq, void *data)
+ {
+ 	struct esp32_p4_i2s *i2s = data;
+@@ -662,6 +686,7 @@
+ 	.open		= esp32p4_pcm_open,
+ 	.hw_params	= esp32p4_pcm_hw_params,
+ 	.trigger	= esp32p4_pcm_trigger,
++	.ack		= esp32p4_pcm_ack,
+ 	.pointer	= esp32p4_pcm_pointer,
+ 	.pcm_new	= esp32p4_pcm_new,
+ 	.legacy_dai_naming = 1,
