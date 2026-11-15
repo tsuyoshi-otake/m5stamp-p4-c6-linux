@@ -1822,26 +1822,27 @@ c68_fail_closed_after_linux() {
 			echo "C68_GATE_FAIL: dtc missing for DTB decompile" >&2
 			exit 1
 		}
-		"$dtc" -I dtb -O dts "$dtb" | grep -q 'cpu@1' || {
+		# Decompile once: `dtc | grep -q` races under pipefail (grep -q
+		# exits on an early match and dtc dies on SIGPIPE).
+		dtb_dts=$("$dtc" -I dtb -O dts "$dtb")
+		grep -q 'cpu@1' <<<"$dtb_dts" || {
 			echo "C68_GATE_FAIL: decompiled DTB has no cpu@1" >&2
 			exit 1
 		}
-		"$dtc" -I dtb -O dts "$dtb" | grep -q 'interrupt-controller' || {
+		grep -q 'interrupt-controller' <<<"$dtb_dts" || {
 			echo "C68_GATE_FAIL: decompiled DTB has no interrupt-controller" >&2
 			exit 1
 		}
-		"$dtc" -I dtb -O dts "$dtb" | grep -q 'espressif,esp32p4-ipi' || {
+		grep -q 'espressif,esp32p4-ipi' <<<"$dtb_dts" || {
 			echo "C68_GATE_FAIL: decompiled DTB has no ESP32-P4 IPI provider" >&2
 			exit 1
 		}
-		"$dtc" -I dtb -O dts "$dtb" |
-			grep -A 10 'timer@500e2000' | grep -Fq '0x17 0x36' || {
+		grep -A 10 'timer@500e2000' <<<"$dtb_dts" | grep -Fq '0x17 0x36' || {
 			echo "C68_GATE_FAIL: decompiled DTB has no CPU1 SYSTIMER route" >&2
 			exit 1
 		}
 		if [[ "${TSENS_LINUX:-0}" == "1" ]]; then
-			"$dtc" -I dtb -O dts "$dtb" |
-				grep -Fq 'espressif,esp32p4-tsens' || {
+			grep -Fq 'espressif,esp32p4-tsens' <<<"$dtb_dts" || {
 				echo "C68_GATE_FAIL: decompiled DTB has no ESP32-P4 TSENS node" >&2
 				exit 1
 			}
