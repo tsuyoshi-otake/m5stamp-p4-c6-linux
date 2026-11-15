@@ -1035,6 +1035,8 @@ fi
 # 0x43/0x44).  Board-agnostic: the patch applies to every build but
 # only lights up where a DT node claims the chip.
 patches+=(0100-gpio-pi4ioe5v6408.patch)
+# ESP32-P4 LEDC PWM (Tab5 uses channel 0 for the LCD backlight boost).
+patches+=(0101-pwm-esp32p4-ledc.patch)
 for patch_name in "${patches[@]}"; do
 	if [[ "$patch_name" == 0000-esp32-serial-resurrect.patch ||
 	      "$patch_name" == 0022-esp32p4-systimer-level-trigger.patch ||
@@ -1080,6 +1082,7 @@ for patch_name in "${patches[@]}"; do
 	      "$patch_name" == 0086-dw-mmc-dma-threshold.patch ||
 	      "$patch_name" == 0087-dw-mmc-fifo-bounce.patch ||
 	      "$patch_name" == 0100-gpio-pi4ioe5v6408.patch ||
+	      "$patch_name" == 0101-pwm-esp32p4-ledc.patch ||
 	      "$patch_name" == 0056-wdt-stacktrace.patch ||
 	      "$patch_name" == 0055-sdio-clock-attest.patch ||
 	      "$patch_name" == 0060-dw-mmc-tx-software-dto.patch ||
@@ -1276,6 +1279,11 @@ CONFIG_RTC_DRV_DS1307=y
 # and friends) can be driven from the shell without shipping
 # libgpiod tools on this minimal image (#35).
 CONFIG_GPIO_SYSFS=y
+# LCD backlight: LEDC channel 0 on GPIO22 via pwm-backlight (#32).
+CONFIG_PWM=y
+CONFIG_PWM_ESP32P4_LEDC=y
+CONFIG_BACKLIGHT_CLASS_DEVICE=y
+CONFIG_BACKLIGHT_PWM=y
 EOF
 fi
 if [[ -n "$pstore_identity" ]]; then
@@ -2581,6 +2589,8 @@ if [[ "$board" == "tab5" ]]; then
 		"CONFIG_SENSORS_INA2XX=y" \
 		"CONFIG_BMI270_I2C=y" \
 		"CONFIG_RTC_DRV_DS1307=y" \
+		"CONFIG_PWM_ESP32P4_LEDC=y" \
+		"CONFIG_BACKLIGHT_PWM=y" \
 		"CONFIG_GPIO_SYSFS=y"; do
 		grep -Fqx -- "${expected}" "${kernel_config}" || {
 			echo "Tab5 kernel config check failed: ${expected}" >&2
