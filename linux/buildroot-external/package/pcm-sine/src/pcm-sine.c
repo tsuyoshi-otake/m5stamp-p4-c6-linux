@@ -95,23 +95,16 @@ int main(int argc, char **argv)
 		 SNDRV_PCM_SUBFORMAT_STD);
 	ivl_set(&IVL(p, SNDRV_PCM_HW_PARAM_CHANNELS), 2);
 	ivl_set(&IVL(p, SNDRV_PCM_HW_PARAM_RATE), rate);
-	/* The DMA engine maps periods onto at most 32 lldescs of 4092 B;
-	 * 2048-frame periods (8 KiB at S16 stereo) in an 8192-frame
-	 * buffer stay well inside that.  Every related derived param
-	 * must be pinned too: hw_params_choose() picks min/max for any
-	 * unfixed interval (e.g. period_time min 84us derives
-	 * period_size 4; periods min 2 derives buffer_size 4096), which
-	 * empties a pinned interval and fails the whole ioctl.  Use
-	 * values that derive back to the pinned frames at this rate:
-	 * period_time = 2048/rate rounded up, buffer_time = 8192/rate,
-	 * periods = 8192/2048.  64-bit math: frames*1e6 overflows u32. */
-	ivl_set(&IVL(p, SNDRV_PCM_HW_PARAM_PERIOD_SIZE), 2048);
-	ivl_set(&IVL(p, SNDRV_PCM_HW_PARAM_BUFFER_SIZE), 8192);
+	/* hw_params_choose() fixes unfixed params by min/max, so leave
+	 * nothing it could pick inconsistently.  Pin values the rules
+	 * engine derives EXACTLY: period_time 50 ms -> period_size
+	 * 2400 at 48 kHz (9600 B -> 3 lldescs of 4092), periods 4 ->
+	 * buffer 9600 frames/38400 B, all within .pcm_hardware and
+	 * ESP32P4_MAX_DESCS.  An in-between frame count (e.g. 2048)
+	 * can never be expressed as integer usec at 48 kHz and makes
+	 * every mulkdiv-derived interval empty. */
+	ivl_set(&IVL(p, SNDRV_PCM_HW_PARAM_PERIOD_TIME), 50000);
 	ivl_set(&IVL(p, SNDRV_PCM_HW_PARAM_PERIODS), 4);
-	ivl_set(&IVL(p, SNDRV_PCM_HW_PARAM_PERIOD_TIME),
-		(unsigned int)((2048ULL * 1000000) / rate + 1));
-	ivl_set(&IVL(p, SNDRV_PCM_HW_PARAM_BUFFER_TIME),
-		(unsigned int)((8192ULL * 1000000) / rate + 1));
 	p->rmask = ~0U;
 	p->cmask = 0;
 
