@@ -400,9 +400,40 @@ fail:
  * 400 ms before calling it absent.
  */
 #define TAB5_TOUCH_ADDR 0x55u
+#define TAB5_TOUCH_GT911_ADDR 0x5du
 #define TAB5_TOUCH_HZ 100000u
 #define TAB5_FW_ST7121 1u
 #define TAB5_FW_ST7123 3u
+
+/* True when a device ACKs 7-bit address `addr` on the internal bus. */
+static bool touch_answers(uint8_t addr)
+{
+	i2c_device_config_t dev_cfg = {
+		.dev_addr_length = I2C_ADDR_BIT_LEN_7,
+		.device_address = addr,
+		.scl_speed_hz = TAB5_TOUCH_HZ,
+	};
+	i2c_master_dev_handle_t tp = NULL;
+	uint8_t reg[2] = { 0x81u, 0x40u };
+	uint8_t id[3] = { 0 };
+	bool answered = false;
+
+	if (!s_i2c_bus ||
+	    i2c_master_bus_add_device(s_i2c_bus, &dev_cfg, &tp) != ESP_OK)
+		return false;
+	for (int i = 0; i < 5 && !answered; ++i) {
+		if (i2c_master_transmit_receive(tp, reg, sizeof(reg), id,
+						sizeof(id), 100) == ESP_OK)
+			answered = true;
+		else
+			esp_rom_delay_us(20000);
+	}
+	i2c_master_bus_rm_device(tp);
+	if (answered)
+		ESP_LOGI(TAG, "panel detect: 0x%02x reg 0x8140 -> "
+			 "\"%c%c%c\"", addr, id[0], id[1], id[2]);
+	return answered;
+}
 
 enum tab5_panel tab5_detect_panel(uint8_t *fw_out)
 {
@@ -436,6 +467,11 @@ enum tab5_panel tab5_detect_panel(uint8_t *fw_out)
 	if (!answered) {
 		ESP_LOGW(TAG, "panel detect: nothing answers at 0x%02x (reg 0x0000)",
 			 TAB5_TOUCH_ADDR);
+		if (touch_answers(TAB5_TOUCH_GT911_ADDR)) {
+			ESP_LOGI(TAG, "panel detect: GT911 at 0x%02x -> "
+				 "ILI9881C", TAB5_TOUCH_GT911_ADDR);
+			return TAB5_PANEL_ILI9881C;
+		}
 		return TAB5_PANEL_NONE;
 	}
 	if (fw_out)

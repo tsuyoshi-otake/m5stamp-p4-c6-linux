@@ -428,6 +428,27 @@
 		};
 
 		/*
+		 * Alternate-panel SKU: GT911 touch controller at 0x5d,
+		 * paired with the ILI9881C display.  It shares the
+		 * ST712x wiring (INT GPIO23, TP_RST expander 0x43 P5)
+		 * and is only populated on that SKU, so the node can
+		 * stay enabled on this bus next to touch@55: only one
+		 * of the two ever answers.  INT polarity matches the
+		 * board wiring; confirm on the alternate SKU.
+		 */
+		gt911: touchscreen@5d {
+			compatible = "goodix,gt911";
+			reg = <0x5d>;
+			interrupts-extended =
+				<&gpio0 23 IRQ_TYPE_EDGE_FALLING>;
+			touchscreen-size-x = <720>;
+			touchscreen-size-y = <1280>;
+			touchscreen-swapped-x-y;
+			touchscreen-inverted-x;
+			status = "okay";
+		};
+
+		/*
 		 * ES8388 stereo codec at 0x10, clocked by I2S0 MCLK.
 		 * Upstream's es8328 driver claims es8388 compatibility
 		 * (everest,es8388); the parts it does not model are

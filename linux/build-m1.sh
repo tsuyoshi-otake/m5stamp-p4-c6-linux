@@ -1244,6 +1244,10 @@ CONFIG_INPUT=y
 CONFIG_INPUT_EVDEV=y
 CONFIG_INPUT_TOUCHSCREEN=y
 CONFIG_TOUCHSCREEN_ST7123=y
+# Alternate panel SKU: GT911 touch at 0x5d on the same internal bus
+# (in-tree goodix.c; the node sits next to touch@55 and only one of the
+# two is ever populated).
+CONFIG_TOUCHSCREEN_GOODIX=y
 # Ext.Port1 A164 keyboard: STM32 at 0x6d on the dedicated hw GPIO0/1
 # pair (linux/tab5/0098); polled -- its bank-1 INT has no irq_chip.
 # INPUT_KEYBOARD is spelled out because CONFIG_EXPERT drops its

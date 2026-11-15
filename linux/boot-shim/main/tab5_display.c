@@ -2,18 +2,22 @@
 /*
  * M5Stack Tab5 display bring-up inside the boot shim.
  *
- * Tab5 units ship with one of two display+touch chips, ST7121 or ST7123,
- * and they need different init tables and vsync timings.  The stock BSP
- * (M5Tab5-UserDemo m5stack_tab5.c, bsp_display_new_with_handles_to_st7123,
- * which serves both chips) does:
+ * Tab5 units ship with one of three display+touch chips: ST7121 or
+ * ST7123 behind the touch controller at I2C 0x55, or an ILI9881C panel
+ * behind a GT911 touch at 0x5d.  The stock BSP (M5Tab5-UserDemo
+ * m5stack_tab5.c, bsp_display_new_with_handles_to_st7123, which serves
+ * both ST712x chips) does:
  *   0. bsp_reset_tp(): pulse LCD_RST and TP_RST together, then read the
  *      touch controller's firmware byte at I2C 0x55 to learn the panel
  *      (1 = ST7121, 3 = ST7123); tab5_panel_reset() / tab5_detect_panel()
- *      in tab5_board.c do the same.  The unit this port was brought up on
- *      is an ST7121: its stock boot log says "Detected ST7121 touch
- *      controller (FW version: 1), using ST7121 display" and "Install LCD
- *      driver of ST7121".  (An earlier revision of this file drove it with
- *      the ST7123 driver and timings and the panel stayed black.)
+ *      in tab5_board.c do the same, and when 0x55 stays silent they fall
+ *      back to probing the GT911 ID register (0x8140 reads "911") at
+ *      0x5d to recognise the ILI9881C SKU.  The unit this port was
+ *      brought up on is an ST7121: its stock boot log says "Detected
+ *      ST7121 touch controller (FW version: 1), using ST7121 display"
+ *      and "Install LCD driver of ST7121".  (An earlier revision of this
+ *      file drove it with the ST7123 driver and timings and the panel
+ *      stayed black.)
  *   1. power the MIPI D-PHY from the P4 internal LDO VO3 at 2.5 V
  *   2. create a 2-lane DSI bus at 965 Mbps per lane (both chips)
  *   3. attach a DBI command channel and the driver for that chip: the
@@ -75,6 +79,7 @@
 #include "esp_lcd_panel_ops.h"
 #include "esp_lcd_st7121.h"
 #include "esp_lcd_st7123.h"
+#include "esp_lcd_ili9881c.h"
 #include "disp_init_data_st7123.h"
 #include "driver/gpio.h"
 #include "driver/ledc.h"
@@ -121,6 +126,14 @@ static const struct panel_profile profile_st7121 = {
 };
 static const struct panel_profile profile_st7123 = {
 	.name = "ST7123", .vsync_pulse = 2, .vsync_back = 8, .vsync_front = 220,
+};
+/* esp-bsp's ILI9881C macro runs its 800x1280 reference panel at 80 MHz
+ * DPI; the Tab5 SKU is the same 720x1280 format as the ST712x panels,
+ * so it keeps the shared 70 MHz clock and only takes its own porches
+ * (conservative: ST7121's spacing until a unit confirms otherwise). */
+static const struct panel_profile profile_ili9881c = {
+	.name = "ILI9881C", .vsync_pulse = 20, .vsync_back = 24,
+	.vsync_front = 200,
 };
 
 /* Backlight: stock BSP uses LEDC low-speed timer 0 at 5 kHz on GPIO22
@@ -475,13 +488,14 @@ void tab5_display_init(struct tab5_fb *out)
 	uint8_t touch_fw = 0;
 	const enum tab5_panel kind = tab5_detect_panel(&touch_fw);
 	if (kind == TAB5_PANEL_NONE) {
-		ESP_LOGW(TAG, "no ST7121/ST7123 touch controller at 0x55 (the "
-			 "ILI9881C/GT911 panel variant is not supported); "
+		ESP_LOGW(TAG, "no touch controller at 0x55 or 0x5d; "
 			 "display skipped");
 		return;
 	}
 	const struct panel_profile *prof =
-		kind == TAB5_PANEL_ST7121 ? &profile_st7121 : &profile_st7123;
+		kind == TAB5_PANEL_ST7121 ? &profile_st7121 :
+		kind == TAB5_PANEL_ST7123 ? &profile_st7123 :
+		&profile_ili9881c;
 	ESP_LOGI(TAG, "panel %s (touch FW byte %u): %u Mbps x %d lanes, "
 		 "vsync %u/%u/%u", prof->name, touch_fw,
 		 (unsigned)LCD_DSI_LANE_MBPS, LCD_DSI_LANES,
@@ -562,6 +576,20 @@ void tab5_display_init(struct tab5_fb *out)
 		};
 		panel_cfg.vendor_config = (void *)&vendor_cfg;
 		err = esp_lcd_new_panel_st7121(io, &panel_cfg, &panel);
+	} else if (kind == TAB5_PANEL_ILI9881C) {
+		/* init_cmds NULL: the vendored driver's built-in ILI9881C
+		 * vendor table (vendor_specific_init_default). */
+		const ili9881c_vendor_config_t vendor_cfg = {
+			.init_cmds = NULL,
+			.init_cmds_size = 0,
+			.mipi_config = {
+				.dsi_bus = dsi,
+				.dpi_config = &dpi_cfg,
+				.lane_num = LCD_DSI_LANES,
+			},
+		};
+		panel_cfg.vendor_config = (void *)&vendor_cfg;
+		err = esp_lcd_new_panel_ili9881c(io, &panel_cfg, &panel);
 	} else {
 		const st7123_vendor_config_t vendor_cfg = {
 			.init_cmds = disp_init_data_st7123,
