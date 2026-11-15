@@ -1254,6 +1254,14 @@ CONFIG_TOUCHSCREEN_GOODIX=y
 # default y.
 CONFIG_INPUT_KEYBOARD=y
 CONFIG_KEYBOARD_TAB5=y
+# BLE HCI over SDIO (#34): the C6 firmware image already ships
+# CONFIG_BT_ENABLED/CONTROLLER_ONLY/BLE_ONLY (C6_BT=1 default, C6_BT=0
+# to opt out) and esp-hosted-ng's esp32_sdio.ko registers an hci_dev
+# when the slave advertises ESP_BT_SDIO_SUPPORT.  Enabling the BT core
+# is all the kernel needs; BlueZ userland is out of reach on NOMMU
+# (bluez5_utils depends on BR2_USE_MMU), so hci0 is raw-socket only.
+CONFIG_BT=y
+CONFIG_BT_LE=y
 EOF
 fi
 if [[ -n "$pstore_identity" ]]; then
