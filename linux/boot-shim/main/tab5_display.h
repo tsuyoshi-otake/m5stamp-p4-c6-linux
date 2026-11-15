@@ -30,3 +30,7 @@ void tab5_display_status(void);
  * unknown). */
 uint32_t tab5_scanout_lli(void);
 int tab5_scanout_chan(void);
+
+/* The panel kind detected by tab5_display_init (TAB5_PANEL_NONE when
+ * init ran before detection or no controller answered). */
+enum tab5_panel tab5_display_panel(void);

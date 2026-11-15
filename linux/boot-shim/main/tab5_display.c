@@ -465,6 +465,13 @@ int tab5_scanout_chan(void)
 	return s_scanout_chan;
 }
 
+static enum tab5_panel s_panel_kind;
+
+enum tab5_panel tab5_display_panel(void)
+{
+	return s_panel_kind;
+}
+
 void tab5_display_init(struct tab5_fb *out)
 {
 	/* The kernel and DTB load windows are held by a linker-placed array at
@@ -487,6 +494,7 @@ void tab5_display_init(struct tab5_fb *out)
 	tab5_panel_reset();
 	uint8_t touch_fw = 0;
 	const enum tab5_panel kind = tab5_detect_panel(&touch_fw);
+	s_panel_kind = kind;
 	if (kind == TAB5_PANEL_NONE) {
 		ESP_LOGW(TAG, "no touch controller at 0x55 or 0x5d; "
 			 "display skipped");

@@ -522,6 +522,30 @@ static bool patch_scanout_node(uint8_t *dtb, uint32_t total)
 	return ok;
 }
 
+/* Enable the GT911 touch node (#36): it ships status="disabled" so
+ * ST712x boards never probe the empty 0x5d address.  Called only when
+ * panel detection found the GT911 (ILI9881C SKU).  The node is located
+ * by its unique compatible string; the status property follows within
+ * the node. */
+static bool patch_gt911_node(uint8_t *dtb, uint32_t total)
+{
+	static const char compat[] = "goodix,gt911";
+	static const char dis[] = "disabled";
+	for (uint32_t i = 0; i + sizeof(compat) <= total; ++i) {
+		if (memcmp(dtb + i, compat, sizeof(compat) - 1))
+			continue;
+		const uint32_t end = i + 512 < total ? i + 512 : total - sizeof(dis);
+		for (uint32_t j = i; j < end; ++j) {
+			if (!memcmp(dtb + j, dis, sizeof(dis) - 1)) {
+				memcpy(dtb + j, "okay", 5);
+				return true;
+			}
+		}
+		return false;
+	}
+	return false;
+}
+
 static bool patch_display_window(uint8_t *dtb, uint32_t total,
 				 uint32_t fb_pa, uint32_t fb_bytes)
 {
@@ -928,6 +952,9 @@ void app_main(void)
 	    !patch_scanout_node(dtb, total))
 		ESP_LOGW(TAG, "scanout DTB patch failed; dsi-scanout driver "
 			 "fails closed");
+	if (tab5_display_panel() == TAB5_PANEL_ILI9881C &&
+	    !patch_gt911_node(dtb, total))
+		ESP_LOGW(TAG, "gt911 DTB patch failed; touch stays disabled");
 	if (s_tab5_fb.ok)
 		tab5_display_status();
 	tab5_i2c_release();
