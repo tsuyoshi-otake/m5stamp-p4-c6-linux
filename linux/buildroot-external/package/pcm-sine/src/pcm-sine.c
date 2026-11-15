@@ -95,6 +95,12 @@ int main(int argc, char **argv)
 		 SNDRV_PCM_SUBFORMAT_STD);
 	ivl_set(&IVL(p, SNDRV_PCM_HW_PARAM_CHANNELS), 2);
 	ivl_set(&IVL(p, SNDRV_PCM_HW_PARAM_RATE), rate);
+	/* The DMA engine maps periods onto at most 32 lldescs of 4092 B;
+	 * 2048-frame periods (8 KiB at S16 stereo) with 4 periods stay
+	 * well inside that. */
+	ivl_set(&IVL(p, SNDRV_PCM_HW_PARAM_PERIOD_SIZE), 2048);
+	ivl_set(&IVL(p, SNDRV_PCM_HW_PARAM_PERIODS), 4);
+	ivl_set(&IVL(p, SNDRV_PCM_HW_PARAM_BUFFER_SIZE), 8192);
 	p->rmask = ~0U;
 	p->cmask = 0;
 
