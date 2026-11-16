@@ -291,7 +291,7 @@ import_snapshot() {
 
 	VALID=1
 	mkdir -p "$STAGE"
-	for name in wpa_supplicant.conf config.txt credentials.txt authorized_keys root_authorized_keys touch-cal.txt; do
+	for name in wpa_supplicant.conf config.txt credentials.txt authorized_keys root_authorized_keys; do
 		path="$MNT_POINT/$name"
 		[ ! -e "$path" ] && continue
 		size=$(wc -c < "$path" 2>/dev/null || echo 65537)
@@ -345,7 +345,7 @@ import_snapshot() {
 	# the changed settings for S40network apply; a file that could not be
 	# published stays old in /tmp and diffs again at the next save.
 	NET_KEYS=""
-	for name in wpa_supplicant.conf config.txt touch-cal.txt; do
+	for name in wpa_supplicant.conf config.txt; do
 		if [ -f "$STAGE/$name" ] && file_changed "$STAGE/$name" "/tmp/$name"; then
 			keys=""
 			if [ "$name" = config.txt ]; then

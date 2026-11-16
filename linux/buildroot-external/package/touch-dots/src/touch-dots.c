@@ -32,7 +32,7 @@
 #define FB0 "/dev/fb0"
 #define TTY0 "/dev/tty0"
 #define TTYCON "/dev/console"
-#define CAL_FILE "/tmp/touch-cal.txt"
+#define CAL_FILE "/boot/touch-cal.txt"
 
 /* Dot is a filled square, DOT_R px to each side of the touch point. */
 #define DOT_R 4
