@@ -520,6 +520,11 @@
 			 * (#33): five-corner evdev taps on the
 			 * inverted-x build showed a mirrored +x with
 			 * scale ~1, i.e. the raw stream was correct.
+			 * Spec-confirmed against the M5Stack BSP
+			 * (M5Tab5-UserDemo m5stack_tab5.c): x_max=720,
+			 * y_max=1280 and swap_xy/mirror_x/mirror_y all
+			 * 0 for ST7121/ST7123 and GT911 alike, so no
+			 * calibration data is needed either (#33).
 			 */
 			status = "okay";
 		};
@@ -606,7 +611,9 @@
 				<&gpio0 23 IRQ_TYPE_EDGE_FALLING>;
 			touchscreen-size-x = <720>;
 			touchscreen-size-y = <1280>;
-			/* Same "no transform" rule as touch@55 (#33). */
+			/* Same "no transform" rule as touch@55 (#33): the
+			 * M5Stack BSP uses x_max=720, y_max=1280 and all-
+			 * zero swap/mirror flags for GT911 too. */
 			/* Disabled by default (#36): nothing sits at 0x5d
 			 * on ST712x boards, and the enabled probe spams
 			 * "I2C communication failure" to the console.
