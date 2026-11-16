@@ -133,14 +133,19 @@
 	};
 
 	/*
-	 * Safe poweroff: expander 0x44 P4 (PWROFF) requests the board
-	 * power controller to cut the rails.  The driver probes with
-	 * GPIOD_OUT_LOW which is a no-op against the shim state (pin
-	 * already output-low), and only pulses the line in the
-	 * sys_off handler at real poweroff time.
+	 * Safe poweroff: expander 0x44 P4 (PWROFF_PLUSE) is the request
+	 * line into the PMS150G power controller on the always-on
+	 * VDD_STBY rail.  It must be pulsed and end idle, exactly like
+	 * the stock BSP's bsp_generate_poweroff_signal(): the expander's
+	 * VDD (SOC_3.3V) stays alive whenever USB-C is attached, so a
+	 * line left latched is still driven when the next power-button
+	 * press arrives -- the PMS150G then holds BOOT_GPIO35 (its PA5,
+	 * wired to the P4 strap pin) low and the SoC lands in ROM
+	 * download mode until all power is removed.  Plain gpio-poweroff
+	 * cannot be used: it ends its sequence asserted.
 	 */
-	gpio-poweroff {
-		compatible = "gpio-poweroff";
+	tab5-pwroff {
+		compatible = "m5stack,tab5-pwroff";
 		gpios = <&exp1 4 GPIO_ACTIVE_HIGH>;
 	};
 

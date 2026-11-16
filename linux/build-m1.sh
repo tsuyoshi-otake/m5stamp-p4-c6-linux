@@ -1288,9 +1288,12 @@ CONFIG_PWM=y
 CONFIG_PWM_ESP32P4_LEDC=y
 CONFIG_BACKLIGHT_CLASS_DEVICE=y
 CONFIG_BACKLIGHT_PWM=y
-# Safe poweroff through expander 0x44 P4 (PWROFF) (#31).
+# Safe poweroff through expander 0x44 P4 (PWROFF_PLUSE): the PMS150G
+# power controller wants a 100 ms pulse ending idle, not a latched
+# level -- a line left asserted makes the next power-on land in ROM
+# download mode (0126 patch, DTS node tab5-pwroff).
 CONFIG_POWER_RESET=y
-CONFIG_POWER_RESET_GPIO=y
+CONFIG_POWER_RESET_TAB5_PWROFF=y
 # USB-A host on the USB2.0 HS DWC @0x50000000 (#30): dwc2 in
 # host-only mode (patch 0063 forces PIO -- no coherent DMA under
 # NOMMU).  usb-storage + hid cover the first bring-up devices.
@@ -2668,7 +2671,7 @@ if [[ "$board" == "tab5" ]]; then
 		"CONFIG_RTC_DRV_DS1307=y" \
 		"CONFIG_PWM_ESP32P4_LEDC=y" \
 		"CONFIG_BACKLIGHT_PWM=y" \
-		"CONFIG_POWER_RESET_GPIO=y" \
+		"CONFIG_POWER_RESET_TAB5_PWROFF=y" \
 		"CONFIG_GPIO_SYSFS=y" \
 		"CONFIG_USB_DWC2_HOST=y" \
 		"CONFIG_USB_STORAGE=y" \
