@@ -188,8 +188,8 @@ int main(int argc, char *argv[])
 	}
 	install_stop_handlers();
 	setvbuf(stdout, NULL, _IOLBF, 0);
-	printf("touch-dots: %dx%d on %s (abs max %dx%d); touch the panel\n",
-	       (int)var.xres, (int)var.yres, input, max_x, max_y);
+	printf("touch-dots: %dx%d on %s (abs max %dx%d%s); touch the panel\n",
+	       (int)var.xres, (int)var.yres, input, max_x, max_y, "");
 	fflush(stdout);
 
 	while (!stopped && (n = read(infd, evs, sizeof(evs))) > 0) {

@@ -347,8 +347,9 @@
 		 * which the boot shim leaves driven high.  dr_mode host:
 		 * the port is a hardwired Type-A receptacle.  ETS_USB_OTG
 		 * interrupt source is 93, routed to free CLIC slot 27.
-		 * PIO mode is forced by kernel patch 0063 (the NOMMU
-		 * port has no coherent DMA for this core).
+		 * The 0063 force-PIO only names the FS core
+		 * (espressif,esp32p4-otg11); this HS core runs the
+		 * auto-detected internal-buffer-DMA host mode.
 		 */
 		usb_otg: usb@50000000 {
 			compatible = "espressif,esp32p4-otg", "snps,dwc2";
@@ -357,6 +358,15 @@
 			dr_mode = "host";
 			hnp-disable;
 			srp-disable;
+			/*
+			 * This core is internal-DMA only (GHWCFG2.ARCH=2):
+			 * no slave mode exists to force, so transfers go
+			 * through the core's own DMA engine and every
+			 * buffer hand-off needs dcache maintenance --
+			 * without dma-noncoherent the engine reads stale
+			 * setup/data and enumeration dies with -32/-71.
+			 */
+			dma-noncoherent;
 			status = "okay";
 		};
 
@@ -502,9 +512,20 @@
 				<&gpio0 23 IRQ_TYPE_EDGE_FALLING>;
 			touchscreen-size-x = <720>;
 			touchscreen-size-y = <1280>;
-			/* Match fbcon=rotate:3 (CCW): x = ymax - y, y = x. */
-			touchscreen-swapped-x-y;
-			touchscreen-inverted-x;
+			/*
+			 * No transform: the controller reports raw
+			 * 720x1280 portrait axes that already match the
+			 * fb pixel layout.  The earlier swapped-x-y and
+			 * inverted-x entries were both measured wrong
+			 * (#33): five-corner evdev taps on the
+			 * inverted-x build showed a mirrored +x with
+			 * scale ~1, i.e. the raw stream was correct.
+			 * Spec-confirmed against the M5Stack BSP
+			 * (M5Tab5-UserDemo m5stack_tab5.c): x_max=720,
+			 * y_max=1280 and swap_xy/mirror_x/mirror_y all
+			 * 0 for ST7121/ST7123 and GT911 alike, so no
+			 * calibration data is needed either (#33).
+			 */
 			status = "okay";
 		};
 
@@ -590,9 +611,15 @@
 				<&gpio0 23 IRQ_TYPE_EDGE_FALLING>;
 			touchscreen-size-x = <720>;
 			touchscreen-size-y = <1280>;
-			touchscreen-swapped-x-y;
-			touchscreen-inverted-x;
-			status = "okay";
+			/* Same "no transform" rule as touch@55 (#33): the
+			 * M5Stack BSP uses x_max=720, y_max=1280 and all-
+			 * zero swap/mirror flags for GT911 too. */
+			/* Disabled by default (#36): nothing sits at 0x5d
+			 * on ST712x boards, and the enabled probe spams
+			 * "I2C communication failure" to the console.
+			 * The boot shim flips this node to okay when its
+			 * panel detection finds the GT911 (ILI9881C SKU). */
+			status = "disabled";
 		};
 
 		/*
@@ -664,8 +691,11 @@
 	 * C6).  The pads are bit-banged instead via spi-gpio +
 	 * mmc_spi -- slow (hundreds of KB/s) but enough for config and
 	 * data exchange.  Card power is the on-chip LDO VO4, which the
-	 * boot shim holds at 3.3 V.  Start at 400 kHz; the slot has no
-	 * card-detect pin.
+	 * boot shim holds at 3.3 V.  The slot has no card-detect pin.
+	 * spi-max-frequency is only a cap: the per-bit cost is MMIO-bound
+	 * (several gpiolib ops per half clock), so nothing on the
+	 * bit-bang path nears the card's 25 MHz SPI ceiling.  400 kHz
+	 * measured <30 KB/s (#29).
 	 */
 	spi_sd: spi-gpio {
 		compatible = "spi-gpio";
@@ -681,7 +711,7 @@
 		mmc-slot@0 {
 			compatible = "mmc-spi-slot";
 			reg = <0>;
-			spi-max-frequency = <400000>;
+			spi-max-frequency = <4000000>;
 			voltage-ranges = <3300 3300>;
 		};
 	};
