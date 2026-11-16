@@ -47,7 +47,7 @@ Not verified, or not there yet:
 - **Other panel lots.** Tab5 units ship with an ST7121 or an ST7123 display, and the oldest ones with an ILI9881C + GT911. The boot shim tells them apart by the touch controller (ST712x at I2C 0x55, GT911 ID at 0x5d) and carries an init path for all three (#36); the GT911 node is enabled only when the shim finds an ILI9881C. Only the ST7121 path has run on real units.
 - **Audio** (#24). The I2S0 ASoC driver and the ES8388 codec register a sound card (`Tab5ES8388`, `/dev/snd/pcmC0D0p`), and `pcm-sine` (a minimal player; `aplay` cannot be built for NOMMU) gets through `hw_params`, but playback stops after about 13 ms and no tone comes out of the speaker yet. Headphone output, headphone detection and the microphones (ES7210 has no upstream driver) are not done.
 - **Bluetooth from user space.** There is no BlueZ userland on this NOMMU system (bluez5_utils needs MMU), so `hci0` is only reachable through raw HCI sockets; nothing is verified on air (#34).
-- **Battery.** Voltage and current come from the INA226; there is no fuel gauge, so no percentage, and the charge-status lines are not exposed as a `power_supply` yet (#31).
+- **Battery.** Voltage, current and charge state are exposed as `/sys/class/power_supply/battery` (and `/sys/class/power_supply/usb` for the charger detect) — see section 6; `capacity` is a pack-voltage estimate only, since there is no fuel gauge (#31).
 - **EXT5V and the external antenna.** `ext5v_en=`/`ext_ant_en=` in `config.txt` drive the expander lines at boot and on a live save (#35); the 5 V output itself has not been measured with a meter.
 - **Not ported:** the camera (#25: this Linux tree has no V4L2/media support and no MIPI-CSI-2, ISP or sensor driver for the P4, so it is a media-stack port, not a wiring change) and USB device mode (the USB-C port is the serial console).
 - **Deep Sleep.** `deepsleep 10` slept and woke on the timer; the board comes back through a normal boot (the P4 wakes by reset) with the panel, touch, keyboard and SoftAP back (#37). Sleep current and waking with the BOOT button have not been checked.
@@ -213,6 +213,8 @@ Two `config.txt` keys drive the expander-0x43 power rails (#35); both default of
 ext5v_en=1        # power the EXT/M5-Bus header 5 V output
 ext_ant_en=1      # select the external MMCX antenna (0 = internal antenna)
 ```
+
+Charger and battery state are exposed through the standard interfaces (#31): `/sys/class/power_supply/usb` (`online` follows the IP2326 `CHG_STAT` line — the same signal the stock firmware uses as its USB-C detect) and `/sys/class/power_supply/battery` (`voltage_now`/`current_now` from the INA226 on the 2S pack, `status`, and `capacity` — a linear pack-voltage estimate only, not a coulomb count).
 
 ### 7. Keyboard (optional)
 

@@ -149,6 +149,31 @@
 		gpios = <&exp1 4 GPIO_ACTIVE_HIGH>;
 	};
 
+	/*
+	 * Power-supply topology (#31).  The IP2326 charger's BAT_STAT
+	 * lands on expander 0x44 P6 (the same line the stock BSP reads
+	 * as USB-C detect): it is high while the charger is in or past
+	 * constant-current charge, low in trickle charge or with no VIN,
+	 * so "online" is an approximation that can blink low during the
+	 * trickle phase of a real charge.
+	 */
+	usb: usb {
+		compatible = "gpio-charger";
+		charger-type = "usb-sdp";
+		gpios = <&exp1 6 GPIO_ACTIVE_HIGH>;
+	};
+
+	/*
+	 * The 2S pack behind J12: voltage/current come from the INA226
+	 * (io-monitor phandle), charge state from the usb supply link.
+	 * CAPACITY is a linear pack-voltage estimate, not a gauge.
+	 */
+	battery {
+		compatible = "m5stack,tab5-battery";
+		io-monitor = <&ina226>;
+		power-supplies = <&usb>;
+	};
+
 	soc: soc {
 		#address-cells = <1>;
 		#size-cells = <1>;
@@ -559,9 +584,12 @@
 			reg = <0x44>;
 			gpio-controller;
 			#gpio-cells = <2>;
+			/* Schematic U7: P1/P2 are unconnected (the earlier
+			 * PWR_GOOD/CHG_STA names were guesses); P6 is the
+			 * IP2326 BAT_STAT line, not a separate USB-detect. */
 			gpio-line-names =
-				"WLAN_PWR_EN", "PWR_GOOD", "CHG_STA", "USB5V_EN",
-				"PWROFF", "nCHG_QC_EN", "USBC_DET", "CHG_EN";
+				"WLAN_PWR_EN", "", "", "USB5V_EN",
+				"PWROFF_PLUSE", "nCHG_QC_EN", "CHG_STAT", "CHG_EN";
 		};
 
 		/*
@@ -594,7 +622,7 @@
 		 * voltage = battery voltage; positive current means
 		 * discharging, negative means charging.
 		 */
-		ina226@41 {
+		ina226: ina226@41 {
 			compatible = "ti,ina226";
 			reg = <0x41>;
 			shunt-resistor = <5000>;

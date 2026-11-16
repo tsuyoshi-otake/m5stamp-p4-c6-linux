@@ -1,0 +1,291 @@
+From: Devin <devin@cognition.ai>
+Subject: [PATCH tab5] power: supply: tab5-battery: battery psy from the
+ INA226 + IP2326 status topology
+
+The Tab5 has no real fuel gauge.  What it does have (schematic U20/U31):
+
+* INA226 at 0x41 watching SYS_BAT_PRE, the real 2S pack node, across
+  R39 (5 mOhm) to SYS_BAT_2S -- bus voltage is the battery voltage and
+  the shunt is signed (+ = discharge, - = charge).  The hwmon ina226
+  driver already owns the device; this driver does raw register reads
+  on the same i2c_client (read-only registers, bus-locked transfers),
+  so no CAL register state is needed.
+* The IP2326 charger's BAT_STAT pin lands on expander 0x44 P6
+  (CHG_STAT), the line the stock BSP reads as its USB-C detect: high
+  while the charger is in (or past) constant-current charge, low in
+  trickle charge or with no VIN.  The "usb" supply is modelled
+  separately by gpio-charger; the battery learns its STATUS through
+  the standard power-supplies link (power_supply_am_i_supplied), so
+  the GPIO has exactly one owner.
+
+CAPACITY is a linear voltage estimate over 6.0..8.4 V (2S li-ion)
+only -- it is a pack-voltage heuristic, not a coulomb count, and the
+documentation calls it an estimate.
+
+Signed-off-by: Devin <devin@cognition.ai>
+---
+ drivers/power/supply/Kconfig        |    9 +
+ drivers/power/supply/Makefile       |    1 +
+ drivers/power/supply/tab5-battery.c |  220 ++++++++++++++++++++++++++++++++++++
+ 3 files changed, 230 insertions(+)
+
+diff --git a/drivers/power/supply/Kconfig b/drivers/power/supply/Kconfig
+index 1111111..2222222 100644
+--- a/drivers/power/supply/Kconfig
++++ b/drivers/power/supply/Kconfig
+@@ -290,6 +290,14 @@ config BATTERY_SBS
+ 	  Say Y to include support for SBS battery driver for SBS-compliant
+ 	  gas gauges.
+ 
++config BATTERY_TAB5
++	bool "M5Stack Tab5 battery monitor"
++	depends on I2C && OF
++	help
++	  Battery supply for the Tab5's INA226 on the 2S pack node, with
++	  charge status taken over the standard power-supplies topology
++	  from the gpio-charger that watches the IP2326 CHG_STAT line.
++
+ config CHARGER_SBS
+ 	tristate "SBS Compliant charger"
+ 	depends on I2C
+
+diff --git a/drivers/power/supply/Makefile b/drivers/power/supply/Makefile
+index 1111111..2222222 100644
+--- a/drivers/power/supply/Makefile
++++ b/drivers/power/supply/Makefile
+@@ -48,5 +48,6 @@ obj-$(CONFIG_BATTERY_IPAQ_MICRO)	+= ipaq_micro_battery.o
+ obj-$(CONFIG_BATTERY_WM97XX)	+= wm97xx_battery.o
+ obj-$(CONFIG_BATTERY_SBS)	+= sbs-battery.o
++obj-$(CONFIG_BATTERY_TAB5)	+= tab5-battery.o
+ obj-$(CONFIG_CHARGER_SBS)	+= sbs-charger.o
+ obj-$(CONFIG_MANAGER_SBS)	+= sbs-manager.o
+ obj-$(CONFIG_BATTERY_BQ27XXX)	+= bq27xxx_battery.o
+
+ obj-$(CONFIG_BATTERY_BQ27XXX_I2C)	+= bq27xxx_battery_i2c.o
+diff --git a/drivers/power/supply/tab5-battery.c b/drivers/power/supply/tab5-battery.c
+new file mode 100644
+index 0000000..3333333
+--- /dev/null
++++ b/drivers/power/supply/tab5-battery.c
+@@ -0,0 +1,220 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * M5Stack Tab5 battery monitor, exposed as a power_supply.
++ *
++ * The board has no real fuel gauge.  An INA226 (0x41) sits on
++ * SYS_BAT_PRE -- the 2S pack node -- measuring across R39 (5 mOhm) to
++ * SYS_BAT_2S, so its bus-voltage register is the battery voltage and
++ * the shunt-voltage register is the signed charge/discharge current
++ * (positive = discharging, negative = charging).
++ * The hwmon ina226 driver owns the device; we only ever read registers
++ * on the shared client, which needs no CAL state.
++ *
++ * Charge state is not read from a pin here: the "usb" supply
++ * (gpio-charger on the IP2326's CHG_STAT, expander 0x44 P6 -- the same
++ * line the stock BSP reads as USB-C detect) is linked through
++ * power-supplies, and STATUS follows power_supply_am_i_supplied().
++ * That keeps the expander GPIO single-owned.
++ *
++ * CAPACITY is a linear voltage estimate over 6.0..8.4 V; the pack has
++ * no coulomb counter, so treat it as an estimate, not a gauge.
++ */
++
++#include <linux/i2c.h>
++#include <linux/module.h>
++#include <linux/of.h>
++#include <linux/platform_device.h>
++#include <linux/power_supply.h>
++
++#define INA226_REG_SHUNT_V	0x01	/* signed, 2.5 uV/LSB */
++#define INA226_REG_BUS_V	0x02	/* unsigned, 1.25 mV/LSB */
++
++/* R39 on the schematic, 5 mOhm.  shunt_lsb_uv / R_uohm = uA per count. */
++#define TAB5_BAT_CURRENT_UA_LSB	500	/* 2.5 uV / 5 mOhm = 0.5 mA */
++
++/* 2S li-ion pack: linear estimate window and present/full thresholds. */
++#define TAB5_BAT_V_EMPTY_UV	6000000
++#define TAB5_BAT_V_FULL_UV	8400000
++#define TAB5_BAT_V_PRESENT_UV	4000000
++#define TAB5_BAT_V_FULLMARK_UV	8300000
++/* Below this magnitude the charge current is treated as "done". */
++#define TAB5_BAT_I_FULL_UA	150000
++
++struct tab5_battery {
++	struct i2c_client *ina;
++	struct power_supply *psy;
++	struct power_supply_desc desc;
++};
++
++static int tab5_bat_read(struct tab5_battery *bat, u8 reg)
++{
++	return i2c_smbus_read_word_swapped(bat->ina, reg);
++}
++
++static int tab5_bat_voltage_uv(struct tab5_battery *bat)
++{
++	int r = tab5_bat_read(bat, INA226_REG_BUS_V);
++
++	return r < 0 ? r : r * 1250;
++}
++
++static int tab5_bat_status(struct tab5_battery *bat, int v_uv, int i_ua)
++{
++	/* am_i_supplied is -ENODEV until the "usb" supply links up. */
++	if (power_supply_am_i_supplied(bat->psy) <= 0)
++		return v_uv > TAB5_BAT_V_PRESENT_UV ?
++			POWER_SUPPLY_STATUS_DISCHARGING :
++			POWER_SUPPLY_STATUS_UNKNOWN;
++	if (i_ua >= 0 && v_uv >= TAB5_BAT_V_FULLMARK_UV)
++		return POWER_SUPPLY_STATUS_FULL;	/* taper ended */
++	return POWER_SUPPLY_STATUS_CHARGING;
++}
++
++static enum power_supply_property tab5_bat_props[] = {
++	POWER_SUPPLY_PROP_STATUS,
++	POWER_SUPPLY_PROP_PRESENT,
++	POWER_SUPPLY_PROP_TECHNOLOGY,
++	POWER_SUPPLY_PROP_HEALTH,
++	POWER_SUPPLY_PROP_VOLTAGE_NOW,
++	POWER_SUPPLY_PROP_CURRENT_NOW,
++	POWER_SUPPLY_PROP_CAPACITY,
++	POWER_SUPPLY_PROP_CAPACITY_LEVEL,
++	POWER_SUPPLY_PROP_SCOPE,
++};
++
++static int tab5_bat_get_property(struct power_supply *psy,
++				 enum power_supply_property psp,
++				 union power_supply_propval *val)
++{
++	struct tab5_battery *bat = power_supply_get_drvdata(psy);
++	int v_uv, i_ua;
++
++	switch (psp) {
++	case POWER_SUPPLY_PROP_STATUS:
++		v_uv = tab5_bat_voltage_uv(bat);
++		if (v_uv < 0)
++			return v_uv;
++		i_ua = tab5_bat_read(bat, INA226_REG_SHUNT_V);
++		if (i_ua < 0)
++			return i_ua;
++		val->intval = tab5_bat_status(bat, v_uv,
++					      (s16)i_ua * TAB5_BAT_CURRENT_UA_LSB);
++		break;
++	case POWER_SUPPLY_PROP_PRESENT:
++		v_uv = tab5_bat_voltage_uv(bat);
++		if (v_uv < 0)
++			return v_uv;
++		val->intval = v_uv > TAB5_BAT_V_PRESENT_UV;
++		break;
++	case POWER_SUPPLY_PROP_VOLTAGE_NOW:
++		v_uv = tab5_bat_voltage_uv(bat);
++		if (v_uv < 0)
++			return v_uv;
++		val->intval = v_uv;
++		break;
++	case POWER_SUPPLY_PROP_CURRENT_NOW:
++		/* signed: + discharging, - charging */
++		i_ua = tab5_bat_read(bat, INA226_REG_SHUNT_V);
++		if (i_ua < 0)
++			return i_ua;
++		val->intval = (s16)i_ua * TAB5_BAT_CURRENT_UA_LSB;
++		break;
++	case POWER_SUPPLY_PROP_CAPACITY:
++		/* Linear voltage estimate only; not a coulomb count. */
++		v_uv = tab5_bat_voltage_uv(bat);
++		if (v_uv < 0)
++			return v_uv;
++		val->intval = clamp((v_uv - TAB5_BAT_V_EMPTY_UV) * 100 /
++				    (TAB5_BAT_V_FULL_UV - TAB5_BAT_V_EMPTY_UV),
++				    0, 100);
++		break;
++	case POWER_SUPPLY_PROP_CAPACITY_LEVEL:
++		v_uv = tab5_bat_voltage_uv(bat);
++		if (v_uv < 0)
++			return v_uv;
++		if (v_uv >= TAB5_BAT_V_FULLMARK_UV)
++			val->intval = POWER_SUPPLY_CAPACITY_LEVEL_FULL;
++		else if (v_uv <= TAB5_BAT_V_EMPTY_UV)
++			val->intval = POWER_SUPPLY_CAPACITY_LEVEL_CRITICAL;
++		else if (v_uv <= TAB5_BAT_V_EMPTY_UV + 400000)
++			val->intval = POWER_SUPPLY_CAPACITY_LEVEL_LOW;
++		else
++			val->intval = POWER_SUPPLY_CAPACITY_LEVEL_NORMAL;
++		break;
++	case POWER_SUPPLY_PROP_TECHNOLOGY:
++		val->intval = POWER_SUPPLY_TECHNOLOGY_LION;
++		break;
++	case POWER_SUPPLY_PROP_HEALTH:
++		val->intval = POWER_SUPPLY_HEALTH_GOOD;
++		break;
++	case POWER_SUPPLY_PROP_SCOPE:
++		val->intval = POWER_SUPPLY_SCOPE_SYSTEM;
++		break;
++	default:
++		return -EINVAL;
++	}
++	return 0;
++}
++
++static int tab5_battery_probe(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct power_supply_config cfg = {};
++	struct device_node *np;
++	struct tab5_battery *bat;
++
++	bat = devm_kzalloc(dev, sizeof(*bat), GFP_KERNEL);
++	if (!bat)
++		return -ENOMEM;
++
++	np = of_parse_phandle(dev->of_node, "io-monitor", 0);
++	if (!np)
++		return dev_err_probe(dev, -EINVAL,
++				     "missing io-monitor phandle\n");
++	bat->ina = of_find_i2c_device_by_node(np);
++	of_node_put(np);
++	if (!bat->ina)
++		return -EPROBE_DEFER;
++
++	bat->desc.name = "battery";
++	bat->desc.type = POWER_SUPPLY_TYPE_BATTERY;
++	bat->desc.properties = tab5_bat_props;
++	bat->desc.num_properties = ARRAY_SIZE(tab5_bat_props);
++	bat->desc.get_property = tab5_bat_get_property;
++
++	cfg.drv_data = bat;
++	cfg.fwnode = dev_fwnode(dev);
++	bat->psy = devm_power_supply_register(dev, &bat->desc, &cfg);
++	if (IS_ERR(bat->psy)) {
++		put_device(&bat->ina->dev);
++		return dev_err_probe(dev, PTR_ERR(bat->psy),
++				     "failed to register battery supply\n");
++	}
++	platform_set_drvdata(pdev, bat);
++	return 0;
++}
++
++static void tab5_battery_remove(struct platform_device *pdev)
++{
++	struct tab5_battery *bat = platform_get_drvdata(pdev);
++
++	put_device(&bat->ina->dev);
++}
++
++static const struct of_device_id tab5_battery_of_match[] = {
++	{ .compatible = "m5stack,tab5-battery" },
++	{}
++};
++MODULE_DEVICE_TABLE(of, tab5_battery_of_match);
++
++static struct platform_driver tab5_battery_driver = {
++	.probe = tab5_battery_probe,
++	.remove = tab5_battery_remove,
++	.driver = {
++		.name = "tab5-battery",
++		.of_match_table = tab5_battery_of_match,
++	},
++};
++module_platform_driver(tab5_battery_driver);
++
++MODULE_DESCRIPTION("M5Stack Tab5 battery monitor power_supply driver");
++MODULE_LICENSE("GPL");

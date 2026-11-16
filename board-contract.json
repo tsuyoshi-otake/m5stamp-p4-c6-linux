@@ -65,12 +65,12 @@
   },
   "io_expander_0x44": {
     "P0": { "function": "WLAN_PWR_EN (C6 rail)", "boot_state": "out 1 (required: C6 off until set)" },
-    "P1": { "function": "input (inferred power-good)", "boot_state": "input Hi-Z" },
-    "P2": { "function": "input (inferred charge status)", "boot_state": "input Hi-Z" },
+    "P1": { "function": "NC (schematic U7: no net)", "boot_state": "input Hi-Z" },
+    "P2": { "function": "NC (schematic U7: no net)", "boot_state": "input Hi-Z" },
     "P3": { "function": "USB5V_EN", "boot_state": "out 1" },
-    "P4": { "function": "PWROFF to PMIC", "boot_state": "out 0 (never pulse at boot)" },
+    "P4": { "function": "PWROFF_PLUSE to PMS150G (PA6 via D12/E_TRG); must be pulsed ~100ms x3 and end low -- a latched level makes the next power-on land in ROM download mode (PMS150G PA5 holds BOOT_GPIO35 low)", "boot_state": "out 0 (never pulse at boot)" },
     "P5": { "function": "nCHG_QC_EN", "boot_state": "out 0 (QC on, stock parity)" },
-    "P6": { "function": "USB-C insert detect", "boot_state": "input" },
+    "P6": { "function": "CHG_STAT = IP2326 BAT_STAT (pin 5 via R37 5.1K); high while the charger is in/past CC charge = the BSP's USB-C detect", "boot_state": "input (BSP: IN_DEF_STA bit6=1, INT unmasked)" },
     "P7": { "function": "CHG_EN", "boot_state": "out 1 (stock parity)" }
   },
   "c6_sdio": {

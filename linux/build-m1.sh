@@ -1294,6 +1294,14 @@ CONFIG_BACKLIGHT_PWM=y
 # download mode (0126 patch, DTS node tab5-pwroff).
 CONFIG_POWER_RESET=y
 CONFIG_POWER_RESET_TAB5_PWROFF=y
+# /sys/class/power_supply (#31): "usb" = gpio-charger on the IP2326
+# CHG_STAT line (expander 0x44 P6, the BSP's USB-C detect); "battery" =
+# the tab5-battery driver over the INA226 (patch 0127, DTS node
+# m5stack,tab5-battery).  POWER_SUPPLY itself is off in every fragment,
+# so it has to be selected here.
+CONFIG_POWER_SUPPLY=y
+CONFIG_CHARGER_GPIO=y
+CONFIG_BATTERY_TAB5=y
 # USB-A host on the USB2.0 HS DWC @0x50000000 (#30): dwc2 in
 # host-only mode (patch 0063 forces PIO -- no coherent DMA under
 # NOMMU).  usb-storage + hid cover the first bring-up devices.
@@ -2672,6 +2680,9 @@ if [[ "$board" == "tab5" ]]; then
 		"CONFIG_PWM_ESP32P4_LEDC=y" \
 		"CONFIG_BACKLIGHT_PWM=y" \
 		"CONFIG_POWER_RESET_TAB5_PWROFF=y" \
+		"CONFIG_POWER_SUPPLY=y" \
+		"CONFIG_CHARGER_GPIO=y" \
+		"CONFIG_BATTERY_TAB5=y" \
 		"CONFIG_GPIO_SYSFS=y" \
 		"CONFIG_USB_DWC2_HOST=y" \
 		"CONFIG_USB_STORAGE=y" \
