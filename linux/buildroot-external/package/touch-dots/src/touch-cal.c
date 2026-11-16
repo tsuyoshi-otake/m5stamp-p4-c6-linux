@@ -422,7 +422,7 @@ int main(int argc, char *argv[])
 		       sqrt(ex * ex + ey * ey), ex, ey);
 	}
 	if (write_cal(co, raw_x, raw_y) == 0)
-		printf("wrote %s\n", CAL_NAME);
+		printf("wrote %s\n", CAL_FILE);
 
 	fill_fb(0);
 out:
