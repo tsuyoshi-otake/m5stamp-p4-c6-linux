@@ -14,7 +14,7 @@ This repository is the Tab5 port of [m5stamp-p4-c6-linux](https://github.com/tsu
 
 ## Status
 
-Checked on a Tab5 (ESP32-P4 rev v1.3, ST7121 panel), with the issue where the result is recorded:
+Checked on a Tab5 (ESP32-P4 rev v1.3, ST7121 panel). The checks for the v0.6.0 release are in [`linux/tests/v0.6.0-hardware-validation-2026-11-15.md`](linux/tests/v0.6.0-hardware-validation-2026-11-15.md); the rows added after it were checked on `main` on 2026-11-16. Hardware that is not supported yet is listed in #38. Each row names the issue where the result is recorded:
 
 | Area | Result |
 | :--- | :--- |
