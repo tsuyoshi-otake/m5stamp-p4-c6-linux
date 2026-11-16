@@ -1327,11 +1327,15 @@ CONFIG_USB_HID=y
 # microSD slot 0 over bit-banged SPI (#29): the slot sits on SDMMC
 # slot-0's fixed pads (CLK43 CMD44 D0..3=39..42) which the dw_mmc
 # instance cannot reach -- it already drives slot 1 (the C6).  The
-# pads are plain GPIOs via IO_MUX, so spi-gpio + mmc_spi works.
+# pads are plain GPIOs via IO_MUX, so spi-gpio + mmc_spi works.  #29
+# swaps the controller node to spi-esp32p4-fastbb, a spi-bitbang clone
+# whose pin pokes are single GPIO_OUT1_W1TS/W1TC/IN1 MMIO accesses; the
+# spi-gpio driver stays enabled as a fallback path for the slot.
 CONFIG_SPI=y
 CONFIG_SPI_MASTER=y
 CONFIG_SPI_BITBANG=y
 CONFIG_SPI_GPIO=y
+CONFIG_SPI_ESP32P4_FASTBB=y
 CONFIG_MMC_SPI=y
 # BLE HCI over SDIO (#34): the C6 firmware image already ships
 # CONFIG_BT_ENABLED/CONTROLLER_ONLY/BLE_ONLY (C6_BT=1 default, C6_BT=0
@@ -2688,6 +2692,7 @@ if [[ "$board" == "tab5" ]]; then
 		"CONFIG_USB_STORAGE=y" \
 		"CONFIG_USB_HID=y" \
 		"CONFIG_SPI_GPIO=y" \
+		"CONFIG_SPI_ESP32P4_FASTBB=y" \
 		"CONFIG_MMC_SPI=y"; do
 		grep -Fqx -- "${expected}" "${kernel_config}" || {
 			echo "Tab5 kernel config check failed: ${expected}" >&2

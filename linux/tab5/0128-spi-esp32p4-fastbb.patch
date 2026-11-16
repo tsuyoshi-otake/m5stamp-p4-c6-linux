@@ -1,0 +1,322 @@
+diff --git a/drivers/spi/Kconfig b/drivers/spi/Kconfig
+index 574d892..f13a1b2 100644
+--- a/drivers/spi/Kconfig
++++ b/drivers/spi/Kconfig
+@@ -500,6 +500,17 @@ config SPI_GPIO
+ 	  GPIO operations, you should be able to leverage that for better
+ 	  speed with a custom version of this driver; see the source code.
+ 
++config SPI_ESP32P4_FASTBB
++	tristate "ESP32-P4 fast bit-bang SPI (direct GPIO MMIO)"
++	depends on GPIOLIB && HAS_IOMEM
++	select SPI_BITBANG
++	help
++	  A drop-in replacement for spi-gpio that drives the SCK/MOSI/CS
++	  lines and samples MISO with single GPIO OUT_W1TS/W1TC/IN register
++	  accesses instead of gpiolib calls.  On the ESP32-P4 that cuts the
++	  per-bit cost to a few MMIO operations, roughly an order of
++	  magnitude faster than spi-gpio's per-bit gpiolib path.
++
+ config SPI_IMG_SPFI
+ 	tristate "IMG SPFI controller"
+ 	depends on MIPS || COMPILE_TEST
+diff --git a/drivers/spi/Makefile b/drivers/spi/Makefile
+index 9396e51..f5b9f08 100644
+--- a/drivers/spi/Makefile
++++ b/drivers/spi/Makefile
+@@ -56,6 +56,7 @@ obj-$(CONFIG_SPI_DW_BT1)		+= spi-dw-bt1.o
+ obj-$(CONFIG_SPI_DW_MMIO)		+= spi-dw-mmio.o
+ obj-$(CONFIG_SPI_DW_PCI)		+= spi-dw-pci.o
+ obj-$(CONFIG_SPI_EP93XX)		+= spi-ep93xx.o
++obj-$(CONFIG_SPI_ESP32P4_FASTBB)	+= spi-esp32p4-fastbb.o
+ obj-$(CONFIG_SPI_FALCON)		+= spi-falcon.o
+ obj-$(CONFIG_SPI_FSI)			+= spi-fsi.o
+ obj-$(CONFIG_SPI_FSL_CPM)		+= spi-fsl-cpm.o
+diff --git a/drivers/spi/spi-esp32p4-fastbb.c b/drivers/spi/spi-esp32p4-fastbb.c
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/drivers/spi/spi-esp32p4-fastbb.c
+@@ -0,0 +1,282 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++/*
++ * ESP32-P4 SPI host driver -- bit-banged GPIO via direct MMIO, transfers
++ * executed in the caller's context.
++ *
++ * Two costs dominate SD-over-SPI here:
++ *   - spi-gpio routes every pin wiggle through gpiolib (descriptor
++ *     checks, regmap/generic-chip indirection): several microseconds
++ *     per half clock.
++ *   - spi-bitbang (any flavour) runs each message on a kworker.
++ *     mmc_spi polls the card's R1 response and data token one byte at
++ *     a time, so every block read pays tens of scheduling round-trips
++ *     before the wire speed even matters.
++ *
++ * This driver implements ->transfer_one: the SPI core calls it from
++ * spi_sync() in the caller's context, drives cs-gpios and inter-
++ * transfer delays itself, and no kworker is involved.  The bit loop
++ * is one GPIO_OUT{,1}_W1TS/W1TC store per edge and one GPIO_IN{,1}
++ * load per bit.
++ *
++ * The pins are still claimed and directed through gpiolib at probe
++ * time (the esp32p4 gpiochip programs IO_MUX on direction changes);
++ * only the hot loop bypasses it.
++ *
++ * Register layout (esp-idf soc/esp32p4/register/hw_ver3/soc/gpio_reg.h,
++ * mirrored in drivers/gpio/gpio-esp32p4.c):
++ *   bank 0 (GPIO0..31):  OUT_W1TS=0x08 OUT_W1TC=0x0C IN=0x3C
++ *   bank 1 (GPIO32..63): OUT1_W1TS=0x14 OUT1_W1TC=0x18 IN1=0x40
++ *   base               = 0x500e0000
++ */
++
++#include <linux/delay.h>
++#include <linux/gpio/consumer.h>
++#include <linux/io.h>
++#include <linux/kernel.h>
++#include <linux/module.h>
++#include <linux/platform_device.h>
++#include <linux/property.h>
++
++#include <linux/spi/spi.h>
++
++#define ESP32P4_GPIO_BASE	0x500e0000
++
++struct fastbb_pin {
++	void __iomem	*set;	/* GPIO_OUT{,1}_W1TS */
++	void __iomem	*clr;	/* GPIO_OUT{,1}_W1TC */
++	u32		mask;
++};
++
++struct spi_fastbb {
++	struct gpio_desc	*sck;
++	struct gpio_desc	*miso;
++	struct gpio_desc	*mosi;
++	void __iomem		*gpio_base;
++	struct fastbb_pin	sck_pin;
++	struct fastbb_pin	mosi_pin;
++	void __iomem		*miso_in;
++	u32			miso_mask;
++};
++
++#define DRIVER_NAME	"spi_esp32p4_fastbb"
++
++static inline void pin_write(const struct fastbb_pin *p, int is_on)
++{
++	writel_relaxed(p->mask, is_on ? p->set : p->clr);
++}
++
++static inline int miso_read(const struct spi_fastbb *fb)
++{
++	return !!(readl_relaxed(fb->miso_in) & fb->miso_mask);
++}
++
++static void spi_fastbb_cs(struct spi_device *spi, bool active)
++{
++	struct gpio_desc *cs = spi_get_csgpiod(spi, 0);
++
++	if (cs)
++		gpiod_set_value_cansleep(cs, active);
++}
++
++/*
++ * Full duplex 8-bit word loop for all four SPI modes.  No explicit
++ * inter-edge delay: each half bit already costs a few hundred ns of
++ * MMIO, far over the spi-max-frequency half period (62 ns at 8 MHz).
++ */
++static int spi_fastbb_xfer(struct spi_fastbb *fb, struct spi_device *spi,
++			   struct spi_transfer *t)
++{
++	const u8 *tx = t->tx_buf;
++	u8 *rx = t->rx_buf;
++	bool cpol = spi->mode & SPI_CPOL;
++	bool cpha = spi->mode & SPI_CPHA;
++	unsigned int i;
++
++	for (i = 0; i < t->len; i++) {
++		u8 in = 0, out = tx ? tx[i] : 0;
++		int bit;
++
++		for (bit = 7; bit >= 0; bit--) {
++			if (!cpha) {
++				/* data set while SCK idle, sample edge 1 */
++				pin_write(&fb->mosi_pin, (out >> bit) & 1);
++				pin_write(&fb->sck_pin, !cpol);
++				in = (in << 1) | miso_read(fb);
++				pin_write(&fb->sck_pin, cpol);
++			} else {
++				/* edge 1 shifts, edge 2 samples */
++				pin_write(&fb->sck_pin, !cpol);
++				pin_write(&fb->mosi_pin, (out >> bit) & 1);
++				pin_write(&fb->sck_pin, cpol);
++				in = (in << 1) | miso_read(fb);
++			}
++		}
++		if (rx)
++			rx[i] = in;
++	}
++	return 0;
++}
++
++/*
++ * Legacy ->transfer: deliberately unqueued.  A transfer_one controller
++ * is forced onto the core's kthread queue by spi_controller_initialize_
++ * queue(), so every spi_sync() pays a task wakeup -- and mmc_spi polls
++ * the card's R1 response and data token one byte at a time, putting
++ * ~10 scheduling round-trips on every 512-byte block.  Running the
++ * whole message in the caller's context is what actually buys the
++ * speed; the deprecated-unqueued note in dmesg is expected.
++ */
++static int spi_fastbb_transfer(struct spi_device *spi,
++			       struct spi_message *mesg)
++{
++	struct spi_fastbb *fb = spi_controller_get_devdata(spi->controller);
++	struct spi_transfer *xfer;
++	int ret = 0;
++
++	mesg->actual_length = 0;
++	list_for_each_entry(xfer, &mesg->transfers, transfer_list) {
++		bool last = list_is_last(&xfer->transfer_list,
++					 &mesg->transfers);
++
++		spi_fastbb_cs(spi, !xfer->cs_off);
++		if ((xfer->tx_buf || xfer->rx_buf) && xfer->len) {
++			ret = spi_fastbb_xfer(fb, spi, xfer);
++			if (ret)
++				break;
++			mesg->actual_length += xfer->len;
++		}
++		spi_transfer_delay_exec(xfer);
++		if (xfer->cs_change && !last) {
++			spi_fastbb_cs(spi, false);
++			spi_transfer_cs_change_delay_exec(mesg, xfer);
++		}
++	}
++	spi_fastbb_cs(spi, false);
++
++	mesg->status = ret;
++	if (mesg->complete)
++		mesg->complete(mesg->context);
++	return ret;
++}
++
++/*
++ * Map a claimed gpio_desc to the P4 GPIO bank's W1TS/W1TC/IN registers.
++ * The esp32p4 gpiochip driver sets gc.base = bank * 32, so the global
++ * number it reports is already the hardware pin number.
++ */
++static int fastbb_map_out(struct spi_fastbb *fb, struct gpio_desc *d,
++			  struct fastbb_pin *pin)
++{
++	long gpio = desc_to_gpio(d);
++	unsigned int bank;
++
++	if (gpio < 0 || gpio >= 64)
++		return -EINVAL;
++	bank = gpio / 32;
++	pin->set = fb->gpio_base + (bank ? 0x14 : 0x08);
++	pin->clr = fb->gpio_base + (bank ? 0x18 : 0x0c);
++	pin->mask = BIT(gpio % 32);
++	return 0;
++}
++
++static int fastbb_map_in(struct spi_fastbb *fb, struct gpio_desc *d,
++			 void __iomem **in, u32 *mask)
++{
++	long gpio = desc_to_gpio(d);
++
++	if (gpio < 0 || gpio >= 64)
++		return -EINVAL;
++	*in = fb->gpio_base + (gpio >= 32 ? 0x40 : 0x3c);
++	*mask = BIT(gpio % 32);
++	return 0;
++}
++
++static int spi_fastbb_request(struct device *dev, struct spi_fastbb *fb)
++{
++	fb->mosi = devm_gpiod_get_optional(dev, "mosi", GPIOD_OUT_LOW);
++	if (IS_ERR(fb->mosi))
++		return PTR_ERR(fb->mosi);
++
++	fb->miso = devm_gpiod_get_optional(dev, "miso", GPIOD_IN);
++	if (IS_ERR(fb->miso))
++		return PTR_ERR(fb->miso);
++
++	fb->sck = devm_gpiod_get(dev, "sck", GPIOD_OUT_LOW);
++	return PTR_ERR_OR_ZERO(fb->sck);
++}
++
++static int spi_fastbb_probe(struct platform_device *pdev)
++{
++	int				status;
++	struct spi_controller		*host;
++	struct spi_fastbb		*fb;
++	struct device			*dev = &pdev->dev;
++	struct fwnode_handle		*fwnode = dev_fwnode(dev);
++
++	host = devm_spi_alloc_host(dev, sizeof(*fb));
++	if (!host)
++		return -ENOMEM;
++
++	if (fwnode)
++		host->use_gpio_descriptors = true;
++
++	fb = spi_controller_get_devdata(host);
++
++	status = spi_fastbb_request(dev, fb);
++	if (status)
++		return status;
++
++	fb->gpio_base = devm_ioremap(dev, ESP32P4_GPIO_BASE, 0x1000);
++	if (!fb->gpio_base)
++		return -ENOMEM;
++
++	status = fastbb_map_out(fb, fb->sck, &fb->sck_pin);
++	if (!status && fb->mosi)
++		status = fastbb_map_out(fb, fb->mosi, &fb->mosi_pin);
++	if (!status && fb->miso)
++		status = fastbb_map_in(fb, fb->miso, &fb->miso_in,
++				       &fb->miso_mask);
++	if (status) {
++		dev_err(dev, "gpio outside the 0..63 P4 banks\n");
++		return status;
++	}
++
++	/* CS lines are claimed by the SPI core itself: with
++	 * use_gpio_descriptors set, spi_get_gpio_descs() grabs every
++	 * cs-gpios line at register time and drives them around each
++	 * ->transfer_one.  Requesting them here too would double-claim
++	 * the line and fail probe with -EBUSY. */
++
++	host->bits_per_word_mask = SPI_BPW_RANGE_MASK(8, 8);
++	host->mode_bits = SPI_CPHA | SPI_CPOL | SPI_CS_HIGH |
++			  SPI_MOSI_IDLE_LOW | SPI_MOSI_IDLE_HIGH;
++	if (!fb->mosi)
++		host->flags = SPI_CONTROLLER_NO_TX;
++	if (!fb->miso)
++		host->flags |= SPI_CONTROLLER_NO_RX;
++
++	host->bus_num = pdev->id;
++	host->flags |= SPI_CONTROLLER_GPIO_SS;
++	host->transfer = spi_fastbb_transfer;
++
++	return devm_spi_register_controller(&pdev->dev, host);
++}
++
++static const struct of_device_id spi_fastbb_dt_ids[] = {
++	{ .compatible = "espressif,esp32p4-fast-spi-gpio" },
++	{}
++};
++MODULE_DEVICE_TABLE(of, spi_fastbb_dt_ids);
++
++static struct platform_driver spi_fastbb_driver = {
++	.driver = {
++		.name	= DRIVER_NAME,
++		.of_match_table = spi_fastbb_dt_ids,
++	},
++	.probe		= spi_fastbb_probe,
++};
++module_platform_driver(spi_fastbb_driver);
++
++MODULE_DESCRIPTION("ESP32-P4 fast bitbanged SPI (direct GPIO MMIO, no workqueue)");
++MODULE_AUTHOR("Devin <devin@cognition.ai>");
++MODULE_LICENSE("GPL");

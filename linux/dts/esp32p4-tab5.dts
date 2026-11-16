@@ -721,17 +721,18 @@
 	 * slot 0's dedicated pads CLK43 CMD44 D0..3=39..42, but slot 0
 	 * is not reachable through the Linux dw_mmc instance (that
 	 * driver models one host per controller and slot 1 carries the
-	 * C6).  The pads are bit-banged instead via spi-gpio +
-	 * mmc_spi -- slow (hundreds of KB/s) but enough for config and
-	 * data exchange.  Card power is the on-chip LDO VO4, which the
-	 * boot shim holds at 3.3 V.  The slot has no card-detect pin.
-	 * spi-max-frequency is only a cap: the per-bit cost is MMIO-bound
-	 * (several gpiolib ops per half clock), so nothing on the
-	 * bit-bang path nears the card's 25 MHz SPI ceiling.  400 kHz
-	 * measured <30 KB/s (#29).
+	 * C6).  The pads are bit-banged via spi-esp32p4-fastbb +
+	 * mmc_spi: same spi-bitbang framework as spi-gpio, but each
+	 * edge is one GPIO_OUT1_W1TS/W1TC store and MISO one GPIO_IN1
+	 * load instead of the gpiolib path, so the slot runs an order
+	 * of magnitude faster than spi-gpio's <30 KB/s.  Card power is
+	 * the on-chip LDO VO4, which the boot shim holds at 3.3 V.
+	 * The slot has no card-detect pin.  spi-max-frequency is only
+	 * a cap; 8 MHz stays under the card's 25 MHz SPI ceiling with
+	 * margin for the MMIO bit loop.
 	 */
-	spi_sd: spi-gpio {
-		compatible = "spi-gpio";
+	spi_sd: spi-esp32p4-fastbb {
+		compatible = "espressif,esp32p4-fast-spi-gpio";
 		#address-cells = <1>;
 		#size-cells = <0>;
 		sck-gpios  = <&gpio1 11 GPIO_ACTIVE_HIGH>; /* GPIO43 CLK */
@@ -744,7 +745,7 @@
 		mmc-slot@0 {
 			compatible = "mmc-spi-slot";
 			reg = <0>;
-			spi-max-frequency = <4000000>;
+			spi-max-frequency = <8000000>;
 			voltage-ranges = <3300 3300>;
 		};
 	};
