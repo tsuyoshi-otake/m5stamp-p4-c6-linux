@@ -243,6 +243,16 @@ hostname=${def_host}
 # Put an empty file named factory-reset on this drive and reboot to restore
 # these defaults and generate new credentials.
 EOF
+	if [ -r "${TARGET_DIR}/etc/board/default-hostname" ]; then
+		# Tab5-only expander 0x43 rails (#35).  Keys default off; they
+		# are applied at boot (S06rails) and live on a config.txt save.
+		cat >>"${stage}/config.txt" <<'EOF'
+# Tab5 expander rails: ext5v_en=1 powers the EXT header 5 V output,
+# ext_ant_en=1 selects the external MMCX antenna (0 = internal antenna).
+#ext5v_en=1
+#ext_ant_en=1
+EOF
+	fi
 	cp "${wpa}" "${stage}/wpa_supplicant.conf"
 	rm -f "${out}"
 	"${mkfs}" -C -F 12 -r 64 -n STAMP_P4 --invariant "${out}" 256 >/dev/null

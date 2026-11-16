@@ -48,7 +48,7 @@ Not verified, or not there yet:
 - **Audio** (#24). The I2S0 ASoC driver and the ES8388 codec register a sound card (`Tab5ES8388`, `/dev/snd/pcmC0D0p`), and `pcm-sine` (a minimal player; `aplay` cannot be built for NOMMU) gets through `hw_params`, but playback stops after about 13 ms and no tone comes out of the speaker yet. Headphone output, headphone detection and the microphones (ES7210 has no upstream driver) are not done.
 - **Bluetooth from user space.** There is no BlueZ userland on this NOMMU system (bluez5_utils needs MMU), so `hci0` is only reachable through raw HCI sockets; nothing is verified on air (#34).
 - **Battery.** Voltage and current come from the INA226; there is no fuel gauge, so no percentage, and the charge-status lines are not exposed as a `power_supply` yet (#31).
-- **EXT5V and the external antenna.** The `EXT5V_EN` and `EXT_ANT_EN` expander lines can be set from Linux, but the 5 V output has not been measured and there is no `config.txt` setting yet (#35).
+- **EXT5V and the external antenna.** `ext5v_en=`/`ext_ant_en=` in `config.txt` drive the expander lines at boot and on a live save (#35); the 5 V output itself has not been measured with a meter.
 - **Not ported:** the camera (#25: this Linux tree has no V4L2/media support and no MIPI-CSI-2, ISP or sensor driver for the P4, so it is a media-stack port, not a wiring change) and USB device mode (the USB-C port is the serial console).
 - **Deep Sleep.** `deepsleep 10` slept and woke on the timer; the board comes back through a normal boot (the P4 wakes by reset) with the panel, touch, keyboard and SoftAP back (#37). Sleep current and waking with the BOOT button have not been checked.
 - **No USB drive for the configuration.** The Stamp-P4 build keeps its configuration on a USB mass-storage drive; the Tab5 has no such gadget port, so `credentials.txt`, `config.txt` and autorun are not reachable from a PC. They are the same files with the same keys, in the boot FAT image in flash, and are changed on the board with `boot-edit` ([6. Change the configuration](#6-change-the-configuration)). On a Tab5, `boot-edit --put` added a file and the kernel wrote it to flash. After a hardware reset the boot shim started from that copy, and `boot-edit --rm` removed the file the same way. Editing with `vi`, and losing power during a flash write, have not been tried.
@@ -206,6 +206,13 @@ boot-edit --rm main.py
 ```
 
 Everything else is as on the Stamp-P4: a change is checked, written to flash and applied about three seconds later, and the console shows the same `[bootsync] Saved to flash` line. `boot-edit` waits for that line's result and says `saved to flash`, or tells you that the save was not confirmed.
+
+Two `config.txt` keys drive the expander-0x43 power rails (#35); both default off and are applied at boot and on a live save:
+
+```sh
+ext5v_en=1        # power the EXT/M5-Bus header 5 V output
+ext_ant_en=1      # select the external MMCX antenna (0 = internal antenna)
+```
 
 ### 7. Keyboard (optional)
 

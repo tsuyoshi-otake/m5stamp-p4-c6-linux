@@ -774,6 +774,15 @@ net_dispatch() {
 			maxcpus)
 				# Nothing reads it: the CPU count is built into the image.
 				net_note "ES_CONFIG: maxcpus= has no effect; the CPU count is built into the image" ;;
+			ext5v_en|ext_ant_en)
+				# Tab5 expander 0x43 rails (#35): applied live,
+				# no restart.  On other boards the helper is
+				# absent and the keys are inert.
+				if [ -x /usr/sbin/tab5-rails ]; then
+					/usr/sbin/tab5-rails || net_note "ES_CONFIG: $k apply failed"
+				else
+					net_note "ES_CONFIG: $k applies to Tab5 only; ignored"
+				fi ;;
 			autorun*|auto_reboot)
 				# autorun_* is applied by bootsync's autorun_apply;
 				# auto_reboot is re-read on every save.
