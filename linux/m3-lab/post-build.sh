@@ -180,6 +180,7 @@ if [ -x "${FLTHDR}" ]; then
 	# Small helpers only need BusyBox's floor.
 	for bin in usr/sbin/respawn usr/sbin/mdnsd usr/sbin/run-system \
 		usr/bin/wifi-qr usr/bin/touch-dots \
+		usr/bin/hci-scan usr/bin/hci-adv \
 		usr/bin/pcm-sine; do
 		if [ -f "${TARGET_DIR}/${bin}" ]; then
 			"${FLTHDR}" -s 16384 "${TARGET_DIR}/${bin}"

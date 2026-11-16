@@ -1,0 +1,7 @@
+config BR2_PACKAGE_HCI_TOOLS
+	bool "Tab5 raw-HCI tools (hci-scan/hci-adv)"
+	help
+	  LE passive scanner and advertiser for the C6 hci0 over SDIO
+	  (#34).  BlueZ needs fork() so it cannot build on this NOMMU
+	  target; these two tools speak the raw HCI socket ABI
+	  (AF_BLUETOOTH/HCI_CHANNEL_USER) directly.
