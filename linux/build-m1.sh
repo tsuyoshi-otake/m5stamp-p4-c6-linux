@@ -2505,6 +2505,7 @@ if $lab_profile; then
 		set_config_value "${br_output}/.config" BR2_PACKAGE_TOUCH_DOTS y
 		set_config_value "${br_output}/.config" BR2_PACKAGE_PCM_SINE y
 		set_config_value "${br_output}/.config" BR2_PACKAGE_PCM_REC y
+		set_config_value "${br_output}/.config" BR2_PACKAGE_PCM_PLAY y
 		# Raw-HCI LE scan/advertise tools for the C6 hci0 (#34).
 		set_config_value "${br_output}/.config" BR2_PACKAGE_HCI_TOOLS y
 	else
@@ -2512,6 +2513,7 @@ if $lab_profile; then
 		set_config_value "${br_output}/.config" BR2_PACKAGE_TOUCH_DOTS "# BR2_PACKAGE_TOUCH_DOTS is not set"
 		set_config_value "${br_output}/.config" BR2_PACKAGE_PCM_SINE "# BR2_PACKAGE_PCM_SINE is not set"
 		set_config_value "${br_output}/.config" BR2_PACKAGE_PCM_REC "# BR2_PACKAGE_PCM_REC is not set"
+		set_config_value "${br_output}/.config" BR2_PACKAGE_PCM_PLAY "# BR2_PACKAGE_PCM_PLAY is not set"
 		set_config_value "${br_output}/.config" BR2_PACKAGE_HCI_TOOLS "# BR2_PACKAGE_HCI_TOOLS is not set"
 	fi
 else
@@ -2520,6 +2522,7 @@ else
 	set_config_value "${br_output}/.config" BR2_PACKAGE_TOUCH_DOTS "# BR2_PACKAGE_TOUCH_DOTS is not set"
 	set_config_value "${br_output}/.config" BR2_PACKAGE_PCM_SINE "# BR2_PACKAGE_PCM_SINE is not set"
 	set_config_value "${br_output}/.config" BR2_PACKAGE_PCM_REC "# BR2_PACKAGE_PCM_REC is not set"
+	set_config_value "${br_output}/.config" BR2_PACKAGE_PCM_PLAY "# BR2_PACKAGE_PCM_PLAY is not set"
 	set_config_value "${br_output}/.config" BR2_PACKAGE_HCI_TOOLS "# BR2_PACKAGE_HCI_TOOLS is not set"
 fi
 set_config_value "${br_output}/.config" BR2_ROOTFS_OVERLAY "\"${rootfs_overlay}\""

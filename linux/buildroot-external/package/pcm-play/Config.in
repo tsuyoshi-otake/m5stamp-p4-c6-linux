@@ -1,0 +1,8 @@
+config BR2_PACKAGE_PCM_PLAY
+	bool "Tab5 raw-ioctl file player"
+	help
+	  Plays a raw S16_LE stereo 48 kHz file through
+	  /dev/snd/pcmCND0p using only the SNDRV_PCM ioctl ABI --
+	  the NOMMU-static aplay-file stand-in for the ES8388/I2S0
+	  bring-up (#24).  Streams the file in chunks; pairs with
+	  pcm-rec for record-then-playback checks.

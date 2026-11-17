@@ -16,6 +16,7 @@ source "$BR2_EXTERNAL_STAMP_P4_PATH/package/wifi-qr/Config.in"
 source "$BR2_EXTERNAL_STAMP_P4_PATH/package/touch-dots/Config.in"
 source "$BR2_EXTERNAL_STAMP_P4_PATH/package/pcm-sine/Config.in"
 source "$BR2_EXTERNAL_STAMP_P4_PATH/package/pcm-rec/Config.in"
+source "$BR2_EXTERNAL_STAMP_P4_PATH/package/pcm-play/Config.in"
 source "$BR2_EXTERNAL_STAMP_P4_PATH/package/hci-tools/Config.in"
 
 config BR2_PACKAGE_STAMP_P4_M1

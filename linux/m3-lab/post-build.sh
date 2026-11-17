@@ -181,7 +181,7 @@ if [ -x "${FLTHDR}" ]; then
 	for bin in usr/sbin/respawn usr/sbin/mdnsd usr/sbin/run-system \
 		usr/bin/wifi-qr usr/bin/touch-dots \
 		usr/bin/hci-scan usr/bin/hci-adv \
-		usr/bin/pcm-sine usr/bin/pcm-rec; do
+		usr/bin/pcm-sine usr/bin/pcm-rec usr/bin/pcm-play; do
 		if [ -f "${TARGET_DIR}/${bin}" ]; then
 			"${FLTHDR}" -s 16384 "${TARGET_DIR}/${bin}"
 		fi
