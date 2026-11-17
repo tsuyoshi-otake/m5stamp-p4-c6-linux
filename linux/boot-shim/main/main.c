@@ -46,6 +46,10 @@
 #include "tsens_oracle.h"
 #endif
 
+#ifdef AUDIO_ORACLE
+#include "audio_oracle.h"
+#endif
+
 #ifdef CMD53_RETENTION_BB
 #include "cmd53_bb_boot.h"
 #endif
@@ -890,6 +894,14 @@ void app_main(void)
 	 */
 	static struct tab5_fb s_tab5_fb;
 	tab5_board_init(&s_tab5_fb);
+#ifdef AUDIO_ORACLE
+	/* #24 diagnostic build: IDF i2s_std tone + register dump.  Runs
+	 * while the shim still owns the internal I2C bus (codec 0x10 and
+	 * the SPK_EN latch on expander 0x43 P1 are reachable).  Never in
+	 * release builds. */
+	if (!audio_oracle_run())
+		ESP_LOGW(TAG, "audio oracle reported failure; boot continues");
+#endif
 	#else
 	/* Enable Full-Speed USB OTG (DWC2) for Type-A USB Gadget */
 	usb_otg_init();

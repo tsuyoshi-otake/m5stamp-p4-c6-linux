@@ -1,0 +1,53 @@
+--- a/sound/soc/espressif/esp32-p4-i2s.c
++++ b/sound/soc/espressif/esp32-p4-i2s.c
+@@ -28,6 +28,7 @@
+ #include <linux/io.h>
+ #include <linux/module.h>
+ #include <linux/of.h>
++#include <linux/of_reserved_mem.h>
+ #include <linux/platform_device.h>
+ #include <linux/rcupdate.h>
+ #include <linux/slab.h>
+@@ -628,21 +629,23 @@
+ static int esp32p4_pcm_new(struct snd_soc_component *component,
+ 			   struct snd_soc_pcm_runtime *rtd)
+ {
+-	struct snd_card *card = rtd->card->snd_card;
+ 	struct esp32_p4_i2s *i2s = dev_get_drvdata(component->dev);
+ 	size_t size = 64 * 1024;
+ 
+-	i2s->tx_descs = dmam_alloc_coherent(card->dev,
++	/* Allocate through the i2s device (not the sound-card dev) so
++	 * the reserved SRAM pool bound at probe is what backs the
++	 * descriptor rings and the managed PCM buffer. */
++	i2s->tx_descs = dmam_alloc_coherent(i2s->dev,
+ 				ESP32P4_MAX_DESCS * sizeof(*i2s->tx_descs),
+ 				&i2s->tx_descs_phys, GFP_KERNEL);
+-	i2s->rx_descs = dmam_alloc_coherent(card->dev,
++	i2s->rx_descs = dmam_alloc_coherent(i2s->dev,
+ 				ESP32P4_MAX_DESCS * sizeof(*i2s->rx_descs),
+ 				&i2s->rx_descs_phys, GFP_KERNEL);
+ 	if (!i2s->tx_descs || !i2s->rx_descs)
+ 		return -ENOMEM;
+ 
+ 	snd_pcm_set_managed_buffer_all(rtd->pcm, SNDRV_DMA_TYPE_DEV,
+-				       card->dev, size, size);
++				       i2s->dev, size, size);
+ 	return 0;
+ }
+ 
+@@ -763,6 +766,14 @@
+ 	i2s->dev = &pdev->dev;
+ 	platform_set_drvdata(pdev, i2s);
+ 
++	/* #24/B11: AHB-GDMA retires only rings that live in internal
++	 * SRAM — a PSRAM ring prefetches then parks with zero EOFs
++	 * (verified against an ESP-IDF i2s_std oracle on this board,
++	 * whose descriptors sit at 0x4ff3xxxx).  Bind the reserved
++	 * i2s0-dma SRAM pool so every coherent alloc lands there. */
++	if (of_reserved_mem_device_init(&pdev->dev))
++		dev_warn(&pdev->dev, "no i2s0-dma SRAM pool, DMA may stall\n");
++
+ 	i2s->i2s = devm_platform_ioremap_resource(pdev, 0);
+ 	if (IS_ERR(i2s->i2s))
+ 		return PTR_ERR(i2s->i2s);

@@ -10,6 +10,8 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#include "esp_err.h"
+
 /* Framebuffer handoff for patch_display_window() in main.c. */
 struct tab5_fb {
 	uint32_t pa;
@@ -66,3 +68,16 @@ enum tab5_panel tab5_detect_panel(uint8_t *fw);
  * P5 (TP_RST) stays released so Linux finds it running at 0x55.
  */
 void tab5_i2c_release(void);
+
+/*
+ * AUDIO_ORACLE diagnostic accessors (the oracle build flag is never set
+ * for release shims).  tab5_i2c_bus() returns the live internal-bus
+ * handle (NULL until expanders_init() ran); tab5_speaker_amp_set()
+ * drives expander 0x43 P1 (SPK_EN) with a read-modify-write on OUT_SET
+ * so the other rails keep their levels, and keeps the s_out_set0
+ * last-write shadow in sync for the i2c_release log line.
+ */
+struct i2c_master_bus_t;
+typedef struct i2c_master_bus_t *tab5_i2c_bus_handle_t;
+tab5_i2c_bus_handle_t tab5_i2c_bus(void);
+esp_err_t tab5_speaker_amp_set(bool on);

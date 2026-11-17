@@ -485,6 +485,9 @@
 			espressif,ws-pin = <29>;
 			espressif,dout-pin = <26>;
 			espressif,din-pin = <28>;
+			/* Descriptors + buffers must live in internal SRAM:
+			 * AHB-GDMA cannot retire a PSRAM ring (#24/B11). */
+			memory-region = <&i2s0_dma_sram>;
 			#sound-dai-cells = <0>;
 			status = "okay";
 		};
@@ -808,6 +811,17 @@
 		 */
 		display_fb_res: framebuffer@49fdf000 {
 			reg = <0x49fdf000 0x00001000>;
+			no-map;
+		};
+
+		/* I2S0 TX/RX AHB-GDMA descriptor rings and PCM buffers must
+		 * sit in internal SRAM — the engine never retires a ring
+		 * placed in PSRAM (#24/B11, IDF reference dump).  Upper
+		 * 192 KiB of HP SRAM; low SRAM holds shim leftovers and
+		 * the dsi-scanout LLI (~0x4ff3b500). */
+		i2s0_dma_sram: i2s0-dma@4ff50000 {
+			compatible = "shared-dma-pool";
+			reg = <0x4ff50000 0x00030000>;
 			no-map;
 		};
 	};

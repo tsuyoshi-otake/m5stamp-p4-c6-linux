@@ -684,6 +684,28 @@ void tab5_i2c_release(void)
 		 "left on", out0, (out0 >> 5) & 1, out1, out1 & 1);
 }
 
+tab5_i2c_bus_handle_t tab5_i2c_bus(void)
+{
+	return (tab5_i2c_bus_handle_t)s_i2c_bus;
+}
+
+esp_err_t tab5_speaker_amp_set(bool on)
+{
+	uint8_t out = 0;
+
+	if (!s_exp0)
+		return ESP_ERR_INVALID_STATE;
+	ESP_RETURN_ON_ERROR(expander_read(s_exp0, PI4IO_REG_OUT_SET, &out),
+			    TAG, "spk_en read");
+	if (on)
+		out |= (1u << 1);
+	else
+		out &= (uint8_t)~(1u << 1);
+	ESP_RETURN_ON_ERROR(expander_write(s_exp0, PI4IO_REG_OUT_SET, out),
+			    TAG, "spk_en write");
+	return ESP_OK;
+}
+
 /*
  * microSD slot 0 power: the dedicated pads CLK43 CMD44 D0..3=39..42 are
  * fed by the chip's LDO VO4 rail.  The kernel drives the slot over
