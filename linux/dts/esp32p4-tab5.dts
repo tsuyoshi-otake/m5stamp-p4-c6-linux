@@ -679,9 +679,17 @@
 		 * ES7210 4-channel microphone ADC at 0x40 (#24/B12).
 		 * The Tab5 wires only MIC1/MIC2 (on-board mics AMIC1/
 		 * AMIC2); MIC3 is the headset-mic line (untested, no
-		 * plug available).  The local minimal driver runs it
-		 * as a plain stereo I2S ADC -- no TDM.  Shares the
-		 * ES8388's MCLK.
+		 * plug available).  The local minimal driver powers
+		 * MIC1/MIC2 at probe as a plain stereo I2S ADC.
+		 *
+		 * It is deliberately NOT a card codec: ASoC binds the
+		 * i2s0 component to exactly one card, and a second
+		 * simple-card fails with -19.  It does not need one:
+		 * schematic net I2S_ASDOUT_MISO_GPIO28 is driven only
+		 * by this chip's SDOUT1/TDMOUT pin -- the ES8388's own
+		 * ASDOUT is unwired -- so the playback card's capture
+		 * stream (pcmC0D0c) already reads the mic frames off
+		 * the shared bus.
 		 */
 		es7210: audio-adc@40 {
 			compatible = "everest,es7210";
@@ -813,28 +821,6 @@
 		};
 		simple-audio-card,codec {
 			sound-dai = <&es8388>;
-		};
-	};
-
-	/*
-	 * ES7210 mic capture on the same I2S0 (RX side).  Second
-	 * card so the mics get their own PCM device; I2S0's DAI
-	 * already exposes a capture stream backed by the AHB IN
-	 * channel and the SRAM pool.
-	 */
-	sound-mic {
-		compatible = "simple-audio-card";
-		simple-audio-card,name = "Tab5-ES7210";
-		simple-audio-card,format = "i2s";
-		simple-audio-card,bitclock-master = <&i2s0>;
-		simple-audio-card,frame-master = <&i2s0>;
-		simple-audio-card,mclk-fs = <256>;
-
-		simple-audio-card,cpu {
-			sound-dai = <&i2s0>;
-		};
-		simple-audio-card,codec {
-			sound-dai = <&es7210>;
 		};
 	};
 
