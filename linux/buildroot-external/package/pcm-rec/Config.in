@@ -1,0 +1,8 @@
+config BR2_PACKAGE_PCM_REC
+	bool "Tab5 raw-ioctl recorder"
+	help
+	  Records a few seconds from /dev/snd/pcmCND0c using only the
+	  SNDRV_PCM ioctl ABI -- the NOMMU-static arecord stand-in for
+	  the ES7210/I2S0 mic bring-up (#24/B12).  Includes a Goertzel
+	  analyzer so the speaker->mic loopback tone can be verified
+	  on the board itself.
