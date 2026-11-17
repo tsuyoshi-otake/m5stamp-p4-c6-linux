@@ -97,8 +97,11 @@ int main(int argc, char **argv)
 		 SNDRV_PCM_SUBFORMAT_STD);
 	ivl_set(&IVL(p, SNDRV_PCM_HW_PARAM_CHANNELS), 2);
 	ivl_set(&IVL(p, SNDRV_PCM_HW_PARAM_RATE), rate);
-	ivl_set(&IVL(p, SNDRV_PCM_HW_PARAM_PERIOD_TIME), 50000);
-	ivl_set(&IVL(p, SNDRV_PCM_HW_PARAM_PERIODS), 4);
+	/* The RX path closes a descriptor per period and the i2s
+	 * eof_num field is 12 bits, so capture periods must stay
+	 * under 4092 B -- 10 ms at 48 kHz stereo is 3840 B. */
+	ivl_set(&IVL(p, SNDRV_PCM_HW_PARAM_PERIOD_TIME), 10000);
+	ivl_set(&IVL(p, SNDRV_PCM_HW_PARAM_PERIODS), 8);
 	p->rmask = ~0U;
 	p->cmask = 0;
 

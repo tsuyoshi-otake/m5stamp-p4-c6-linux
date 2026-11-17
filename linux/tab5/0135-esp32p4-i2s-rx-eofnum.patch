@@ -1,0 +1,51 @@
+--- a/sound/soc/espressif/esp32-p4-i2s.c	2026-11-17 04:21:29.119484448 +0000
++++ b/sound/soc/espressif/esp32-p4-i2s.c	2026-11-17 04:21:29.099484318 +0000
+@@ -148,7 +148,7 @@
+ /* AHB_*_CONF0 bits */
+ #define AHB_IN_RST		BIT(0)
+ #define AHB_IN_DATA_BURST_EN	BIT(3)
+-#define AHB_MEM_TRANS_EN	BIT(4)
++#define AHB_IN_DSCR_BURST_EN	BIT(4)
+ #define AHB_OUT_RST		BIT(0)
+ #define AHB_OUT_AUTO_WRBACK	BIT(2)
+ #define AHB_OUT_EOF_MODE	BIT(3)
+@@ -416,6 +416,8 @@
+ 	if (!descs)
+ 		return -ENOMEM;
+ 	i2s->period_bytes = pbytes;
++	if (!tx)
++		i2s_wr(i2s, I2S_RXEOF_NUM, pbytes);
+ 
+ 	for (i = 0; i < periods; i++) {
+ 		u32 off = 0;
+@@ -426,7 +428,7 @@
+ 			descs[d].dw0 = LLDESC_OWNER |
+ 				       (len << LLDESC_SIZE_S) |
+ 				       (len << LLDESC_LENGTH_S);
+-			if (j == chunks - 1)
++			if (j == chunks - 1 || !tx)
+ 				descs[d].dw0 |= LLDESC_EOF;
+ 			descs[d].buf = buf + i * pbytes + off;
+ 			descs[d].next = descs_phys +
+@@ -468,7 +470,7 @@
+ 	} else {
+ 		ch = AHB_CH_IN(i2s->rx_chan);
+ 		dma_wr(i2s, ch + AHB_CONF0, AHB_IN_RST);
+-		dma_wr(i2s, ch + AHB_CONF0, AHB_IN_DATA_BURST_EN);
++		dma_wr(i2s, ch + AHB_CONF0, AHB_IN_DATA_BURST_EN | AHB_IN_DSCR_BURST_EN);
+ 		dma_wr(i2s, ch + AHB_PERI_SEL, i2s->peri);
+ 		dma_wr(i2s, AHB_IN_LINK_ADDR(i2s->rx_chan),
+ 		       i2s->rx_descs_phys);
+@@ -681,6 +683,12 @@
+ 	struct snd_pcm_runtime *runtime = substream->runtime;
+ 
+ 	snd_soc_set_runtime_hwparams(substream, &esp32p4_pcm_hardware);
++	/* RX descriptors are closed by the I2S eof_num counter, a 12-bit
++	 * field: one period must fit in a single lldesc.  Keep capture
++	 * periods under LLDESC_MAX_BYTES; playback can span descs. */
++	if (substream->stream == SNDRV_PCM_STREAM_CAPTURE)
++		snd_pcm_hw_constraint_minmax(runtime, SNDRV_PCM_HW_PARAM_PERIOD_BYTES,
++					   64, LLDESC_MAX_BYTES);
+ 	return 0;
+ }
+ 
