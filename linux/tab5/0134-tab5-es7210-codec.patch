@@ -76,7 +76,12 @@
 +	{ 0x22, 0x0a },
 +	{ 0x20, 0x0a },		/* ADC34 HPF */
 +	{ 0x21, 0x2a },
-+	{ 0x08, 0x00 },		/* slave mode */
++	{ 0x08, 0x10 },		/* slave mode + keep bit4 set: the
++				   esp_codec_dev flow only updates
++				   bit0 (slave), leaving the chip's
++				   post-reset bit4=1; forcing the byte
++				   to 0x00 makes SDOUT emit one stereo
++				   pair per ~16 frames (B17 RX gate) */
 +	{ 0x40, 0x43 },		/* analog on, VDDA 3.3 V, VMID 5k */
 +	{ 0x41, 0x70 },		/* MIC12 bias ~2.87 V */
 +	{ 0x42, 0x70 },		/* MIC34 bias ~2.87 V */
