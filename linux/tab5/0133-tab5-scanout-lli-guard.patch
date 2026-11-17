@@ -48,7 +48,7 @@
  	int irq, ret;
  
  	s = devm_kzalloc(&pdev->dev, sizeof(*s), GFP_KERNEL);
-@@ -162,6 +187,21 @@
+@@ -162,6 +187,20 @@
  		return -ENODEV;
  	}
  
