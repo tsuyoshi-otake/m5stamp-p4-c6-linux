@@ -34,7 +34,7 @@ Checked on a Tab5 (ESP32-P4 rev v1.3, ST7121 panel). The checks for the v0.6.0 r
 | IMU | BMI270 (I2C 0x68) is `iio:device0`; flat on a desk it reads about 1 g on Z (#26). |
 | RTC | RX8130CE at I2C **0x32** is `/dev/rtc0`. The clock is restored from it at boot and written back after NTP. After 11 minutes with the power off it was within one second of the PC's clock (#28). |
 | USB-A host | The HS USB 2.0 controller (DWC2) runs as a host on the USB-A port: a USB flash drive enumerated as `/dev/sda` and read back (#30). |
-| microSD | The slot works over SPI (`spi-esp32p4-fastbb` + `mmc_spi`): a 32 GB SDHC card shows up as `mmcblk0` with its partition and reads back. FAT and ext2 mount; NTFS does not. About 98 KB/s read — the bit-bang pins are poked by direct GPIO MMIO and each transfer runs inline instead of on a kworker, ~3.3× the old `spi-gpio` path (#29). |
+| microSD | The slot works over SPI (`spi-esp32p4-fastbb` + `mmc_spi`): a 32 GB SDHC card shows up as `mmcblk0` with its partition and reads back. The kernel reads FAT and ext2 but not NTFS; the card tested was NTFS, so mounting has not been tried. About 98 KB/s read — the bit-bang pins are poked by direct GPIO MMIO and each transfer runs inline instead of on a kworker, ~3.3× the old `spi-gpio` path (#29). |
 | Bluetooth | The C6 advertises BLE over SDIO and the kernel registers `hci0`; `hci-scan`/`hci-adv` verified it on air against a PC (#34). |
 | MicroPython | `python3` runs (v1.22.2). |
 | Memory | The NOMMU user pool grew by 8 KB over a 32 minute soak. A leak in `bootsyncd` that exhausted the pool within hours on this board is fixed (#3). |
