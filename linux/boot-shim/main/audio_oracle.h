@@ -20,3 +20,13 @@
  * continues -- this is a diagnostic, not a contract).
  */
 bool audio_oracle_run(void);
+
+/*
+ * ES7210 capture reference: opens the ADC with the exact
+ * esp_codec_dev register flow the M5 BSP uses (all four mics, TDM
+ * mode, 30 dB gain), reads ~1 s of TDM RX on the BSP's duplex channel
+ * layout, prints RMS/peak/nonzero sample counts, then dumps the ES7210
+ * register file plus the same I2S0/GDMA/GPIO window as the tone dump.
+ * Returns false when no nonzero samples arrive.
+ */
+bool audio_oracle_mic_run(void);

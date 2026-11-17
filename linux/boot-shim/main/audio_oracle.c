@@ -21,6 +21,7 @@
 #include "esp_log.h"
 #include "driver/i2c_master.h"
 #include "driver/i2s_std.h"
+#include "driver/i2s_tdm.h"
 #include "driver/i2s_types.h"
 #include "tab5_board.h"
 #include "audio_oracle.h"
@@ -216,9 +217,24 @@ static esp_err_t es8388_init_playback(i2c_master_bus_handle_t bus,
 	return ESP_OK;
 }
 
+static int16_t sine[CHUNK_FRAMES * 2]; /* stereo frames, L=R */
+
+/* One 480-frame chunk = 10 periods of 1 kHz at 48 kHz stereo. */
+static void fill_sine(void)
+{
+	uint32_t i;
+	for (i = 0u; i < CHUNK_FRAMES; ++i) {
+		float s = sinf(2.0f * 3.14159265358979f *
+			       (float)(i % FRAMES_PER_PERIOD) /
+			       (float)FRAMES_PER_PERIOD);
+		int16_t v = (int16_t)(s * (float)SINE_AMPLITUDE);
+		sine[i * 2u] = v;
+		sine[i * 2u + 1u] = v;
+	}
+}
+
 bool audio_oracle_run(void)
 {
-	static int16_t sine[CHUNK_FRAMES * 2]; /* stereo frames, L=R */
 	i2c_master_bus_handle_t bus;
 	i2c_master_dev_handle_t codec = NULL;
 	i2s_chan_handle_t tx = NULL;
@@ -234,15 +250,7 @@ bool audio_oracle_run(void)
 		return false;
 	}
 
-	/* One 480-frame chunk = 10 periods of 1 kHz at 48 kHz stereo. */
-	for (i = 0u; i < CHUNK_FRAMES; ++i) {
-		float s = sinf(2.0f * 3.14159265358979f *
-			       (float)(i % FRAMES_PER_PERIOD) /
-			       (float)FRAMES_PER_PERIOD);
-		int16_t v = (int16_t)(s * (float)SINE_AMPLITUDE);
-		sine[i * 2u] = v;
-		sine[i * 2u + 1u] = v;
-	}
+	fill_sine();
 
 	if (es8388_init_playback(bus, &codec) != ESP_OK) {
 		ESP_LOGE(TAG, "es8388 init failed; oracle skipped");
@@ -312,5 +320,274 @@ out:
 	(void)tab5_speaker_amp_set(false);
 	(void)i2c_master_bus_rm_device(codec);
 	ESP_LOGI(TAG, "AUDIO_ORACLE %s", ok ? "done" : "FAILED");
+	return ok;
+}
+
+/* ------------------------------------------------------------------ */
+/* ES7210 microphone capture reference (#24).  Same transcription rule
+ * as the ES8388 table above: this is esp_codec_dev's es7210_open() +
+ * es7210_set_fs() + es7210_enable(true) register flow from
+ * device/es7210/es7210.c in esp-adf, run over the BSP's exact channel
+ * layout from M5Tab5-UserDemo's m5stack_tab5.c (TX std Philips 16-bit
+ * mono, RX TDM 4-slot stereo 16-bit @ 48 kHz, mclk_multiple 256,
+ * bclk_div 8, all four MIC inputs selected, fs = 48 kHz/4ch/16bit). */
+#define ES7210_ADDR 0x40u
+#define MIC_CHUNK_BYTES 8192u
+#define MIC_CHUNKS 12u /* ~1 s of 48 kHz stereo 16-bit */
+
+static i2c_master_dev_handle_t s_adc;
+
+static esp_err_t es7210_w(uint8_t reg, uint8_t val)
+{
+	uint8_t buf[2] = { reg, val };
+	return i2c_master_transmit(s_adc, buf, sizeof(buf), 100);
+}
+
+static esp_err_t es7210_r(uint8_t reg, uint8_t *val)
+{
+	return i2c_master_transmit_receive(s_adc, &reg, 1, val, 1, 100);
+}
+
+static esp_err_t es7210_u(uint8_t reg, uint8_t mask, uint8_t data)
+{
+	uint8_t v = 0;
+	esp_err_t e = es7210_r(reg, &v);
+	if (e != ESP_OK)
+		return e;
+	return es7210_w(reg, (uint8_t)((v & ~mask) | (mask & data)));
+}
+
+/* es7210_select_mics(0x0F): enable all four ADC front-ends like the BSP. */
+static void es7210_select_mics_all(void)
+{
+	uint8_t i;
+	for (i = 0; i < 4u; ++i)
+		es7210_u((uint8_t)(0x43u + i), 0x10, 0x00);
+	es7210_w(0x4b, 0xff);
+	es7210_w(0x4c, 0xff);
+	es7210_u(0x01, 0x0b, 0x00);
+	es7210_w(0x4b, 0x00);
+	es7210_u(0x43, 0x10, 0x10); /* MIC1 */
+	es7210_u(0x01, 0x0b, 0x00);
+	es7210_w(0x4b, 0x00);
+	es7210_u(0x44, 0x10, 0x10); /* MIC2 */
+	es7210_u(0x01, 0x15, 0x00);
+	es7210_w(0x4c, 0x00);
+	es7210_u(0x45, 0x10, 0x10); /* MIC3 */
+	es7210_u(0x01, 0x15, 0x00);
+	es7210_w(0x4c, 0x00);
+	es7210_u(0x46, 0x10, 0x10); /* MIC4 */
+}
+
+static void dump_es7210_regs(void)
+{
+	uint8_t reg, v;
+	ESP_LOGI(TAG, "=== ES7210 register dump ===");
+	for (reg = 0x00; reg <= 0x4f; ++reg) {
+		v = 0;
+		if (es7210_r(reg, &v) == ESP_OK)
+			ESP_LOGI(TAG, "ES7210 0x%02x = 0x%02x", reg, v);
+		else
+			ESP_LOGW(TAG, "ES7210 0x%02x read failed", reg);
+	}
+	ESP_LOGI(TAG, "=== ES7210 dump end ===");
+}
+
+bool audio_oracle_mic_run(void)
+{
+	static int16_t micbuf[MIC_CHUNK_BYTES / 2];
+	i2c_master_bus_handle_t bus;
+	i2s_chan_handle_t tx = NULL, rx = NULL;
+	uint8_t off_reg = 0;
+	esp_err_t err;
+	size_t got;
+	uint64_t sumsq = 0;
+	int32_t peak = 0, nonzero = 0, samples = 0;
+	uint32_t i;
+	uint8_t i2;
+	bool ok = false;
+
+	bus = tab5_i2c_bus();
+	if (!bus) {
+		ESP_LOGE(TAG, "internal i2c bus is not up; mic oracle skipped");
+		return false;
+	}
+
+	/* es7210_open() register flow. */
+	{
+		i2c_device_config_t dev_cfg = {
+			.dev_addr_length = I2C_ADDR_BIT_LEN_7,
+			.device_address = ES7210_ADDR,
+			.scl_speed_hz = 400000u,
+		};
+		err = i2c_master_bus_add_device(bus, &dev_cfg, &s_adc);
+		if (err != ESP_OK) {
+			ESP_LOGE(TAG, "es7210 i2c attach failed: %s",
+				 esp_err_to_name(err));
+			return false;
+		}
+	}
+	es7210_w(0x00, 0xff);
+	es7210_w(0x00, 0x41);
+	es7210_w(0x01, 0x3f);
+	es7210_w(0x09, 0x30);
+	es7210_w(0x0a, 0x30);
+	es7210_w(0x23, 0x2a);
+	es7210_w(0x22, 0x0a);
+	es7210_w(0x20, 0x0a);
+	es7210_w(0x21, 0x2a);
+	es7210_u(0x08, 0x01, 0x00); /* slave mode */
+	es7210_w(0x40, 0x43);
+	es7210_w(0x41, 0x70);
+	es7210_w(0x42, 0x70);
+	es7210_w(0x07, 0x20);
+	es7210_w(0x02, 0xc1);
+	es7210_select_mics_all();
+	for (i2 = 0; i2 < 4u; ++i2) /* set_channel_gain(0x0F, 30 dB) */
+		es7210_u((uint8_t)(0x43u + i2), 0x0f, 0x0a);
+	es7210_w(0x12, 0x00); /* non-TDM stereo (matches std-RX frame) */
+	es7210_r(0x01, &off_reg);
+	ESP_LOGI(TAG, "es7210 open done; off_reg=0x%02x", off_reg);
+
+	/* es7210_set_fs(48000, 4ch, 16bit): bits=16 -> 0x11 |= 0x60,
+	 * fmt NORMAL -> 0x11 &= ~0x03.  Slave: rate table skipped. */
+	es7210_u(0x11, 0xe3, 0x60);
+
+	/* BSP channel layout: one channel, TX std mono + RX TDM4. */
+	{
+		i2s_chan_config_t chan_cfg =
+			I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
+		chan_cfg.auto_clear = true;
+		err = i2s_new_channel(&chan_cfg, &tx, &rx);
+		if (err != ESP_OK) {
+			ESP_LOGE(TAG, "i2s_new_channel: %s",
+				 esp_err_to_name(err));
+			goto out;
+		}
+	}
+	{
+		i2s_std_config_t std_cfg = {
+			.clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(48000),
+			.slot_cfg = {
+				.data_bit_width = I2S_DATA_BIT_WIDTH_16BIT,
+				.slot_bit_width = I2S_SLOT_BIT_WIDTH_AUTO,
+				.slot_mode = I2S_SLOT_MODE_STEREO,
+				.slot_mask = I2S_STD_SLOT_BOTH,
+				.ws_width = I2S_DATA_BIT_WIDTH_16BIT,
+				.ws_pol = false,
+				.bit_shift = true,
+				.left_align = true,
+				.big_endian = false,
+				.bit_order_lsb = false,
+			},
+			.gpio_cfg = {
+				.mclk = PIN_MCLK,
+				.bclk = PIN_BCK,
+				.ws = PIN_WS,
+				.dout = PIN_DOUT,
+				.din = PIN_DIN,
+				.invert_flags = {
+					.mclk_inv = false,
+					.bclk_inv = false,
+					.ws_inv = false,
+				},
+			},
+		};
+		/* Experiment: std stereo RX shares TX's 32-BCK frame
+		 * exactly (TDM4 RX never completed a frame on the
+		 * 32-BCK WS cadence -> read timeout). */
+		i2s_std_config_t rx_std = std_cfg;
+		rx_std.gpio_cfg.dout = GPIO_NUM_NC;
+		rx_std.gpio_cfg.din = PIN_DIN;
+		err = i2s_channel_init_std_mode(tx, &std_cfg);
+		if (err == ESP_OK)
+			err = i2s_channel_init_std_mode(rx, &rx_std);
+		if (err == ESP_OK) {
+			/* TX has TX_STOP_EN: an underrun kills the shared
+			 * BCK/WS and starves RX.  Preload the sine backlog
+			 * before TX starts so it never runs dry. */
+			size_t loaded = 0;
+			fill_sine();
+			err = i2s_channel_preload_data(tx, sine, sizeof(sine),
+						       &loaded);
+			ESP_LOGI(TAG, "tx preload: %u bytes", (unsigned)loaded);
+		}
+		if (err == ESP_OK)
+			err = i2s_channel_enable(tx);
+		if (err == ESP_OK)
+			err = i2s_channel_enable(rx);
+		if (err != ESP_OK) {
+			ESP_LOGE(TAG, "i2s duplex setup failed: %s",
+				 esp_err_to_name(err));
+			goto out;
+		}
+	}
+
+	/* es7210_enable(true): start(off_reg) then unmute all four. */
+	es7210_w(0x01, off_reg);
+	es7210_w(0x06, 0x00);
+	es7210_w(0x40, 0x43);
+	es7210_w(0x47, 0x08);
+	es7210_w(0x48, 0x08);
+	es7210_w(0x49, 0x08);
+	es7210_w(0x4a, 0x08);
+	es7210_select_mics_all();
+	es7210_w(0x40, 0x43);
+	es7210_w(0x00, 0x71);
+	es7210_w(0x00, 0x41);
+	es7210_u(0x15, 0x03, 0x00); /* ADC12 unmute */
+	es7210_u(0x14, 0x03, 0x00); /* ADC34 unmute */
+
+	/* Full-duplex RX shares TX's BCK/WS (sig_loopback).  Keep TX
+	 * fed so its clock generator never underruns while recording
+	 * -- this doubles as the mic loopback. */
+	if (tab5_speaker_amp_set(true) != ESP_OK)
+		ESP_LOGW(TAG, "speaker amp enable failed; loopback quiet");
+	for (i = 0; i < MIC_CHUNKS; ++i) {
+		uint32_t n, w;
+		for (w = 0; w < 6u; ++w) { /* ~60 ms TX per ~43 ms read */
+			size_t wrote = 0;
+			(void)i2s_channel_write(tx, sine, sizeof(sine),
+						&wrote, 200);
+		}
+		err = i2s_channel_read(rx, micbuf, sizeof(micbuf), &got, 1000);
+		if (err != ESP_OK) {
+			ESP_LOGE(TAG, "i2s read chunk %" PRIu32 ": %s", i,
+				 esp_err_to_name(err));
+			break;
+		}
+		for (n = 0; n < got / 2u; ++n) {
+			int32_t v = micbuf[n];
+			if (v != 0)
+				nonzero++;
+			if (v < 0)
+				v = -v;
+			if (v > peak)
+				peak = v;
+			sumsq += (uint64_t)micbuf[n] * (uint64_t)micbuf[n];
+		}
+		samples += (int32_t)(got / 2u);
+		if (i == 0u)
+			ESP_LOGI(TAG, "first samples: %d %d %d %d %d %d %d %d",
+				 micbuf[0], micbuf[1], micbuf[2], micbuf[3],
+				 micbuf[4], micbuf[5], micbuf[6], micbuf[7]);
+	}
+	ESP_LOGI(TAG,
+		 "MIC capture: %" PRIi32 " samples, %" PRIi32 " nonzero, peak %" PRIi32
+		 ", rms2=%llu",
+		 samples, nonzero, peak,
+		 samples ? (unsigned long long)(sumsq / (uint64_t)samples) : 0ull);
+	dump_regs();
+	dump_es7210_regs();
+	ok = (nonzero > 0);
+
+	(void)tab5_speaker_amp_set(false);
+	i2s_channel_disable(tx);
+	i2s_channel_disable(rx);
+	i2s_del_channel(tx);
+	i2s_del_channel(rx);
+out:
+	(void)i2c_master_bus_rm_device(s_adc);
+	ESP_LOGI(TAG, "AUDIO_ORACLE mic %s", ok ? "done (nonzero)" : "FAILED (all-zero)");
 	return ok;
 }

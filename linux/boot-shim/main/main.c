@@ -899,8 +899,12 @@ void app_main(void)
 	 * while the shim still owns the internal I2C bus (codec 0x10 and
 	 * the SPK_EN latch on expander 0x43 P1 are reachable).  Never in
 	 * release builds. */
+#ifndef AUDIO_ORACLE_MIC_ONLY
 	if (!audio_oracle_run())
 		ESP_LOGW(TAG, "audio oracle reported failure; boot continues");
+#endif
+	if (!audio_oracle_mic_run())
+		ESP_LOGW(TAG, "mic oracle reported failure; boot continues");
 #endif
 	#else
 	/* Enable Full-Speed USB OTG (DWC2) for Type-A USB Gadget */
