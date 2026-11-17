@@ -42,7 +42,7 @@
       "0x10": "ES8388 audio codec (speaker path)",
       "0x28": "unidentified (seen in stock scan)",
       "0x32": "unidentified (seen in stock scan; possibly PMIC/charger, inferred)",
-      "0x36": "camera SCCB (SC202CS/SC2356, inferred)",
+      "0x36": "camera SCCB — VERIFIED on board: chip-ID 0xeb52 (= SC202CS; M5 ships the register-compatible SC2356), appears only after CAM_RST (0x43 P6) high; 1-lane CSI, fixed 24MHz XCLK osc, GPIO36 unconnected",
       "0x40": "ES7210 4-mic ADC",
       "0x41": "INA226 power monitor",
       "0x43": "PI4IOE5V6408 IO expander 0",
