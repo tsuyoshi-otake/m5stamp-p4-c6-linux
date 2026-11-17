@@ -1,0 +1,138 @@
+--- a/sound/soc/espressif/esp32-p4-i2s.c
++++ b/sound/soc/espressif/esp32-p4-i2s.c
+@@ -24,6 +24,8 @@
+ #include <linux/dma-map-ops.h>
+ #include <linux/dma-mapping.h>
+ #include <linux/err.h>
++#include <linux/gcd.h>
++#include <linux/math64.h>
+ #include <linux/interrupt.h>
+ #include <linux/io.h>
+ #include <linux/module.h>
+@@ -211,9 +213,13 @@
+ #define I2S0_O_WS		27
+ #define I2S0_SD			28	/* I_SD_PAD_IN / O_SD_PAD_OUT */
+ 
+-/* module clock: PLL_160M / 13 = 12.307 MHz, close to 256*48k */
+-#define ESP32P4_MOD_DIV		13
+-#define ESP32P4_MOD_CLK		(160000000UL / ESP32P4_MOD_DIV)
++/* Module clock source: XTAL 40 MHz (TX/RX_CLK_SRC_SEL=0), the
++ * source the IDF oracle uses.  The fractional divider in
++ * CTRL12-14 is programmed per stream rate to rate*256 Hz
++ * (12.288 MHz at 48 kHz), matching the oracle dump
++ * (CTRL13=0x406400, CTRL14=0x8622d). */
++#define ESP32P4_I2S_SCLK	40000000UL
++#define ESP32P4_I2S_FRACT_MAX	512	/* 9-bit frac divider fields */
+ #define ESP32P4_MAX_DESCS	32
+ 
+ struct esp32_p4_i2s {
+@@ -307,21 +313,16 @@
+ 	clkrst_set(i2s, CLKRST_HP_RST_EN2,
+ 		   BIT(CLKRST_I2S_RST_APB_S + u), 0);
+ 
+-	/* module clocks: src_sel 1 = PLL_160M, integer div n in the
+-	 * companion reg.  Only i2s0 is wired; other units need their
+-	 * own CTRL reg mapping. */
++	/* module clocks: src_sel 0 = XTAL_40M (the IDF oracle
++	 * source).  Dividers are programmed per stream rate in
++	 * esp32p4_i2s_set_mclk(); only i2s0 is wired. */
+ 	if (u == 0) {
+ 		clkrst_set(i2s, CLKRST_PERI_CLK_CTRL11,
+ 			   CLKRST_RX_CLK_EN | (3 << CLKRST_RX_CLK_SRC_S),
+-			   CLKRST_RX_CLK_EN | (1 << CLKRST_RX_CLK_SRC_S));
+-		writel(ESP32P4_MOD_DIV,
+-		       i2s->clkrst + CLKRST_PERI_CLK_CTRL12);
++			   CLKRST_RX_CLK_EN);
+ 		clkrst_set(i2s, CLKRST_PERI_CLK_CTRL13,
+ 			   CLKRST_TX_CLK_EN | (3 << CLKRST_TX_CLK_SRC_S),
+-			   CLKRST_TX_CLK_EN | (1 << CLKRST_TX_CLK_SRC_S));
+-		/* tx divider + bind mclk to the tx module clock */
+-		writel(ESP32P4_MOD_DIV | CLKRST_MST_CLK_SEL,
+-		       i2s->clkrst + CLKRST_PERI_CLK_CTRL14);
++			   CLKRST_TX_CLK_EN);
+ 	}
+ 	writel(readl(i2s->lpclkrst + LP_HP_CLK_CTRL) | LP_PAD_I2S0_MCLK_EN,
+ 	       i2s->lpclkrst + LP_HP_CLK_CTRL);
+@@ -490,6 +491,63 @@
+ 	}
+ }
+ 
++/* Program the i2s0 module clock to rate*256 Hz from XTAL 40 MHz
++ * using the same fractional-division scheme as IDF
++ * i2s_hal_calc_mclk_precise_division(): sclk/mclk = n + num/den,
++ * hardware-encoded as x = den/z - 1, y = den % z,
++ * z = num (or den - num when the fraction rounds up, yn1 = 1).
++ * Returns the achieved module clock in Hz. */
++static u32 esp32p4_i2s_set_mclk(struct esp32_p4_i2s *i2s,
++			      unsigned int rate, bool tx)
++{
++	u32 mclk = rate * 256, n, x = 0, y = 0, z = 0, yn1 = 0;
++	u32 err, g, den = 0, num = 0, d;
++
++	n = ESP32P4_I2S_SCLK / mclk;
++	err = ESP32P4_I2S_SCLK % mclk;
++	if (err && err < mclk - mclk / (ESP32P4_I2S_FRACT_MAX - 1) * 2) {
++		g = gcd(mclk, err);
++		den = mclk / g;
++		num = err / g;
++		d = den / ESP32P4_I2S_FRACT_MAX + 1;
++		den /= d;
++		num /= d;
++		if (den && num) {
++			yn1 = num * 2 > den;
++			z = yn1 ? den - num : num;
++			x = den / z - 1;
++			y = den % z;
++		}
++	} else if (err) {
++		n++;
++	}
++
++	if (tx) {
++		/* CTRL13: tx clk_en + src=0, div n[20:13] x[29:21];
++		 * CTRL14: y[8:0] z[17:9] yn1[18] mst_sel[19] */
++		clkrst_set(i2s, CLKRST_PERI_CLK_CTRL13,
++			   (0xff << 13) | (0x1ff << 21) |
++			   CLKRST_TX_CLK_EN | (3 << CLKRST_TX_CLK_SRC_S),
++			   (n << 13) | (x << 21) | CLKRST_TX_CLK_EN);
++		writel(y | (z << 9) | (yn1 << 18) | CLKRST_MST_CLK_SEL,
++		       i2s->clkrst + CLKRST_PERI_CLK_CTRL14);
++	} else {
++		/* CTRL12: rx div n[7:0] x[16:8] y[25:17];
++		 * CTRL13 low bits: rx z[8:0] yn1[9] */
++		writel(n | (x << 8) | (y << 17),
++		       i2s->clkrst + CLKRST_PERI_CLK_CTRL12);
++		clkrst_set(i2s, CLKRST_PERI_CLK_CTRL13, 0x3ff,
++			   z | (yn1 << 9));
++	}
++
++	/* 64/32 divide must go through div64_u64: a plain u64 division
++	 * lowers to __udivdi3, whose PLT slot resolves to a data
++	 * address on this NOMMU kernel (wild branch -> oops). */
++	return num ? (u32)DIV64_U64_ROUND_CLOSEST(
++			mul_u32_u32(ESP32P4_I2S_SCLK, den), n * den + num)
++		   : ESP32P4_I2S_SCLK / n;
++}
++
+ static int esp32p4_pcm_hw_params(struct snd_soc_component *component,
+ 				 struct snd_pcm_substream *substream,
+ 				 struct snd_pcm_hw_params *params)
+@@ -655,7 +713,7 @@
+ {
+ 	struct esp32_p4_i2s *i2s = dev_get_drvdata(dai->dev);
+ 	unsigned int data_bits, chan_bits, bck_div;
+-	u32 conf, conf1;
++	u32 conf, conf1, mclk;
+ 	bool tx = substream->stream == SNDRV_PCM_STREAM_PLAYBACK;
+ 
+ 	switch (params_format(params)) {
+@@ -677,7 +735,8 @@
+ 	 * is programmed as div-1 (IDF writes 7 for a divide by 8), so
+ 	 * bck_div is the real divisor and the register stores it - 1. */
+ 	chan_bits = data_bits;
+-	bck_div = DIV_ROUND_CLOSEST(ESP32P4_MOD_CLK,
++	mclk = esp32p4_i2s_set_mclk(i2s, params_rate(params), tx);
++	bck_div = DIV_ROUND_CLOSEST(mclk,
+ 			params_rate(params) * params_channels(params) *
+ 			chan_bits);
+ 	if (!bck_div || bck_div > 63)
