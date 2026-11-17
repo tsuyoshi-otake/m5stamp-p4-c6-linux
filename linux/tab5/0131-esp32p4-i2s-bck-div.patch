@@ -1,0 +1,33 @@
+--- a/sound/soc/espressif/esp32-p4-i2s.c
++++ b/sound/soc/espressif/esp32-p4-i2s.c
+@@ -654,7 +654,7 @@
+ 				 struct snd_soc_dai *dai)
+ {
+ 	struct esp32_p4_i2s *i2s = dev_get_drvdata(dai->dev);
+-	unsigned int data_bits, chan_bits = 32, bck_div;
++	unsigned int data_bits, chan_bits, bck_div;
+ 	u32 conf, conf1;
+ 	bool tx = substream->stream == SNDRV_PCM_STREAM_PLAYBACK;
+ 
+@@ -671,6 +671,12 @@
+ 	default:
+ 		return -EINVAL;
+ 	}
++	/* Slot width follows the data width, as IDF i2s_std does (its
++	 * confirmed-good state runs 16-bit slots, not 32): HALF_SAMPLE
++	 * _BITS/TDM_CHAN_BITS=15 in the oracle dump.  The BCK_DIV field
++	 * is programmed as div-1 (IDF writes 7 for a divide by 8), so
++	 * bck_div is the real divisor and the register stores it - 1. */
++	chan_bits = data_bits;
+ 	bck_div = DIV_ROUND_CLOSEST(ESP32P4_MOD_CLK,
+ 			params_rate(params) * params_channels(params) *
+ 			chan_bits);
+@@ -680,7 +686,7 @@
+ 	/* std/philips on P4 runs the TDM engine with 2 slots;
+ 	 * msb_shift gives the 1-BCK data delay I2S expects. */
+ 	conf = I2S_TDM_EN | I2S_MSB_SHIFT;
+-	conf |= (bck_div << I2S_BCK_DIV_NUM_S) & I2S_BCK_DIV_NUM_M;
++	conf |= ((bck_div - 1) << I2S_BCK_DIV_NUM_S) & I2S_BCK_DIV_NUM_M;
+ 	/* conf is a full-register store, so every field not named
+ 	 * drops to 0 -- including several whose reset default is 1
+ 	 * and that the IDF std path leaves untouched: PCM_BYPASS
