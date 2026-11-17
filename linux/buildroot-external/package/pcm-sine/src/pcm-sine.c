@@ -137,30 +137,51 @@ int main(int argc, char **argv)
 	}
 
 	frames = (long)(rate * seconds);
+	/* Exact one-period table: for integer f, the tone repeats every
+	 * rate/gcd(f, rate) samples (440 -> 1200, 1000 -> 48), so one
+	 * short sin() pass yields a sample-exact loop.  The recursive
+	 * quadrature oscillator replaced in B15 had no such guarantee:
+	 * its amplitude is 1/sin(w) (~17x at 440 Hz) -> int16 wrap, and
+	 * a partial WRITEI desynced the state from the play position.
+	 * pos tracks consumed frames so partial writes stay seamless. */
+	unsigned fi = (unsigned)lrint(freq);
+	unsigned g, period, i;
+	long pos = 0;
+	int16_t *tab;
+	if (!fi)
+		fi = 1;
+	g = fi;
+	{
+		unsigned h = rate, t;
+		while (h) {
+			t = g % h;
+			g = h;
+			h = t;
+		}
+	}
+	period = rate / g;
+	if (period > rate)
+		period = rate;
+	tab = malloc(period * sizeof(int16_t));
 	buf = malloc(960 * 2 * sizeof(int16_t));
-	if (!buf) {
+	if (!tab || !buf) {
 		fprintf(stderr, "malloc failed\n");
 		return 1;
 	}
-	/* Generate on the fly, one 10 ms chunk per write: a full-buffer
-	 * sin() precompute costs ~1.5 s on this soft-float core before
-	 * the first sample reaches the DAC (#B14 playback-onset lag).
-	 * A quadrature oscillator (a few flops/sample) keeps real time. */
-	double w = 2.0 * M_PI * freq / rate;
-	double os = 0.0, oc = 1.0, wr = 2.0 * cos(w);
+	for (i = 0; i < period; i++) {
+		long v = lrint(12000.0 * sin(2.0 * M_PI * fi * i / rate));
+		tab[i] = v > 32767 ? 32767 : v < -32768 ? -32768 : v;
+	}
 
 	while (done < frames) {
 		static int stall;
 		long want = frames - done;
 		if (want > 960)
 			want = 960;
-		for (long i = 0; i < want; i++) {
-			double t = wr * oc - os;
-			os = oc;
-			oc = t;
-			int16_t v = (int16_t)(12000.0 * os);
-			buf[2 * i] = v;
-			buf[2 * i + 1] = v;
+		for (long j = 0; j < want; j++) {
+			int16_t v = tab[(pos + j) % period];
+			buf[2 * j] = v;
+			buf[2 * j + 1] = v;
 		}
 		xf.buf = buf;
 		xf.frames = want;
@@ -180,8 +201,10 @@ int main(int argc, char **argv)
 			continue;
 		}
 		stall = 0;
+		pos += xf.result;
 		done += xf.result;
 	}
+	free(tab);
 	printf("played %.0f ms of %.0f Hz sine on %s\n",
 	       seconds * 1000, freq, dev);
 	return 0;
