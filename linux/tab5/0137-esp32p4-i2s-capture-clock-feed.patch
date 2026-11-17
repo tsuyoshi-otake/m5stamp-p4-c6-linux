@@ -1,0 +1,156 @@
+--- a/sound/soc/espressif/esp32-p4-i2s.c
++++ b/sound/soc/espressif/esp32-p4-i2s.c
+@@ -57,6 +57,7 @@
+ #define I2S_LC_HUNG_CONF	0x60
+ #define I2S_RXEOF_NUM		0x64
+ #define I2S_STATE		0x6c
++#define I2S_CONF_SIGLE_DATA	0x68
+ #define I2S_CLK_GATE		0x7c
+ 
+ /* I2S_TX_CONF / I2S_RX_CONF bits */
+@@ -83,7 +84,7 @@
+ #define I2S_BCK_DIV_NUM_S	21
+ #define I2S_BCK_DIV_NUM_M	(0x3f << I2S_BCK_DIV_NUM_S)
+ #define I2S_TX_CHAN_MOD_S	27
+-#define I2S_TX_SIG_LOOPBACK	BIT(31)
++#define I2S_TX_SIG_LOOPBACK	BIT(30)
+ 
+ /* I2S_*_CONF1 bits */
+ #define I2S_TDM_WS_WIDTH_M	0x1ff
+@@ -214,6 +215,8 @@
+ #define I2S0_MCLK		26
+ #define I2S0_O_WS		27
+ #define I2S0_SD			28	/* I_SD_PAD_IN / O_SD_PAD_OUT */
++#define I2S0_I_BCK		29	/* rx-side slave BCK input */
++#define I2S0_I_WS		30	/* rx-side slave WS input */
+ 
+ /* Module clock source: XTAL 40 MHz (TX/RX_CLK_SRC_SEL=0), the
+  * source the IDF oracle uses.  The fractional divider in
+@@ -235,6 +238,8 @@
+ 	int irq_rx;		/* ahb in ch irq */
+ 	u8 tx_chan, rx_chan;	/* ahb channel numbers */
+ 	u8 peri;		/* peri_sel trigger for this i2s unit */
++	bool tx_streaming, rx_streaming;
++	unsigned int rx_rate;	/* last capture rate; feeds the clock TX */
+ 	u8 unit;		/* i2s unit index 0..2 */
+ 
+ 	/* pin numbers (-1 = unused) */
+@@ -561,6 +566,10 @@
+ 		   : ESP32P4_I2S_SCLK / n;
+ }
+ 
++static void esp32p4_tx_clock_start(struct esp32_p4_i2s *i2s,
++				   unsigned int rate);
++static void esp32p4_tx_clock_stop(struct esp32_p4_i2s *i2s);
++
+ static int esp32p4_pcm_hw_params(struct snd_soc_component *component,
+ 				 struct snd_pcm_substream *substream,
+ 				 struct snd_pcm_hw_params *params)
+@@ -581,10 +590,15 @@
+ 	case SNDRV_PCM_TRIGGER_START:
+ 	case SNDRV_PCM_TRIGGER_RESUME:
+ 	case SNDRV_PCM_TRIGGER_PAUSE_RELEASE:
+-		if (tx)
++		if (tx) {
+ 			atomic_set(&i2s->tx_pos, 0);
+-		else
++			i2s->tx_streaming = true;
++		} else {
+ 			atomic_set(&i2s->rx_pos, 0);
++			i2s->rx_streaming = true;
++			if (!i2s->tx_streaming)
++				esp32p4_tx_clock_start(i2s, i2s->rx_rate);
++		}
+ 		esp32p4_dma_start(i2s, tx);
+ 		i2s_wr(i2s, tx ? I2S_TX_CONF : I2S_RX_CONF,
+ 		       (i2s_rd(i2s, tx ? I2S_TX_CONF : I2S_RX_CONF) &
+@@ -597,6 +611,17 @@
+ 		       i2s_rd(i2s, tx ? I2S_TX_CONF : I2S_RX_CONF) &
+ 		       ~I2S_START);
+ 		esp32p4_dma_stop(i2s, tx);
++		if (tx) {
++			i2s->tx_streaming = false;
++			/* playback stops but capture still needs the
++			 * codec clocks: fall back to the zero feed. */
++			if (i2s->rx_streaming)
++				esp32p4_tx_clock_start(i2s, i2s->rx_rate);
++		} else {
++			i2s->rx_streaming = false;
++			if (!i2s->tx_streaming)
++				esp32p4_tx_clock_stop(i2s);
++		}
+ 		break;
+ 	default:
+ 		return -EINVAL;
+@@ -726,6 +751,41 @@
+ 	return 0;
+ }
+ 
++/* The codec pins are driven by the TX clock tree only: O_BCK,
++ * O_WS and MCLK are TX-side outputs and the ES7210/ES8388 are bus
++ * slaves, so a capture-only stream still needs the TX unit
++ * running or the ADC sees no clocks and SDOUT stays low (every
++ * sample reads 0).  The IDF oracle proves the working model: TX
++ * owns the pin clocks and RX is a slave tapping them.  With no
++ * playback, TX runs a constant-zero feed (STOP_EN off so an empty
++ * FIFO can never kill the clock generator). */
++static void esp32p4_tx_clock_start(struct esp32_p4_i2s *i2s,
++				   unsigned int rate)
++{
++	u32 mclk = esp32p4_i2s_set_mclk(i2s, rate, true);
++	u32 bck_div = DIV_ROUND_CLOSEST(mclk, rate * 2 * 16);
++	u32 conf = I2S_TDM_EN | I2S_MSB_SHIFT | I2S_PCM_BYPASS |
++		   I2S_RX_MONO_FST_VLD | I2S_TX_BCK_NO_DLY |
++		   I2S_TX_SIG_LOOPBACK;
++	u32 conf1 = 15 | (15 << I2S_BITS_MOD_S) |
++		    (15 << I2S_HALF_SAMPLE_BITS_S) |
++		    (15 << I2S_TDM_CHAN_BITS_S);
++
++	if (bck_div && bck_div <= 63)
++		conf |= ((bck_div - 1) << I2S_BCK_DIV_NUM_S) &
++			I2S_BCK_DIV_NUM_M;
++	i2s_wr(i2s, I2S_CONF_SIGLE_DATA, 0);
++	i2s_wr(i2s, I2S_TX_CONF1, conf1);
++	i2s_wr(i2s, I2S_TX_TDM_CTRL,
++	       (1 << I2S_TDM_TOT_CHAN_NUM_S) | 0x3);
++	i2s_wr(i2s, I2S_TX_CONF, conf | I2S_START | I2S_UPDATE);
++}
++
++static void esp32p4_tx_clock_stop(struct esp32_p4_i2s *i2s)
++{
++	i2s_wr(i2s, I2S_TX_CONF, i2s_rd(i2s, I2S_TX_CONF) & ~I2S_START);
++}
++
+ static int esp32p4_i2s_hw_params(struct snd_pcm_substream *substream,
+ 				 struct snd_pcm_hw_params *params,
+ 				 struct snd_soc_dai *dai)
+@@ -781,13 +841,15 @@
+ 		   I2S_TDM_CHAN_BITS_M);
+ 
+ 	if (tx) {
+-		conf |= I2S_TX_STOP_EN | I2S_TX_BCK_NO_DLY;
++		conf |= I2S_TX_STOP_EN | I2S_TX_BCK_NO_DLY |
++			I2S_TX_SIG_LOOPBACK;
+ 		i2s_wr(i2s, I2S_TX_CONF, conf);
+ 		i2s_wr(i2s, I2S_TX_CONF1, conf1);
+ 		i2s_wr(i2s, I2S_TX_TDM_CTRL,
+ 		       (1 << I2S_TDM_TOT_CHAN_NUM_S) | 0x3);
+ 	} else {
+-		conf |= I2S_RX_PCM_CONF_DFLT;
++		i2s->rx_rate = params_rate(params);
++		conf |= I2S_RX_PCM_CONF_DFLT | I2S_SLAVE_MOD;
+ 		i2s_wr(i2s, I2S_RX_CONF, conf);
+ 		i2s_wr(i2s, I2S_RX_CONF1, conf1);
+ 		i2s_wr(i2s, I2S_RX_TDM_CTRL,
+@@ -922,6 +984,11 @@
+ 	pin_out(i2s, i2s->ws_pin, I2S0_O_WS);
+ 	pin_out(i2s, i2s->dout_pin, I2S0_SD);
+ 	pin_in(i2s, i2s->din_pin, I2S0_SD);
++	/* The codec pins carry only TX-side clocks; the RX slave
++	 * taps them back through the pad input path exactly like
++	 * IDF's full_duplex_slave (plus SIG_LOOPBACK internally). */
++	pin_in(i2s, i2s->bck_pin, I2S0_I_BCK);
++	pin_in(i2s, i2s->ws_pin, I2S0_I_WS);
+ 
+ 	ret = devm_snd_soc_register_component(&pdev->dev, &esp32p4_component,
+ 					      &esp32p4_dai, 1);
