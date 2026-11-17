@@ -159,8 +159,18 @@ int main(int argc, char **argv)
 		done += xf.result;
 	}
 	if (ofd >= 0) {
-		if (write(ofd, buf, done * 2 * sizeof(int16_t)) < 0)
-			perror("write");
+		const char *w = (const char *)buf;
+		size_t left = done * 2 * sizeof(int16_t);
+		while (left) {
+			ssize_t n = write(ofd, w, left);
+			if (n <= 0) {
+				perror("write");
+				close(ofd);
+				return 1;
+			}
+			w += n;
+			left -= n;
+		}
 		close(ofd);
 	}
 
