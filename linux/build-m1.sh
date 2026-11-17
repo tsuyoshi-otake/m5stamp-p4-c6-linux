@@ -1288,9 +1288,20 @@ CONFIG_PWM=y
 CONFIG_PWM_ESP32P4_LEDC=y
 CONFIG_BACKLIGHT_CLASS_DEVICE=y
 CONFIG_BACKLIGHT_PWM=y
-# Safe poweroff through expander 0x44 P4 (PWROFF) (#31).
+# Safe poweroff through expander 0x44 P4 (PWROFF_PLUSE): the PMS150G
+# power controller wants a 100 ms pulse ending idle, not a latched
+# level -- a line left asserted makes the next power-on land in ROM
+# download mode (0126 patch, DTS node tab5-pwroff).
 CONFIG_POWER_RESET=y
-CONFIG_POWER_RESET_GPIO=y
+CONFIG_POWER_RESET_TAB5_PWROFF=y
+# /sys/class/power_supply (#31): "usb" = gpio-charger on the IP2326
+# CHG_STAT line (expander 0x44 P6, the BSP's USB-C detect); "battery" =
+# the tab5-battery driver over the INA226 (patch 0127, DTS node
+# m5stack,tab5-battery).  POWER_SUPPLY itself is off in every fragment,
+# so it has to be selected here.
+CONFIG_POWER_SUPPLY=y
+CONFIG_CHARGER_GPIO=y
+CONFIG_BATTERY_TAB5=y
 # USB-A host on the USB2.0 HS DWC @0x50000000 (#30): dwc2 in
 # host-only mode (patch 0063 forces PIO -- no coherent DMA under
 # NOMMU).  usb-storage + hid cover the first bring-up devices.
@@ -1316,11 +1327,15 @@ CONFIG_USB_HID=y
 # microSD slot 0 over bit-banged SPI (#29): the slot sits on SDMMC
 # slot-0's fixed pads (CLK43 CMD44 D0..3=39..42) which the dw_mmc
 # instance cannot reach -- it already drives slot 1 (the C6).  The
-# pads are plain GPIOs via IO_MUX, so spi-gpio + mmc_spi works.
+# pads are plain GPIOs via IO_MUX, so spi-gpio + mmc_spi works.  #29
+# swaps the controller node to spi-esp32p4-fastbb, a spi-bitbang clone
+# whose pin pokes are single GPIO_OUT1_W1TS/W1TC/IN1 MMIO accesses; the
+# spi-gpio driver stays enabled as a fallback path for the slot.
 CONFIG_SPI=y
 CONFIG_SPI_MASTER=y
 CONFIG_SPI_BITBANG=y
 CONFIG_SPI_GPIO=y
+CONFIG_SPI_ESP32P4_FASTBB=y
 CONFIG_MMC_SPI=y
 # BLE HCI over SDIO (#34): the C6 firmware image already ships
 # CONFIG_BT_ENABLED/CONTROLLER_ONLY/BLE_ONLY (C6_BT=1 default, C6_BT=0
@@ -2489,14 +2504,26 @@ if $lab_profile; then
 		set_config_value "${br_output}/.config" BR2_PACKAGE_WIFI_QR y
 		set_config_value "${br_output}/.config" BR2_PACKAGE_TOUCH_DOTS y
 		set_config_value "${br_output}/.config" BR2_PACKAGE_PCM_SINE y
+		set_config_value "${br_output}/.config" BR2_PACKAGE_PCM_REC y
+		set_config_value "${br_output}/.config" BR2_PACKAGE_PCM_PLAY y
+		# Raw-HCI LE scan/advertise tools for the C6 hci0 (#34).
+		set_config_value "${br_output}/.config" BR2_PACKAGE_HCI_TOOLS y
 	else
 		set_config_value "${br_output}/.config" BR2_PACKAGE_WIFI_QR "# BR2_PACKAGE_WIFI_QR is not set"
 		set_config_value "${br_output}/.config" BR2_PACKAGE_TOUCH_DOTS "# BR2_PACKAGE_TOUCH_DOTS is not set"
+		set_config_value "${br_output}/.config" BR2_PACKAGE_PCM_SINE "# BR2_PACKAGE_PCM_SINE is not set"
+		set_config_value "${br_output}/.config" BR2_PACKAGE_PCM_REC "# BR2_PACKAGE_PCM_REC is not set"
+		set_config_value "${br_output}/.config" BR2_PACKAGE_PCM_PLAY "# BR2_PACKAGE_PCM_PLAY is not set"
+		set_config_value "${br_output}/.config" BR2_PACKAGE_HCI_TOOLS "# BR2_PACKAGE_HCI_TOOLS is not set"
 	fi
 else
 	set_config_value "${br_output}/.config" BR2_PACKAGE_BOOT_COMMIT "# BR2_PACKAGE_BOOT_COMMIT is not set"
 	set_config_value "${br_output}/.config" BR2_PACKAGE_WIFI_QR "# BR2_PACKAGE_WIFI_QR is not set"
 	set_config_value "${br_output}/.config" BR2_PACKAGE_TOUCH_DOTS "# BR2_PACKAGE_TOUCH_DOTS is not set"
+	set_config_value "${br_output}/.config" BR2_PACKAGE_PCM_SINE "# BR2_PACKAGE_PCM_SINE is not set"
+	set_config_value "${br_output}/.config" BR2_PACKAGE_PCM_REC "# BR2_PACKAGE_PCM_REC is not set"
+	set_config_value "${br_output}/.config" BR2_PACKAGE_PCM_PLAY "# BR2_PACKAGE_PCM_PLAY is not set"
+	set_config_value "${br_output}/.config" BR2_PACKAGE_HCI_TOOLS "# BR2_PACKAGE_HCI_TOOLS is not set"
 fi
 set_config_value "${br_output}/.config" BR2_ROOTFS_OVERLAY "\"${rootfs_overlay}\""
 set_config_value "${br_output}/.config" BR2_ROOTFS_POST_BUILD_SCRIPT "\"${post_build_scripts}\""
@@ -2668,12 +2695,16 @@ if [[ "$board" == "tab5" ]]; then
 		"CONFIG_RTC_DRV_DS1307=y" \
 		"CONFIG_PWM_ESP32P4_LEDC=y" \
 		"CONFIG_BACKLIGHT_PWM=y" \
-		"CONFIG_POWER_RESET_GPIO=y" \
+		"CONFIG_POWER_RESET_TAB5_PWROFF=y" \
+		"CONFIG_POWER_SUPPLY=y" \
+		"CONFIG_CHARGER_GPIO=y" \
+		"CONFIG_BATTERY_TAB5=y" \
 		"CONFIG_GPIO_SYSFS=y" \
 		"CONFIG_USB_DWC2_HOST=y" \
 		"CONFIG_USB_STORAGE=y" \
 		"CONFIG_USB_HID=y" \
 		"CONFIG_SPI_GPIO=y" \
+		"CONFIG_SPI_ESP32P4_FASTBB=y" \
 		"CONFIG_MMC_SPI=y"; do
 		grep -Fqx -- "${expected}" "${kernel_config}" || {
 			echo "Tab5 kernel config check failed: ${expected}" >&2

@@ -44,6 +44,20 @@ if("$ENV{TSENS_ORACLE}" STREQUAL "1")
     target_sources(${COMPONENT_LIB} PRIVATE "tsens_oracle.c")
     target_compile_definitions(${COMPONENT_LIB} PRIVATE TSENS_ORACLE=1)
 endif()
+# #24 diagnostic, never in release: IDF's own i2s_std plays a 1 kHz tone
+# through the ES8388 and dumps the I2S0/GDMA/clkrst/GPIO-matrix register
+# state mid-play for comparison with the Linux driver's state.
+if("$ENV{AUDIO_ORACLE}" STREQUAL "1")
+    if(NOT "$ENV{ES_BOARD}" STREQUAL "tab5")
+        message(FATAL_ERROR "AUDIO_ORACLE only builds for ES_BOARD=tab5")
+    endif()
+    target_sources(${COMPONENT_LIB} PRIVATE "audio_oracle.c")
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE AUDIO_ORACLE=1)
+    if("$ENV{AUDIO_ORACLE_MIC_ONLY}" STREQUAL "1")
+        target_compile_definitions(${COMPONENT_LIB} PRIVATE
+            AUDIO_ORACLE_MIC_ONLY=1)
+    endif()
+endif()
 if("$ENV{CMD53_RETENTION_BB}" STREQUAL "1")
     target_sources(${COMPONENT_LIB} PRIVATE "cmd53_bb.c")
     target_include_directories(${COMPONENT_LIB} PRIVATE

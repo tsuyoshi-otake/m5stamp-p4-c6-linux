@@ -1,0 +1,71 @@
+--- a/drivers/misc/esp32p4_dsi_scanout.c
++++ b/drivers/misc/esp32p4_dsi_scanout.c
+@@ -66,6 +66,12 @@
+ #define SRAM_UNCACHED_OFF	0x40000000 /* SOC_NON_CACHEABLE_OFFSET */
+ #define SRAM_LO			0x4ff00000
+ #define SRAM_HI			0x4ff80000
++/* The i2s0-dma shared-dma-pool in the Tab5 DTS reserves this
++ * window for audio descriptors/buffers; a scan-out LLI inside it
++ * would be silently overwritten by AHB-GDMA traffic.  Refuse the
++ * handoff loudly rather than corrupt the display list. */
++#define I2S0_DMA_POOL_LO	0x4ff50000
++#define I2S0_DMA_POOL_HI	0x4ff80000
+ 
+ struct dsi_scanout {
+ 	void __iomem *regs;
+@@ -76,6 +82,25 @@
+ 	unsigned long frames;
+ 	struct device *dev;
+ };
++
++/* Read the i2s0-dma shared-dma-pool window from the reserved-memory
++ * node; fall back to the compiled-in window if the node is absent. */
++static void dsi_scanout_pool_range(u32 *lo, u32 *hi)
++{
++	struct device_node *np;
++	u32 reg[2];
++
++	*lo = I2S0_DMA_POOL_LO;
++	*hi = I2S0_DMA_POOL_HI;
++	np = of_find_node_by_name(NULL, "i2s0-dma");
++	if (np) {
++		if (!of_property_read_u32_array(np, "reg", reg, 2) && reg[1]) {
++			*lo = reg[0];
++			*hi = reg[0] + reg[1];
++		}
++		of_node_put(np);
++	}
++}
+ 
+ static void dsi_scanout_rearm(struct dsi_scanout *s)
+ {
+@@ -137,7 +162,7 @@
+ static int dsi_scanout_probe(struct platform_device *pdev)
+ {
+ 	struct dsi_scanout *s;
+-	u32 val;
++	u32 val, pool_lo, pool_hi;
+ 	int irq, ret;
+ 
+ 	s = devm_kzalloc(&pdev->dev, sizeof(*s), GFP_KERNEL);
+@@ -162,6 +187,20 @@
+ 		return -ENODEV;
+ 	}
+ 
++	/* Hard refuse an LLI inside the i2s0-dma pool: audio GDMA
++	 * descriptors/buffers would silently overwrite the display's
++	 * link list.  The driver only ever walks this single item (it
++	 * re-marks it LAST on every re-arm), so the head check covers
++	 * the whole chain. */
++	dsi_scanout_pool_range(&pool_lo, &pool_hi);
++	if (s->lli_pa >= pool_lo && s->lli_pa < pool_hi) {
++		dev_err(&pdev->dev,
++			"scanout lli 0x%08x lies inside the i2s0-dma pool "
++			"[0x%08x,0x%08x); refusing the handoff\n",
++			s->lli_pa, pool_lo, pool_hi);
++		return -ENODEV;
++	}
++
+ 	s->regs = devm_platform_ioremap_resource(pdev, 0);
+ 	if (IS_ERR(s->regs))
+ 		return PTR_ERR(s->regs);

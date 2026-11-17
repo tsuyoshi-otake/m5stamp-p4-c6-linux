@@ -1,0 +1,155 @@
+From: Devin <devin@cognition.ai>
+Subject: [PATCH tab5] power: reset: tab5-pwroff: pulse PWROFF like the
+ stock BSP, never leave it asserted
+
+The Tab5's power controller is a PMS150G MCU on the always-on VDD_STBY
+rail.  Its PA6 input watches PWROFF_PLUSE (expander 0x44 P4) as the
+power-off request, and its PA5 output is wired straight to BOOT_GPIO35,
+the P4's flash-vs-download strap.
+
+The stock firmware (bsp_generate_poweroff_signal in M5Tab5-UserDemo)
+issues three 100 ms assert/deassert cycles on OUT_SET and leaves the
+line LOW.  Upstream gpio-poweroff instead ends its sequence with the
+line asserted.  On this board that is fatal: with USB-C attached, the
+expander's VDD (SOC_3.3V) stays alive through the off state
+(USB_5VIN -> PRE_5V -> VBK_LCK -> SYS_INT5V), so the request pin keeps
+being driven across the power-down.  The PMS150G then sees the request
+still pending when the next power-button press arrives and holds PA5 =
+BOOT_GPIO35 low at power-on -- the P4 samples GPIO35=0 and lands in ROM
+download mode (boot:0x204 DOWNLOAD(USB/UART0/SPI)).  A CHIP_PU reset
+cannot clear either latch; only removing USB-C *and* the battery does,
+which is exactly the observed symptom.
+
+Add a small board driver that registers a sys_off power-off handler
+issuing the stock pulse pattern and returning the line to idle.  Probe
+requests the GPIO as GPIOD_OUT_LOW, a no-op against the state the boot
+shim leaves (IO_DIR P4 output, OUT_SET bit4 clear).
+
+Signed-off-by: Devin <devin@cognition.ai>
+---
+ drivers/power/reset/Kconfig       |   10 +++
+ drivers/power/reset/Makefile      |    1 +
+ drivers/power/reset/tab5-pwroff.c |   83 ++++++++++++++++++++++++++++++
+ 3 files changed, 94 insertions(+)
+
+diff --git a/drivers/power/reset/Kconfig b/drivers/power/reset/Kconfig
+index 1111111..2222222 100644
+--- a/drivers/power/reset/Kconfig
++++ b/drivers/power/reset/Kconfig
+@@ -104,6 +104,15 @@ config POWER_RESET_GPIO
+ 	  If your board needs a GPIO high/low to power down, say Y and
+ 	  create a binding in your devicetree.
+ 
++config POWER_RESET_TAB5_PWROFF
++	bool "M5Stack Tab5 PWROFF pulse power-off driver"
++	depends on OF
++	help
++	  The Tab5's PMS150G power controller takes its power-off request
++	  as a ~100 ms pulse on PWROFF_PLUSE (expander 0x44 P4); the line
++	  must end idle or the next power-on lands in ROM download mode.
++	  Say Y for M5Stack Tab5.
++
+ config POWER_RESET_GPIO_RESTART
+ 	bool "GPIO restart driver"
+ 	depends on OF
+diff --git a/drivers/power/reset/Makefile b/drivers/power/reset/Makefile
+index 1111111..2222222 100644
+--- a/drivers/power/reset/Makefile
++++ b/drivers/power/reset/Makefile
+@@ -11,6 +11,7 @@ obj-$(CONFIG_POWER_RESET_EP93XX) += ep93xx-restart.o
+ obj-$(CONFIG_POWER_RESET_GEMINI_POWEROFF) += gemini-poweroff.o
+ obj-$(CONFIG_POWER_RESET_GPIO) += gpio-poweroff.o
+ obj-$(CONFIG_POWER_RESET_GPIO_RESTART) += gpio-restart.o
++obj-$(CONFIG_POWER_RESET_TAB5_PWROFF) += tab5-pwroff.o
+ obj-$(CONFIG_POWER_RESET_HISI) += hisi-reboot.o
+ obj-$(CONFIG_POWER_RESET_LINKSTATION) += linkstation-poweroff.o
+ obj-$(CONFIG_POWER_RESET_MACSMC) += macsmc-reboot.o
+diff --git a/drivers/power/reset/tab5-pwroff.c b/drivers/power/reset/tab5-pwroff.c
+new file mode 100644
+index 0000000..3333333
+--- /dev/null
++++ b/drivers/power/reset/tab5-pwroff.c
+@@ -0,0 +1,83 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * M5Stack Tab5 power-off request driver.
++ *
++ * The board's power controller is a PMS150G MCU on the always-on
++ * VDD_STBY rail.  The SoC asks it to drop the main rails by pulsing
++ * PWROFF_PLUSE, which is expander 0x44 P4 (Tab5 schematic, sheet 5).
++ *
++ * Unlike a typical gpio-poweroff line, this net must return to idle:
++ * the expander's VDD (SOC_3.3V) stays alive whenever USB-C is attached,
++ * so a request left asserted is still driven when the next power-button
++ * press arrives.  The PMS150G treats that pending request as a command
++ * to hold BOOT_GPIO35 (its PA5, wired to the P4 strap pin) low at
++ * power-on, and the SoC boots into ROM download mode until all power
++ * is removed.
++ *
++ * This mirrors the stock firmware's bsp_generate_poweroff_signal():
++ * three 100 ms assert/deassert cycles on OUT_SET, ending low.
++ */
++
++#include <linux/delay.h>
++#include <linux/gpio/consumer.h>
++#include <linux/module.h>
++#include <linux/of.h>
++#include <linux/platform_device.h>
++#include <linux/reboot.h>
++
++#define TAB5_PWROFF_PULSES	3
++#define TAB5_PWROFF_PULSE_MS	100
++#define TAB5_PWROFF_SETTLE_MS	3000
++
++static int tab5_pwroff_off(struct sys_off_data *data)
++{
++	struct gpio_desc *gpiod = data->cb_data;
++	int i;
++
++	for (i = 0; i < TAB5_PWROFF_PULSES; i++) {
++		gpiod_set_value_cansleep(gpiod, 1);
++		msleep(TAB5_PWROFF_PULSE_MS);
++		gpiod_set_value_cansleep(gpiod, 0);
++		msleep(TAB5_PWROFF_PULSE_MS);
++	}
++
++	/* The rails should be gone long before this returns. */
++	msleep(TAB5_PWROFF_SETTLE_MS);
++	WARN(1, "Tab5 PWROFF pulses sent but the board is still powered\n");
++
++	return NOTIFY_DONE;
++}
++
++static int tab5_pwroff_probe(struct platform_device *pdev)
++{
++	struct gpio_desc *gpiod;
++
++	/* Idle-low matches the state the boot shim leaves the line in. */
++	gpiod = devm_gpiod_get(&pdev->dev, NULL, GPIOD_OUT_LOW);
++	if (IS_ERR(gpiod))
++		return dev_err_probe(&pdev->dev, PTR_ERR(gpiod),
++				     "cannot get PWROFF line\n");
++
++	return devm_register_sys_off_handler(&pdev->dev,
++					     SYS_OFF_MODE_POWER_OFF,
++					     SYS_OFF_PRIO_DEFAULT,
++					     tab5_pwroff_off, gpiod);
++}
++
++static const struct of_device_id tab5_pwroff_of_match[] = {
++	{ .compatible = "m5stack,tab5-pwroff" },
++	{}
++};
++MODULE_DEVICE_TABLE(of, tab5_pwroff_of_match);
++
++static struct platform_driver tab5_pwroff_driver = {
++	.probe = tab5_pwroff_probe,
++	.driver = {
++		.name = "tab5-pwroff",
++		.of_match_table = tab5_pwroff_of_match,
++	},
++};
++module_platform_driver(tab5_pwroff_driver);
++
++MODULE_DESCRIPTION("M5Stack Tab5 PWROFF pulse power-off driver");
++MODULE_LICENSE("GPL");

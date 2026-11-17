@@ -133,15 +133,45 @@
 	};
 
 	/*
-	 * Safe poweroff: expander 0x44 P4 (PWROFF) requests the board
-	 * power controller to cut the rails.  The driver probes with
-	 * GPIOD_OUT_LOW which is a no-op against the shim state (pin
-	 * already output-low), and only pulses the line in the
-	 * sys_off handler at real poweroff time.
+	 * Safe poweroff: expander 0x44 P4 (PWROFF_PLUSE) is the request
+	 * line into the PMS150G power controller on the always-on
+	 * VDD_STBY rail.  It must be pulsed and end idle, exactly like
+	 * the stock BSP's bsp_generate_poweroff_signal(): the expander's
+	 * VDD (SOC_3.3V) stays alive whenever USB-C is attached, so a
+	 * line left latched is still driven when the next power-button
+	 * press arrives -- the PMS150G then holds BOOT_GPIO35 (its PA5,
+	 * wired to the P4 strap pin) low and the SoC lands in ROM
+	 * download mode until all power is removed.  Plain gpio-poweroff
+	 * cannot be used: it ends its sequence asserted.
 	 */
-	gpio-poweroff {
-		compatible = "gpio-poweroff";
+	tab5-pwroff {
+		compatible = "m5stack,tab5-pwroff";
 		gpios = <&exp1 4 GPIO_ACTIVE_HIGH>;
+	};
+
+	/*
+	 * Power-supply topology (#31).  The IP2326 charger's BAT_STAT
+	 * lands on expander 0x44 P6 (the same line the stock BSP reads
+	 * as USB-C detect): it is high while the charger is in or past
+	 * constant-current charge, low in trickle charge or with no VIN,
+	 * so "online" is an approximation that can blink low during the
+	 * trickle phase of a real charge.
+	 */
+	usb: usb {
+		compatible = "gpio-charger";
+		charger-type = "usb-sdp";
+		gpios = <&exp1 6 GPIO_ACTIVE_HIGH>;
+	};
+
+	/*
+	 * The 2S pack behind J12: voltage/current come from the INA226
+	 * (io-monitor phandle), charge state from the usb supply link.
+	 * CAPACITY is a linear pack-voltage estimate, not a gauge.
+	 */
+	battery {
+		compatible = "m5stack,tab5-battery";
+		io-monitor = <&ina226>;
+		power-supplies = <&usb>;
 	};
 
 	soc: soc {
@@ -455,6 +485,9 @@
 			espressif,ws-pin = <29>;
 			espressif,dout-pin = <26>;
 			espressif,din-pin = <28>;
+			/* Descriptors + buffers must live in internal SRAM:
+			 * AHB-GDMA cannot retire a PSRAM ring (#24/B11). */
+			memory-region = <&i2s0_dma_sram>;
 			#sound-dai-cells = <0>;
 			status = "okay";
 		};
@@ -554,9 +587,12 @@
 			reg = <0x44>;
 			gpio-controller;
 			#gpio-cells = <2>;
+			/* Schematic U7: P1/P2 are unconnected (the earlier
+			 * PWR_GOOD/CHG_STA names were guesses); P6 is the
+			 * IP2326 BAT_STAT line, not a separate USB-detect. */
 			gpio-line-names =
-				"WLAN_PWR_EN", "PWR_GOOD", "CHG_STA", "USB5V_EN",
-				"PWROFF", "nCHG_QC_EN", "USBC_DET", "CHG_EN";
+				"WLAN_PWR_EN", "", "", "USB5V_EN",
+				"PWROFF_PLUSE", "nCHG_QC_EN", "CHG_STAT", "CHG_EN";
 		};
 
 		/*
@@ -589,7 +625,7 @@
 		 * voltage = battery voltage; positive current means
 		 * discharging, negative means charging.
 		 */
-		ina226@41 {
+		ina226: ina226@41 {
 			compatible = "ti,ina226";
 			reg = <0x41>;
 			shunt-resistor = <5000>;
@@ -640,15 +676,27 @@
 		};
 
 		/*
-		 * ES7210 4-channel microphone ADC at 0x40.  There is
-		 * no upstream Linux driver; kept disabled so nothing
-		 * probes it.  Until one is written, mic input uses
-		 * the ES8388's own ADC.
+		 * ES7210 4-channel microphone ADC at 0x40 (#24/B12).
+		 * The Tab5 wires only MIC1/MIC2 (on-board mics AMIC1/
+		 * AMIC2); MIC3 is the headset-mic line (untested, no
+		 * plug available).  The local minimal driver powers
+		 * MIC1/MIC2 at probe as a plain stereo I2S ADC.
+		 *
+		 * It is deliberately NOT a card codec: ASoC binds the
+		 * i2s0 component to exactly one card, and a second
+		 * simple-card fails with -19.  It does not need one:
+		 * schematic net I2S_ASDOUT_MISO_GPIO28 is driven only
+		 * by this chip's SDOUT1/TDMOUT pin -- the ES8388's own
+		 * ASDOUT is unwired -- so the playback card's capture
+		 * stream (pcmC0D0c) already reads the mic frames off
+		 * the shared bus.
 		 */
 		es7210: audio-adc@40 {
 			compatible = "everest,es7210";
 			reg = <0x40>;
-			status = "disabled";
+			clocks = <&es8388_mclk>;
+			#sound-dai-cells = <0>;
+			status = "okay";
 		};
 	};
 
@@ -688,17 +736,18 @@
 	 * slot 0's dedicated pads CLK43 CMD44 D0..3=39..42, but slot 0
 	 * is not reachable through the Linux dw_mmc instance (that
 	 * driver models one host per controller and slot 1 carries the
-	 * C6).  The pads are bit-banged instead via spi-gpio +
-	 * mmc_spi -- slow (hundreds of KB/s) but enough for config and
-	 * data exchange.  Card power is the on-chip LDO VO4, which the
-	 * boot shim holds at 3.3 V.  The slot has no card-detect pin.
-	 * spi-max-frequency is only a cap: the per-bit cost is MMIO-bound
-	 * (several gpiolib ops per half clock), so nothing on the
-	 * bit-bang path nears the card's 25 MHz SPI ceiling.  400 kHz
-	 * measured <30 KB/s (#29).
+	 * C6).  The pads are bit-banged via spi-esp32p4-fastbb +
+	 * mmc_spi: same spi-bitbang framework as spi-gpio, but each
+	 * edge is one GPIO_OUT1_W1TS/W1TC store and MISO one GPIO_IN1
+	 * load instead of the gpiolib path, so the slot runs an order
+	 * of magnitude faster than spi-gpio's <30 KB/s.  Card power is
+	 * the on-chip LDO VO4, which the boot shim holds at 3.3 V.
+	 * The slot has no card-detect pin.  spi-max-frequency is only
+	 * a cap; 8 MHz stays under the card's 25 MHz SPI ceiling with
+	 * margin for the MMIO bit loop.
 	 */
-	spi_sd: spi-gpio {
-		compatible = "spi-gpio";
+	spi_sd: spi-esp32p4-fastbb {
+		compatible = "espressif,esp32p4-fast-spi-gpio";
 		#address-cells = <1>;
 		#size-cells = <0>;
 		sck-gpios  = <&gpio1 11 GPIO_ACTIVE_HIGH>; /* GPIO43 CLK */
@@ -711,15 +760,38 @@
 		mmc-slot@0 {
 			compatible = "mmc-spi-slot";
 			reg = <0>;
-			spi-max-frequency = <4000000>;
+			spi-max-frequency = <8000000>;
 			voltage-ranges = <3300 3300>;
 		};
 	};
 
 	/*
-	 * ES8388 + I2S0 link.  simple-audio-card is enough here: the
-	 * amp/headphone switching through expander 0x43 is handled
-	 * by the expander-IC driver, not the machine driver.
+	 * NS4150B mono speaker amp.  Its enable is expander 0x43 P1
+	 * (SPK_EN); wiring a simple-audio-amplifier node through the
+	 * card's aux-devs makes DAPM drive the pin: high on playback,
+	 * low again when the stream stops (#24/B12).
+	 * Schematic: the amp taps the HPOUT_L net, which the OUT2 pair
+	 * (LOUT2/ROUT2) drives -- verified on-device by forcing
+	 * DACPOWER per pair mid-playback (OUT2 alone keeps the 1 kHz
+	 * tone loud; OUT1 alone drops it to silence).
+	 */
+	spk_amp: audio-amplifier {
+		compatible = "simple-audio-amplifier";
+		sound-name-prefix = "Amp";
+		enable-gpios = <&exp0 1 GPIO_ACTIVE_HIGH>;
+	};
+
+	/*
+	 * ES8388 + I2S0 link.  simple-audio-card with an aux
+	 * amplifier and the headphone jack.  The jack carries the
+	 * HPOUT_L/HPOUT_R nets; per the schematic extraction the
+	 * OUT2 pair drives HPOUT_L and the OUT1 pair drives
+	 * HPOUT_R (the net labels sit against ROUT2/ROUT1
+	 * respectively), so the jack route powers all four outputs.
+	 * HP_DET is expander 0x43 P7, an input that reads low with
+	 * nothing plugged (measured: 0x43 reg0 = 0x00) -- the jack
+	 * switch opens on insertion, so insertion pulls it high:
+	 * GPIO_ACTIVE_HIGH.
 	 */
 	sound {
 		compatible = "simple-audio-card";
@@ -728,11 +800,35 @@
 		simple-audio-card,bitclock-master = <&i2s0>;
 		simple-audio-card,frame-master = <&i2s0>;
 		simple-audio-card,mclk-fs = <256>;
+		simple-audio-card,aux-devs = <&spk_amp>;
+
+		simple-audio-card,widgets =
+			"Speaker", "External Speaker",
+			"Headphone", "Headphones";
+		simple-audio-card,routing =
+			"External Speaker", "Amp OUTL",
+			"External Speaker", "Amp OUTR",
+			"Amp INL", "LOUT2",
+			"Amp INR", "ROUT2",
+			"Headphones", "LOUT1",
+			"Headphones", "ROUT1",
+			"Headphones", "LOUT2",
+			"Headphones", "ROUT2";
+		simple-audio-card,hp-det-gpios = <&exp0 7 GPIO_ACTIVE_HIGH>;
 
 		simple-audio-card,cpu {
 			sound-dai = <&i2s0>;
 		};
 		simple-audio-card,codec {
+			/* ES8388 is the only bound codec.  ES7210 needs no
+			 * binding: in slave mode it streams onto the shared
+			 * GPIO28/DIN net (ES8388's ASDOUT is unwired)
+			 * whenever i2s0 clocks BCK/WS, so card0's capture
+			 * PCM reads the microphones directly.  Binding it
+			 * as a second codec panics in this kernel's ASoC
+			 * device-link deferral, and aux-dev gives it no
+			 * stream either -- its Linux driver applies the
+			 * vendor always-on init at probe instead. */
 			sound-dai = <&es8388>;
 		};
 	};
@@ -774,6 +870,17 @@
 		 */
 		display_fb_res: framebuffer@49fdf000 {
 			reg = <0x49fdf000 0x00001000>;
+			no-map;
+		};
+
+		/* I2S0 TX/RX AHB-GDMA descriptor rings and PCM buffers must
+		 * sit in internal SRAM — the engine never retires a ring
+		 * placed in PSRAM (#24/B11, IDF reference dump).  Upper
+		 * 192 KiB of HP SRAM; low SRAM holds shim leftovers and
+		 * the dsi-scanout LLI (~0x4ff3b500). */
+		i2s0_dma_sram: i2s0-dma@4ff50000 {
+			compatible = "shared-dma-pool";
+			reg = <0x4ff50000 0x00030000>;
 			no-map;
 		};
 	};

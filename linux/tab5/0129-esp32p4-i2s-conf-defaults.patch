@@ -1,0 +1,70 @@
+--- a/sound/soc/espressif/esp32-p4-i2s.c
++++ b/sound/soc/espressif/esp32-p4-i2s.c
+@@ -67,8 +67,10 @@
+ #define I2S_BIG_ENDIAN		BIT(7)
+ #define I2S_UPDATE		BIT(8)
+ #define I2S_RX_MONO_FST_VLD	BIT(9)
++#define I2S_RX_PCM_CONF_DFLT	BIT(10)
+ #define I2S_PCM_BYPASS		BIT(12)
+ #define I2S_MSB_SHIFT		BIT(13)
++#define I2S_TX_BCK_NO_DLY	BIT(14)
+ #define I2S_LEFT_ALIGN		BIT(15)
+ #define I2S_FILL_EN_24		BIT(16)
+ #define I2S_WS_IDLE_POL		BIT(17)
+@@ -147,7 +149,9 @@
+ #define AHB_OUT_RST		BIT(0)
+ #define AHB_OUT_AUTO_WRBACK	BIT(2)
+ #define AHB_OUT_EOF_MODE	BIT(3)
++#define AHB_OUT_DSCR_BURST_EN	BIT(4)
+ #define AHB_OUT_DATA_BURST_EN	BIT(5)
++#define AHB_OUT_BURST_MODE_INCR4	(1 << 8)
+ 
+ /* AHB_*_LINK bits */
+ #define AHB_INLINK_START	BIT(2)
+@@ -444,8 +448,15 @@
+ 	if (tx) {
+ 		ch = AHB_CH_OUT(i2s->tx_chan);
+ 		dma_wr(i2s, ch + AHB_CONF0, AHB_OUT_RST);
++		/* Match the IDF channel setup: besides auto-wrback and
++		 * data-burst keep the reset-default OUT_EOF_MODE=1 and
++		 * OUT_DATA_BURST_MODE_SEL=1 (incr, 16-byte beats), and
++		 * enable descriptor bursts.  The old bare
++		 * AUTO_WRBACK|DATA_BURST_EN write zeroed both (#24). */
+ 		dma_wr(i2s, ch + AHB_CONF0,
+-		       AHB_OUT_AUTO_WRBACK | AHB_OUT_DATA_BURST_EN);
++		       AHB_OUT_AUTO_WRBACK | AHB_OUT_EOF_MODE |
++		       AHB_OUT_DSCR_BURST_EN | AHB_OUT_DATA_BURST_EN |
++		       AHB_OUT_BURST_MODE_INCR4);
+ 		dma_wr(i2s, ch + AHB_PERI_SEL, i2s->peri);
+ 		dma_wr(i2s, AHB_OUT_LINK_ADDR(i2s->tx_chan),
+ 		       i2s->tx_descs_phys);
+@@ -667,6 +678,14 @@
+ 	 * msb_shift gives the 1-BCK data delay I2S expects. */
+ 	conf = I2S_TDM_EN | I2S_MSB_SHIFT;
+ 	conf |= (bck_div << I2S_BCK_DIV_NUM_S) & I2S_BCK_DIV_NUM_M;
++	/* conf is a full-register store, so every field not named
++	 * drops to 0 -- including several whose reset default is 1
++	 * and that the IDF std path leaves untouched: PCM_BYPASS
++	 * (bit12; 0 would route samples through the u/A-law
++	 * (de)compress unit and can stall the FIFO path), plus
++	 * MONO_FST_VLD (bit9), TX BCK_NO_DLY (bit14) and the RX
++	 * PCM_CONF default (#24). */
++	conf |= I2S_PCM_BYPASS | I2S_RX_MONO_FST_VLD;
+ 	conf1 = (chan_bits - 1)
+ 		| (((data_bits - 1) << I2S_BITS_MOD_S) & I2S_BITS_MOD_M)
+ 		| (((chan_bits - 1) << I2S_HALF_SAMPLE_BITS_S) &
+@@ -675,12 +694,13 @@
+ 		   I2S_TDM_CHAN_BITS_M);
+ 
+ 	if (tx) {
+-		conf |= I2S_TX_STOP_EN;
++		conf |= I2S_TX_STOP_EN | I2S_TX_BCK_NO_DLY;
+ 		i2s_wr(i2s, I2S_TX_CONF, conf);
+ 		i2s_wr(i2s, I2S_TX_CONF1, conf1);
+ 		i2s_wr(i2s, I2S_TX_TDM_CTRL,
+ 		       (1 << I2S_TDM_TOT_CHAN_NUM_S) | 0x3);
+ 	} else {
++		conf |= I2S_RX_PCM_CONF_DFLT;
+ 		i2s_wr(i2s, I2S_RX_CONF, conf);
+ 		i2s_wr(i2s, I2S_RX_CONF1, conf1);
+ 		i2s_wr(i2s, I2S_RX_TDM_CTRL,

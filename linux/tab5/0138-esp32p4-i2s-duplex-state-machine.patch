@@ -1,0 +1,215 @@
+--- a/sound/soc/espressif/esp32-p4-i2s.c
++++ b/sound/soc/espressif/esp32-p4-i2s.c
+@@ -238,8 +238,11 @@
+ 	int irq_rx;		/* ahb in ch irq */
+ 	u8 tx_chan, rx_chan;	/* ahb channel numbers */
+ 	u8 peri;		/* peri_sel trigger for this i2s unit */
+-	bool tx_streaming, rx_streaming;
++	bool rx_streaming;
++	u8 tx_state;		/* TX_IDLE / TX_FEED / TX_PLAY */
+ 	unsigned int rx_rate;	/* last capture rate; feeds the clock TX */
++	u32 tx_conf, tx_conf1;	/* playback conf words (STOP_EN excluded) */
++	spinlock_t tx_lock;	/* serializes tx_state + TX_CONF writes */
+ 	u8 unit;		/* i2s unit index 0..2 */
+ 
+ 	/* pin numbers (-1 = unused) */
+@@ -248,13 +251,19 @@
+ 	/* dma rings */
+ 	struct ahb_lldesc *tx_descs, *rx_descs;
+ 	dma_addr_t tx_descs_phys, rx_descs_phys;
+-	u32 period_bytes;
+ 
+ 	struct snd_pcm_substream *tx_sub, *rx_sub;
+ 	atomic_t tx_pos, rx_pos;	/* byte position in ring */
++	u32 tx_period_bytes, rx_period_bytes;
+ 	unsigned int fmt;
+ };
+ 
++enum {
++	TX_IDLE,	/* serializer stopped */
++	TX_FEED,	/* running, zero feed: supplies codec clocks for RX */
++	TX_PLAY,	/* running, real DMA playback data */
++};
++
+ static inline u32 i2s_rd(struct esp32_p4_i2s *i2s, u32 reg)
+ {
+ 	return readl(i2s->i2s + reg);
+@@ -425,9 +434,12 @@
+ 	descs_phys = tx ? i2s->tx_descs_phys : i2s->rx_descs_phys;
+ 	if (!descs)
+ 		return -ENOMEM;
+-	i2s->period_bytes = pbytes;
+-	if (!tx)
++	if (tx)
++		i2s->tx_period_bytes = pbytes;
++	else {
++		i2s->rx_period_bytes = pbytes;
+ 		i2s_wr(i2s, I2S_RXEOF_NUM, pbytes);
++	}
+ 
+ 	for (i = 0; i < periods; i++) {
+ 		u32 off = 0;
+@@ -585,47 +597,85 @@
+ {
+ 	struct esp32_p4_i2s *i2s = dev_get_drvdata(component->dev);
+ 	bool tx = substream->stream == SNDRV_PCM_STREAM_PLAYBACK;
++	unsigned long flags;
+ 
++	/* TX is a shared resource: it alone drives the codec clock
++	 * pins, so capture-only runs it as a zero-data clock feed.
++	 * The transitions below never rewrite TX_CONF in a way that
++	 * clears START while the engine runs -- a full-store write
++	 * mid-stream is what used to kill the clocks and starve RX.
++	 * STOP_EN is deferred to the last moment: with it set an
++	 * empty FIFO stops the clock generator outright. */
++	spin_lock_irqsave(&i2s->tx_lock, flags);
+ 	switch (cmd) {
+ 	case SNDRV_PCM_TRIGGER_START:
+ 	case SNDRV_PCM_TRIGGER_RESUME:
+ 	case SNDRV_PCM_TRIGGER_PAUSE_RELEASE:
+ 		if (tx) {
+ 			atomic_set(&i2s->tx_pos, 0);
+-			i2s->tx_streaming = true;
++			if (i2s->tx_state == TX_FEED) {
++				/* Clocks already run at the programmed
++				 * rate; arm the data path first, only
++				 * then allow underrun-stop. */
++				esp32p4_dma_start(i2s, true);
++				i2s_wr(i2s, I2S_TX_CONF,
++				       i2s_rd(i2s, I2S_TX_CONF) |
++				       I2S_TX_STOP_EN);
++			} else {
++				esp32p4_dma_start(i2s, true);
++				i2s_wr(i2s, I2S_TX_CONF,
++				       i2s->tx_conf | I2S_TX_STOP_EN |
++				       I2S_START | I2S_UPDATE);
++			}
++			i2s->tx_state = TX_PLAY;
+ 		} else {
+ 			atomic_set(&i2s->rx_pos, 0);
+ 			i2s->rx_streaming = true;
+-			if (!i2s->tx_streaming)
++			if (i2s->tx_state == TX_IDLE) {
+ 				esp32p4_tx_clock_start(i2s, i2s->rx_rate);
++				i2s->tx_state = TX_FEED;
++			}
++			esp32p4_dma_start(i2s, false);
++			i2s_wr(i2s, I2S_RX_CONF,
++			       (i2s_rd(i2s, I2S_RX_CONF) & ~I2S_UPDATE) |
++			       I2S_START | I2S_UPDATE);
+ 		}
+-		esp32p4_dma_start(i2s, tx);
+-		i2s_wr(i2s, tx ? I2S_TX_CONF : I2S_RX_CONF,
+-		       (i2s_rd(i2s, tx ? I2S_TX_CONF : I2S_RX_CONF) &
+-			~I2S_UPDATE) | I2S_START | I2S_UPDATE);
+ 		break;
+ 	case SNDRV_PCM_TRIGGER_STOP:
+ 	case SNDRV_PCM_TRIGGER_SUSPEND:
+ 	case SNDRV_PCM_TRIGGER_PAUSE_PUSH:
+-		i2s_wr(i2s, tx ? I2S_TX_CONF : I2S_RX_CONF,
+-		       i2s_rd(i2s, tx ? I2S_TX_CONF : I2S_RX_CONF) &
+-		       ~I2S_START);
+-		esp32p4_dma_stop(i2s, tx);
+ 		if (tx) {
+-			i2s->tx_streaming = false;
+-			/* playback stops but capture still needs the
+-			 * codec clocks: fall back to the zero feed. */
+-			if (i2s->rx_streaming)
+-				esp32p4_tx_clock_start(i2s, i2s->rx_rate);
++			if (i2s->rx_streaming) {
++				/* Keep clocks for capture: drop STOP_EN
++				 * before the link stops so the feed can
++				 * never underrun-halt. */
++				i2s_wr(i2s, I2S_TX_CONF,
++				       i2s_rd(i2s, I2S_TX_CONF) &
++				       ~I2S_TX_STOP_EN);
++				esp32p4_dma_stop(i2s, true);
++				i2s->tx_state = TX_FEED;
++			} else {
++				i2s_wr(i2s, I2S_TX_CONF,
++				       i2s_rd(i2s, I2S_TX_CONF) & ~I2S_START);
++				esp32p4_dma_stop(i2s, true);
++				i2s->tx_state = TX_IDLE;
++			}
+ 		} else {
++			i2s_wr(i2s, I2S_RX_CONF,
++			       i2s_rd(i2s, I2S_RX_CONF) & ~I2S_START);
++			esp32p4_dma_stop(i2s, false);
+ 			i2s->rx_streaming = false;
+-			if (!i2s->tx_streaming)
++			if (i2s->tx_state == TX_FEED) {
+ 				esp32p4_tx_clock_stop(i2s);
++				i2s->tx_state = TX_IDLE;
++			}
+ 		}
+ 		break;
+ 	default:
++		spin_unlock_irqrestore(&i2s->tx_lock, flags);
+ 		return -EINVAL;
+ 	}
++	spin_unlock_irqrestore(&i2s->tx_lock, flags);
+ 	return 0;
+ }
+ 
+@@ -669,7 +719,7 @@
+ 
+ 	dma_wr(i2s, AHB_OUT_INT_CLR(i2s->tx_chan), st);
+ 	if (st & AHB_OUT_EOF) {
+-		atomic_add(i2s->period_bytes, &i2s->tx_pos);
++		atomic_add(i2s->tx_period_bytes, &i2s->tx_pos);
+ 		sub = rcu_dereference(i2s->tx_sub);
+ 		if (sub)
+ 			snd_pcm_period_elapsed(sub);
+@@ -685,7 +735,7 @@
+ 
+ 	dma_wr(i2s, AHB_IN_INT_CLR(i2s->rx_chan), st);
+ 	if (st & AHB_IN_SUC_EOF) {
+-		atomic_add(i2s->period_bytes, &i2s->rx_pos);
++		atomic_add(i2s->rx_period_bytes, &i2s->rx_pos);
+ 		sub = rcu_dereference(i2s->rx_sub);
+ 		if (sub)
+ 			snd_pcm_period_elapsed(sub);
+@@ -793,6 +843,7 @@
+ 	struct esp32_p4_i2s *i2s = dev_get_drvdata(dai->dev);
+ 	unsigned int data_bits, chan_bits, bck_div;
+ 	u32 conf, conf1, mclk;
++	unsigned long flags;
+ 	bool tx = substream->stream == SNDRV_PCM_STREAM_PLAYBACK;
+ 
+ 	switch (params_format(params)) {
+@@ -841,12 +892,23 @@
+ 		   I2S_TDM_CHAN_BITS_M);
+ 
+ 	if (tx) {
+-		conf |= I2S_TX_STOP_EN | I2S_TX_BCK_NO_DLY |
+-			I2S_TX_SIG_LOOPBACK;
+-		i2s_wr(i2s, I2S_TX_CONF, conf);
++		conf |= I2S_TX_BCK_NO_DLY | I2S_TX_SIG_LOOPBACK;
++		spin_lock_irqsave(&i2s->tx_lock, flags);
++		i2s->tx_conf = conf;
++		i2s->tx_conf1 = conf1;
+ 		i2s_wr(i2s, I2S_TX_CONF1, conf1);
+ 		i2s_wr(i2s, I2S_TX_TDM_CTRL,
+ 		       (1 << I2S_TDM_TOT_CHAN_NUM_S) | 0x3);
++		/* While the engine runs (feed or play), write the play
++		 * conf with START and UPDATE preserved: it must never
++		 * see a full-store CONF that drops START, and STOP_EN
++		 * stays out until the data path is armed in trigger. */
++		if (i2s->tx_state == TX_IDLE)
++			i2s_wr(i2s, I2S_TX_CONF, conf);
++		else
++			i2s_wr(i2s, I2S_TX_CONF,
++			       conf | I2S_START | I2S_UPDATE);
++		spin_unlock_irqrestore(&i2s->tx_lock, flags);
+ 	} else {
+ 		i2s->rx_rate = params_rate(params);
+ 		conf |= I2S_RX_PCM_CONF_DFLT | I2S_SLAVE_MOD;
+@@ -953,6 +1015,8 @@
+ 		i2s->unit = v;
+ 	i2s->tx_chan = 0;
+ 	i2s->rx_chan = 1;
++	i2s->tx_state = TX_IDLE;
++	spin_lock_init(&i2s->tx_lock);
+ 	i2s->mclk_pin = -1;
+ 	i2s->bck_pin = -1;
+ 	i2s->ws_pin = -1;

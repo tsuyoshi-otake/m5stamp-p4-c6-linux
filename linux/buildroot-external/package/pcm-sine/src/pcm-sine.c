@@ -3,9 +3,10 @@
  * linking, so neither can build on this static NOMMU image.  This
  * speaks the raw SNDRV_PCM ioctl ABI only -- no libasound (#24).
  *
- * Usage: pcm-sine [card [seconds [freq_hz]]]
+ * Usage: pcm-sine [card [seconds [freq_hz [amp_dbfs]]]]
  *   pcm-sine            -> 1 s 440 Hz on pcmC0D0p
  *   pcm-sine 0 2 880    -> 2 s 880 Hz on pcmC0D0p
+ *   pcm-sine 0 3 440 -20 -> 440 Hz at -20 dBFS (default -8.74)
  */
 #include <errno.h>
 #include <fcntl.h>
@@ -50,6 +51,10 @@ int main(int argc, char **argv)
 	int card = argc > 1 ? atoi(argv[1]) : 0;
 	double seconds = argc > 2 ? atof(argv[2]) : 1.0;
 	double freq = argc > 3 ? atof(argv[3]) : 440.0;
+	/* 4th arg: amplitude in dBFS (<= 0).  Default is the original
+	 * fixed gain of 12000 LSB (~-8.74 dBFS). */
+	double dbfs = argc > 4 ? atof(argv[4]) : 0.0;
+	double amp = argc > 4 ? 0.0 : 12000.0;
 	unsigned int rate = 48000;
 	char dev[64];
 	struct snd_pcm_hw_params *p;
@@ -137,21 +142,72 @@ int main(int argc, char **argv)
 	}
 
 	frames = (long)(rate * seconds);
-	buf = malloc(frames * 2 * sizeof(int16_t));
-	if (!buf) {
-		fprintf(stderr, "malloc %ld failed\n", frames);
+	/* Exact one-period table: for integer f, the tone repeats every
+	 * rate/gcd(f, rate) samples (440 -> 1200, 1000 -> 48), so one
+	 * short sin() pass yields a sample-exact loop.  The recursive
+	 * quadrature oscillator replaced in B15 had no such guarantee:
+	 * its amplitude is 1/sin(w) (~17x at 440 Hz) -> int16 wrap, and
+	 * a partial WRITEI desynced the state from the play position.
+	 * pos tracks consumed frames so partial writes stay seamless. */
+	unsigned fi = (unsigned)lrint(freq);
+	unsigned g, period, i;
+	long pos = 0;
+	int16_t *tab;
+	if (!fi)
+		fi = 1;
+	g = fi;
+	{
+		unsigned h = rate, t;
+		while (h) {
+			t = g % h;
+			g = h;
+			h = t;
+		}
+	}
+	period = rate / g;
+	if (period > rate)
+		period = rate;
+	tab = malloc(period * sizeof(int16_t));
+	buf = malloc(960 * 2 * sizeof(int16_t));
+	if (!tab || !buf) {
+		fprintf(stderr, "malloc failed\n");
 		return 1;
 	}
-	for (long i = 0; i < frames; i++) {
-		int16_t s = (int16_t)(12000.0 * sin(2.0 * M_PI * freq * i / rate));
-		buf[2 * i] = s;
-		buf[2 * i + 1] = s;
+	if (argc > 4) {
+		double d = dbfs;
+		if (d > 0.0)
+			d = 0.0;
+		/* pow() crashes on this NOMMU uClibc BFLT runtime, so the
+		 * dB->linear factor is a multiply loop: exact for integer
+		 * dB, <= ~0.1 dB off for fractions. */
+		amp = 32767.0;
+		while (d <= -1.0) {
+			amp *= 0.8912509381; /* 10^(-1/20) */
+			d += 1.0;
+		}
+		amp *= 1.0 + d * 0.10875; /* d in (-1,0] */
+	}
+	if (amp > 32767.0)
+		amp = 32767.0;
+	if (amp < 1.0)
+		amp = 1.0;
+	for (i = 0; i < period; i++) {
+		long v = lrint(amp * sin(2.0 * M_PI * fi * i / rate));
+		tab[i] = v > 32767 ? 32767 : v < -32768 ? -32768 : v;
 	}
 
 	while (done < frames) {
 		static int stall;
-		xf.buf = buf + done * 2;
-		xf.frames = frames - done;
+		long want = frames - done;
+		if (want > 960)
+			want = 960;
+		for (long j = 0; j < want; j++) {
+			int16_t v = tab[(pos + j) % period];
+			buf[2 * j] = v;
+			buf[2 * j + 1] = v;
+		}
+		xf.buf = buf;
+		xf.frames = want;
 		xf.result = 0;
 		err = ioctl(fd, SNDRV_PCM_IOCTL_WRITEI_FRAMES, &xf);
 		if (err < 0) {
@@ -168,8 +224,10 @@ int main(int argc, char **argv)
 			continue;
 		}
 		stall = 0;
+		pos += xf.result;
 		done += xf.result;
 	}
+	free(tab);
 	printf("played %.0f ms of %.0f Hz sine on %s\n",
 	       seconds * 1000, freq, dev);
 	return 0;

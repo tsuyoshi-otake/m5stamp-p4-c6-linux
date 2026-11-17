@@ -1,0 +1,82 @@
+#!/bin/sh
+# Tab5 only (#35): apply ext5v_en=/ext_ant_en= from config.txt to the
+# expander at 0x43 (schematic U6): P0 = EXT_ANT_EN (0 = internal antenna,
+# 1 = external MMCX), P2 = EXT5V_EN (EXT header 5 V output).  Both default
+# to 0, matching the state the boot shim leaves; the keys are applied at
+# boot (S06rails) and live on a config.txt save (S40network apply).
+#
+# config.txt on Tab5 lives on the flash-resident boot FAT -- there is no
+# USB drive.  S05tmpfs stages a copy at /tmp/config.txt early in boot;
+# /boot/config.txt is the mounted image and /etc/board/config.txt the
+# built-in default, in that order of preference.
+#
+# The lines are driven through the sysfs GPIO ABI (the image carries no
+# libgpiod tools; CONFIG_GPIO_SYSFS is on for exactly this).
+
+conf_get() {
+	bom=$(printf '\357\273\277')
+	cr=$(printf '\r')
+	sed -n -e "1s/^$bom//" -e "s/$cr\$//" \
+		-e "/^[[:blank:]]*$1[[:blank:]]*=/{s/^[[:blank:]]*$1[[:blank:]]*=[[:blank:]]*//;${3:-}p;q;}" "$2" 2>/dev/null
+}
+NOSPACE='s/ //g;'
+
+CFG=/etc/board/config.txt
+[ -f /tmp/config.txt ] && CFG=/tmp/config.txt
+[ -f /boot/config.txt ] && CFG=/boot/config.txt
+
+chip=""
+for c in /sys/class/gpio/gpiochip*; do
+	l=""
+	read -r l < "$c/label" 2>/dev/null || continue
+	case "$l" in
+		*0043*) chip=$c; break ;;
+	esac
+done
+if [ -z "$chip" ]; then
+	echo "tab5-rails: expander 0x43 gpiochip not found" >&2
+	exit 1
+fi
+base=""
+read -r base < "$chip/base" 2>/dev/null || {
+	echo "tab5-rails: cannot read $chip/base" >&2
+	exit 1
+}
+
+# $1 = port offset on the expander, $2 = resolved 0/1
+set_line() {
+	n=$((base + $1))
+	if [ ! -d "/sys/class/gpio/gpio$n" ]; then
+		echo "$n" > /sys/class/gpio/export 2>/dev/null || {
+			echo "tab5-rails: export gpio$n failed" >&2
+			return 1
+		}
+	fi
+	echo out > "/sys/class/gpio/gpio$n/direction" 2>/dev/null || {
+		echo "tab5-rails: direction gpio$n failed" >&2
+		return 1
+	}
+	echo "$2" > "/sys/class/gpio/gpio$n/value" 2>/dev/null || {
+		echo "tab5-rails: write gpio$n failed" >&2
+		return 1
+	}
+	# Leave the sysfs node exported so the state can be inspected and
+	# poked from the console; the pin is ours anyway.
+	return 0
+}
+
+apply_key() { # $1 = config key, $2 = port offset, $3 = description
+	v=$(conf_get "$1" "$CFG" "$NOSPACE")
+	case "$v" in
+		1) want=1 ;;
+		""|0) want=0 ;;
+		*) echo "tab5-rails: ignoring invalid $1=$v (use 0 or 1)" >&2; return 0 ;;
+	esac
+	set_line "$2" "$want" &&
+		echo "M3-lab: $1=$want applied (expander 0x43 P$2, $3)"
+}
+
+apply_key ext_ant_en 0 "external antenna"
+apply_key ext5v_en   2 "EXT header 5V"
+
+exit 0

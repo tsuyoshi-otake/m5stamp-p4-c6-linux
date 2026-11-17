@@ -1,0 +1,53 @@
+--- a/sound/soc/espressif/esp32-p4-i2s.c
++++ b/sound/soc/espressif/esp32-p4-i2s.c
+@@ -148,11 +148,12 @@
+ /* AHB_*_CONF0 bits */
+ #define AHB_IN_RST		BIT(0)
+ #define AHB_IN_DATA_BURST_EN	BIT(3)
+-#define AHB_IN_DSCR_BURST_EN	BIT(4)
++#define AHB_IN_DSCR_BURST_EN	BIT(2)
+ #define AHB_OUT_RST		BIT(0)
+ #define AHB_OUT_AUTO_WRBACK	BIT(2)
+ #define AHB_OUT_EOF_MODE	BIT(3)
+ #define AHB_OUT_DSCR_BURST_EN	BIT(4)
++#define AHB_IN_BURST_MODE_INCR4	(1 << 6)
+ #define AHB_OUT_DATA_BURST_EN	BIT(5)
+ #define AHB_OUT_BURST_MODE_INCR4	(1 << 8)
+ 
+@@ -204,6 +205,7 @@
+ #define GPIO_SIG_IN_SEL		BIT(7)
+ #define GPIO_FUNC_OUT_SEL(p)	(0x558 + (p) * 4)
+ #define GPIO_FUNC_OUT_SEL_M	0x1ff
++#define IOMUX_FUN_IE		(1 << 9)
+ #define IOMUX_MCU_SEL_GPIO	(1 << 12)
+ #define IOMUX_MCU_SEL_M		(0x7 << 12)
+ 
+@@ -294,8 +296,11 @@
+ 
+ 	if (pin < 0)
+ 		return;
++	/* mcu_sel=GPIO routes the pad through the matrix; FUN_IE must
++	 * also be set or the schmitt trigger stays off and the matrix
++	 * reads a constant 0 (capture returns silence). */
+ 	v = readl(i2s->gpio + IOMUX_OFF + pin * 4);
+-	writel((v & ~IOMUX_MCU_SEL_M) | IOMUX_MCU_SEL_GPIO,
++	writel((v & ~IOMUX_MCU_SEL_M) | IOMUX_MCU_SEL_GPIO | IOMUX_FUN_IE,
+ 	       i2s->gpio + IOMUX_OFF + pin * 4);
+ 	writel((pin & GPIO_FUNC_IN_SEL_M) | GPIO_SIG_IN_SEL,
+ 	       i2s->gpio + GPIO_FUNC_IN_SEL(sig));
+@@ -470,7 +475,13 @@
+ 	} else {
+ 		ch = AHB_CH_IN(i2s->rx_chan);
+ 		dma_wr(i2s, ch + AHB_CONF0, AHB_IN_RST);
+-		dma_wr(i2s, ch + AHB_CONF0, AHB_IN_DATA_BURST_EN | AHB_IN_DSCR_BURST_EN);
++		/* Match the IDF RX channel: descriptor burst on, data
++		 * burst off (i2s passes max_data_burst_size=0), and keep
++		 * the reset INCR4 data-burst mode.  mem_trans_en (bit4)
++		 * must stay 0 -- it would switch the channel to
++		 * memory-to-memory and starve the peripheral path. */
++		dma_wr(i2s, ch + AHB_CONF0,
++			       AHB_IN_DSCR_BURST_EN | AHB_IN_BURST_MODE_INCR4);
+ 		dma_wr(i2s, ch + AHB_PERI_SEL, i2s->peri);
+ 		dma_wr(i2s, AHB_IN_LINK_ADDR(i2s->rx_chan),
+ 		       i2s->rx_descs_phys);
+ 
