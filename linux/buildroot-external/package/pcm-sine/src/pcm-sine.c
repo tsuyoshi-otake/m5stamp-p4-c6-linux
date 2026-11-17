@@ -137,21 +137,33 @@ int main(int argc, char **argv)
 	}
 
 	frames = (long)(rate * seconds);
-	buf = malloc(frames * 2 * sizeof(int16_t));
+	buf = malloc(960 * 2 * sizeof(int16_t));
 	if (!buf) {
-		fprintf(stderr, "malloc %ld failed\n", frames);
+		fprintf(stderr, "malloc failed\n");
 		return 1;
 	}
-	for (long i = 0; i < frames; i++) {
-		int16_t s = (int16_t)(12000.0 * sin(2.0 * M_PI * freq * i / rate));
-		buf[2 * i] = s;
-		buf[2 * i + 1] = s;
-	}
+	/* Generate on the fly, one 10 ms chunk per write: a full-buffer
+	 * sin() precompute costs ~1.5 s on this soft-float core before
+	 * the first sample reaches the DAC (#B14 playback-onset lag).
+	 * A quadrature oscillator (a few flops/sample) keeps real time. */
+	double w = 2.0 * M_PI * freq / rate;
+	double os = 0.0, oc = 1.0, wr = 2.0 * cos(w);
 
 	while (done < frames) {
 		static int stall;
-		xf.buf = buf + done * 2;
-		xf.frames = frames - done;
+		long want = frames - done;
+		if (want > 960)
+			want = 960;
+		for (long i = 0; i < want; i++) {
+			double t = wr * oc - os;
+			os = oc;
+			oc = t;
+			int16_t v = (int16_t)(12000.0 * os);
+			buf[2 * i] = v;
+			buf[2 * i + 1] = v;
+		}
+		xf.buf = buf;
+		xf.frames = want;
 		xf.result = 0;
 		err = ioctl(fd, SNDRV_PCM_IOCTL_WRITEI_FRAMES, &xf);
 		if (err < 0) {
