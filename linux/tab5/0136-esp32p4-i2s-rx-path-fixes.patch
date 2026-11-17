@@ -50,24 +50,4 @@
  		dma_wr(i2s, ch + AHB_PERI_SEL, i2s->peri);
  		dma_wr(i2s, AHB_IN_LINK_ADDR(i2s->rx_chan),
  		       i2s->rx_descs_phys);
---- a/arch/riscv/kernel/smp.c
-+++ b/arch/riscv/kernel/smp.c
-@@ -114,11 +114,18 @@
- 
- static void send_ipi_mask(const struct cpumask *mask, enum ipi_message_type op)
- {
-+	/* tolerate a missing IPI provider (esp32p4-ipi node absent):
-+	 * the queued work still runs at the next tick/irq exit instead
-+	 * of faulting on a NULL descriptor. */
-+	if (!ipi_desc[op])
-+		return;
- 	__ipi_send_mask(ipi_desc[op], mask);
- }
- 
- static void send_ipi_single(int cpu, enum ipi_message_type op)
- {
-+	if (!ipi_desc[op])
-+		return;
- 	__ipi_send_mask(ipi_desc[op], cpumask_of(cpu));
- }
  
