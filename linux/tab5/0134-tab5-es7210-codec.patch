@@ -31,16 +31,21 @@
  obj-$(CONFIG_SND_SOC_ES8328_SPI)+= snd-soc-es8328-spi.o
 --- a/sound/soc/codecs/es7210.c
 +++ b/sound/soc/codecs/es7210.c
-@@ -0,0 +1,184 @@
+@@ -0,0 +1,120 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
-+ * Minimal ES7210 driver for the M5Stack Tab5 (B12/#24).
++ * Minimal ES7210 driver for the M5Stack Tab5 (B12).
 + *
-+ * The part is a four-channel ADC front end; on the Tab5 only MIC1 and
-+ * MIC2 are wired (on-board mics AMIC1/AMIC2), so this driver runs the
-+ * chip as a plain stereo I2S ADC -- no TDM.  The register writes below
-+ * reproduce the vendor esp-adf es7210.c init sequence verbatim for
-+ * slave mode (verified against the published source).
++ * The part is a four-channel ADC front end; on the Tab5 MIC1/MIC2 are
++ * the on-board mics (AMIC1/AMIC2), MIC3 is the headset line, and MIC4
++ * is unwired.  The chip runs in slave mode (i2s0 supplies MCLK/BCK/WS)
++ * and drives SDOUT1 onto the shared GPIO28/DIN net; ES8388's own
++ * ASDOUT is not wired, so card0's capture PCM reads these mics
++ * directly.  ASoC binding is intentionally absent: a second codec on
++ * the card's dai-link panics in this kernel's device-link
++ * deferral, and an aux-dev never receives a stream -- so the vendor
++ * esp-adf init is applied once at probe instead (slave mode needs no
++ * runtime register work; the LRCK timing comes from the bus clocks).
 + */
 +#include <linux/i2c.h>
 +#include <linux/module.h>
@@ -51,8 +56,16 @@
 +	struct regmap *regmap;
 +};
 +
-+/* Vendor es7210_adc_init order: reset, timing, HPF quick-setup,
-+ * slave mode, analog/VMID, mic bias, OSR, main clock. */
++/* esp-adf es7210.c: es7210_open() + es7210_start() + mic_select for
++ * MIC1|MIC2, then unmute -- verbatim register order from the vendor
++ * driver, slave mode, ~30 dB PGA. */
++static const struct regmap_config es7210_regmap_config = {
++	.reg_bits	= 8,
++	.val_bits	= 8,
++	.max_register	= 0x4c,
++	.cache_type	= REGCACHE_NONE,
++};
++
 +static const struct reg_sequence es7210_init[] = {
 +	{ 0x00, 0xff },		/* reset */
 +	{ 0x00, 0x41 },
@@ -68,151 +81,74 @@
 +	{ 0x41, 0x70 },		/* MIC12 bias ~2.87 V */
 +	{ 0x42, 0x70 },		/* MIC34 bias ~2.87 V */
 +	{ 0x07, 0x20 },		/* OSR */
-+	{ 0x02, 0xc1 },		/* main clock: adc_div1, dll bypass */
-+};
-+
-+/* MIC1|MIC2 select: power ADC12 pair, PGA on, 24 dB gain, no TDM. */
-+static const struct reg_sequence es7210_mic12[] = {
-+	{ 0x4b, 0xff },		/* MIC12 pair power off first */
-+	{ 0x4c, 0xff },		/* MIC34 pair off (mics 3/4 unused) */
-+	{ 0x4b, 0x00 },		/* ADC12 pair on */
-+	{ 0x43, 0x18 },		/* MIC1 PGA on, 24 dB */
-+	{ 0x44, 0x18 },		/* MIC2 PGA on, 24 dB */
++	{ 0x02, 0xc1 },		/* main clock clear-state */
++	/* mic_select: gains off, pairs powered down, then MIC1|MIC2 on */
++	{ 0x43, 0x00 }, { 0x44, 0x00 }, { 0x45, 0x00 }, { 0x46, 0x00 },
++	{ 0x4b, 0xff },
++	{ 0x4c, 0xff },
++	{ 0x01, 0x34 },		/* reg01 &= ~0x0b: ADC12 clocks run */
++	{ 0x4b, 0x00 },		/* ADC12 pair on (MIC34 stay off) */
++	{ 0x43, 0x1a },		/* MIC1 PGA on, ~30 dB */
++	{ 0x44, 0x1a },		/* MIC2 PGA on, ~30 dB */
 +	{ 0x12, 0x00 },		/* stereo, no TDM */
++	/* es7210_start */
++	{ 0x01, 0x34 },		/* off_reg: ADC12 clocks run */
++	{ 0x06, 0x00 },		/* POWER_DOWN release */
++	{ 0x40, 0x43 },		/* analog on */
++	{ 0x47, 0x08 },		/* MIC1 power LP_PGA */
++	{ 0x48, 0x08 },		/* MIC2 power LP_PGA */
++	{ 0x49, 0x08 },		/* MIC3 power (headset line) */
++	{ 0x4a, 0x08 },		/* MIC4 power */
++	{ 0x40, 0x43 },
++	{ 0x00, 0x71 },		/* vendor tail reset */
++	{ 0x00, 0x41 },
++	{ 0x14, 0x00 },		/* ADC12 unmute */
++	{ 0x15, 0x00 },		/* ADC34 unmute */
 +	{ 0x11, 0x60 },		/* SDP iface: I2S fmt, 16-bit data */
-+	{ 0x01, 0x34 },		/* 0x3f & ~0x0b: ADC12 clocks run */
 +};
 +
-+/* Vendor coeff_div rows, restricted to the MCLK the card supplies
-+ * (rate*256 -> 12.288 MHz or 11.2896 MHz families).  reg02 packs
-+ * adc_div | doubler<<6 | dll_bypass<<7; reg04/05 are the LRCK
-+ * divider (MCLK/LRCK). */
-+struct es7210_coeff {
-+	unsigned int rate;
-+	u8 reg02, reg04, reg05;
-+};
-+
-+static const struct es7210_coeff es7210_coeffs[] = {
-+	{  8000, 0x83, 0x06, 0x00 },	/* 12.288M: div3 dll_byp, lrck/1536 */
-+	{ 16000, 0xc3, 0x03, 0x00 },	/* 12.288M: div3+doubler, lrck/768 */
-+	{ 22050, 0x81, 0x02, 0x00 },	/* 11.2896M: div1, lrck/512 */
-+	{ 24000, 0x81, 0x02, 0x00 },	/* 12.288M: div1, lrck/512 */
-+	{ 32000, 0x81, 0x01, 0x80 },	/* 12.288M: div1, lrck/384 */
-+	{ 44100, 0x81, 0x01, 0x00 },	/* 11.2896M: div1, lrck/256 */
-+	{ 48000, 0x81, 0x01, 0x00 },	/* 12.288M: div1, lrck/256 */
-+};
-+
-+static int es7210_hw_params(struct snd_pcm_substream *substream,
-+			    struct snd_pcm_hw_params *params,
-+			    struct snd_soc_dai *dai)
-+{
-+	struct es7210_priv *priv = snd_soc_dai_get_drvdata(dai);
-+	unsigned int rate = params_rate(params);
-+	int i;
-+
-+	for (i = 0; i < ARRAY_SIZE(es7210_coeffs); i++)
-+		if (es7210_coeffs[i].rate == rate)
-+			break;
-+	if (i == ARRAY_SIZE(es7210_coeffs))
-+		return -EINVAL;
-+
-+	regmap_write(priv->regmap, 0x02, es7210_coeffs[i].reg02);
-+	regmap_write(priv->regmap, 0x07, 0x20);
-+	regmap_write(priv->regmap, 0x04, es7210_coeffs[i].reg04);
-+	regmap_write(priv->regmap, 0x05, es7210_coeffs[i].reg05);
-+	return 0;
-+}
-+
-+static int es7210_set_fmt(struct snd_soc_dai *dai, unsigned int fmt)
-+{
-+	if ((fmt & SND_SOC_DAIFMT_FORMAT_MASK) != SND_SOC_DAIFMT_I2S)
-+		return -EINVAL;
-+	return 0;
-+}
-+
-+static const struct snd_soc_dai_ops es7210_dai_ops = {
-+	.hw_params	= es7210_hw_params,
-+	.set_fmt	= es7210_set_fmt,
-+};
-+
-+static struct snd_soc_dai_driver es7210_dai = {
-+	.name = "es7210-hifi",
-+	.capture = {
-+		.stream_name	= "Capture",
-+		.channels_min	= 2,
-+		.channels_max	= 2,
-+		.rates		= SNDRV_PCM_RATE_8000_96000,
-+		.formats	= SNDRV_PCM_FMTBIT_S16_LE |
-+				  SNDRV_PCM_FMTBIT_S32_LE,
-+	},
-+	.ops = &es7210_dai_ops,
-+};
-+
-+static const struct snd_soc_component_driver es7210_component = {
-+	.name = "es7210",
-+};
-+
-+static const struct regmap_config es7210_regmap_config = {
-+	.reg_bits	= 8,
-+	.val_bits	= 8,
-+	.max_register	= 0x4c,
-+	.cache_type	= REGCACHE_NONE,
-+};
-+
-+static int es7210_i2c_probe(struct i2c_client *i2c)
++static int es7210_probe(struct i2c_client *client)
 +{
 +	struct es7210_priv *priv;
-+	int i, ret;
++	int ret;
 +
-+	priv = devm_kzalloc(&i2c->dev, sizeof(*priv), GFP_KERNEL);
++	priv = devm_kzalloc(&client->dev, sizeof(*priv), GFP_KERNEL);
 +	if (!priv)
 +		return -ENOMEM;
-+
-+	priv->regmap = devm_regmap_init_i2c(i2c, &es7210_regmap_config);
++	priv->regmap = devm_regmap_init_i2c(client, &es7210_regmap_config);
 +	if (IS_ERR(priv->regmap))
 +		return PTR_ERR(priv->regmap);
-+
-+	for (i = 0; i < ARRAY_SIZE(es7210_init); i++) {
-+		ret = regmap_write(priv->regmap, es7210_init[i].reg,
-+				   es7210_init[i].def);
-+		if (ret)
-+			return dev_err_probe(&i2c->dev, ret,
-+					     "es7210 init write %d failed", i);
-+	}
-+	for (i = 0; i < ARRAY_SIZE(es7210_mic12); i++) {
-+		ret = regmap_write(priv->regmap, es7210_mic12[i].reg,
-+				   es7210_mic12[i].def);
-+		if (ret)
-+			return dev_err_probe(&i2c->dev, ret,
-+					     "es7210 mic write %d failed", i);
-+	}
-+
-+	i2c_set_clientdata(i2c, priv);
-+	return devm_snd_soc_register_component(&i2c->dev,
-+			&es7210_component, &es7210_dai, 1);
++	i2c_set_clientdata(client, priv);
++	ret = regmap_register_patch(priv->regmap, es7210_init,
++				    ARRAY_SIZE(es7210_init));
++	if (ret)
++		return ret;
++	dev_info(&client->dev, "ES7210 ADC initialized (MIC1/MIC2)\n");
++	return 0;
 +}
 +
 +static const struct of_device_id es7210_of_match[] = {
-+	{ .compatible = "everest,es7210" },
-+	{ }
++	{ .compatible = "everest,es7210", },
++	{},
 +};
 +MODULE_DEVICE_TABLE(of, es7210_of_match);
 +
 +static const struct i2c_device_id es7210_i2c_id[] = {
 +	{ "es7210" },
-+	{ }
++	{},
 +};
 +MODULE_DEVICE_TABLE(i2c, es7210_i2c_id);
 +
-+static struct i2c_driver es7210_i2c_driver = {
++static struct i2c_driver es7210_driver = {
 +	.driver = {
-+		.name		= "es7210",
-+		.of_match_table	= es7210_of_match,
++		.name = "es7210",
++		.of_match_table = es7210_of_match,
 +	},
-+	.probe		= es7210_i2c_probe,
++	.probe		= es7210_probe,
 +	.id_table	= es7210_i2c_id,
 +};
-+module_i2c_driver(es7210_i2c_driver);
 +
-+MODULE_DESCRIPTION("Minimal ES7210 ADC driver (stereo MIC1/MIC2)");
++module_i2c_driver(es7210_driver);
++
++MODULE_DESCRIPTION("Everest ES7210 always-on ADC init (Tab5)");
 +MODULE_LICENSE("GPL");

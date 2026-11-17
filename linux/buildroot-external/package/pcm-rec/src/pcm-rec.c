@@ -101,7 +101,7 @@ int main(int argc, char **argv)
 	 * eof_num field is 12 bits, so capture periods must stay
 	 * under 4092 B -- 10 ms at 48 kHz stereo is 3840 B. */
 	ivl_set(&IVL(p, SNDRV_PCM_HW_PARAM_PERIOD_TIME), 10000);
-	ivl_set(&IVL(p, SNDRV_PCM_HW_PARAM_PERIODS), 8);
+	ivl_set(&IVL(p, SNDRV_PCM_HW_PARAM_PERIODS), 6);
 	p->rmask = ~0U;
 	p->cmask = 0;
 

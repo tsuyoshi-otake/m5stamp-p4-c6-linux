@@ -820,6 +820,15 @@
 			sound-dai = <&i2s0>;
 		};
 		simple-audio-card,codec {
+			/* ES8388 is the only bound codec.  ES7210 needs no
+			 * binding: in slave mode it streams onto the shared
+			 * GPIO28/DIN net (ES8388's ASDOUT is unwired)
+			 * whenever i2s0 clocks BCK/WS, so card0's capture
+			 * PCM reads the microphones directly.  Binding it
+			 * as a second codec panics in this kernel's ASoC
+			 * device-link deferral, and aux-dev gives it no
+			 * stream either -- its Linux driver applies the
+			 * vendor always-on init at probe instead. */
 			sound-dai = <&es8388>;
 		};
 	};
