@@ -1,0 +1,15 @@
+--- a/drivers/misc/esp32p4_dsi_scanout.c
++++ b/drivers/misc/esp32p4_dsi_scanout.c
+@@ -66,6 +66,12 @@
+ #define SRAM_UNCACHED_OFF	0x40000000 /* SOC_NON_CACHEABLE_OFFSET */
+ #define SRAM_LO			0x4ff00000
+ #define SRAM_HI			0x4ff80000
++/* The i2s0-dma shared-dma-pool in the Tab5 DTS reserves this
++ * window for audio descriptors/buffers; a scan-out LLI inside it
++ * would be silently overwritten by AHB-GDMA traffic.  Refuse the
++ * handoff loudly rather than corrupt the display list. */
++#define I2S0_DMA_POOL_LO	0x4ff50000
++#define I2S0_DMA_POOL_HI	0x4ff80000
+ 
+ struct dsi_scanout {
+ 	void __iomem *regs;
