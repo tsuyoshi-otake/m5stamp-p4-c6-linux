@@ -1,6 +1,6 @@
 --- a/sound/soc/espressif/esp32-p4-i2s.c
 +++ b/sound/soc/espressif/esp32-p4-i2s.c
-@@ -148,7 +148,7 @@
+@@ -148,11 +148,12 @@
  /* AHB_*_CONF0 bits */
  #define AHB_IN_RST		BIT(0)
  #define AHB_IN_DATA_BURST_EN	BIT(3)
@@ -9,7 +9,12 @@
  #define AHB_OUT_RST		BIT(0)
  #define AHB_OUT_AUTO_WRBACK	BIT(2)
  #define AHB_OUT_EOF_MODE	BIT(3)
-@@ -205,6 +205,7 @@
+ #define AHB_OUT_DSCR_BURST_EN	BIT(4)
++#define AHB_IN_BURST_MODE_INCR4	(1 << 6)
+ #define AHB_OUT_DATA_BURST_EN	BIT(5)
+ #define AHB_OUT_BURST_MODE_INCR4	(1 << 8)
+ 
+@@ -204,6 +205,7 @@
  #define GPIO_SIG_IN_SEL		BIT(7)
  #define GPIO_FUNC_OUT_SEL(p)	(0x558 + (p) * 4)
  #define GPIO_FUNC_OUT_SEL_M	0x1ff
@@ -17,7 +22,7 @@
  #define IOMUX_MCU_SEL_GPIO	(1 << 12)
  #define IOMUX_MCU_SEL_M		(0x7 << 12)
  
-@@ -295,8 +296,11 @@
+@@ -294,8 +296,11 @@
  
  	if (pin < 0)
  		return;
@@ -30,7 +35,7 @@
  	       i2s->gpio + IOMUX_OFF + pin * 4);
  	writel((pin & GPIO_FUNC_IN_SEL_M) | GPIO_SIG_IN_SEL,
  	       i2s->gpio + GPIO_FUNC_IN_SEL(sig));
-@@ -471,7 +475,13 @@
+@@ -470,7 +475,13 @@
  	} else {
  		ch = AHB_CH_IN(i2s->rx_chan);
  		dma_wr(i2s, ch + AHB_CONF0, AHB_IN_RST);
