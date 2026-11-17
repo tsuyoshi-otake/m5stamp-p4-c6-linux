@@ -676,15 +676,19 @@
 		};
 
 		/*
-		 * ES7210 4-channel microphone ADC at 0x40.  There is
-		 * no upstream Linux driver; kept disabled so nothing
-		 * probes it.  Until one is written, mic input uses
-		 * the ES8388's own ADC.
+		 * ES7210 4-channel microphone ADC at 0x40 (#24/B12).
+		 * The Tab5 wires only MIC1/MIC2 (on-board mics AMIC1/
+		 * AMIC2); MIC3 is the headset-mic line (untested, no
+		 * plug available).  The local minimal driver runs it
+		 * as a plain stereo I2S ADC -- no TDM.  Shares the
+		 * ES8388's MCLK.
 		 */
 		es7210: audio-adc@40 {
 			compatible = "everest,es7210";
 			reg = <0x40>;
-			status = "disabled";
+			clocks = <&es8388_mclk>;
+			#sound-dai-cells = <0>;
+			status = "okay";
 		};
 	};
 
@@ -754,13 +758,73 @@
 	};
 
 	/*
-	 * ES8388 + I2S0 link.  simple-audio-card is enough here: the
-	 * amp/headphone switching through expander 0x43 is handled
-	 * by the expander-IC driver, not the machine driver.
+	 * NS4150B mono speaker amp.  Its enable is expander 0x43 P1
+	 * (SPK_EN); wiring a simple-audio-amplifier node through the
+	 * card's aux-devs makes DAPM drive the pin: high on playback,
+	 * low again when the stream stops (#24/B12).
+	 * Schematic: the amp taps the HPOUT_L net, which the OUT2 pair
+	 * (LOUT2/ROUT2) drives -- verified on-device by forcing
+	 * DACPOWER per pair mid-playback (OUT2 alone keeps the 1 kHz
+	 * tone loud; OUT1 alone drops it to silence).
+	 */
+	spk_amp: audio-amplifier {
+		compatible = "simple-audio-amplifier";
+		sound-name-prefix = "Amp";
+		enable-gpios = <&exp0 1 GPIO_ACTIVE_HIGH>;
+	};
+
+	/*
+	 * ES8388 + I2S0 link.  simple-audio-card with an aux
+	 * amplifier and the headphone jack.  The jack carries the
+	 * HPOUT_L/HPOUT_R nets; per the schematic extraction the
+	 * OUT2 pair drives HPOUT_L and the OUT1 pair drives
+	 * HPOUT_R (the net labels sit against ROUT2/ROUT1
+	 * respectively), so the jack route powers all four outputs.
+	 * HP_DET is expander 0x43 P7, an input that reads low with
+	 * nothing plugged (measured: 0x43 reg0 = 0x00) -- the jack
+	 * switch opens on insertion, so insertion pulls it high:
+	 * GPIO_ACTIVE_HIGH.
 	 */
 	sound {
 		compatible = "simple-audio-card";
 		simple-audio-card,name = "Tab5-ES8388";
+		simple-audio-card,format = "i2s";
+		simple-audio-card,bitclock-master = <&i2s0>;
+		simple-audio-card,frame-master = <&i2s0>;
+		simple-audio-card,mclk-fs = <256>;
+		simple-audio-card,aux-devs = <&spk_amp>;
+
+		simple-audio-card,widgets =
+			"Speaker", "External Speaker",
+			"Headphone", "Headphones";
+		simple-audio-card,routing =
+			"External Speaker", "Amp OUTL",
+			"External Speaker", "Amp OUTR",
+			"Amp INL", "LOUT2",
+			"Amp INR", "ROUT2",
+			"Headphones", "LOUT1",
+			"Headphones", "ROUT1",
+			"Headphones", "LOUT2",
+			"Headphones", "ROUT2";
+		simple-audio-card,hp-det-gpios = <&exp0 7 GPIO_ACTIVE_HIGH>;
+
+		simple-audio-card,cpu {
+			sound-dai = <&i2s0>;
+		};
+		simple-audio-card,codec {
+			sound-dai = <&es8388>;
+		};
+	};
+
+	/*
+	 * ES7210 mic capture on the same I2S0 (RX side).  Second
+	 * card so the mics get their own PCM device; I2S0's DAI
+	 * already exposes a capture stream backed by the AHB IN
+	 * channel and the SRAM pool.
+	 */
+	sound-mic {
+		compatible = "simple-audio-card";
+		simple-audio-card,name = "Tab5-ES7210";
 		simple-audio-card,format = "i2s";
 		simple-audio-card,bitclock-master = <&i2s0>;
 		simple-audio-card,frame-master = <&i2s0>;
@@ -770,7 +834,7 @@
 			sound-dai = <&i2s0>;
 		};
 		simple-audio-card,codec {
-			sound-dai = <&es8388>;
+			sound-dai = <&es7210>;
 		};
 	};
 
