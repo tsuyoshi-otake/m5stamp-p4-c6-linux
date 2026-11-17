@@ -3,9 +3,10 @@
  * linking, so neither can build on this static NOMMU image.  This
  * speaks the raw SNDRV_PCM ioctl ABI only -- no libasound (#24).
  *
- * Usage: pcm-sine [card [seconds [freq_hz]]]
+ * Usage: pcm-sine [card [seconds [freq_hz [amp_dbfs]]]]
  *   pcm-sine            -> 1 s 440 Hz on pcmC0D0p
  *   pcm-sine 0 2 880    -> 2 s 880 Hz on pcmC0D0p
+ *   pcm-sine 0 3 440 -20 -> 440 Hz at -20 dBFS (default -8.74)
  */
 #include <errno.h>
 #include <fcntl.h>
@@ -50,6 +51,10 @@ int main(int argc, char **argv)
 	int card = argc > 1 ? atoi(argv[1]) : 0;
 	double seconds = argc > 2 ? atof(argv[2]) : 1.0;
 	double freq = argc > 3 ? atof(argv[3]) : 440.0;
+	/* 4th arg: amplitude in dBFS (<= 0).  Default is the original
+	 * fixed gain of 12000 LSB (~-8.74 dBFS). */
+	double dbfs = argc > 4 ? atof(argv[4]) : 0.0;
+	double amp = argc > 4 ? 0.0 : 12000.0;
 	unsigned int rate = 48000;
 	char dev[64];
 	struct snd_pcm_hw_params *p;
@@ -168,8 +173,26 @@ int main(int argc, char **argv)
 		fprintf(stderr, "malloc failed\n");
 		return 1;
 	}
+	if (argc > 4) {
+		double d = dbfs;
+		if (d > 0.0)
+			d = 0.0;
+		/* pow() crashes on this NOMMU uClibc BFLT runtime, so the
+		 * dB->linear factor is a multiply loop: exact for integer
+		 * dB, <= ~0.1 dB off for fractions. */
+		amp = 32767.0;
+		while (d <= -1.0) {
+			amp *= 0.8912509381; /* 10^(-1/20) */
+			d += 1.0;
+		}
+		amp *= 1.0 + d * 0.10875; /* d in (-1,0] */
+	}
+	if (amp > 32767.0)
+		amp = 32767.0;
+	if (amp < 1.0)
+		amp = 1.0;
 	for (i = 0; i < period; i++) {
-		long v = lrint(12000.0 * sin(2.0 * M_PI * fi * i / rate));
+		long v = lrint(amp * sin(2.0 * M_PI * fi * i / rate));
 		tab[i] = v > 32767 ? 32767 : v < -32768 ? -32768 : v;
 	}
 
