@@ -64,10 +64,11 @@ key_unset_ok() {
 	case "$1" in password|root_password) return 1 ;; *) return 0 ;; esac
 }
 # A key that can only be set where its apply path exists.
+SYSBOARD=${M5CFG_SYS_BOARD:-/sys/kernel/board}
 key_present() {
 	case "$1" in
 		ext5v_en|ext_ant_en) [ -x /usr/sbin/tab5-rails ] ;;
-		lp_core|lp_program|lp_period) [ -d /sys/kernel/board/lp_core ] ;;
+		lp_core|lp_program|lp_period) [ -d "$SYSBOARD/lp_core" ] ;;
 		*) return 0 ;;
 	esac
 }
@@ -177,19 +178,33 @@ eff_ssid() {
 bad() { VALIDATE_MSG=$1; return 1; }
 VALIDATE_MSG=""
 
+# Leading or trailing blanks are a lock-out for secrets: conf_get
+# strips them on read, so the stored value would differ from what was
+# typed.  Reject before they reach a file.
+no_edge_blank() {
+	case "$1" in
+		" "*|"	"*|*" "|*"	")
+			bad "value must not start or end with a blank"
+			return 1 ;;
+	esac
+	return 0
+}
+
 validate() { # $1 key, $2 value
 	k=$1; v=$2
 	case "$k" in
 		hostname)
 			[ "${#v}" -le 32 ] || { bad "hostname is at most 32 characters"; return 1; }
 			case "$v" in
-				[A-Za-z0-9]|[A-Za-z0-9][A-Za-z0-9-]*[A-Za-z0-9]) return 0 ;;
-				*) bad "hostname is letters, digits and dashes (no edge dashes)" ;;
+				""|*[!A-Za-z0-9-]*|-*|*-)
+					bad "hostname is letters, digits and dashes (no edge dashes)" ;;
+				*) return 0 ;;
 			esac ;;
 		wifi_mode)
 			case "$v" in ap|sta) return 0 ;; esac
 			bad "wifi_mode is ap or sta" ;;
 		wifi_ssid)
+			no_edge_blank "$v" || return 1
 			[ -n "$v" ] || { bad "empty SSID (set wifi_ssid \"\" returns to wpa_supplicant.conf)"; return 1; }
 			[ "${#v}" -le 32 ] || { bad "SSID is at most 32 bytes"; return 1; }
 			case "$v" in
@@ -197,6 +212,7 @@ validate() { # $1 key, $2 value
 				*) return 0 ;;
 			esac ;;
 		wifi_psk)
+			no_edge_blank "$v" || return 1
 			[ "${#v}" -ge 8 ] || { bad "passphrase is 8-63 characters"; return 1; }
 			[ "${#v}" -le 63 ] || { bad "passphrase is 8-63 characters"; return 1; }
 			case "$v" in
@@ -243,11 +259,21 @@ validate() { # $1 key, $2 value
 				*) return 0 ;;
 			esac ;;
 		lp_period)
+			# Mirror S05tmpfs exactly: "0, 500ms, 1s, 1m ... up to 1h"
+			# (1-9 digits + ms|s|m|h, or bare seconds; <= 3600000 ms).
 			n=${v%%[!0-9]*}; u=${v#"$n"}
-			case "$n" in ''|??????????*) bad "lp_period looks like 1s or 500ms" ;; esac
-			case "$u" in ''|s|ms|m|h) return 0 ;; esac
-			bad "lp_period unit is ms, s, m or h" ;;
+			case "$n" in ''|??????????*) bad "lp_period looks like 1s or 500ms"; return 1 ;; esac
+			case "$u" in
+				ms) ms=$n ;;
+				''|s) ms=$((n * 1000)) ;;
+				m) ms=$((n * 60000)) ;;
+				h) ms=$((n * 3600000)) ;;
+				*) bad "lp_period unit is ms, s, m or h"; return 1 ;;
+			esac
+			[ "$ms" -le 3600000 ] || { bad "lp_period is at most 1h"; return 1; }
+			return 0 ;;
 		password|root_password)
+			no_edge_blank "$v" || return 1
 			[ "${#v}" -ge 8 ] || { bad "password is 8-64 characters"; return 1; }
 			[ "${#v}" -le 64 ] || { bad "password is 8-64 characters"; return 1; }
 			case "$v" in
@@ -268,7 +294,10 @@ validate() { # $1 key, $2 value
 # -------------------------------------------------------- key editing ----
 # These run inside the mounted working copy ($MNT).  Only the first
 # "key=" line is touched; every other byte (comments, order, CRLF on
-# other lines, indentation) is copied through unchanged.
+# other lines, indentation) is copied through unchanged.  On the
+# replaced line itself the leading blanks are kept, and the CR is kept
+# when the original line had one (Stamp users edit these files with
+# Notepad); an appended line uses a plain LF.
 
 # Remove the first line that sets $2 in file $1 (builtins only).
 editor_del() {
@@ -301,7 +330,11 @@ editor_set() {
 					esac
 				done
 				_indent=${_kk%"$2"}
-				printf '%s\n' "$_indent$2=$3"
+				case "$_l" in
+					*"$CR") _eol=$CR ;;   # keep a CRLF line ending
+					*) _eol="" ;;
+				esac
+				printf '%s%s\n' "$_indent$2=$3" "$_eol"
 				_s_done=1
 			else
 				printf '%s\n' "$_l"

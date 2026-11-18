@@ -292,6 +292,61 @@ out=$(M5CFG_TSCRIPT="$tmp/tscr/events" sh "$tool" menu </dev/null 2>&1)
 echo "$out" | grep -q "== Wi-Fi ==" &&
 	ok "key byte selects while touch is on" || bad "key select: $out"
 
+# 16. REVIEW 1 group B: validation fixes.
+before=$(md5sum "$img" | cut -d' ' -f1)
+for kv in "hostname ab!!c" "hostname -x" "hostname x-" \
+	"lp_period s" "lp_period ms" "lp_period 12345678901s" \
+	"lp_period 2h"; do
+	set -- $kv
+	out=$(sh "$tool" set "$1" "$2" 2>&1); rc=$?
+	[ "$rc" -eq 1 ] && [ "$(md5sum "$img" | cut -d' ' -f1)" = "$before" ] ||
+		{ bad "set $kv rc=$rc changed the image ($out)"; break; }
+done
+ok "group-B rejects: bad hostname/lp_period"
+# leading/trailing blanks on secrets are lock-outs and rejected.
+_n=0
+for spec in "wifi_psk| lead8ch" "password|8trailch " "wifi_ssid| lead"; do
+	_k=${spec%%|*}; _v=${spec#*|}
+	out=$(sh "$tool" set "$_k" "$_v" 2>&1); rc=$?
+	[ "$rc" -eq 1 ] || { _n=1; bad "blank '$_v' rc=$rc ($out)"; }
+done
+[ "$(md5sum "$img" | cut -d' ' -f1)" = "$before" ] && [ "$_n" -eq 0 ] &&
+	ok "edge blanks rejected, image untouched" || bad "edge blanks"
+start_saver
+for kv in "hostname ab" "hostname m5"; do
+	set -- $kv
+	out=$(sh "$tool" set "$1" "$2" 2>&1); rc=$?
+	[ "$rc" -eq 0 ] || { bad "set $kv rc=$rc ($out)"; break; }
+done
+stop_saver
+ok "group-B accepts: m5/ab hostnames"
+# lp_period accepts go through 'set' with the lp_core sysfs seam
+# enabled (the key is feature-gated to boards that have it).
+mkdir -p "$tmp/sysboard/lp_core"
+start_saver
+for v in 0 500ms 1s 1m 30m 1h; do
+	out=$(M5CFG_SYS_BOARD="$tmp/sysboard" sh "$tool" set lp_period "$v" 2>&1)
+	rc=$?
+	[ "$rc" -eq 0 ] || { bad "lp_period $v rc=$rc ($out)"; break; }
+done
+for v in s ms 12345678901s 2h 90m 3601s; do
+	out=$(M5CFG_SYS_BOARD="$tmp/sysboard" sh "$tool" set lp_period "$v" 2>&1)
+	rc=$?
+	[ "$rc" -eq 1 ] || { bad "lp_period $v rc=$rc ($out)"; break; }
+done
+stop_saver
+ok "lp_period mirrors the S05tmpfs range (0 .. 1h)"
+# leading/trailing blanks rejected with a clear message
+out=$(sh "$tool" set password " lead9char" 2>&1)
+echo "$out" | grep -q "blank" && ok "edge blank message" || bad "blank: $out"
+# editor_set keeps the CR on a CRLF line
+start_saver
+sh "$tool" set channel 7 >/dev/null 2>&1
+stop_saver
+# od -c sees the real bytes (MSYS grep textifies its stdin, hiding CR)
+imgfile config.txt | od -c | grep -q '7  \\r' &&
+	ok "CRLF line keeps its CR" || bad "CR lost: $(imgfile config.txt | grep channel | od -c | head -1)"
+
 if [ "$fails" -gt 0 ]; then
 	echo "FAILED: $fails checks"
 	exit 1
