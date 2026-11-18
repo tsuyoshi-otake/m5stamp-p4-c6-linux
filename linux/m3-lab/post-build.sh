@@ -34,6 +34,7 @@ for path in \
 	"${TARGET_DIR}/usr/sbin/autorun" \
 	"${TARGET_DIR}/usr/sbin/deepsleep" \
 	"${TARGET_DIR}/usr/sbin/boot-edit" \
+	"${TARGET_DIR}/usr/bin/m5-config" \
 	"${TARGET_DIR}/usr/lib/micropython/deepsleep.py" \
 	"${TARGET_DIR}/usr/lib/micropython/lpcore.py" \
 	"${TARGET_DIR}/usr/lib/board/autorun.sh" \
@@ -59,6 +60,7 @@ chmod 0755 "${TARGET_DIR}/usr/sbin/sysinfo"
 chmod 0755 "${TARGET_DIR}/usr/sbin/autorun"
 chmod 0755 "${TARGET_DIR}/usr/sbin/deepsleep"
 chmod 0755 "${TARGET_DIR}/usr/sbin/boot-edit"
+chmod 0755 "${TARGET_DIR}/usr/bin/m5-config"
 chmod 0644 "${TARGET_DIR}/usr/lib/micropython/deepsleep.py"
 chmod 0644 "${TARGET_DIR}/usr/lib/micropython/lpcore.py"
 # Overrides Buildroot's udhcpc script: the m3-lab copy sources its *.d

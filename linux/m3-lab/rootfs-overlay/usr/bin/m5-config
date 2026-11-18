@@ -1,0 +1,969 @@
+#!/bin/sh
+# m5-config (#42): a raspi-config-style settings menu for the M3-lab image,
+# plus the scriptable form the menu itself calls:
+#
+#   m5-config                 interactive menus (serial, SSH, panel console)
+#   m5-config list            managed keys and their current values
+#   m5-config get KEY         print the current value (secrets print "set")
+#   m5-config set KEY VALUE   validate, write to the boot FAT, save, apply
+#   m5-config set KEY ""      remove the key (where a missing key is valid)
+#   m5-config set KEY -       read the value from stdin (secrets)
+#
+# set exit status: 0 saved (or "no change"), 1 rejected, 2 not saved
+# (#43 marker), 3 written to the drive but the flash save was not
+# confirmed, 64 usage error.
+#
+# The only store is the boot FAT image: a change edits a working copy of
+# /tmp/boot.img, swaps it in atomically, and lets bootsyncd save it and
+# apply what changed -- the same mechanism boot-edit triggers.  On a
+# board whose USB drive is exported to a host (the Stamp) the LUN is
+# ejected board-side after the swap, so the import saves the new image
+# and the host sees it after reattach.
+#
+# Every command on this NOMMU system is a ~480 KB vfork+exec, so the hot
+# paths (key read, key edit) stay shell-builtin; mount/md5sum/eject run
+# only on a real write.
+
+RUN_DIR="${M5CFG_RUN_DIR:-/run}"
+BOOT_IMG="${M5CFG_BOOT_IMG:-/tmp/boot.img}"
+PUB_DIR="${M5CFG_TMP:-/tmp}"
+UDC_ROOT="${RUN_SYSTEM_CLASS_UDC_ROOT:-/sys/class/udc}"
+SAVE_WAIT="${M5CFG_SAVE_WAIT:-15}"
+NOSAVE_MARK="$RUN_DIR/.boot-nosave"
+FLASH_HASH_FILE="$RUN_DIR/.boot-flash-md5"
+ETC_BOARD="${M5CFG_ETC_BOARD:-/etc/board}"
+BOOT_MNT="${M5CFG_BOOT_MNT:-/boot}"
+HOME_M5="${M5CFG_HOME_M5:-/home/m5}"
+HOME_ROOT="${M5CFG_HOME_ROOT:-/root}"
+LOCK="$RUN_DIR/.m5-config.lock"
+WORK_IMG="$PUB_DIR/.m5cfg-img.$$"
+MNT="$RUN_DIR/.m5cfg-mnt.$$"
+CR=$(printf '\r')
+# A newline inside quotes: $(printf '\n') would be stripped to empty.
+NL='
+'
+
+die() { echo "m5-config: $1" >&2; exit "${2:-1}"; }
+
+# ---------------------------------------------------------------- keys ----
+
+# The managed keys and the drive file each lives in.  Everything else on
+# the drive (wpa_supplicant.conf, autorun programs, NOT-SAVED.txt...)
+# stays user-managed.
+key_file() {
+	case "$1" in
+		authorized_keys|root_authorized_keys) echo "$1" ;;
+		password|root_password) echo "credentials.txt" ;;
+		*) echo "config.txt" ;;
+	esac
+}
+key_secret() {
+	case "$1" in password|root_password) return 0 ;; *) return 1 ;; esac
+}
+key_unset_ok() {
+	case "$1" in password|root_password) return 1 ;; *) return 0 ;; esac
+}
+# A key that can only be set where its apply path exists.
+key_present() {
+	case "$1" in
+		ext5v_en|ext_ant_en) [ -x /usr/sbin/tab5-rails ] ;;
+		lp_core|lp_program|lp_period) [ -d /sys/kernel/board/lp_core ] ;;
+		*) return 0 ;;
+	esac
+}
+key_known() {
+	case "$1" in
+		hostname|wifi_mode|wifi_ssid|wifi_psk|wifi_pmf|channel|country|\
+		ntp_server|debug|sdio_mhz|ssh_password_auth|watchdog|deepsleep|\
+		auto_reboot|autorun|autorun_restart|lp_core|lp_program|lp_period|\
+		ext5v_en|ext_ant_en|password|root_password|\
+		authorized_keys|root_authorized_keys) return 0 ;;
+		*) return 1 ;;
+	esac
+}
+# Keys that exist in the files but are not managed here; "set" on them
+# explains why instead of "unknown key".
+key_explained() {
+	case "$1" in
+		device_id) echo "device_id is written at first boot; it is not edited" ;;
+		ssid|psk) echo "credentials.txt ssid=/psk= are the generated values for reference; the live Wi-Fi settings are wifi_ssid/wifi_psk in config.txt or wpa_supplicant.conf" ;;
+		maxcpus) echo "maxcpus has no effect; the CPU count is built into the image" ;;
+		*) return 1 ;;
+	esac
+}
+
+# ------------------------------------------------------------- reading ----
+
+# Effective file for reads: the published /tmp copy, then the mounted
+# drive, then the built-in default -- the order the boot scripts use.
+eff_file() {
+	for f in "$PUB_DIR/$1" "$BOOT_MNT/$1" "$ETC_BOARD/$1"; do
+		[ -f "$f" ] && { echo "$f"; return 0; }
+	done
+	return 1
+}
+
+# True when line $1 sets key $2: optional leading blanks, the key,
+# optional blanks, "=" -- the same shape conf_get matches, so a
+# "#key=..." comment never counts.
+is_key_line() {
+	case "$1" in *=*) ;; *) return 1 ;; esac
+	_k=${1%%=*}
+	case "$_k" in ''|'#'*|*\ *#*|*'	'#*) return 1 ;; esac
+	while :; do
+		case "$_k" in
+			" "*|"	"*) _k=${_k#?} ;;
+			*) break ;;
+		esac
+	done
+	while :; do
+		case "$_k" in
+			*" "|*"	") _k=${_k%?} ;;
+			*) break ;;
+		esac
+	done
+	case "$_k" in *" "*|*"	"*) return 1 ;; esac
+	[ "$_k" = "$2" ]
+}
+
+# First "key=" value in the effective file (builtins only).  Value
+# printed with surrounding blanks trimmed.
+cfg_get() {
+	_f=$(eff_file "$(key_file "$1")") || return 1
+	_found=1
+	while IFS= read -r _l || [ -n "$_l" ]; do
+		_l=${_l%"$CR"}
+		if is_key_line "$_l" "$1"; then
+			_v=${_l#*=}
+			_found=0
+			break
+		fi
+	done < "$_f"
+	[ "$_found" -eq 0 ] || return 1
+	while :; do
+		case "$_v" in
+			" "*|"	"*) _v=${_v#?} ;;
+			*) break ;;
+		esac
+	done
+	while :; do
+		case "$_v" in
+			*" "|*"	") _v=${_v%?} ;;
+			*) break ;;
+		esac
+	done
+	echo "$_v"
+}
+
+# The installed authorized_keys (the drive file lives inside the image;
+# the .ssh copy installed at the last save mirrors it).
+keys_file() {
+	case "$1" in
+		authorized_keys) echo "$HOME_M5/.ssh/authorized_keys" ;;
+		root_authorized_keys) echo "$HOME_ROOT/.ssh/authorized_keys" ;;
+	esac
+}
+
+# The SSID in effect: wifi_ssid wins, else the ssid= of the
+# wpa_supplicant.conf actually in use.
+eff_ssid() {
+	v=$(cfg_get wifi_ssid 2>/dev/null) && [ -n "$v" ] && { echo "$v"; return; }
+	f=$(eff_file wpa_supplicant.conf) || return 1
+	sed -n 's/^[ 	]*ssid[ 	]*=[ 	]*"\{0,1\}\([^"]*\)"\{0,1\}.*/\1/p' "$f" 2>/dev/null | head -n 1
+}
+
+# ---------------------------------------------------------- validation ----
+
+bad() { VALIDATE_MSG=$1; return 1; }
+VALIDATE_MSG=""
+
+validate() { # $1 key, $2 value
+	k=$1; v=$2
+	case "$k" in
+		hostname)
+			[ "${#v}" -le 32 ] || { bad "hostname is at most 32 characters"; return 1; }
+			case "$v" in
+				[A-Za-z0-9]|[A-Za-z0-9][A-Za-z0-9-]*[A-Za-z0-9]) return 0 ;;
+				*) bad "hostname is letters, digits and dashes (no edge dashes)" ;;
+			esac ;;
+		wifi_mode)
+			case "$v" in ap|sta) return 0 ;; esac
+			bad "wifi_mode is ap or sta" ;;
+		wifi_ssid)
+			[ -n "$v" ] || { bad "empty SSID (set wifi_ssid \"\" returns to wpa_supplicant.conf)"; return 1; }
+			[ "${#v}" -le 32 ] || { bad "SSID is at most 32 bytes"; return 1; }
+			case "$v" in
+				*\"*|*\\*) bad "wifi_ssid must not contain \" or \\" ;;
+				*) return 0 ;;
+			esac ;;
+		wifi_psk)
+			[ "${#v}" -ge 8 ] || { bad "passphrase is 8-63 characters"; return 1; }
+			[ "${#v}" -le 63 ] || { bad "passphrase is 8-63 characters"; return 1; }
+			case "$v" in
+				*\"*|*\\*) bad "wifi_psk must not contain \" or \\" ;;
+				*) return 0 ;;
+			esac ;;
+		wifi_pmf|debug|watchdog|ext5v_en|ext_ant_en)
+			case "$v" in 0|1) return 0 ;; esac
+			bad "$k is 0 or 1" ;;
+		channel)
+			case "$v" in
+				[1-9]|1[0-3]) return 0 ;;
+				*) bad "channel is 1-13" ;;
+			esac ;;
+		country)
+			case "$v" in
+				[A-Za-z][A-Za-z]) return 0 ;;
+				*) bad "country is a two-letter code (e.g. JP)" ;;
+			esac ;;
+		ntp_server)
+			[ "$v" = none ] && return 0
+			case "$v" in
+				*[!A-Za-z0-9._:-]*) bad "ntp_server is a host name or IP, or none" ;;
+				*) return 0 ;;
+			esac ;;
+		sdio_mhz)
+			case "$v" in 1|2|5|10|20|40) return 0 ;; esac
+			bad "sdio_mhz is 1, 2, 5, 10, 20 or 40" ;;
+		ssh_password_auth|deepsleep|auto_reboot|autorun_restart)
+			case "$v" in yes|no) return 0 ;; esac
+			bad "$k is yes or no" ;;
+		autorun)
+			case "$v" in
+				off|no|0) return 0 ;;
+				*[!A-Za-z0-9._-]*) bad "autorun is off or a file name" ;;
+				*) return 0 ;;
+			esac ;;
+		lp_core)
+			case "$v" in always|sleep|off) return 0 ;; esac
+			bad "lp_core is always, sleep or off" ;;
+		lp_program)
+			case "$v" in
+				*[!A-Za-z0-9._-]*) bad "lp_program is a file name on the drive" ;;
+				*) return 0 ;;
+			esac ;;
+		lp_period)
+			n=${v%%[!0-9]*}; u=${v#"$n"}
+			case "$n" in ''|??????????*) bad "lp_period looks like 1s or 500ms" ;; esac
+			case "$u" in ''|s|ms|m|h) return 0 ;; esac
+			bad "lp_period unit is ms, s, m or h" ;;
+		password|root_password)
+			[ "${#v}" -ge 8 ] || { bad "password is 8-64 characters"; return 1; }
+			[ "${#v}" -le 64 ] || { bad "password is 8-64 characters"; return 1; }
+			case "$v" in
+				*:*|*"$CR"*|*"$NL"*) bad "password must not contain : or a line break" ;;
+				*) return 0 ;;
+			esac ;;
+		authorized_keys|root_authorized_keys)
+			case "$v" in
+				ssh-rsa\ *|ssh-dss\ *|ssh-ed25519\ *|ecdsa-*\ *|sk-*) return 0 ;;
+				*) bad "not an SSH public key line (ssh-ed25519 AAAA...)" ;;
+			esac ;;
+		*) bad "unknown key" ;;
+	esac
+	# A "bad" in any arm set the message; success paths returned 0 above.
+	return 1
+}
+
+# -------------------------------------------------------- key editing ----
+# These run inside the mounted working copy ($MNT).  Only the first
+# "key=" line is touched; every other byte (comments, order, CRLF on
+# other lines, indentation) is copied through unchanged.
+
+# Remove the first line that sets $2 in file $1 (builtins only).
+editor_del() {
+	_d_done=0
+	{
+		while IFS= read -r _l || [ -n "$_l" ]; do
+			if [ "$_d_done" -eq 0 ] && is_key_line "$_l" "$2"; then
+				_d_done=1
+			else
+				printf '%s\n' "$_l"
+			fi
+		done
+	} < "$1" > "$1.new" || { rm -f "$1.new"; return 1; }
+	mv -f "$1.new" "$1"
+}
+
+# Set $2=$3 in file $1: replace the first existing line in place
+# (keeping its leading blanks), or append at the end when absent.
+editor_set() {
+	_s_done=0
+	{
+		while IFS= read -r _l || [ -n "$_l" ]; do
+			if [ "$_s_done" -eq 0 ] && is_key_line "$_l" "$2"; then
+				# the leading blanks of the original line
+				_kk=${_l%%=*}
+				while :; do
+					case "$_kk" in
+						*" "|*"	") _kk=${_kk%?} ;;
+						*) break ;;
+					esac
+				done
+				_indent=${_kk%"$2"}
+				printf '%s\n' "$_indent$2=$3"
+				_s_done=1
+			else
+				printf '%s\n' "$_l"
+			fi
+		done
+		# || : the last [ -eq 0 ] must not decide the group's exit status.
+		[ "$_s_done" -eq 1 ] || printf '%s\n' "$2=$3"
+	} < "$1" > "$1.new" || { rm -f "$1.new"; return 1; }
+	mv -f "$1.new" "$1"
+}
+
+# Apply one validated edit inside the mounted image.  $1 key, $2 value,
+# $3 = set|del.
+apply_edit() {
+	f=$MNT/$(key_file "$1")
+	case "$1" in
+		authorized_keys|root_authorized_keys)
+			if [ "$3" = del ]; then
+				rm -f "$f"
+			else
+				printf '%s\n' "$2" >> "$f"
+			fi ;;
+		*)
+			if [ "$3" = del ]; then
+				editor_del "$f" "$1"
+			else
+				editor_set "$f" "$1" "$2"
+			fi ;;
+	esac
+}
+
+# --------------------------------------------------------- the save ----
+
+img_hash() {
+	HASH=""
+	_line=$(md5sum "$1" 2>/dev/null) || return 1
+	HASH=${_line%% *}
+	[ -n "$HASH" ]
+}
+
+lun_file() {
+	for c in "$UDC_ROOT"/*/device/udc/*/gadget/lun*/file; do
+		[ -f "$c" ] && { echo "$c"; return 0; }
+	done
+	return 1
+}
+
+_cleanup() {
+	trap - EXIT HUP INT TERM
+	umount "$MNT" 2>/dev/null
+	rm -rf "$MNT" "$WORK_IMG" "$LOCK"
+}
+
+# $1 = key, $2 = value, $3 = set|del.  Edits a working copy of the image,
+# swaps it in, ejects the LUN if a host holds it, and waits for the
+# bootsyncd save hash like boot-edit does.  Prints one result line.
+drive_write() {
+	if [ -f "$NOSAVE_MARK" ]; then
+		_reason=""
+		read -r _reason < "$NOSAVE_MARK" 2>/dev/null || true
+		echo "m5-config: not saved: ${_reason:-kernel could not read the boot image}" >&2
+		return 2
+	fi
+	_uid=""
+	while read -r _k _u _r; do
+		[ "$_k" = Uid: ] && { _uid=$_u; break; }
+	done < /proc/self/status 2>/dev/null
+	# Refuse only a uid we can read and know is not root; a platform
+	# without /proc/self/status cannot check at all, and host tests run
+	# with M5CFG_ASSUME_ROOT=1.
+	if [ -z "${M5CFG_ASSUME_ROOT:-}" ] && [ -n "$_uid" ] && [ "$_uid" != 0 ]; then
+		echo "m5-config: only root can change the boot drive" >&2
+		return 1
+	fi
+	[ -f "$BOOT_IMG" ] || { echo "m5-config: $BOOT_IMG is missing" >&2; return 1; }
+
+	if ! mkdir "$LOCK" 2>/dev/null; then
+		_p=""
+		[ -f "$LOCK/pid" ] && read -r _p < "$LOCK/pid"
+		if [ -n "$_p" ] && kill -0 "$_p" 2>/dev/null; then
+			echo "m5-config: another m5-config is running (pid $_p)" >&2
+			return 1
+		fi
+		rm -rf "$LOCK"
+		mkdir "$LOCK" 2>/dev/null || { echo "m5-config: could not lock" >&2; return 1; }
+	fi
+	echo $$ > "$LOCK/pid" 2>/dev/null
+	trap _cleanup EXIT HUP INT TERM
+
+	mkdir -p "$MNT" 2>/dev/null || { _cleanup; return 1; }
+	cp -f "$BOOT_IMG" "$WORK_IMG" 2>/dev/null || {
+		echo "m5-config: no room in $PUB_DIR for a working copy" >&2
+		_cleanup; return 1; }
+	mount -t vfat -o "loop,rw,noatime,umask=0077" "$WORK_IMG" "$MNT" 2>/dev/null || {
+		echo "m5-config: the boot image is not a mountable FAT volume" >&2
+		_cleanup; return 1; }
+
+	rc=0
+	apply_edit "$1" "$2" "$3" || rc=$?
+	sync
+	umount "$MNT" 2>/dev/null || {
+		echo "m5-config: could not unmount the working copy; nothing was changed" >&2
+		_cleanup; return 1; }
+	[ "$rc" -eq 0 ] || {
+		echo "m5-config: the change failed; the drive is as it was" >&2
+		_cleanup; return 1; }
+
+	img_hash "$WORK_IMG" || { _cleanup; return 1; }
+	new=$HASH
+	img_hash "$BOOT_IMG" || { _cleanup; return 1; }
+	if [ "$new" = "$HASH" ]; then
+		echo "m5-config: no change"
+		_cleanup
+		return 0
+	fi
+	mv -f "$WORK_IMG" "$BOOT_IMG" || {
+		echo "m5-config: could not replace $BOOT_IMG" >&2
+		_cleanup; return 1; }
+
+	# A host holding the USB drive keeps the old (already-open) image
+	# until the gadget drops it.  The eject makes the host see the new
+	# file and turns the save into an immediate eject-import; without a
+	# LUN the swap itself wakes bootsyncd's settle path.
+	_lf=$(lun_file) && {
+		_b=""
+		read -r _b < "$_lf" 2>/dev/null || true
+		[ -n "$_b" ] && echo 1 > "${_lf%file}forced_eject" 2>/dev/null || true
+	}
+
+	i=0
+	while [ "$i" -lt "$SAVE_WAIT" ]; do
+		sleep 1
+		_saved=""
+		[ -f "$FLASH_HASH_FILE" ] && read -r _saved < "$FLASH_HASH_FILE"
+		if [ "$_saved" = "$new" ]; then
+			echo "m5-config: saved to flash"
+			_cleanup
+			return 0
+		fi
+		i=$((i + 1))
+	done
+	echo "m5-config: not confirmed after ${SAVE_WAIT} s; read the [bootsync] lines on the console" >&2
+	_cleanup
+	return 3
+}
+
+# --------------------------------------------------------------- cli ----
+
+usage() {
+	cat >&2 <<-'EOF'
+	usage:
+	  m5-config                  interactive settings menu
+	  m5-config list             managed keys and current values
+	  m5-config get KEY          print the value (secrets print "set")
+	  m5-config set KEY VALUE    validate, write, save to flash, apply
+	  m5-config set KEY ""       remove the key where valid
+	  m5-config set KEY -        read the value from stdin (secrets)
+	set exits 0 saved, 1 rejected, 2 not saved (#43), 3 unconfirmed.
+	EOF
+	exit 64
+}
+
+do_get() {
+	key_known "$1" || {
+		_x=$(key_explained "$1") && echo "$_x" >&2
+		die "unknown key '$1'" ; }
+	if key_secret "$1"; then
+		v=$(cfg_get "$1" 2>/dev/null)
+		[ -n "$v" ] && echo "set" || echo "not set"
+		return 0
+	fi
+	case "$1" in
+		authorized_keys|root_authorized_keys)
+			kf=$(keys_file "$1")
+			if [ -s "$kf" ]; then cat "$kf"; else echo "no keys"; fi
+			return 0 ;;
+	esac
+	v=$(cfg_get "$1" 2>/dev/null) || v=""
+	if [ -z "$v" ]; then
+		case "$1" in
+			wifi_ssid) v=$(eff_ssid 2>/dev/null) ;;
+			wifi_mode)
+				f=$(eff_file wpa_supplicant.conf)
+				if grep -q '^[ 	]*mode=2' "$f" 2>/dev/null; then
+					v=ap
+				else
+					v=sta
+				fi ;;
+		esac
+	fi
+	echo "${v:-(unset)}"
+}
+
+do_list() {
+	for k in hostname wifi_mode wifi_ssid wifi_psk wifi_pmf channel \
+		country ntp_server debug sdio_mhz ssh_password_auth watchdog \
+		deepsleep auto_reboot autorun autorun_restart \
+		lp_core lp_program lp_period ext5v_en ext_ant_en \
+		password root_password authorized_keys root_authorized_keys; do
+		key_present "$k" || continue
+		case "$k" in
+			authorized_keys|root_authorized_keys)
+				kf=$(keys_file "$k")
+				n=0
+				[ -f "$kf" ] && n=$(grep -c . "$kf" 2>/dev/null || echo 0)
+				echo "$k = $n key(s)" ;;
+			*)
+				if key_secret "$k"; then
+					v=$(cfg_get "$k" 2>/dev/null)
+					[ -n "$v" ] && echo "$k = (set)" || echo "$k = (unset)"
+				else
+					v=$(cfg_get "$k" 2>/dev/null) || v=""
+					[ -z "$v" ] && [ "$k" = wifi_ssid ] &&
+						v=$(eff_ssid 2>/dev/null)
+					echo "$k = ${v:-(unset)}"
+				fi ;;
+		esac
+	done
+}
+
+do_set() {
+	_k=$1; _v=$2; _from_stdin=${3:-0}
+	key_known "$_k" || {
+		_x=$(key_explained "$_k") && die "$_x"
+		die "unknown key '$_k' (see: m5-config list)" 64; }
+	key_present "$_k" || die "$_k is not present on this board" 1
+	if [ "$_from_stdin" = 1 ]; then
+		IFS= read -r _v || die "no value on stdin" 64
+		_v=${_v%"$CR"}
+	fi
+	if [ -z "$_v" ]; then
+		key_unset_ok "$_k" || die "$_k cannot be removed; set a new value"
+		drive_write "$_k" "" del
+		return $?
+	fi
+	validate "$_k" "$_v" || die "rejected: $VALIDATE_MSG" 1
+	# ssh_password_auth=no without installed keys is ignored by S85ssh
+	# anyway; reject early with a clear reason instead of saving a no-op.
+	if [ "$_k" = ssh_password_auth ] && [ "$_v" = no ] &&
+		[ ! -s "$HOME_M5/.ssh/authorized_keys" ]; then
+		die "rejected: no authorized_keys installed for m5; key-only login would have no keys" 1
+	fi
+	drive_write "$_k" "$_v" set
+	return $?
+}
+
+# ------------------------------------------------------------- menu ----
+
+scr_clear() { printf '\033[2J\033[H'; }
+
+say() { echo "$1"; }
+
+ask() { # $1 prompt -> REPLY
+	printf '%s' "$1"
+	IFS= read -r REPLY || REPLY=""
+	REPLY=${REPLY%"$CR"}
+}
+
+ask_secret() { # $1 prompt -> REPLY (echo off where possible)
+	printf '%s' "$1"
+	stty -echo 2>/dev/null || busybox stty -echo 2>/dev/null || true
+	IFS= read -rs REPLY 2>/dev/null || IFS= read -r REPLY || REPLY=""
+	stty echo 2>/dev/null || busybox stty echo 2>/dev/null || true
+	echo
+	REPLY=${REPLY%"$CR"}
+}
+
+pause() { ask "  [Enter] "; }
+
+is_ssh() { [ -n "${SSH_CONNECTION:-}${SSH_TTY:-}" ]; }
+
+nosave_note() {
+	if [ -f "$NOSAVE_MARK" ]; then
+		r=""; read -r r < "$NOSAVE_MARK" 2>/dev/null || true
+		say "  ! NOT SAVED this boot:"
+		say "    ${r:-boot image unreadable}"
+		return 0
+	fi
+	return 1
+}
+
+# One validated edit; do_set prints the result.  $1 key.
+menu_set() {
+	ask "  new $1 (empty cancels): "
+	[ -z "$REPLY" ] && { say "  unchanged"; pause; return; }
+	do_set "$1" "$REPLY" || true
+	say "  -> $1: $(do_get "$1" 2>/dev/null || echo '?')"
+	pause
+}
+
+menu_secret() {
+	ask_secret "  new $1 (empty cancels): "
+	[ -z "$REPLY" ] && { say "  unchanged"; pause; return; }
+	do_set "$1" "$REPLY" || true
+	pause
+}
+
+menu_wifi() {
+	while :; do
+		scr_clear
+		ssid=$(eff_ssid 2>/dev/null)
+		mode=$(do_get wifi_mode 2>/dev/null)
+		ip=""
+		ifc=$(ifconfig wlan0 2>/dev/null)
+		case "$ifc" in *"inet addr:"*)
+			ip=${ifc#*inet addr:}; ip=${ip%% *} ;;
+		esac
+		say "== Wi-Fi =="
+		say " mode: ${mode:-?}   ssid: ${ssid:-?}"
+		say " ip:   ${ip:-none}"
+		nosave_note
+		say ""
+		say " 1 mode (ap or sta)"
+		say " 2 SSID"
+		say " 3 passphrase"
+		say " 4 channel (SoftAP)"
+		say " 5 PMF on/off"
+		say " 0 back"
+		ask "? "
+		case "$REPLY" in
+			1)
+				if is_ssh; then
+					say "  You are on SSH: a Wi-Fi change cuts"
+					say "  this session.  Type yes to go on:"
+					ask "  > "
+					[ "$REPLY" = yes ] || { pause; continue; }
+				fi
+				ask "  mode ap or sta (empty cancels): "
+				case "$REPLY" in ap|sta) do_set wifi_mode "$REPLY" || true ;; esac
+				pause ;;
+			2) menu_set wifi_ssid ;;
+			3) menu_secret wifi_psk ;;
+			4) menu_set channel ;;
+			5) menu_set wifi_pmf ;;
+			0) return ;;
+		esac
+	done
+}
+
+menu_keys() { # $1 = authorized_keys|root_authorized_keys, $2 label
+	while :; do
+		scr_clear
+		kf=$(keys_file "$1")
+		n=0; [ -f "$kf" ] && n=$(grep -c . "$kf" 2>/dev/null || echo 0)
+		say "== SSH keys: $2 =="
+		say " installed: $n key(s)"
+		say " 1 add a key (paste a line)"
+		say " 2 remove all"
+		say " 0 back"
+		ask "? "
+		case "$REPLY" in
+			1)
+				say "  paste the public key line:"
+				ask "  > "
+				[ -n "$REPLY" ] && do_set "$1" "$REPLY" || true
+				pause ;;
+			2)
+				do_set "$1" "" || true
+				pause ;;
+			0) return ;;
+		esac
+	done
+}
+
+menu_system() {
+	while :; do
+		scr_clear
+		say "== System =="
+		say " hostname: $(hostname 2>/dev/null || cfg_get hostname)"
+		nosave_note
+		say ""
+		say " 1 hostname"
+		say " 2 m5 password"
+		say " 3 root password"
+		say " 4 SSH password login on/off"
+		say " 5 SSH keys for m5"
+		say " 6 SSH keys for root"
+		say " 0 back"
+		ask "? "
+		case "$REPLY" in
+			1) menu_set hostname ;;
+			2) menu_secret password ;;
+			3) menu_secret root_password ;;
+			4)
+				cur=$(cfg_get ssh_password_auth 2>/dev/null)
+				ask "  ssh_password_auth yes|no [${cur:-yes}] (empty cancels): "
+				[ -n "$REPLY" ] && do_set ssh_password_auth "$REPLY" || true
+				pause ;;
+			5) menu_keys authorized_keys m5 ;;
+			6) menu_keys root_authorized_keys root ;;
+			0) return ;;
+		esac
+	done
+}
+
+menu_datetime() {
+	scr_clear
+	say "== Date and time =="
+	say " now: $(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null)"
+	if [ -c /dev/rtc0 ]; then
+		say " rtc: present (/dev/rtc0)"
+	else
+		say " rtc: none"
+	fi
+	say ""
+	ask "  set time YYYY-MM-DD HH:MM (empty cancels): "
+	case "$REPLY" in
+		[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]\ [0-9][0-9]:[0-9][0-9])
+			if date -s "$REPLY:00" >/dev/null 2>&1; then
+				say "  clock set"
+				[ -c /dev/rtc0 ] && hwclock -w 2>/dev/null &&
+					say "  rtc written"
+			else
+				say "  rejected by date -s"
+			fi ;;
+		"") ;;
+		*) say "  use YYYY-MM-DD HH:MM" ;;
+	esac
+	pause
+}
+
+menu_display() {
+	scr_clear
+	say "== Display =="
+	bl=""
+	for d in /sys/class/backlight/*/brightness; do
+		[ -f "$d" ] && { bl=$d; break; }
+	done
+	[ -z "$bl" ] && { say " no backlight device"; pause; return; }
+	mx=0; read -r mx < "${bl%brightness}max_brightness" 2>/dev/null || mx=0
+	cur=0; read -r cur < "$bl" 2>/dev/null || cur=0
+	pct=0; [ "$mx" -gt 0 ] && pct=$((cur * 100 / mx))
+	say " brightness: ${pct}%"
+	ask "  new brightness 0-100 (empty cancels): "
+	case "$REPLY" in
+		''|*[!0-9]*) say "  unchanged" ;;
+		*)
+			if [ "$REPLY" -le 100 ]; then
+				echo $((REPLY * mx / 100)) > "$bl" 2>/dev/null &&
+					say "  set to ${REPLY}%" || say "  write failed"
+			else
+				say "  0-100"
+			fi ;;
+	esac
+	pause
+}
+
+menu_sound() {
+	while :; do
+		scr_clear
+		say "== Sound =="
+		say " 1 test tone (2 s)"
+		say " 2 record 3 s and play back"
+		say " 0 back"
+		ask "? "
+		case "$REPLY" in
+			1) /usr/bin/pcm-sine 0 2 440 -12 || say "  tone failed" ;;
+			2)
+				if /usr/bin/pcm-rec 0 3 0 /tmp/m5cfg-rec.raw >/dev/null 2>&1; then
+					/usr/bin/pcm-play 0 /tmp/m5cfg-rec.raw ||
+						say "  play failed"
+				else
+					say "  record failed"
+				fi
+				rm -f /tmp/m5cfg-rec.raw ;;
+			0) return ;;
+		esac
+		pause
+	done
+}
+
+menu_ports() {
+	while :; do
+		scr_clear
+		say "== Ports (expander) =="
+		say " ext5v_en:  $(cfg_get ext5v_en 2>/dev/null || echo 0)"
+		say " ext_ant_en:$(cfg_get ext_ant_en 2>/dev/null || echo 0)"
+		say " 1 ext5v_en 0/1 (EXT header 5 V)"
+		say " 2 ext_ant_en 0/1 (MMCX antenna)"
+		say " 0 back"
+		ask "? "
+		case "$REPLY" in
+			1) menu_set ext5v_en ;;
+			2) menu_set ext_ant_en ;;
+			0) return ;;
+		esac
+	done
+}
+
+menu_blekbd() {
+	while :; do
+		scr_clear
+		say "== Bluetooth keyboard =="
+		say " 1 scan for keyboards"
+		say " 2 pair a keyboard (addr)"
+		say " 3 list paired"
+		say " 4 forget (addr or all)"
+		say " 0 back"
+		ask "? "
+		case "$REPLY" in
+			1) /usr/bin/ble-kbd scan 8 ;;
+			2)
+				ask "  address AA:BB:.. (empty cancels): "
+				[ -n "$REPLY" ] && /usr/bin/ble-kbd pair "$REPLY" ;;
+			3) /usr/bin/ble-kbd list ;;
+			4)
+				ask "  address or all (empty cancels): "
+				[ -n "$REPLY" ] && /usr/bin/ble-kbd forget "$REPLY" ;;
+			0) return ;;
+		esac
+		pause
+	done
+}
+
+pwroff_support() {
+	# The only board with a sys_off power-off handler is the Tab5
+	# (tab5-pwroff); on the Stamp, poweroff just halts the CPUs.
+	m=""
+	read -r m < /sys/firmware/devicetree/base/model 2>/dev/null || return 1
+	case "$m" in *Tab5*) return 0 ;; esac
+	return 1
+}
+
+menu_power() {
+	while :; do
+		scr_clear
+		say "== Power =="
+		say " 1 reboot"
+		[ -w /sys/kernel/board/deep_sleep ] &&
+			say " 2 deep sleep (wake timer)"
+		[ -d /sys/kernel/board/lp_core ] &&
+			say " 3 LP core settings"
+		pwroff_support && say " 4 power off"
+		say " 0 back"
+		ask "? "
+		case "$REPLY" in
+			1) say " rebooting"; sync; reboot ;;
+			2)
+				[ -w /sys/kernel/board/deep_sleep ] || continue
+				ask "  wake after (10, 30s, 15m, 2h; empty cancels): "
+				[ -n "$REPLY" ] && /usr/sbin/deepsleep "$REPLY"
+				pause ;;
+			3) [ -d /sys/kernel/board/lp_core ] && menu_lpcore ;;
+			4)
+				pwroff_support || continue
+				say " powering off"; sync; poweroff ;;
+			0) return ;;
+		esac
+	done
+}
+
+menu_lpcore() {
+	while :; do
+		scr_clear
+		say "== LP core =="
+		say " lp_core:   $(cfg_get lp_core 2>/dev/null || echo '(default always)')"
+		say " lp_program:$(cfg_get lp_program 2>/dev/null || echo '(lp.bin)')"
+		say " lp_period: $(cfg_get lp_period 2>/dev/null || echo '(1s)')"
+		say " 1 lp_core (always|sleep|off)"
+		say " 2 lp_program (file name)"
+		say " 3 lp_period (e.g. 1s)"
+		say " 0 back"
+		ask "? "
+		case "$REPLY" in
+			1) menu_set lp_core ;;
+			2) menu_set lp_program ;;
+			3) menu_set lp_period ;;
+			0) return ;;
+		esac
+	done
+}
+
+menu_status() {
+	while :; do
+		scr_clear
+		say "== Status =="
+		[ -f /run/status.txt ] && sed 's/^/ /' /run/status.txt
+		say " bootfat: $(cat /sys/kernel/board/bootfat 2>/dev/null || echo n/a)"
+		if [ -f "$NOSAVE_MARK" ]; then
+			r=""; read -r r < "$NOSAVE_MARK" 2>/dev/null || true
+			say " save:    NOT SAVED ($r)"
+		else
+			say " save:    normal (changes are saved)"
+		fi
+		say " usb:     $(/usr/sbin/usb-lun state 2>/dev/null || echo no-drive)"
+		for p in /sys/class/power_supply/*/capacity; do
+			[ -f "$p" ] || continue
+			c=""; read -r c < "$p" 2>/dev/null || continue
+			st=""; read -r st < "${p%capacity}status" 2>/dev/null || true
+			say " battery: ${c}% ${st}"
+		done
+		say ""
+		say " 1 sysinfo  0 back"
+		ask "? "
+		case "$REPLY" in
+			1) scr_clear; /usr/sbin/sysinfo; pause ;;
+			0) return ;;
+		esac
+	done
+}
+
+# The main menu, with entries gated on the feature they need: no
+# board-name tests anywhere -- a missing backlight, sound card,
+# expander helper or ble-kbd tool hides the entry.
+menu_main() {
+	while :; do
+		scr_clear
+		snd=1; prt=1; ble=1; dsp=1
+		[ -x /usr/bin/pcm-sine ] && [ -d /dev/snd ] && ls /dev/snd/pcm* >/dev/null 2>&1 || snd=0
+		[ -x /usr/sbin/tab5-rails ] || prt=0
+		[ -x /usr/bin/ble-kbd ] || ble=0
+		_d=""; for d in /sys/class/backlight/*/brightness; do
+			[ -f "$d" ] && { _d=$d; break; }
+		done
+		[ -z "$_d" ] && dsp=0
+		say "== m5-config =="
+		m=""; read -r m < /sys/firmware/devicetree/base/model 2>/dev/null || true
+		say " board: ${m:-unknown}"
+		nosave_note
+		say ""
+		say " 1 Wi-Fi"
+		say " 2 System"
+		say " 3 Date/time"
+		[ "$dsp" -eq 1 ] && say " 4 Display"
+		[ "$snd" -eq 1 ] && say " 5 Sound"
+		[ "$prt" -eq 1 ] && say " 6 Ports"
+		[ "$ble" -eq 1 ] && say " 7 Bluetooth keyboard"
+		say " 8 Power"
+		say " 9 Status"
+		say " 0 exit"
+		ask "? "
+		case "$REPLY" in
+			1) menu_wifi ;;
+			2) menu_system ;;
+			3) menu_datetime ;;
+			4) [ "$dsp" -eq 1 ] && menu_display ;;
+			5) [ "$snd" -eq 1 ] && menu_sound ;;
+			6) [ "$prt" -eq 1 ] && menu_ports ;;
+			7) [ "$ble" -eq 1 ] && menu_blekbd ;;
+			8) menu_power ;;
+			9) menu_status ;;
+			0) scr_clear; exit 0 ;;
+		esac
+	done
+}
+
+# -------------------------------------------------------------- main ----
+
+case "${1:-menu}" in
+	menu) menu_main ;;
+	list) do_list ;;
+	get) [ $# -eq 2 ] || usage; do_get "$2" ;;
+	set)
+		[ $# -ge 2 ] && [ $# -le 3 ] || usage
+		if [ $# -eq 3 ] && [ "$3" = - ]; then
+			do_set "$2" "" 1
+		elif [ $# -eq 3 ]; then
+			do_set "$2" "$3"
+		elif [ $# -eq 2 ]; then
+			[ -t 0 ] || usage
+			key_secret "$2" && ask_secret "new $2: " || ask "new $2: "
+			do_set "$2" "$REPLY"
+		fi ;;
+	*) usage ;;
+esac
