@@ -1,0 +1,8 @@
+config BR2_PACKAGE_BLE_KBD
+	bool "Tab5 BLE keyboard client (ble-kbd)"
+	help
+	  BLE HID-over-GATT keyboard client for the C6 hci0 over SDIO
+	  (#41).  BlueZ needs fork() so it cannot build on this NOMMU
+	  target; ble-kbd speaks the kernel mgmt socket, an L2CAP ATT
+	  channel and /dev/uhid directly, and stores bonds in the boot
+	  FAT where bootsyncd persists them.

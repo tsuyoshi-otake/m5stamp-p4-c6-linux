@@ -1345,6 +1345,11 @@ CONFIG_MMC_SPI=y
 # (bluez5_utils depends on BR2_USE_MMU), so hci0 is raw-socket only.
 CONFIG_BT=y
 CONFIG_BT_LE=y
+
+# BLE keyboard (#41): ble-kbd's HOGP client feeds reports into the
+# input layer through /dev/uhid; SMP crypto comes from the BT selects
+# (CRYPTO_ECDH + CRYPTO_LIB_AES + CRYPTO_LIB_AES_CBC_MACS).
+CONFIG_UHID=y
 EOF
 	cat >>"${kernel_config_fragment}" <<EOF
 
@@ -2508,6 +2513,8 @@ if $lab_profile; then
 		set_config_value "${br_output}/.config" BR2_PACKAGE_PCM_PLAY y
 		# Raw-HCI LE scan/advertise tools for the C6 hci0 (#34).
 		set_config_value "${br_output}/.config" BR2_PACKAGE_HCI_TOOLS y
+		# BLE keyboard: mgmt pair/bond + HOGP->UHID client (#41).
+		set_config_value "${br_output}/.config" BR2_PACKAGE_BLE_KBD y
 	else
 		set_config_value "${br_output}/.config" BR2_PACKAGE_WIFI_QR "# BR2_PACKAGE_WIFI_QR is not set"
 		set_config_value "${br_output}/.config" BR2_PACKAGE_TOUCH_DOTS "# BR2_PACKAGE_TOUCH_DOTS is not set"
@@ -2515,6 +2522,7 @@ if $lab_profile; then
 		set_config_value "${br_output}/.config" BR2_PACKAGE_PCM_REC "# BR2_PACKAGE_PCM_REC is not set"
 		set_config_value "${br_output}/.config" BR2_PACKAGE_PCM_PLAY "# BR2_PACKAGE_PCM_PLAY is not set"
 		set_config_value "${br_output}/.config" BR2_PACKAGE_HCI_TOOLS "# BR2_PACKAGE_HCI_TOOLS is not set"
+		set_config_value "${br_output}/.config" BR2_PACKAGE_BLE_KBD "# BR2_PACKAGE_BLE_KBD is not set"
 	fi
 else
 	set_config_value "${br_output}/.config" BR2_PACKAGE_BOOT_COMMIT "# BR2_PACKAGE_BOOT_COMMIT is not set"

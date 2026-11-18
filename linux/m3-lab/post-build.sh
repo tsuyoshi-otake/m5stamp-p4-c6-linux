@@ -25,6 +25,7 @@ for path in \
 	"${TARGET_DIR}/etc/init.d/S45bootsync" \
 	"${TARGET_DIR}/etc/init.d/S85ssh" \
 	"${TARGET_DIR}/etc/init.d/S90watchdog" \
+	"${TARGET_DIR}/etc/init.d/S95blekbd" \
 	"${TARGET_DIR}/usr/sbin/bootsyncd" \
 	"${TARGET_DIR}/usr/sbin/usb-lun" \
 	"${TARGET_DIR}/usr/sbin/watchdog-feed" \
@@ -47,6 +48,7 @@ chmod 0755 "${TARGET_DIR}/etc/init.d/S40network"
 chmod 0755 "${TARGET_DIR}/etc/init.d/S45bootsync"
 chmod 0755 "${TARGET_DIR}/etc/init.d/S85ssh"
 chmod 0755 "${TARGET_DIR}/etc/init.d/S90watchdog"
+chmod 0755 "${TARGET_DIR}/etc/init.d/S95blekbd"
 chmod 0755 "${TARGET_DIR}/usr/sbin/bootsyncd"
 chmod 0755 "${TARGET_DIR}/usr/sbin/usb-lun"
 chmod 0755 "${TARGET_DIR}/usr/sbin/watchdog-feed"
@@ -181,6 +183,7 @@ if [ -x "${FLTHDR}" ]; then
 	for bin in usr/sbin/respawn usr/sbin/mdnsd usr/sbin/run-system \
 		usr/bin/wifi-qr usr/bin/touch-dots \
 		usr/bin/hci-scan usr/bin/hci-adv \
+		usr/bin/ble-kbd \
 		usr/bin/pcm-sine usr/bin/pcm-rec usr/bin/pcm-play; do
 		if [ -f "${TARGET_DIR}/${bin}" ]; then
 			"${FLTHDR}" -s 16384 "${TARGET_DIR}/${bin}"

@@ -291,7 +291,7 @@ import_snapshot() {
 
 	VALID=1
 	mkdir -p "$STAGE"
-	for name in wpa_supplicant.conf config.txt credentials.txt authorized_keys root_authorized_keys; do
+	for name in wpa_supplicant.conf config.txt credentials.txt authorized_keys root_authorized_keys ble-bonds.dat; do
 		path="$MNT_POINT/$name"
 		[ ! -e "$path" ] && continue
 		size=$(wc -c < "$path" 2>/dev/null || echo 65537)
