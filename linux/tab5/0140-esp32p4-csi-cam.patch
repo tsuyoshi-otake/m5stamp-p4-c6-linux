@@ -23,11 +23,11 @@ dsi-scanout driver; this driver never touches the block reset,
 and refuses to arm a channel that is enabled or equals the
 shim-patched espressif,scanout-chan.
 
- 2 files changed, 563 insertions(+)
+ 2 files changed, 565 insertions(+)
 
 --- /dev/null
 +++ b/drivers/misc/esp32p4_cam.c
-@@ -0,0 +1,562 @@
+@@ -0,0 +1,564 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * ESP32-P4 MIPI-CSI one-shot raw capture (Tab5 camera bring-up).
@@ -327,7 +327,9 @@ shim-patched espressif,scanout-chan.
 +		return dev_err_probe(c->dev, -ENOMEM,
 +				     "frame buffer alloc failed\n");
 +
-+	gpiod_set_value(c->rst, 1);
++	/* CAM_RST sits on the i2c expander (pi4ioe5v6408): its
++	 * gpio_chip can sleep, so _cansleep everywhere. */
++	gpiod_set_value_cansleep(c->rst, 1);
 +	msleep(20);
 +
 +	cam_ldo3(c);
@@ -456,7 +458,7 @@ shim-patched espressif,scanout-chan.
 +	if (c->prepared) {
 +		writel(0, c->brg + BRG_CSI_EN);
 +		writel(GDMA_CHEN_DIS(c->chan), c->gdma + GDMA_CHEN0);
-+		gpiod_set_value(c->rst, 0);
++		gpiod_set_value_cansleep(c->rst, 0);
 +		c->prepared = false;
 +	}
 +	if (c->fb_va) {
@@ -565,7 +567,7 @@ shim-patched espressif,scanout-chan.
 +
 +	writel(0, c->brg + BRG_CSI_EN);
 +	writel(GDMA_CHEN_DIS(c->chan), c->gdma + GDMA_CHEN0);
-+	gpiod_set_value(c->rst, 0);	/* never leave CAM_RST high */
++	gpiod_set_value_cansleep(c->rst, 0);	/* never leave CAM_RST high */
 +	misc_deregister(&c->misc);
 +	if (c->fb_va)
 +		dma_free_coherent(&pdev->dev, CAM_FRAME_BYTES, c->fb_va,
