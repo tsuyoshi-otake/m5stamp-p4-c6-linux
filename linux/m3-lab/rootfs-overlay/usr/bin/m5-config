@@ -1132,7 +1132,9 @@ ttext() {
 	done
 	if [ "$_sec" = 1 ]; then
 		"$STTY" echo 2>/dev/null || busybox stty echo 2>/dev/null || :
-		trap - HUP INT TERM
+		# Back to the session trap, not "no trap": a signal later in
+		# the session must still reach _cleanup (palette, tty, EVF).
+		trap '_cleanup; exit 130' HUP INT TERM
 	fi
 	return $_r
 }
