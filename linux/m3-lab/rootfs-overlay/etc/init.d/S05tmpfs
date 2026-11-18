@@ -479,7 +479,10 @@ EOF
 		# the kernel cannot write flash it stays staged and boot-shim writes
 		# it at the next normal reboot; until then a power cycle loses it and
 		# the next boot generates new values.
-		if [ "${CRED_NEW:-0}" -eq 1 ] && [ -f /tmp/boot.img ] && [ -x /usr/sbin/boot-commit ]; then
+		# #43: when the kernel could not read/mount the flashed image the
+		# drive is the template — saving it would overwrite the real
+		# settings in flash, so fresh credentials live only until reboot.
+		if [ "${CRED_NEW:-0}" -eq 1 ] && [ ! -f /run/.boot-nosave ] && [ -f /tmp/boot.img ] && [ -x /usr/sbin/boot-commit ]; then
 			rc=0
 			/usr/sbin/boot-commit /tmp/boot.img || rc=$?
 			case "$rc" in

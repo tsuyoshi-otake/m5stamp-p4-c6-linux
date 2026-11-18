@@ -156,6 +156,17 @@ grep -q "NOT saved: test reason" "$tmp/log" 2>/dev/null &&
 	{ echo "FAIL: missing NOT-saved log"; fails=$((fails + 1)); }
 rm -f "$tmp/run/.boot-nosave"
 
+# 10. The credentials fast-path in S05tmpfs calls boot-commit directly
+# and must honour the same marker — a real board leaked template saves
+# through it before the gate existed.
+s05="$repo_root/linux/m3-lab/rootfs-overlay/etc/init.d/S05tmpfs"
+if awk '/CRED_NEW:-0/,/boot-commit/' "$s05" | grep -q 'boot-nosave'; then
+	echo "ok: credentials boot-commit gated by marker"
+else
+	echo "FAIL: credentials boot-commit not gated"
+	fails=$((fails + 1))
+fi
+
 if [ "$fails" -gt 0 ]; then
 	echo "FAILED: $fails checks"
 	exit 1
