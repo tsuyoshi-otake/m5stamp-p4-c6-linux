@@ -248,9 +248,10 @@ ok "no leftovers"
 
 # 15. touch layer (#42 NEW REQ): a stub m5-key plays back scripted
 # events; the real item/menu_pick code draws the two-column 80x22
-# grid, maps taps to items and handles the nav zones.  Layout: header
-# rows 0-4, item blocks at rows 5-18 in two 40-col halves (slot i ->
-# top 5+(i/2)*3, col (i%2)*40), nav at rows 19-21 (col<40 back/exit,
+# grid, maps taps to items and handles the nav zones.  Layout (#44):
+# header rows 0-2, item buttons at rows 3-18 in two 40-col halves on
+# a 4-row pitch (slot i -> top 3+(i/2)*4, col (i%2)*40; 3 colour rows
+# plus a gap), message strip row 18, nav rows 19-21 (col<40 back/exit,
 # 40-59 prev, 60-79 more).
 mkdir -p "$tmp/bin" "$tmp/tscr"
 cat > "$tmp/bin/m5-key" <<'EOF'
@@ -265,29 +266,36 @@ chmod +x "$tmp/bin/m5-key"
 export M5CFG_FORCE_TOUCH=1 M5CFG_M5_KEY="$tmp/bin/m5-key" \
 	M5CFG_TSCRIPT="$tmp/tscr/events"
 
-# A tap inside the "Wi-Fi" block (slot 0: rows 5-7, cols 0-39) opens
+# A tap inside the "Wi-Fi" button (slot 0: rows 3-6, cols 0-39) opens
 # the Wi-Fi menu; nav-left is Back everywhere, and on the main menu it
 # is labelled [exit] and exits.
-printf 'T 6 10\nT 20 10\nT 20 10\n' > "$tmp/tscr/events"
+printf 'T 4 10\nT 20 10\nT 20 10\n' > "$tmp/tscr/events"
 out=$(M5CFG_TSCRIPT="$tmp/tscr/events" sh "$tool" menu </dev/null 2>&1)
 echo "$out" | grep -q "== Wi-Fi ==" &&
 	ok "tap on item block opens Wi-Fi" || bad "tap select: $out"
 echo "$out" | grep -q "exit ]" &&
 	ok "main menu nav says [exit]" || bad "nav label: $out"
-# The right-hand column: item 2 (System) lives at rows 5-7, col 40-79.
-printf 'T 6 50\nT 20 10\nT 20 10\n' > "$tmp/tscr/events"
+# The right-hand column: item 2 (System) lives at rows 3-6, col 40-79.
+printf 'T 4 50\nT 20 10\nT 20 10\n' > "$tmp/tscr/events"
 out=$(M5CFG_TSCRIPT="$tmp/tscr/events" sh "$tool" menu </dev/null 2>&1)
 echo "$out" | grep -q "== System ==" &&
 	ok "tap in the right column opens System" || bad "col2: $out"
-# A tap in the header (row 2, above all blocks) is ignored: the menu
+# A tap in the header (row 1, above all buttons) is ignored: the menu
 # redraws and keeps waiting; a nav tap then leaves.
-printf 'T 2 40\nT 20 10\n' > "$tmp/tscr/events"
+printf 'T 1 40\nT 20 10\n' > "$tmp/tscr/events"
 out=$(M5CFG_TSCRIPT="$tmp/tscr/events" sh "$tool" menu </dev/null 2>&1)
 echo "$out" | grep -q "== m5-config ==" &&
 	! echo "$out" | grep -q "== Wi-Fi ==" &&
 	ok "tap outside any block is ignored" ||
 	bad "header tap escaped the menu: $out"
-# Pager: force 2 items/page so the 5 visible main items span three
+# ... and a dead-zone tap triggers a FULL repaint: the title is
+# emitted a second time before the back tap leaves.
+printf 'T 1 40\nT 20 10\n' > "$tmp/tscr/events"
+out=$(M5CFG_TSCRIPT="$tmp/tscr/events" sh "$tool" menu </dev/null 2>&1)
+[ "$(echo "$out" | grep -c '== m5-config ==')" -ge 2 ] &&
+	ok "dead-zone tap causes a full redraw" ||
+	bad "no redraw after dead tap: $out"
+# Pager: force 2 items/page so the 6 visible main items span three
 # pages; [more >] (col 60-79) turns, [< prev] (col 40-59) turns back.
 printf 'T 20 65\nT 20 45\nT 20 10\n' > "$tmp/tscr/events"
 out=$(M5CFG_TPP=2 M5CFG_TSCRIPT="$tmp/tscr/events" \
@@ -303,13 +311,13 @@ echo "$out" | grep -q "== Wi-Fi ==" &&
 # 16. touch dead ends: a text field shows the keyboard note plus a
 # [back] block instead of a prompt; a tap leaves and returns to the
 # menu.  (menu_set -> ttext)
-printf 'T 6 50\nT 6 10\nT 20 10\nT 20 10\n' > "$tmp/tscr/events"
+printf 'T 4 50\nT 4 10\nT 20 10\nT 20 10\n' > "$tmp/tscr/events"
 out=$(M5CFG_TSCRIPT="$tmp/tscr/events" sh "$tool" menu </dev/null 2>&1)
 echo "$out" | grep -q "needs a keyboard" &&
 	ok "text field shows needs-a-keyboard + back" ||
 	bad "ttext: $out"
 # ... and a typed line still reaches it through the K-byte path.
-printf 'T 6 50\nT 6 10\nK h\nT 20 10\nT 20 10\n' > "$tmp/tscr/events"
+printf 'T 4 50\nT 4 10\nK h\nT 20 10\nT 20 10\n' > "$tmp/tscr/events"
 start_saver
 out=$(printf 'ost-9\n' | M5CFG_TSCRIPT="$tmp/tscr/events" \
 	sh "$tool" menu 2>&1)
@@ -317,8 +325,8 @@ stop_saver
 imgfile config.txt | grep -q "hostname=host-9" &&
 	ok "K byte + typed rest still enters the value" || bad "ttext kbd: $out"
 # a chooser block picks the value by tap: Wi-Fi item 5 (PMF) is slot 4
-# (rows 11-13, col 0-39); inside tpick "0 1" value "1" is slot 1.
-printf 'T 6 10\nT 12 10\nT 6 50\nT 20 10\nT 20 10\n' > "$tmp/tscr/events"
+# (rows 11-14, col 0-39); inside tpick "0 1" value "1" is slot 1.
+printf 'T 4 10\nT 12 10\nT 4 50\nT 20 10\nT 20 10\n' > "$tmp/tscr/events"
 start_saver
 out=$(M5CFG_TSCRIPT="$tmp/tscr/events" sh "$tool" menu </dev/null 2>&1)
 stop_saver
@@ -394,10 +402,10 @@ grep -n "trap '_cleanup; exit 130'" "$tool" >/dev/null &&
 	ok "signal traps exit after cleanup" || bad "trap does not exit"
 
 # 19. REVIEW 2: secrets typed through the touch path are never echoed.
-# System (main slot 1) -> "m5 password" (slot 1: rows 5-7, col 40) ->
+# System (main slot 1) -> "m5 password" (slot 1: rows 3-6, col 40) ->
 # ttext secret -> K n + typed rest; the value shows only as '*' and
 # lands in the image.
-printf 'T 6 50\nT 6 50\nK n\nT 20 10\nT 20 10\nT 20 10\n' > "$tmp/tscr/events"
+printf 'T 4 50\nT 4 50\nK n\nT 20 10\nT 20 10\nT 20 10\n' > "$tmp/tscr/events"
 start_saver
 out=$(printf 'ewsecret99\n' | M5CFG_TSCRIPT="$tmp/tscr/events" \
 	sh "$tool" menu 2>&1)
@@ -410,7 +418,7 @@ echo "$out" | grep -q 'value: ' && echo "$out" | grep -q '\*\*\*' &&
 
 # 20. '?' is a real first char now (K ? is a literal, not a control
 # token): a password may start with '?'.
-printf 'T 6 50\nT 6 50\nK ?\nT 20 10\nT 20 10\nT 20 10\n' > "$tmp/tscr/events"
+printf 'T 4 50\nT 4 50\nK ?\nT 20 10\nT 20 10\nT 20 10\n' > "$tmp/tscr/events"
 start_saver
 out=$(printf 'abc12345\n' | M5CFG_TSCRIPT="$tmp/tscr/events" \
 	sh "$tool" menu 2>&1)
@@ -418,23 +426,23 @@ stop_saver
 imgfile credentials.txt | grep -q '^password=?abc12345$' &&
 	ok "K ? starts a password value" || bad "K ?: $out"
 
-# 21. Result messages live in the message area (row 14), not under the
-# nav block: a touch set shows "saving ..." then "saved to flash" at
-# the parked cursor, and the prompt sat at row 14 too.
-printf 'T 6 50\nT 6 10\nK b\nT 20 10\nT 20 10\nT 20 10\n' > "$tmp/tscr/events"
+# 21. Result messages live in the message strip (row 19 = MSGTOP+1),
+# not under the nav block: a touch set shows "saving ..." then
+# "saved to flash" at the parked cursor, and the prompt sat at row 19.
+printf 'T 4 50\nT 4 10\nK b\nT 20 10\nT 20 10\nT 20 10\n' > "$tmp/tscr/events"
 start_saver
 out=$(printf 'ox-1\n' | M5CFG_TSCRIPT="$tmp/tscr/events" \
 	sh "$tool" menu 2>&1)
 stop_saver
 echo "$out" | grep -q 'saving \.\.\.' && echo "$out" | grep -q 'saved to flash' &&
-	echo "$out" | grep -q "$(printf '\033\[14;1H')value: " &&
+	echo "$out" | grep -q "$(printf '\033\[19;1H')value: " &&
 	ok "results print in the message area" || bad "msg area: $out"
 imgfile config.txt | grep -q 'hostname=box-1' &&
 	ok "touch set still saves" || bad "touch set"
 
-# 22. K enter/K bs in tadjust: Wi-Fi -> channel (slot 3, rows 8-10 col
+# 22. K enter/K bs in tadjust: Wi-Fi -> channel (slot 3, rows 7-10 col
 # 40) -> type 1 2, erase, 3, enter -> channel=13.
-printf 'T 6 10\nT 9 50\nK 1\nK 2\nK bs\nK 3\nK enter\nT 20 10\nT 20 10\nT 20 10\n' \
+printf 'T 4 10\nT 8 50\nK 1\nK 2\nK bs\nK 3\nK enter\nT 20 10\nT 20 10\nT 20 10\n' \
 	> "$tmp/tscr/events"
 start_saver
 out=$(M5CFG_TSCRIPT="$tmp/tscr/events" sh "$tool" menu </dev/null 2>&1)
@@ -443,16 +451,27 @@ imgfile config.txt | grep -q '^channel=13$' &&
 	ok "tadjust: digits + K bs + K enter" || bad "tadjust kbd: $out"
 
 # 23. K enter in tpick cancels without picking: wifi_mode stays ap.
-printf 'T 6 10\nT 6 10\nK enter\nT 20 10\nT 20 10\nT 20 10\n' > "$tmp/tscr/events"
+printf 'T 4 10\nT 4 10\nK enter\nT 20 10\nT 20 10\nT 20 10\n' > "$tmp/tscr/events"
 out=$(M5CFG_TSCRIPT="$tmp/tscr/events" sh "$tool" menu </dev/null 2>&1)
 imgfile config.txt | grep -q '^wifi_mode=ap$' &&
 	ok "K enter in tpick = back, no pick" || bad "tpick enter"
 
-# 24. Buttons are visible: every block draws reverse video.
+# 24. Buttons are visible: every block draws in the redefined button
+# colour (slot 4 = #3b4252), and the Nord palette is set with ESC ] P
+# on entry and restored with ESC ] R on the way out.
 printf 'T 20 10\n' > "$tmp/tscr/events"
 out=$(M5CFG_TSCRIPT="$tmp/tscr/events" sh "$tool" menu </dev/null 2>&1)
-echo "$out" | grep -q "$(printf '\033\[7m')" &&
-	ok "blocks draw as reverse-video buttons" || bad "no buttons"
+echo "$out" | grep -q "$(printf '\033\[37;44m')" &&
+	ok "blocks draw as palette-colour buttons" || bad "no buttons"
+echo "$out" | grep -q "$(printf '\033\]P02e3440')" &&
+	ok "Nord palette is set (ESC ] P)" || bad "palette not set"
+echo "$out" | grep -q "$(printf '\033\]R')" &&
+	ok "palette restored on exit (ESC ] R)" || bad "palette not restored"
+# the tapped button briefly changes to the tapped colour (#5e81ac)
+printf 'T 4 10\nT 20 10\n' > "$tmp/tscr/events"
+out=$(M5CFG_TSCRIPT="$tmp/tscr/events" sh "$tool" menu </dev/null 2>&1)
+echo "$out" | grep -q "$(printf '\033\[37;45m')" &&
+	ok "tapped button flashes in the tapped colour" || bad "no tap flash"
 
 # 25. Bluetooth: stub ble-kbd with two same-named keyboards.  Blocks
 # carry "NAME_(..:EE:FF)" labels; the tap resolves by slot index --
@@ -473,9 +492,9 @@ printf '  AA:BB:CC:DD:EE:01 type=1 rssi=-50 [HID] name=Kbd One\n' \
 printf '  AA:BB:CC:DD:EE:02 type=1 rssi=-60 [HID] name=Kbd One\n' \
 	>> "$tmp/ble-in"
 : > "$tmp/blelog"
-# "Bluetooth keyboard" is main slot 3 (rows 8-10, col 40) when the
+# "Bluetooth keyboard" is main slot 3 (rows 7-10, col 40) when the
 # stub makes the feature present; the 2nd scan entry is tpick slot 1.
-printf 'T 9 50\nT 6 10\nT 6 50\nT 20 10\nT 20 10\nT 20 10\n' > "$tmp/tscr/events"
+printf 'T 8 50\nT 4 10\nT 4 50\nT 20 10\nT 20 10\nT 20 10\n' > "$tmp/tscr/events"
 out=$(M5CFG_BLE_KBD="$tmp/bin/ble-kbd" M5CFG_BLELOG="$tmp/blelog" \
 	M5CFG_BLE_IN="$tmp/ble-in" M5CFG_TSCRIPT="$tmp/tscr/events" \
 	sh "$tool" menu </dev/null 2>&1)
@@ -504,7 +523,7 @@ cat > "$tmp/bin/usb-lun" <<'EOF'
 EOF
 chmod +x "$tmp/bin/usb-lun"
 echo valid > "$tmp/sysboard/bootfat"
-# Status is main slot 4 (rows 11-13, col 0); [more] twice -> page 3.
+# Status is main slot 4 (rows 11-14, col 0); [more] twice -> page 3.
 printf 'T 12 10\nT 20 65\nT 20 65\nT 20 10\nT 20 10\n' > "$tmp/tscr/events"
 out=$(M5CFG_STATUS_TXT="$tmp/status.txt" M5CFG_SYSINFO="$tmp/bin/sysinfo" \
 	M5CFG_USB_LUN="$tmp/bin/usb-lun" M5CFG_SYS_BOARD="$tmp/sysboard" \
@@ -550,7 +569,7 @@ echo_check() { # $1 desc; log is $tmp/m5.log
 }
 
 # typed value: System(1) -> m5 password(1) -> K s + stdin "ekret999"
-printf 'T 6 50\nT 6 50\nK s\nT 20 10\n' > "$tmp/tscr/events"
+printf 'T 4 50\nT 4 50\nK s\nT 20 10\n' > "$tmp/tscr/events"
 : > "$tmp/m5.log"
 start_saver
 out=$(printf 'ekret999\n' | M5LOG="$tmp/m5.log" M5CFG_STTY="$tmp/bin/stty" \
@@ -562,7 +581,7 @@ echo_check && imgfile credentials.txt | grep -q '^password=sekret999$' &&
 	{ bad "stty order typed: $(cat "$tmp/m5.log")"; }
 
 # back tap: same entry, T instead of a key -> STTY echo, nothing saved
-printf 'T 6 50\nT 6 50\nT 20 10\nT 20 10\n' > "$tmp/tscr/events"
+printf 'T 4 50\nT 4 50\nT 20 10\nT 20 10\n' > "$tmp/tscr/events"
 : > "$tmp/m5.log"
 out=$(M5LOG="$tmp/m5.log" M5CFG_STTY="$tmp/bin/stty" \
 	M5CFG_M5_KEY="$tmp/bin/m5-key-log" M5CFG_TSCRIPT="$tmp/tscr/events" \
@@ -572,7 +591,7 @@ echo_check && imgfile credentials.txt | grep -q '^password=sekret999$' &&
 	{ bad "stty order back: $(cat "$tmp/m5.log")"; }
 
 # m5-key failure: events run out inside ttext -> failure exit, echo back
-printf 'T 6 50\nT 6 50\n' > "$tmp/tscr/events"
+printf 'T 4 50\nT 4 50\n' > "$tmp/tscr/events"
 : > "$tmp/m5.log"
 out=$(M5LOG="$tmp/m5.log" M5CFG_STTY="$tmp/bin/stty" \
 	M5CFG_M5_KEY="$tmp/bin/m5-key-log" M5CFG_TSCRIPT="$tmp/tscr/events" \
@@ -582,7 +601,7 @@ echo_check && ok "stty echo on m5-key failure" ||
 
 # INT/TERM trap: the stub's 3rd call hits the script with SIGINT mid-
 # ttext; the trap must put echo back (rc 130, STTY echo last).
-printf 'T 6 50\nT 6 50\nINT\n' > "$tmp/tscr/events"
+printf 'T 4 50\nT 4 50\nINT\n' > "$tmp/tscr/events"
 : > "$tmp/m5.log"
 out=$(M5LOG="$tmp/m5.log" M5CFG_STTY="$tmp/bin/stty" \
 	M5CFG_M5_KEY="$tmp/bin/m5-key-log" M5CFG_TSCRIPT="$tmp/tscr/events" \
@@ -594,7 +613,7 @@ tail -1 "$tmp/m5.log" | grep -q 'STTY echo' && [ "$rc" -eq 130 ] &&
 
 # 28. Non-secret ttext never touches stty (plain fields keep normal
 # echo): the same field edit through ttext logs no STTY lines at all.
-printf 'T 6 50\nT 6 10\nK b\nT 20 10\nT 20 10\n' > "$tmp/tscr/events"
+printf 'T 4 50\nT 4 10\nK b\nT 20 10\nT 20 10\n' > "$tmp/tscr/events"
 : > "$tmp/m5.log"
 start_saver
 out=$(printf 'ox-2\n' | M5LOG="$tmp/m5.log" M5CFG_STTY="$tmp/bin/stty" \
@@ -605,6 +624,32 @@ stop_saver
 	imgfile config.txt | grep -q '^hostname=box-2$' &&
 	ok "non-secret ttext calls no stty" ||
 	{ bad "non-secret stty: $(cat "$tmp/m5.log")"; }
+
+# 29. B25 NOMMU lint: no $( ) inside the touch event/redraw path.
+# Each $( ) forks a whole second hush (~480 KB contiguous on NOMMU);
+# in the input wait that is the difference between two idle processes
+# (m5-config + m5-key) and alloc failures.  Arithmetic $(( )) is fine;
+# the pattern below only flags a $( that does not open another (.
+_lint_fns="menu_pick tpick tconfirm tadjust ttext tpage pause item \
+_tblock _navdraw _tflash _tget say msg _tmsg nosave_note scr_clear \
+menu_wifi menu_system menu_datetime menu_display menu_sound \
+menu_ports menu_blekbd menu_power menu_lpcore menu_status menu_main \
+status_lines menu_set menu_secret menu_choose menu_adjust menu_keys \
+_blescan touch_ok _touch_init _pal_set _pal_restore set_apply trun \
+cfg_get eff_file key_file keys_file eff_ssid key_explained lun_file \
+do_get is_key_line pwroff_support"
+_lint_hit=0
+for fn in $_lint_fns; do
+	awk -v f="$fn" 'index($0, f "()") == 1 { on = 1 }
+		on { print }
+		on && /^}/ { exit }' "$tool" > "$tmp/fnbody"
+	[ -s "$tmp/fnbody" ] || { _lint_hit=1; bad "lint: $fn not found"; continue; }
+	grep -nE '\$\([^()]' "$tmp/fnbody" &&
+		{ _lint_hit=1; bad "lint: \$( ) inside $fn"; }
+done
+[ "$_lint_hit" -eq 0 ] &&
+	ok "lint: no \$( ) inside the touch event/redraw path" ||
+	bad "lint found \$( ) in touch functions"
 
 if [ "$fails" -gt 0 ]; then
 	echo "FAILED: $fails checks"

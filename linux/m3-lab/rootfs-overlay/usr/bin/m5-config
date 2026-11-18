@@ -50,11 +50,11 @@ die() { echo "m5-config: $1" >&2; exit "${2:-1}"; }
 # The managed keys and the drive file each lives in.  Everything else on
 # the drive (wpa_supplicant.conf, autorun programs, NOT-SAVED.txt...)
 # stays user-managed.
-key_file() {
+key_file() { # -> KF
 	case "$1" in
-		authorized_keys|root_authorized_keys) echo "$1" ;;
-		password|root_password) echo "credentials.txt" ;;
-		*) echo "config.txt" ;;
+		authorized_keys|root_authorized_keys) KF=$1 ;;
+		password|root_password) KF=credentials.txt ;;
+		*) KF=config.txt ;;
 	esac
 }
 key_secret() {
@@ -84,12 +84,12 @@ key_known() {
 }
 # Keys that exist in the files but are not managed here; "set" on them
 # explains why instead of "unknown key".
-key_explained() {
+key_explained() { # -> KX
 	case "$1" in
-		device_id) echo "device_id is written at first boot; it is not edited" ;;
-		ssid|psk) echo "credentials.txt ssid=/psk= are the generated values for reference; the live Wi-Fi settings are wifi_ssid/wifi_psk in config.txt or wpa_supplicant.conf" ;;
-		maxcpus) echo "maxcpus has no effect; the CPU count is built into the image" ;;
-		*) return 1 ;;
+		device_id) KX="device_id is written at first boot; it is not edited" ;;
+		ssid|psk) KX="credentials.txt ssid=/psk= are the generated values for reference; the live Wi-Fi settings are wifi_ssid/wifi_psk in config.txt or wpa_supplicant.conf" ;;
+		maxcpus) KX="maxcpus has no effect; the CPU count is built into the image" ;;
+		*) KX=""; return 1 ;;
 	esac
 }
 
@@ -97,11 +97,11 @@ key_explained() {
 
 # Effective file for reads: the published /tmp copy, then the mounted
 # drive, then the built-in default -- the order the boot scripts use.
-eff_file() {
-	for f in "$PUB_DIR/$1" "$BOOT_MNT/$1" "$ETC_BOARD/$1"; do
-		[ -f "$f" ] && { echo "$f"; return 0; }
+eff_file() { # -> EFF
+	for EFF in "$PUB_DIR/$1" "$BOOT_MNT/$1" "$ETC_BOARD/$1"; do
+		[ -f "$EFF" ] && return 0
 	done
-	return 1
+	EFF=""; return 1
 }
 
 # True when line $1 sets key $2: optional leading blanks, the key,
@@ -127,10 +127,10 @@ is_key_line() {
 	[ "$_k" = "$2" ]
 }
 
-# First "key=" value in the effective file (builtins only).  Value
-# printed with surrounding blanks trimmed.
-cfg_get() {
-	_f=$(eff_file "$(key_file "$1")") || return 1
+# First "key=" value in the effective file (builtins only).  Sets
+# CFG_VAL to the value with surrounding blanks trimmed.
+cfg_get() { # -> CFG_VAL
+	key_file "$1"; eff_file "$KF" || return 1
 	_found=1
 	while IFS= read -r _l || [ -n "$_l" ]; do
 		_l=${_l%"$CR"}
@@ -139,7 +139,7 @@ cfg_get() {
 			_found=0
 			break
 		fi
-	done < "$_f"
+	done < "$EFF"
 	[ "$_found" -eq 0 ] || return 1
 	while :; do
 		case "$_v" in
@@ -153,24 +153,44 @@ cfg_get() {
 			*) break ;;
 		esac
 	done
-	echo "$_v"
+	CFG_VAL=$_v
 }
 
 # The installed authorized_keys (the drive file lives inside the image;
 # the .ssh copy installed at the last save mirrors it).
-keys_file() {
+keys_file() { # -> KFILE
 	case "$1" in
-		authorized_keys) echo "$HOME_M5/.ssh/authorized_keys" ;;
-		root_authorized_keys) echo "$HOME_ROOT/.ssh/authorized_keys" ;;
+		authorized_keys) KFILE=$HOME_M5/.ssh/authorized_keys ;;
+		root_authorized_keys) KFILE=$HOME_ROOT/.ssh/authorized_keys ;;
+		*) KFILE="" ;;
 	esac
 }
 
 # The SSID in effect: wifi_ssid wins, else the ssid= of the
-# wpa_supplicant.conf actually in use.
-eff_ssid() {
-	v=$(cfg_get wifi_ssid 2>/dev/null) && [ -n "$v" ] && { echo "$v"; return; }
-	f=$(eff_file wpa_supplicant.conf) || return 1
-	sed -n 's/^[ 	]*ssid[ 	]*=[ 	]*"\{0,1\}\([^"]*\)"\{0,1\}.*/\1/p' "$f" 2>/dev/null | head -n 1
+# wpa_supplicant.conf actually in use.  Builtins only (#40: on NOMMU a
+# sed|head pipe is two ~480 KB execs per menu redraw).
+eff_ssid() { # -> ESSID
+	if cfg_get wifi_ssid 2>/dev/null && [ -n "$CFG_VAL" ]; then
+		ESSID=$CFG_VAL; return 0
+	fi
+	eff_file wpa_supplicant.conf || { ESSID=""; return 1; }
+	ESSID=""
+	while IFS= read -r _l || [ -n "$_l" ]; do
+		_l=${_l%"$CR"}
+		is_key_line "$_l" ssid || continue
+		_v=${_l#*=}
+		while :; do
+			case "$_v" in
+				" "*|"	"*) _v=${_v#?} ;;
+				*) break ;;
+			esac
+		done
+		_v=${_v#\"}
+		_v=${_v%%\"*}
+		ESSID=$_v
+		return 0
+	done < "$EFF"
+	return 1
 }
 
 # ---------------------------------------------------------- validation ----
@@ -349,7 +369,7 @@ editor_set() {
 # Apply one validated edit inside the mounted image.  $1 key, $2 value,
 # $3 = set|del.
 apply_edit() {
-	f=$MNT/$(key_file "$1")
+	key_file "$1"; f=$MNT/$KF
 	case "$1" in
 		authorized_keys|root_authorized_keys)
 			if [ "$3" = del ]; then
@@ -375,15 +395,16 @@ img_hash() {
 	[ -n "$HASH" ]
 }
 
-lun_file() {
-	for c in "$UDC_ROOT"/*/device/udc/*/gadget/lun*/file; do
-		[ -f "$c" ] && { echo "$c"; return 0; }
+lun_file() { # -> LF
+	for LF in "$UDC_ROOT"/*/device/udc/*/gadget/lun*/file; do
+		[ -f "$LF" ] && return 0
 	done
-	return 1
+	LF=""; return 1
 }
 
 _cleanup() {
 	trap - EXIT HUP INT TERM
+	[ "$_pal_on" = 1 ] && _pal_restore
 	umount "$MNT" 2>/dev/null
 	rm -rf "$MNT" "$WORK_IMG" "$LOCK"
 }
@@ -459,10 +480,10 @@ drive_write() {
 	# until the gadget drops it.  The eject makes the host see the new
 	# file and turns the save into an immediate eject-import; without a
 	# LUN the swap itself wakes bootsyncd's settle path.
-	_lf=$(lun_file) && {
+	lun_file && {
 		_b=""
-		read -r _b < "$_lf" 2>/dev/null || true
-		[ -n "$_b" ] && echo 1 > "${_lf%file}forced_eject" 2>/dev/null || true
+		read -r _b < "$LF" 2>/dev/null || true
+		[ -n "$_b" ] && echo 1 > "${LF%file}forced_eject" 2>/dev/null || true
 	}
 
 	# The save can take SAVE_WAIT seconds; on the panel the message
@@ -501,35 +522,45 @@ usage() {
 	exit 64
 }
 
-do_get() {
+# do_get echoes the value for the CLI and also leaves it in DG_VAL so
+# menu code can read it without a command substitution (each $( ) is
+# one more ~480 KB hush exec on NOMMU).
+do_get() { # -> DG_VAL, prints value
 	key_known "$1" || {
-		_x=$(key_explained "$1") && echo "$_x" >&2
+		key_explained "$1" && echo "$KX" >&2
 		die "unknown key '$1'" ; }
 	if key_secret "$1"; then
-		v=$(cfg_get "$1" 2>/dev/null)
-		[ -n "$v" ] && echo "set" || echo "not set"
+		cfg_get "$1" 2>/dev/null
+		[ -n "$CFG_VAL" ] && DG_VAL=set || DG_VAL="not set"
+		echo "$DG_VAL"
 		return 0
 	fi
 	case "$1" in
 		authorized_keys|root_authorized_keys)
-			kf=$(keys_file "$1")
-			if [ -s "$kf" ]; then cat "$kf"; else echo "no keys"; fi
-			return 0 ;;
+			keys_file "$1"
+			if [ -s "$KFILE" ]; then cat "$KFILE"; else echo "no keys"; fi
+			DG_VAL=""; return 0 ;;
 	esac
-	v=$(cfg_get "$1" 2>/dev/null) || v=""
+	cfg_get "$1" 2>/dev/null || CFG_VAL=""
+	v=$CFG_VAL
 	if [ -z "$v" ]; then
 		case "$1" in
-			wifi_ssid) v=$(eff_ssid 2>/dev/null) ;;
+			wifi_ssid) eff_ssid 2>/dev/null; v=$ESSID ;;
 			wifi_mode)
-				f=$(eff_file wpa_supplicant.conf)
-				if grep -q '^[ 	]*mode=2' "$f" 2>/dev/null; then
-					v=ap
-				else
-					v=sta
+				v=sta
+				if eff_file wpa_supplicant.conf; then
+					while IFS= read -r _l || [ -n "$_l" ]; do
+						is_key_line "$_l" mode && {
+							case "${_l#*=}" in
+								2|2\ *) v=ap ;;
+							esac
+						}
+					done < "$EFF"
 				fi ;;
 		esac
 	fi
-	echo "${v:-(unset)}"
+	DG_VAL=${v:-(unset)}
+	echo "$DG_VAL"
 }
 
 do_list() {
@@ -541,18 +572,23 @@ do_list() {
 		key_present "$k" || continue
 		case "$k" in
 			authorized_keys|root_authorized_keys)
-				kf=$(keys_file "$k")
+				keys_file "$k"
 				n=0
-				[ -f "$kf" ] && n=$(grep -c . "$kf" 2>/dev/null || echo 0)
+				if [ -f "$KFILE" ]; then
+					while IFS= read -r _l || [ -n "$_l" ]; do
+						[ -n "$_l" ] && n=$((n + 1))
+					done < "$KFILE"
+				fi
 				echo "$k = $n key(s)" ;;
 			*)
 				if key_secret "$k"; then
-					v=$(cfg_get "$k" 2>/dev/null)
-					[ -n "$v" ] && echo "$k = (set)" || echo "$k = (unset)"
+					cfg_get "$k" 2>/dev/null
+					[ -n "$CFG_VAL" ] && echo "$k = (set)" || echo "$k = (unset)"
 				else
-					v=$(cfg_get "$k" 2>/dev/null) || v=""
+					cfg_get "$k" 2>/dev/null || CFG_VAL=""
+					v=$CFG_VAL
 					[ -z "$v" ] && [ "$k" = wifi_ssid ] &&
-						v=$(eff_ssid 2>/dev/null)
+						{ eff_ssid 2>/dev/null; v=$ESSID; }
 					echo "$k = ${v:-(unset)}"
 				fi ;;
 		esac
@@ -564,8 +600,8 @@ do_list() {
 do_set() {
 	_k=$1; _v=$2; _from_stdin=${3:-0}
 	if ! key_known "$_k"; then
-		_x=$(key_explained "$_k")
-		[ -n "$_x" ] && echo "m5-config: $_x" >&2 ||
+		key_explained "$_k"
+		[ -n "$KX" ] && echo "m5-config: $KX" >&2 ||
 			echo "m5-config: unknown key '$_k' (see: m5-config list)" >&2
 		return 64
 	fi
@@ -599,12 +635,16 @@ do_set() {
 # ------------------------------------------------------------- menu ----
 
 scr_clear() {
-	printf '\033[2J\033[H'
+	# \033[0m first: ED uses the current background attribute, so a
+	# clear while a button colour is selected would paint the whole
+	# screen in button colour.
+	printf '\033[0m\033[2J\033[H'
 	_trow=0
 	_iord=0
 	_islots=""
 	_navlabel=back
 	_msgrow=0
+	_saycol=""
 	[ -z "${_tkeep:-}" ] && _tpage=0
 	_tkeep=""
 }
@@ -613,9 +653,16 @@ say() {
 	if [ "$_TOUCH" = 1 ]; then
 		# header rows are absolute-addressed, truncated to the
 		# panel width and limited to the header area so they can
-		# never collide with the item blocks below.
+		# never collide with the item blocks below.  An empty
+		# line stays a plain-mode spacer; on the panel it would
+		# burn one of only three header rows.
+		[ -z "$1" ] && return
 		[ "$_trow" -lt "$ITOP" ] || return 0
-		printf '\033[%s;1H%.80s\033[K' "$((_trow + 1))" "$1"
+		_c=$_DIM
+		[ "$_trow" = 0 ] && _c=$_TTL
+		[ -n "$_saycol" ] && _c=$_saycol
+		printf '\033[%s;1H%s%.80s\033[K\033[0m' \
+			"$((_trow + 1))" "$_c" "$1"
 		_trow=$((_trow + 1))
 		return
 	fi
@@ -640,7 +687,8 @@ msg() {
 	if [ "$_TOUCH" = 1 ]; then
 		[ "$_msgrow" -lt $((NAVTOP - MSGTOP)) ] ||
 			_msgrow=$((NAVTOP - MSGTOP - 1))
-		printf '\033[%s;1H%.80s\033[K' "$((MSGTOP + _msgrow + 1))" "$1"
+		printf '\033[%s;1H\033[0m%.80s\033[K' \
+			"$((MSGTOP + _msgrow + 1))" "$1"
 		_msgrow=$((_msgrow + 1))
 	else
 		echo "$1"
@@ -668,17 +716,26 @@ set_apply() {
 # and the m5-key helper.  Serial/SSH keep the plain single-line menus.
 #
 # Geometry for the Tab5 panel console (fbcon=rotate:3 -> 80x22):
-# rows 0-4 header (say), rows 5-18 ten three-row item blocks in two
-# 40-column halves, rows 19-21 the nav block.  Every block is placed
-# with absolute cursor addressing and the tap hit-test uses the same
+# rows 0-2 header (say), rows 3-18 eight item blocks in two 40-column
+# halves on a 4-row pitch (3 colour rows + 1 gap row; buttons 3-5, 7-9,
+# 11-13, 15-17, gaps 6/10/14/18), row 18 the message strip (the last
+# gap row doubles as it), rows 19-21 the nav block.  The 4-row pitch
+# is the only way to keep 3-row buttons, a real vertical label centre
+# and a 3-line header inside 22 rows.  Every block is placed with
+# absolute cursor addressing and the tap hit-test uses the same
 # arithmetic, so boxes are right by construction (no line counting).
-# Blocks are drawn as reverse-video buttons; rows MSGTOP..NAVTOP-1
-# are the message area where command output lands (_tmsg parks the
-# cursor there) so results are never drawn under the nav block.
+# The hit-test folds a pitch's gap row into the button above it
+# ("the hit area may include the gap"); the message strip row and the
+# header stay inert.
+#
+# Palette: Linux console redefinition (ESC ] P n rrggbb) turns the
+# default slots into a calm Nord scheme -- VT/panel only, serial and
+# SSH never see it.  ESC ] R restores the default palette on every
+# exit path (exit button, EOF, signal, m5-key failure) via _cleanup.
 _TOUCH=0
-ITOP=5; NAVTOP=19; TPP=${M5CFG_TPP:-10}; COLW=40
-MSGTOP=$((ITOP + 8))
-_trow=0 _iord=0 _tpage=0 _tkeep="" _navlabel=back _islots="" _msgrow=0
+ITOP=3; NAVTOP=19; TPP=${M5CFG_TPP:-8}; COLW=40
+MSGTOP=18
+_trow=0 _iord=0 _tpage=0 _tkeep="" _navlabel=back _islots="" _msgrow=0 _saycol=""
 M5KEY="${M5CFG_M5_KEY:-/usr/bin/m5-key}"
 STTY="${M5CFG_STTY:-stty}"
 BLEKBD="${M5CFG_BLE_KBD:-/usr/bin/ble-kbd}"
@@ -686,18 +743,55 @@ SYSINFO="${M5CFG_SYSINFO:-/usr/sbin/sysinfo}"
 USBLUN="${M5CFG_USB_LUN:-/usr/sbin/usb-lun}"
 STATUS_TXT="${M5CFG_STATUS_TXT:-/run/status.txt}"
 PSUPPLY="${M5CFG_PSUPPLY:-/sys/class/power_supply}"
+EVF=$RUN_DIR/.m5cfg-ev.$$
+_pal_on=0
+# SGR colours on the redefined slots (fg 3x / bg 4x):
+# 0 bg #2e3440, 1 warn #bf616a, 2 ok #a3be8c, 3 dim #81a1c1,
+# 4 button #3b4252, 5 tapped #5e81ac, 6 title #88c0d0, 7 text #e5e9f0.
+_TTL='\033[36m'; _DIM='\033[33m'; _WRN='\033[31m'; _OK='\033[32m'
+_BTN='\033[37;44m'; _TAP='\033[37;45m'
+_pal_set() {
+	printf '\033]P02e3440\033]P1bf616a\033]P2a3be8c\033]P381a1c1\033]P43b4252\033]P55e81ac\033]P688c0d0\033]P7e5e9f0'
+	_pal_on=1
+}
+_pal_restore() {
+	[ "$_pal_on" = 1 ] || return 0
+	printf '\033]R'
+	_pal_on=0
+}
+_touch_init() {
+	# 0600: a typed password's first byte lands in $EVF.
+	(umask 077; : > "$EVF") 2>/dev/null || :
+	_pal_set
+	trap _cleanup EXIT
+	trap '_cleanup; exit 130' HUP INT TERM
+}
 touch_ok() {
 	[ "$_TOUCH" = 1 ] && return 0
-	[ -n "${M5CFG_FORCE_TOUCH:-}" ] && { _TOUCH=1; return; }
+	[ -n "${M5CFG_FORCE_TOUCH:-}" ] && { _TOUCH=1; _touch_init; return; }
 	[ -x "$M5KEY" ] || return 1
-	_tty=$(tty 2>/dev/null) || return 1
+	(umask 077; : > "$EVF") 2>/dev/null || return 1
+	tty > "$EVF" 2>/dev/null || return 1
+	IFS= read -r _tty < "$EVF" || return 1
 	case "$_tty" in /dev/tty[0-9]*|/dev/console) ;; *) return 1 ;; esac
 	"$M5KEY" probe >/dev/null 2>&1 || return 1
 	_TOUCH=1
+	_touch_init
+}
+
+# _tget: one m5-key event into _ev through the event file.  A direct
+# redirect plus the read builtin keeps the input wait at exactly two
+# processes -- this hush and m5-key.  A $( ) would fork a second ~480
+# KB hush for every event; on NOMMU that is the difference between a
+# menu that fits and alloc failures (#40).
+_tget() {
+	"$M5KEY" > "$EVF" 2>/dev/null || return 1
+	IFS= read -r _ev < "$EVF" || return 1
+	[ -n "$_ev" ]
 }
 
 # item KEY LABEL: a menu choice.  Plain mode prints " KEY LABEL" (one
-# per line, under 44 columns); touch mode draws a three-row block in
+# per line, under 44 columns); touch mode draws a three-row button in
 # the two-column grid and remembers its slot for the tap hit-test.
 # Items past the page capacity are skipped (nav pages through them).
 # Key 0 is never drawn -- the nav block carries Back on every screen.
@@ -710,21 +804,26 @@ item() {
 	_s=$((_i % TPP))
 	eval "_isnum_$_s=\$_k; _islbl_$_s=\$_l"
 	_islots="$_islots$_s "
-	_tblock $((ITOP + (_s / 2) * 3)) $(((_s % 2) * COLW)) "$_k $_l"
+	_tblock $((ITOP + (_s / 2) * 4)) $(((_s % 2) * COLW)) "$_k $_l"
 }
 
-# _tblock TOP COL LABEL [W]: one finger button -- reverse video over
-# all three rows and W columns (default 38) inside the 40-column
-# half, so the tap target is visible instead of a floating label.
-# The width comes through the format string: busybox printf has no
-# %*s.  Tap zones are unchanged (COLW halves, nav thirds).
+# _tblock TOP COL LABEL [W]: one finger button -- three rows of the
+# button colour over W columns (default 36) starting 2 columns into
+# the 40-column half, so every button has a visible gap on all four
+# sides (4 columns between the halves, 2 at the screen edges, one
+# empty row between button rows).  The label is vertically centred
+# on the middle row.  The width comes through the format string:
+# busybox printf has no %*s.
 _tblock() {
-	_tbw=${4:-38}; _tbi=$((_tbw - 2))
-	printf "\033[%s;%sH\033[7m%-${_tbw}s\033[0m" \
+	_tbw=${4:-36}
+	_tl=${#3}; [ "$_tl" -gt "$((_tbw - 2))" ] && _tl=$((_tbw - 2))
+	_tp=$(( (_tbw - _tl) / 2 ))
+	_tr=$((_tbw - _tp - _tl))
+	printf "\033[%s;%sH${_BTN}%-${_tbw}s\033[0m" \
 		"$(($1 + 1))" "$(($2 + 2))" ""
-	printf "\033[%s;%sH\033[7m %-${_tbi}.${_tbi}s \033[0m" \
-		"$(($1 + 2))" "$(($2 + 2))" "$3"
-	printf "\033[%s;%sH\033[7m%-${_tbw}s\033[0m" \
+	printf "\033[%s;%sH${_BTN}%${_tp}s%-${_tl}.${_tl}s%-${_tr}s\033[0m" \
+		"$(($1 + 2))" "$(($2 + 2))" "" "$3" ""
+	printf "\033[%s;%sH${_BTN}%-${_tbw}s\033[0m" \
 		"$(($1 + 3))" "$(($2 + 2))" ""
 }
 
@@ -737,56 +836,62 @@ _navdraw() {
 	[ "$_npages" -lt 1 ] && _npages=1
 	_tblock "$NAVTOP" 0 "[ $_navlabel ]"
 	if [ "$_npages" -gt 1 ]; then
-		_tblock "$NAVTOP" 39 "[< prev ]" 18
-		_tblock "$NAVTOP" 59 "[ more $((_tpage + 1))/$_npages > ]" 18
+		_tblock "$NAVTOP" 39 "[< prev ]" 16
+		_tblock "$NAVTOP" 59 "[ more $((_tpage + 1))/$_npages > ]" 16
 	fi
 }
 
-# menu_pick: touch-mode replacement for 'ask "? "'.  Reads events from
-# m5-key: a key byte becomes REPLY (the panel keyboard keeps working),
-# a tap becomes the tapped item's key, briefly highlighted.  Nav zones:
-# left 40 columns = back/exit, 40-59 = prev page, 60-79 = more page.
-# Page moves return an empty REPLY so the menu loop redraws.
+# menu_pick: touch-mode replacement for 'ask "? "'.  One m5-key event
+# per call through the event file (no $( ) -- see _tget): a key byte
+# becomes REPLY (the panel keyboard keeps working), a tap becomes the
+# tapped item's key, briefly highlighted.  Nav zones: left 40 columns
+# = back/exit, 40-59 = prev page, 60-79 = more page.  Every event
+# returns so the menu loop repaints the whole screen -- a kernel
+# message can scroll the console mid-wait and a full redraw is the
+# only thing that keeps hit boxes and pixels in step.
 menu_pick() {
 	[ "$_TOUCH" = 0 ] && { ask "? "; return; }
 	_navdraw
-	while :; do
-		_ev=$("$M5KEY") || { REPLY=""; return 1; }
-		case "$_ev" in
-			K\ *) REPLY=${_ev#K }; return ;;
-			T\ *) ;;
-			*) continue ;;
-		esac
-		set -- ${_ev#T }
-		_tr=$1; _tc=$2
-		REPLY=""
-		if [ "$_tr" -ge "$NAVTOP" ]; then
-			if [ "$_tc" -lt 40 ]; then
-				REPLY=0
-			elif [ "$_npages" -gt 1 ]; then
-				if [ "$_tc" -lt 60 ] && [ "$_tpage" -gt 0 ]; then
-					_tpage=$((_tpage - 1)); _tkeep=1
-				elif [ "$_tc" -ge 60 ] &&
-					[ "$_tpage" -lt $((_npages - 1)) ]; then
-					_tpage=$((_tpage + 1)); _tkeep=1
-				fi
+	_tget || { REPLY=""; return 1; }
+	case "$_ev" in
+		K\ *) REPLY=${_ev#K }; return ;;
+		T\ *) ;;
+		*) REPLY=""; _tkeep=1; return ;;
+	esac
+	set -- ${_ev#T }
+	_tr=$1; _tc=$2
+	REPLY=""
+	if [ "$_tr" -ge "$NAVTOP" ]; then
+		if [ "$_tc" -lt 40 ]; then
+			REPLY=0
+		elif [ "$_npages" -gt 1 ]; then
+			if [ "$_tc" -lt 60 ] && [ "$_tpage" -gt 0 ]; then
+				_tpage=$((_tpage - 1)); _tkeep=1
+			elif [ "$_tc" -ge 60 ] &&
+				[ "$_tpage" -lt $((_npages - 1)) ]; then
+				_tpage=$((_tpage + 1)); _tkeep=1
 			fi
-			return
 		fi
-		[ "$_tr" -ge "$ITOP" ] || continue
-		_s=$(( ((_tr - ITOP) / 3) * 2 + _tc / COLW ))
-		case " $_islots " in *" $_s "*) ;; *) continue ;; esac
-		eval "REPLY=\$_isnum_$_s"
-		_tflash $_s; return
-	done
+		return
+	fi
+	if [ "$_tr" -ge "$ITOP" ] && [ "$_tr" -lt "$MSGTOP" ]; then
+		_s=$(( ((_tr - ITOP) / 4) * 2 + _tc / COLW ))
+		case " $_islots " in
+			*" $_s "*)
+				eval "REPLY=\$_isnum_$_s"
+				_tflash $_s
+				return ;;
+		esac
+	fi
+	_tkeep=1
 }
 
-_tflash() { # brief normal-video redraw of the tapped button
-	_top=$((ITOP + ($1 / 2) * 3)); _col=$((($1 % 2) * COLW))
+_tflash() { # brief tapped-colour redraw of the tapped button
+	_top=$((ITOP + ($1 / 2) * 4)); _col=$((($1 % 2) * COLW))
 	eval "_l=\$_islbl_$1; _k=\$_isnum_$1"
-	printf '\033[%s;%sH%-38s' "$((_top + 1))" "$((_col + 2))" ""
-	printf '\033[%s;%sH %-36.36s ' "$((_top + 2))" "$((_col + 2))" "$_k $_l"
-	printf '\033[%s;%sH%-38s' "$((_top + 3))" "$((_col + 2))" ""
+	_s=$_BTN; _BTN=$_TAP
+	_tblock "$_top" "$_col" "$_k $_l"
+	_BTN=$_s
 	usleep 200000 2>/dev/null || :
 }
 
@@ -801,72 +906,107 @@ pause() {
 	ask "  [Enter] "
 }
 
-# tpick TITLE "v1 v2 ..." (touch only): value blocks in the grid plus
-# a [ back ] button.  REPLY = the tapped value and TPIDX its slot
-# index (both "" for back) -- callers that keep a parallel list
-# resolve the pick by slot, never by comparing label text.  Keyboard:
-# a digit picks the Nth value, anything else goes back.  Returns 1 in
-# plain mode so the caller falls back to a typed prompt.
+# tpick TITLE "v1 v2 ..." (touch only): value buttons in the grid plus
+# a [ back ] button, paging like the menus when the list is longer
+# than a page.  REPLY = the tapped value and TPIDX its index in the
+# full list (both "" for back) -- callers that keep a parallel list
+# resolve the pick by index, never by comparing label text.  Keyboard:
+# a digit picks the Nth visible value, anything else goes back.
+# Non-selecting events redraw the whole screen before waiting again.
+# Returns 1 in plain mode so the caller falls back to a typed prompt.
 tpick() {
 	[ "$_TOUCH" = 1 ] || return 1
-	scr_clear
-	say "== $1 =="
 	_i=0
 	for _v in $2; do
-		_s=$_i; _i=$((_i + 1))
-		eval "_tpv_$_s=\$_v"
-		_tblock $((ITOP + (_s / 2) * 3)) $(((_s % 2) * COLW)) \
-			"$_i $_v"
+		eval "_tpv_$_i=\$_v"; _i=$((_i + 1))
 	done
-	_tn=$_i
+	_tn=$_i; _pg=0
+	_np=$(( (_tn + TPP - 1) / TPP )); [ "$_np" -lt 1 ] && _np=1
 	REPLY=""; TPIDX=""
-	_tblock "$NAVTOP" 0 "[ back ]"
+	_need=1
 	while :; do
-		_ev=$("$M5KEY") || return 0
+		if [ "$_need" = 1 ]; then
+			scr_clear; say "== $1 =="
+			_i=$((_pg * TPP)); _end=$((_i + TPP))
+			[ "$_end" -gt "$_tn" ] && _end=$_tn
+			while [ "$_i" -lt "$_end" ]; do
+				_s=$((_i % TPP))
+				eval "_v=\$_tpv_$_i"
+				_tblock $((ITOP + (_s / 2) * 4)) \
+					$(((_s % 2) * COLW)) "$((_i + 1)) $_v"
+				_i=$((_i + 1))
+			done
+			_tblock "$NAVTOP" 0 "[ back ]"
+			if [ "$_np" -gt 1 ]; then
+				_tblock "$NAVTOP" 39 "[< prev ]" 16
+				_tblock "$NAVTOP" 59 "[ more $((_pg + 1))/$_np > ]" 16
+			fi
+			_need=0
+		fi
+		_tget || return 0
 		case "$_ev" in
 			K\ *)
 				_c=${_ev#K }
 				case "$_c" in
 					[1-9])
-						_d=$((_c - 1))
+						_d=$((_pg * TPP + _c - 1))
 						[ "$_d" -lt "$_tn" ] || return 0
 						TPIDX=$_d
 						eval "REPLY=\$_tpv_$_d" ;;
 				esac
 				return 0 ;;
 			T\ *) ;;
-			*) continue ;;
+			*) _need=1; continue ;;
 		esac
 		set -- ${_ev#T }
 		_tr=$1; _tc=$2
-		[ "$_tr" -ge "$NAVTOP" ] && return 0
-		[ "$_tr" -ge "$ITOP" ] || continue
-		_s=$(( ((_tr - ITOP) / 3) * 2 + _tc / COLW ))
-		[ "$_s" -lt "$_tn" ] || continue
-		TPIDX=$_s
-		eval "REPLY=\$_tpv_$_s"
+		if [ "$_tr" -ge "$NAVTOP" ]; then
+			[ "$_tc" -lt 40 ] && return 0
+			if [ "$_np" -gt 1 ]; then
+				if [ "$_tc" -lt 60 ] && [ "$_pg" -gt 0 ]; then
+					_pg=$((_pg - 1))
+				elif [ "$_tc" -ge 60 ] &&
+					[ "$_pg" -lt $((_np - 1)) ]; then
+					_pg=$((_pg + 1))
+				fi
+			fi
+			_need=1; continue
+		fi
+		[ "$_tr" -ge "$ITOP" ] && [ "$_tr" -lt "$MSGTOP" ] ||
+			{ _need=1; continue; }
+		_s=$(( ((_tr - ITOP) / 4) * 2 + _tc / COLW ))
+		_i=$((_pg * TPP + _s))
+		[ "$_s" -lt "$TPP" ] && [ "$_i" -lt "$_tn" ] ||
+			{ _need=1; continue; }
+		TPIDX=$_i
+		eval "REPLY=\$_tpv_$_i"
 		return 0
 	done
 }
 
 # tconfirm QUESTION (touch only): [yes]/[no] buttons.  REPLY=yes|no.
 # Keyboard: 'y' = yes, anything else (incl. K enter/K bs) = no.
+# Non-selecting events redraw the whole screen before waiting again.
 tconfirm() {
 	[ "$_TOUCH" = 1 ] || return 1
-	scr_clear
-	say "== $1 =="
-	_tblock $ITOP 0 "yes"
-	_tblock $ITOP 40 "no"
+	REPLY=no
+	_need=1
 	while :; do
-		_ev=$("$M5KEY") || { REPLY=no; return 0; }
+		if [ "$_need" = 1 ]; then
+			scr_clear; say "== $1 =="
+			_tblock $ITOP 0 "yes"
+			_tblock $ITOP 40 "no"
+			_need=0
+		fi
+		_tget || return 0
 		case "$_ev" in
-			K\ *) [ "${_ev#K }" = y ] && REPLY=yes || REPLY=no
-				return 0 ;;
+			K\ *) [ "${_ev#K }" = y ] && REPLY=yes; return 0 ;;
 			T\ *) ;;
-			*) continue ;;
+			*) _need=1; continue ;;
 		esac
 		set -- ${_ev#T }
-		[ "$1" -ge "$ITOP" ] && [ "$1" -lt $((ITOP + 3)) ] || continue
+		[ "$1" -ge "$ITOP" ] && [ "$1" -lt $((ITOP + 4)) ] ||
+			{ _need=1; continue; }
 		[ "$2" -lt 40 ] && REPLY=yes || REPLY=no
 		return 0
 	done
@@ -875,21 +1015,22 @@ tconfirm() {
 # tadjust TITLE CUR MIN MAX STEP (touch only): [-]/[+] buttons plus
 # [OK]/[cancel].  Keyboard: digits build a value, K bs erases one,
 # K enter = OK, 'c' = cancel, other bytes are ignored.  REPLY = the
-# value or "" on cancel.
+# value or "" on cancel.  The screen is redrawn after every event so
+# the value line and hit zones never drift apart.
 tadjust() {
 	[ "$_TOUCH" = 1 ] || return 1
 	_cur=$2; _buf=""
-	scr_clear
-	say "== $1 =="
-	say "  $3 .. $4"
 	while :; do
+		scr_clear
+		say "== $1 =="
+		say "  $3 .. $4"
 		_tblock $ITOP 0  "[ -$5 ]"
 		_tblock $ITOP 40 "[ +$5 ]"
-		_tblock $((ITOP + 3)) 0  "[ OK ]"
-		_tblock $((ITOP + 3)) 40 "[ cancel ]"
+		_tblock $((ITOP + 4)) 0  "[ OK ]"
+		_tblock $((ITOP + 4)) 40 "[ cancel ]"
 		printf '\033[%s;1Hvalue: %-20s\033[K' "$((MSGTOP + 1))" \
 			"${_buf:-$_cur}"
-		_ev=$("$M5KEY") || { REPLY=""; return 0; }
+		_tget || { REPLY=""; return 0; }
 		case "$_ev" in
 			K\ *)
 				_c=${_ev#K }
@@ -903,7 +1044,7 @@ tadjust() {
 			*) continue ;;
 		esac
 		set -- ${_ev#T }
-		[ "$1" -ge "$ITOP" ] && [ "$1" -lt $((ITOP + 3)) ] && {
+		[ "$1" -ge "$ITOP" ] && [ "$1" -lt $((ITOP + 4)) ] && {
 			_buf=""
 			if [ "$2" -lt 40 ]; then
 				[ "$((_cur - $5))" -ge "$3" ] &&
@@ -913,7 +1054,7 @@ tadjust() {
 					_cur=$((_cur + $5)) || _cur=$4
 			fi
 			continue; }
-		[ "$1" -ge $((ITOP + 3)) ] && [ "$1" -lt $((ITOP + 6)) ] && {
+		[ "$1" -ge $((ITOP + 4)) ] && [ "$1" -lt $((ITOP + 8)) ] && {
 			[ "$2" -lt 40 ] && REPLY=${_buf:-$_cur} || REPLY=""
 			return 0; }
 	done
@@ -928,11 +1069,6 @@ tadjust() {
 # echoed; each char shows as '*' and tty echo is restored after.
 ttext() {
 	_sec=${2:-0}
-	scr_clear
-	say "== $1 =="
-	say "  this field needs a keyboard"
-	say "  (type the value, then Enter)"
-	_tblock "$NAVTOP" 0 "[ back ]"
 	REPLY=""
 	_r=0
 	if [ "$_sec" = 1 ]; then
@@ -944,17 +1080,26 @@ ttext() {
 		"$STTY" -echo 2>/dev/null || busybox stty -echo 2>/dev/null || :
 		trap '"$STTY" echo 2>/dev/null || busybox stty echo 2>/dev/null || :; exit 130' HUP INT TERM
 	fi
+	_need=1
 	while :; do
-		_ev=$("$M5KEY") || { _r=1; break; }
+		if [ "$_need" = 1 ]; then
+			scr_clear
+			say "== $1 =="
+			say "  this field needs a keyboard"
+			say "  (type the value, then Enter)"
+			_tblock "$NAVTOP" 0 "[ back ]"
+			_need=0
+		fi
+		_tget || { _r=1; break; }
 		case "$_ev" in
 			T\ *) break ;;
 			K\ *) ;;
-			*) continue ;;
+			*) _need=1; continue ;;
 		esac
 		_c=${_ev#K }
 		case "$_c" in
 			enter) break ;;
-			bs) continue ;;
+			bs) _need=1; continue ;;
 		esac
 		printf '\033[%s;1Hvalue: \033[K' "$((MSGTOP + 1))"
 		if [ "$_sec" = 1 ]; then
@@ -1001,8 +1146,14 @@ is_ssh() { [ -n "${SSH_CONNECTION:-}${SSH_TTY:-}" ]; }
 nosave_note() {
 	if [ -f "$NOSAVE_MARK" ]; then
 		r=""; read -r r < "$NOSAVE_MARK" 2>/dev/null || true
-		say "  ! NOT SAVED this boot:"
-		say "    ${r:-boot image unreadable}"
+		if [ "$_TOUCH" = 1 ]; then
+			_saycol=$_WRN
+			say "  ! NOT SAVED: ${r:-boot image unreadable}"
+			_saycol=""
+		else
+			say "  ! NOT SAVED this boot:"
+			say "    ${r:-boot image unreadable}"
+		fi
 		return 0
 	fi
 	return 1
@@ -1023,8 +1174,10 @@ menu_set() {
 		set_apply "$1" "$REPLY" && break
 		[ "$_TOUCH" = 1 ] && pause
 	done
-	[ "$_TOUCH" = 1 ] ||
-		msg "  -> $1: $(do_get "$1" 2>/dev/null || echo '?')"
+	if [ "$_TOUCH" = 0 ]; then
+		do_get "$1" >/dev/null 2>&1
+		msg "  -> $1: ${DG_VAL:-?}"
+	fi
 	pause
 }
 
@@ -1085,18 +1238,19 @@ menu_adjust() {
 menu_wifi() {
 	while :; do
 		scr_clear
-		ssid=$(eff_ssid 2>/dev/null)
-		mode=$(do_get wifi_mode 2>/dev/null)
+		eff_ssid 2>/dev/null; ssid=$ESSID
+		do_get wifi_mode >/dev/null 2>&1; mode=$DG_VAL
+		# the live address out of status.txt -- an ifconfig exec
+		# per redraw is another ~480 KB the panel cannot spare.
 		ip=""
-		ifc=$(ifconfig wlan0 2>/dev/null)
-		case "$ifc" in *"inet addr:"*)
-			ip=${ifc#*inet addr:}; ip=${ip%% *} ;;
-		esac
+		if [ -f "$STATUS_TXT" ]; then
+			while IFS= read -r _l || [ -n "$_l" ]; do
+				case "$_l" in ip_address=*) ip=${_l#ip_address=} ;; esac
+			done < "$STATUS_TXT"
+		fi
 		say "== Wi-Fi =="
-		say " mode: ${mode:-?}   ssid: ${ssid:-?}"
-		say " ip:   ${ip:-none}"
+		say " ${mode:-?} ${ssid:-?} ${ip:-no ip}"
 		nosave_note
-		say ""
 		item 1 "mode (ap or sta)"
 		item 2 SSID
 		item 3 passphrase
@@ -1119,9 +1273,9 @@ menu_wifi() {
 				menu_choose wifi_mode "ap sta" "Wi-Fi mode" ;;
 			2) menu_set wifi_ssid ;;
 			3) menu_secret wifi_psk ;;
-			4) menu_adjust channel \
-				"$(cfg_get channel 2>/dev/null || echo 6)" \
-				1 13 1 channel ;;
+			4)
+				cfg_get channel 2>/dev/null || CFG_VAL=6
+				menu_adjust channel "$CFG_VAL" 1 13 1 channel ;;
 			5) menu_choose wifi_pmf "0 1" "PMF" ;;
 			0) return ;;
 		esac
@@ -1131,8 +1285,13 @@ menu_wifi() {
 menu_keys() { # $1 = authorized_keys|root_authorized_keys, $2 label
 	while :; do
 		scr_clear
-		kf=$(keys_file "$1")
-		n=0; [ -f "$kf" ] && n=$(grep -c . "$kf" 2>/dev/null || echo 0)
+		keys_file "$1"
+		n=0
+		if [ -f "$KFILE" ]; then
+			while IFS= read -r _l || [ -n "$_l" ]; do
+				[ -n "$_l" ] && n=$((n + 1))
+			done < "$KFILE"
+		fi
 		say "== SSH keys: $2 =="
 		say " installed: $n key(s)"
 		item 1 "add a key (paste a line)"
@@ -1166,9 +1325,11 @@ menu_system() {
 	while :; do
 		scr_clear
 		say "== System =="
-		say " hostname: $(hostname 2>/dev/null || cfg_get hostname)"
+		_hn=""
+		read -r _hn < /proc/sys/kernel/hostname 2>/dev/null ||
+			{ cfg_get hostname 2>/dev/null; _hn=$CFG_VAL; }
+		say " hostname: ${_hn:-?}"
 		nosave_note
-		say ""
 		item 1 hostname
 		item 2 "m5 password"
 		item 3 "root password"
@@ -1193,13 +1354,26 @@ menu_system() {
 menu_datetime() {
 	scr_clear
 	say "== Date and time =="
-	say " now: $(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null)"
+	# /proc/driver/rtc is free to read; a date exec per redraw is
+	# another ~480 KB exec the panel cannot spare.
+	_now=""
+	if [ -r /proc/driver/rtc ]; then
+		_rd=""; _rt=""
+		while read -r _k _c _v; do
+			case "$_k" in
+				rtc_date) _rd=$_v ;;
+				rtc_time) _rt=$_v ;;
+			esac
+		done < /proc/driver/rtc
+		[ -n "$_rd" ] && _now="$_rd $_rt (rtc)"
+	fi
+	[ -z "$_now" ] && _now="(clock unreadable; set it below)"
+	say " now: $_now"
 	if [ -c /dev/rtc0 ]; then
 		say " rtc: present (/dev/rtc0)"
 	else
 		say " rtc: none"
 	fi
-	say ""
 	if [ "$_TOUCH" = 1 ]; then
 		ttext "set time (YYYY-MM-DD HH:MM)" || return
 	else
@@ -1228,8 +1402,11 @@ menu_display() {
 		[ -f "$d" ] && { bl=$d; break; }
 	done
 	[ -z "$bl" ] && { say " no backlight device"; pause; return; }
-	mx=0; read -r mx < "${bl%brightness}max_brightness" 2>/dev/null || mx=0
-	cur=0; read -r cur < "$bl" 2>/dev/null || cur=0
+	mx=0
+	[ -f "${bl%brightness}max_brightness" ] &&
+		read -r mx < "${bl%brightness}max_brightness" 2>/dev/null || mx=0
+	cur=0
+	[ -f "$bl" ] && read -r cur < "$bl" 2>/dev/null || cur=0
 	pct=0; [ "$mx" -gt 0 ] && pct=$((cur * 100 / mx))
 	say " brightness: ${pct}%"
 	if [ "$_TOUCH" = 1 ]; then
@@ -1281,8 +1458,10 @@ menu_ports() {
 	while :; do
 		scr_clear
 		say "== Ports (expander) =="
-		say " ext5v_en:  $(cfg_get ext5v_en 2>/dev/null || echo 0)"
-		say " ext_ant_en:$(cfg_get ext_ant_en 2>/dev/null || echo 0)"
+		cfg_get ext5v_en 2>/dev/null || CFG_VAL=0
+		_e5=$CFG_VAL
+		cfg_get ext_ant_en 2>/dev/null || CFG_VAL=0
+		say " ext5v_en:$_e5  ext_ant_en:$CFG_VAL"
 		item 1 "ext5v_en 0/1 (EXT header 5 V)"
 		item 2 "ext_ant_en 0/1 (MMCX antenna)"
 		item 0 back
@@ -1312,7 +1491,17 @@ _blescan() {
 					*) _n="" ;;
 				esac
 				_n=${_n:-$_a}
-				_n=$(echo "$_n" | tr ' ' '_')
+				# spaces to underscores, builtins only -- a
+				# tr pipe would be two execs per list line.
+				_s=""
+				while :; do
+					case "$_n" in
+						*" "*)
+							_s="$_s${_n%% *}_"
+							_n=${_n#* } ;;
+						*) _n="$_s$_n"; break ;;
+					esac
+				done
 				_t5=${_a%:*}; _t5=${_t5##*:}
 				eval "_bta_$_i=\$_a; _btn_$_i=\$_n"
 				_picks="$_picks${_n}_(${_t5}:${_a##*:}) "
@@ -1352,13 +1541,17 @@ menu_blekbd() {
 					printf '\033[1;1H\033[1m== pairing %s (%s) ==\033[0m\033[K' \
 						"$_name" "$_addr"
 					printf '\033[3;1H'
-					"$BLEKBD" pair "$_addr" | while IFS= read -r _l; do
+					# through a file: a pipe would park a whole
+					# extra hush for the read side.
+					"$BLEKBD" pair "$_addr" > /tmp/ble-pair.txt 2>&1
+					while IFS= read -r _l; do
 						case "$_l" in
 							*[0-9][0-9][0-9][0-9]*|*asskey*|*nter*)
 								printf '\033[1m%s\033[0m\n' "$_l" ;;
 							*) printf '%s\n' "$_l" ;;
 						esac
-					done
+					done < /tmp/ble-pair.txt
+					rm -f /tmp/ble-pair.txt
 				else
 					"$BLEKBD" scan 8
 					ask "  address AA:BB:.. (empty cancels): " || continue
@@ -1458,9 +1651,13 @@ menu_lpcore() {
 	while :; do
 		scr_clear
 		say "== LP core =="
-		say " lp_core:   $(cfg_get lp_core 2>/dev/null || echo '(default always)')"
-		say " lp_program:$(cfg_get lp_program 2>/dev/null || echo '(lp.bin)')"
-		say " lp_period: $(cfg_get lp_period 2>/dev/null || echo '(1s)')"
+		cfg_get lp_core 2>/dev/null || CFG_VAL="(default always)"
+		_lc=$CFG_VAL
+		cfg_get lp_program 2>/dev/null || CFG_VAL="(lp.bin)"
+		_lp=$CFG_VAL
+		cfg_get lp_period 2>/dev/null || CFG_VAL="(1s)"
+		say " core:$_lc  period:$CFG_VAL"
+		say " prog:$_lp"
 		item 1 "lp_core (always|sleep|off)"
 		item 2 "lp_program (file name)"
 		item 3 "lp_period (e.g. 1s)"
@@ -1479,15 +1676,26 @@ menu_lpcore() {
 # set the plain menu prints through say and the touch pager shows.
 status_lines() {
 	echo "== Status =="
-	[ -f "$STATUS_TXT" ] && sed 's/^/ /' "$STATUS_TXT"
-	echo " bootfat: $(cat "$SYSBOARD/bootfat" 2>/dev/null || echo n/a)"
+	if [ -f "$STATUS_TXT" ]; then
+		while IFS= read -r _l || [ -n "$_l" ]; do
+			echo " $_l"
+		done < "$STATUS_TXT"
+	fi
+	_bf=""
+	[ -f "$SYSBOARD/bootfat" ] &&
+		read -r _bf < "$SYSBOARD/bootfat" 2>/dev/null || _bf=""
+	echo " bootfat: ${_bf:-n/a}"
 	if [ -f "$NOSAVE_MARK" ]; then
 		r=""; read -r r < "$NOSAVE_MARK" 2>/dev/null || true
 		echo " save:    NOT SAVED ($r)"
 	else
 		echo " save:    normal (changes are saved)"
 	fi
-	echo " usb:     $("$USBLUN" state 2>/dev/null || echo no-drive)"
+	# usb-lun state via the event file: the helper still runs (once
+	# per Status visit), but no command-substitution hush rides along.
+	_us=no-drive
+	"$USBLUN" state > "$EVF" 2>/dev/null && read -r _us < "$EVF"
+	echo " usb:     $_us"
 	for p in "$PSUPPLY"/*/capacity; do
 		[ -f "$p" ] || continue
 		c=""; read -r c < "$p" 2>/dev/null || continue
@@ -1503,7 +1711,10 @@ status_lines() {
 tpage() {
 	[ "$_TOUCH" = 1 ] || { cat "$1"; return; }
 	_pf=$1
-	_pn=$(grep -c '' "$_pf" 2>/dev/null || echo 0)
+	_pn=0
+	while IFS= read -r _l || [ -n "$_l" ]; do
+		_pn=$((_pn + 1))
+	done < "$_pf"
 	_pnp=$(((_pn + NAVTOP - 1) / NAVTOP))
 	[ "$_pnp" -lt 1 ] && _pnp=1
 	_pg=0
@@ -1516,14 +1727,21 @@ tpage() {
 			[ "$_n" -le "$_skip" ] && continue
 			_d=$((_d + 1))
 			[ "$_d" -gt "$NAVTOP" ] && break
-			printf '\033[%s;1H%.80s\033[K' "$_d" "$_l"
+			case "$_l" in
+				==*)
+					printf '\033[%s;1H%s%.80s\033[K\033[0m' \
+						"$_d" "$_TTL" "$_l" ;;
+				*)
+					printf '\033[%s;1H\033[0m%.80s\033[K' \
+						"$_d" "$_l" ;;
+			esac
 		done < "$_pf"
 		_tblock "$NAVTOP" 0 "[ back ]"
 		if [ "$_pnp" -gt 1 ]; then
-			_tblock "$NAVTOP" 39 "[< prev ]" 18
-			_tblock "$NAVTOP" 59 "[ more $((_pg + 1))/$_pnp > ]" 18
+			_tblock "$NAVTOP" 39 "[< prev ]" 16
+			_tblock "$NAVTOP" 59 "[ more $((_pg + 1))/$_pnp > ]" 16
 		fi
-		_ev=$("$M5KEY") || return
+		_tget || return
 		case "$_ev" in
 			K\ *) return ;;
 			T\ *) ;;
@@ -1578,7 +1796,10 @@ menu_main() {
 	while :; do
 		scr_clear
 		snd=1; prt=1; ble=1; dsp=1
-		[ -x /usr/bin/pcm-sine ] && [ -d /dev/snd ] && ls /dev/snd/pcm* >/dev/null 2>&1 || snd=0
+		# the glob tests without an ls exec
+		_pcm=0
+		for d in /dev/snd/pcm*; do [ -e "$d" ] && { _pcm=1; break; }; done
+		[ -x /usr/bin/pcm-sine ] && [ "$_pcm" = 1 ] || snd=0
 		[ -x /usr/sbin/tab5-rails ] || prt=0
 		[ -x "$BLEKBD" ] || ble=0
 		_d=""; for d in /sys/class/backlight/*/brightness; do
@@ -1586,7 +1807,9 @@ menu_main() {
 		done
 		[ -z "$_d" ] && dsp=0
 		say "== m5-config =="
-		m=""; read -r m < /sys/firmware/devicetree/base/model 2>/dev/null || true
+		m=""
+		[ -r /sys/firmware/devicetree/base/model ] &&
+			read -r m < /sys/firmware/devicetree/base/model 2>/dev/null || true
 		say " board: ${m:-unknown}"
 		nosave_note
 		say ""
@@ -1612,7 +1835,7 @@ menu_main() {
 			7) [ "$ble" -eq 1 ] && menu_blekbd ;;
 			8) menu_power ;;
 			9) menu_status ;;
-			0) scr_clear; exit 0 ;;
+			0) _pal_restore; scr_clear; exit 0 ;;
 		esac
 	done
 }
@@ -1620,7 +1843,13 @@ menu_main() {
 # -------------------------------------------------------------- main ----
 
 case "${1:-menu}" in
-	menu) touch_ok; menu_main ;;
+	menu)
+		touch_ok
+		menu_main
+		# EOF / m5-key failure land here; the signal and exit-
+		# button paths restore through _cleanup or the 0) case.
+		[ "$_TOUCH" = 1 ] && { _pal_restore; scr_clear; }
+		;;
 	list) do_list ;;
 	get) [ $# -eq 2 ] || usage; do_get "$2" ;;
 	set)
