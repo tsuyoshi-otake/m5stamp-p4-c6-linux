@@ -161,6 +161,8 @@ This overwrites the whole flash, including the stock NVS and PHY data and any cr
 | `0xf80000` | — | Second `/boot` slot, for power-loss-safe updates |
 | `0xfc0000` | — | Two 4 KB A/B metadata sectors |
 
+If the running kernel cannot read or mount the staged copy of `boot.img`, the board still comes up on a temporary drive but writes nothing back: `bootsyncd` logs `NOT saved: …`, `boot-edit` refuses changes, and the flash copy is left alone (#43).
+
 ### 4. First boot
 
 The Tab5 starts Linux on its own after flashing. Open the serial port at 115200 8N1 and press Enter for a root shell; the panel shows the same console.

@@ -340,10 +340,12 @@ start() {
 		printf '%s\r\n' \
 			"This boot drive is a temporary copy." \
 			"" \
-			"Reason: $reason" \
+			"The firmware could not read the saved settings" \
+			"($reason)." \
 			"" \
-			"Changes made here are NOT saved to flash this boot." \
-			"Delete this file when done." \
+			"The settings in flash are unchanged. Changes made" \
+			"here are NOT saved this boot. Update or reflash the" \
+			"firmware; details are on the serial console." \
 			> /boot/NOT-SAVED.txt 2>/dev/null || true
 	fi
 

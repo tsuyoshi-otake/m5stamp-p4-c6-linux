@@ -68,6 +68,14 @@
 		 * until a UART fixture is attached.
 		 */
 		bootargs = "earlycon=esp32p4usbjtag,mmio32,0x500d2000 console=ttyGS1,115200n8 loglevel=4 root=/dev/mtdblock0 rootfstype=squashfs ro init=/sbin/init maxcpus=1";
+		/*
+		 * Filled in by the boot shim after boot-slot selection (fixed
+		 * 8-byte field, patched in place): "valid" when a CRC-checked
+		 * A/B record selected the boot FAT, "blank" when none did.
+		 * "nobootft" means the shim never ran the patcher (old shim vs
+		 * new DTB).  Read back as /sys/kernel/board/bootfat.
+		 */
+		m5stack,bootfat = "nobootft";
 	};
 
 	soc: soc {

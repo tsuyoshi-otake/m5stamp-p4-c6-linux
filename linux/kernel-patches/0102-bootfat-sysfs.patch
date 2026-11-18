@@ -1,0 +1,79 @@
+Subject: [PATCH] misc: esp32p4-bootfat: publish the shim's boot-slot
+ verdict in /sys/kernel/board
+
+For issue #43 userspace must know whether the boot shim selected the
+PSRAM boot FAT from a CRC-checked A/B record.  Without that, a kernel
+that cannot read the PSRAM copy (bad signature, mount failure) cannot
+distinguish "flash really holds a valid image" from "flash is blank"
+and could overwrite a good image with a regenerated template.
+
+The shim now rewrites the fixed 8-byte "nobootft" placeholder of
+/chosen/m5stack,bootfat in the DTB before the Linux jump: "valid"
+when select_boot_partition() picked a metadata record whose image CRC
+verified, "blank" when no record validated (fresh or wiped flash).
+This driver publishes the string as /sys/kernel/board/bootfat next to
+wake_reason; a missing property (old shim vs new DTB) reports
+"unknown" so userspace falls back to the FAT signature check instead
+of trusting the PSRAM bytes blindly.
+
+ 2 files changed, 48 insertions(+)
+
+diff --git a/drivers/misc/Makefile b/drivers/misc/Makefile
+index 1111111..2222222 100644
+--- a/drivers/misc/Makefile
++++ b/drivers/misc/Makefile
+@@ -77,3 +77,4 @@
+ obj-$(CONFIG_ESP32P4_BOOTFLASH)	+= esp32p4-bootflash.o
+ obj-$(CONFIG_ESP32P4_SLEEP)	+= esp32p4-sleep.o
+ obj-y				+= esp32p4_dsi_scanout.o
++obj-y				+= esp32p4_bootfat.o
+--- a/drivers/misc/esp32p4_bootfat.c
++++ b/drivers/misc/esp32p4_bootfat.c
+@@ -0,0 +1,47 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * /sys/kernel/board/bootfat -- the boot shim's boot-FAT verdict.
++ *
++ * select_boot_partition() in the boot shim validates the two A/B
++ * boot-metadata records (magic, commit word, record CRC) and the
++ * selected slot's image CRC before copying the image to PSRAM.  It
++ * then rewrites the fixed-width "nobootft" placeholder of
++ * /chosen/m5stack,bootfat in the DTB to "valid" (a record passed) or
++ * "blank" (no valid record: fresh or wiped flash, safe to regenerate
++ * and save).  This file only publishes it; "unknown" also covers a
++ * missing property (old shim), in which case userspace must fall back
++ * to the FAT signature check.
++ */
++#include <linux/init.h>
++#include <linux/kernel.h>
++#include <linux/kobject.h>
++#include <linux/nommu_userspace_pool.h>
++#include <linux/of.h>
++#include <linux/string.h>
++#include <linux/sysfs.h>
++
++static char bootfat_state[8] = "unknown";
++
++static ssize_t bootfat_show(struct kobject *kobj,
++			    struct kobj_attribute *attr, char *buf)
++{
++	return sysfs_emit(buf, "%s\n", bootfat_state);
++}
++static struct kobj_attribute bootfat_attr = __ATTR_RO(bootfat);
++
++static int __init esp32p4_bootfat_init(void)
++{
++	struct kobject *kobj = board_kobj;
++	const char *name;
++
++	if (of_chosen &&
++	    !of_property_read_string(of_chosen, "m5stack,bootfat", &name) &&
++	    (!strcmp(name, "valid") || !strcmp(name, "blank")))
++		strscpy(bootfat_state, name, sizeof(bootfat_state));
++	if (!kobj)
++		kobj = kobject_create_and_add("board", kernel_kobj);
++	if (!kobj)
++		return -ENOMEM;
++	return sysfs_create_file(kobj, &bootfat_attr.attr);
++}
++late_initcall(esp32p4_bootfat_init);

@@ -28,7 +28,8 @@ export PATH
 BOOT_CLASSIFY_CMDLINE="$tmp/cmdline"
 : > "$BOOT_CLASSIFY_CMDLINE"
 BOOT_CLASSIFY_MNT="$tmp/mnt"
-export BOOT_CLASSIFY_CMDLINE BOOT_CLASSIFY_MNT MOUNT_OK
+BOOT_CLASSIFY_SYSFS="$tmp/bootfat"
+export BOOT_CLASSIFY_CMDLINE BOOT_CLASSIFY_MNT BOOT_CLASSIFY_SYSFS MOUNT_OK
 
 fails=0
 check() { # name expected actual
@@ -52,15 +53,17 @@ mkimg "$img"
 MOUNT_OK=1
 check "valid image" ok "$("$helper" "$img")"
 
-# 2. All-zero 262144 bytes: right size, no signature.
+# 2. All-zero 262144 bytes: right size, no signature.  The shim says
+# "blank" (no CRC-valid A/B record), so regenerating is safe.
 img="$tmp/zero.img"
 dd if=/dev/zero of="$img" bs=4096 count=64 2>/dev/null
-check "all-zero image" no-signature "$("$helper" "$img")"
+echo blank > "$BOOT_CLASSIFY_SYSFS"
+check "all-zero image, shim blank" no-signature "$("$helper" "$img")"
 
-# 3. Random bytes: no signature either.
+# 3. Random bytes: no signature either, same blank verdict.
 img="$tmp/rand.img"
 dd if=/dev/urandom of="$img" bs=4096 count=64 2>/dev/null
-check "random image" no-signature "$("$helper" "$img")"
+check "random image, shim blank" no-signature "$("$helper" "$img")"
 
 # 4. Truncated file.
 img="$tmp/trunc.img"
@@ -83,14 +86,33 @@ MOUNT_OK=1
 # 7. Missing file entirely.
 check "missing image" read-fail "$("$helper" "$tmp/gone.img")"
 
-# 8. Forced-state cmdline word (board test hook).
+# 8. Forced-state cmdline word (board test hook): read-fail and
+# mount-fail only.  Removed words must NOT force a state that permits
+# a flash save.
 img="$tmp/valid2.img"
 mkimg "$img"
 echo "console=ttyGS1 es_bootfat=mount-fail root=x" > "$BOOT_CLASSIFY_CMDLINE"
 check "forced mount-fail" mount-fail "$("$helper" "$img")"
 echo "es_bootfat=read-fail" > "$BOOT_CLASSIFY_CMDLINE"
 check "forced read-fail" read-fail "$("$helper" "$img")"
+echo "es_bootfat=no-signature" > "$BOOT_CLASSIFY_CMDLINE"
+check "removed no-signature hook" ok "$("$helper" "$img")"
+echo "es_bootfat=ok" > "$BOOT_CLASSIFY_CMDLINE"
+check "removed ok hook" ok "$("$helper" "$img")"
 : > "$BOOT_CLASSIFY_CMDLINE"
+
+# 8b. No-signature evidence gate (#43 review): with a signature-less
+# image, the shim verdict decides.
+img="$tmp/nosig.img"
+dd if=/dev/zero of="$img" bs=4096 count=64 2>/dev/null
+echo valid > "$BOOT_CLASSIFY_SYSFS"
+check "no-sig + shim valid" read-fail "$("$helper" "$img")"
+echo blank > "$BOOT_CLASSIFY_SYSFS"
+check "no-sig + shim blank" no-signature "$("$helper" "$img")"
+echo unknown > "$BOOT_CLASSIFY_SYSFS"
+check "no-sig + shim unknown" no-signature "$("$helper" "$img")"
+rm -f "$BOOT_CLASSIFY_SYSFS"
+check "no-sig + no shim node" no-signature "$("$helper" "$img")"
 
 # 9. bootsyncd must not write while the marker exists: extract
 # import_snapshot, stub its deps, set the marker, assert it returns

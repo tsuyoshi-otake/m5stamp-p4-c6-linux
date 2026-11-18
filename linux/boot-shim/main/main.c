@@ -350,8 +350,14 @@ static const esp_partition_t *select_boot_partition(void)
 			 records[selected_meta].slot, records[selected_meta].image_crc32);
 	else
 		ESP_LOGW(TAG, "boot selection: legacy fallback slot0");
+	s_boot_meta_valid = (selected_meta >= 0);
 	return slots[selected_slot];
 }
+
+/* #43: whether a CRC-checked A/B record selected this boot's image.
+ * "valid" tells Linux the flash really holds a good boot FAT, so an
+ * unreadable PSRAM copy is a kernel problem, not a corrupt image. */
+static bool s_boot_meta_valid;
 
 static void fatal_restart(const char *reason)
 {
@@ -612,6 +618,27 @@ static bool patch_panel_name(uint8_t *dtb, uint32_t total)
 	return false;
 }
 #endif /* BOARD_TAB5 */
+
+/* #43: hand the boot-slot verdict to Linux.  /chosen/m5stack,bootfat in
+ * the DTB carries the fixed 8-byte placeholder "nobootft"; it is
+ * overwritten in place with "valid" (an A/B record passed its CRC) or
+ * "blank" (no valid record), NUL-padded, and shows up as
+ * /sys/kernel/board/bootfat.  Both boards share this file. */
+static bool patch_bootfat_state(uint8_t *dtb, uint32_t total)
+{
+	static const uint8_t needle[8] = "nobootft";
+	uint8_t val[8] = {0};
+	const char *name = s_boot_meta_valid ? "valid" : "blank";
+
+	memcpy(val, name, strlen(name));
+	for (uint32_t i = 0; i + sizeof(needle) <= total; ++i) {
+		if (!memcmp(dtb + i, needle, sizeof(needle))) {
+			memcpy(dtb + i, val, sizeof(val));
+			return true;
+		}
+	}
+	return false;
+}
 
 static void IRAM_ATTR jump_to_linux(uint32_t entry, uint32_t dtb_pa)
 {
@@ -1022,6 +1049,10 @@ void app_main(void)
 		tab5_display_status();
 	tab5_i2c_release();
 #endif
+	/* Old DTBs lack the placeholder; the kernel then falls back to the
+	 * FAT signature check like before. */
+	if (!patch_bootfat_state(dtb, total))
+		ESP_LOGW(TAG, "bootfat DTB patch skipped; Linux falls back to the signature check");
 	cache_hal_writeback_addr(DTB_LOAD_PA, total);
 
 	ESP_LOGI(TAG, "Linux artifacts valid; kernel=%" PRIu32 " bytes, rootfs=%" PRIu32 " bytes", image_bytes, rootfs->size);
