@@ -27,6 +27,7 @@ for path in \
 	"${TARGET_DIR}/etc/init.d/S90watchdog" \
 	"${TARGET_DIR}/etc/init.d/S95blekbd" \
 	"${TARGET_DIR}/usr/sbin/bootsyncd" \
+	"${TARGET_DIR}/usr/sbin/boot-classify" \
 	"${TARGET_DIR}/usr/sbin/usb-lun" \
 	"${TARGET_DIR}/usr/sbin/watchdog-feed" \
 	"${TARGET_DIR}/usr/sbin/update-status" \
@@ -50,6 +51,7 @@ chmod 0755 "${TARGET_DIR}/etc/init.d/S85ssh"
 chmod 0755 "${TARGET_DIR}/etc/init.d/S90watchdog"
 chmod 0755 "${TARGET_DIR}/etc/init.d/S95blekbd"
 chmod 0755 "${TARGET_DIR}/usr/sbin/bootsyncd"
+chmod 0755 "${TARGET_DIR}/usr/sbin/boot-classify"
 chmod 0755 "${TARGET_DIR}/usr/sbin/usb-lun"
 chmod 0755 "${TARGET_DIR}/usr/sbin/watchdog-feed"
 chmod 0755 "${TARGET_DIR}/usr/sbin/update-status"

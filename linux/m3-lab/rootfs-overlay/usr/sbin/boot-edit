@@ -61,6 +61,16 @@ else
 fi
 
 [ -f "$BOOT_IMG" ] || die "$BOOT_IMG is missing"
+# #43: while the kernel could not read/mount the flashed image the drive
+# is the template; writes must refuse rather than risk wiping flash.
+if [ -f "$RUN_DIR/.boot-nosave" ]; then
+	case "$mode" in
+	edit|put|rm)
+		reason=""
+		read -r reason < "$RUN_DIR/.boot-nosave" 2>/dev/null || true
+		die "changes cannot be saved this boot: ${reason:-kernel could not read the boot image} (see NOT-SAVED.txt)" ;;
+	esac
+fi
 # The image is root's alone (it holds the passwords and the Wi-Fi key).
 [ -r "$BOOT_IMG" ] || die "only root can change the boot drive (use su)"
 # With a USB device port the PC owns the image while the drive is attached;
