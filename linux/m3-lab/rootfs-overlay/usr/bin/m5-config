@@ -614,6 +614,7 @@ item() {
 # loop redraws.
 menu_pick() {
 	[ "$_TOUCH" = 0 ] && { ask "? "; return; }
+	# (EOF/m5-key failure returns 1 -> the caller's menu exits)
 	_npages=$(( (_iord + _tcap - 1) / _tcap ))
 	_navtop=$_trow
 	echo "  ------"
@@ -625,7 +626,7 @@ menu_pick() {
 		echo ""
 	fi
 	_trow=$((_trow + 3))
-	_ev=$("$M5KEY") || { REPLY=""; return; }
+	_ev=$("$M5KEY") || { REPLY=""; return 1; }
 	case "$_ev" in
 		K\ *) REPLY=${_ev#K } ;;
 		T\ *)
@@ -665,9 +666,9 @@ menu_pick() {
 	esac
 }
 
-ask() { # $1 prompt -> REPLY
+ask() { # $1 prompt -> REPLY; rc 1 on EOF so menus do not spin
 	printf '%s' "$1"
-	IFS= read -r REPLY || REPLY=""
+	IFS= read -r REPLY || { REPLY=""; return 1; }
 	REPLY=${REPLY%"$CR"}
 }
 
@@ -731,7 +732,7 @@ menu_wifi() {
 		item 4 "channel (SoftAP)"
 		item 5 "PMF on/off"
 		item 0 back
-		menu_pick
+		menu_pick || return
 		case "$REPLY" in
 			1)
 				if is_ssh; then
@@ -762,7 +763,7 @@ menu_keys() { # $1 = authorized_keys|root_authorized_keys, $2 label
 		item 1 "add a key (paste a line)"
 		item 2 "remove all"
 		item 0 back
-		menu_pick
+		menu_pick || return
 		case "$REPLY" in
 			1)
 				say "  paste the public key line:"
@@ -791,7 +792,7 @@ menu_system() {
 		item 5 "SSH keys for m5"
 		item 6 "SSH keys for root"
 		item 0 back
-		menu_pick
+		menu_pick || return
 		case "$REPLY" in
 			1) menu_set hostname ;;
 			2) menu_secret password ;;
@@ -867,7 +868,7 @@ menu_sound() {
 		item 1 "test tone (2 s)"
 		item 2 "record 3 s and play back"
 		item 0 back
-		menu_pick
+		menu_pick || return
 		case "$REPLY" in
 			1) /usr/bin/pcm-sine 0 2 440 -12 || say "  tone failed" ;;
 			2)
@@ -893,7 +894,7 @@ menu_ports() {
 		item 1 "ext5v_en 0/1 (EXT header 5 V)"
 		item 2 "ext_ant_en 0/1 (MMCX antenna)"
 		item 0 back
-		menu_pick
+		menu_pick || return
 		case "$REPLY" in
 			1) menu_set ext5v_en ;;
 			2) menu_set ext_ant_en ;;
@@ -911,7 +912,7 @@ menu_blekbd() {
 		item 3 "list paired"
 		item 4 "forget (addr or all)"
 		item 0 back
-		menu_pick
+		menu_pick || return
 		case "$REPLY" in
 			1) /usr/bin/ble-kbd scan 8 ;;
 			2)
@@ -947,7 +948,7 @@ menu_power() {
 			item 3 "LP core settings"
 		pwroff_support && item 4 "power off"
 		item 0 back
-		menu_pick
+		menu_pick || return
 		case "$REPLY" in
 			1) say " rebooting"; sync; reboot ;;
 			2)
@@ -975,7 +976,7 @@ menu_lpcore() {
 		item 2 "lp_program (file name)"
 		item 3 "lp_period (e.g. 1s)"
 		item 0 back
-		menu_pick
+		menu_pick || return
 		case "$REPLY" in
 			1) menu_set lp_core ;;
 			2) menu_set lp_program ;;
@@ -1007,7 +1008,7 @@ menu_status() {
 		say ""
 		item 1 sysinfo
 		item 0 back
-		menu_pick
+		menu_pick || return
 		case "$REPLY" in
 			1) scr_clear; /usr/sbin/sysinfo; pause ;;
 			0) return ;;
@@ -1044,7 +1045,7 @@ menu_main() {
 		item 8 Power
 		item 9 Status
 		item 0 exit
-		menu_pick
+		menu_pick || return
 		case "$REPLY" in
 			1) menu_wifi ;;
 			2) menu_system ;;
