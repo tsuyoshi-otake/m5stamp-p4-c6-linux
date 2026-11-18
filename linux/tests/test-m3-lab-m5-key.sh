@@ -86,6 +86,31 @@ r=$(run map 720 1280 3 80 22 5 1000)
 [ "$r" = "0 17" ] && echo "ok: header tap -> row 0 (no block)" ||
 	{ echo "FAIL: header tap got '$r'"; fails=$((fails + 1)); }
 
+# --- kmap: one tty byte -> one K token (REVIEW 2 #5).  Enter and
+# Backspace get names so a literal '?' is unambiguous; other control
+# bytes report nothing (rc 1).
+kcheck() { # $1 byte(dec) $2 want token (or ! for ignored)
+	got=$(run kmap "$1" 2>/dev/null); rc=$?
+	if [ "$2" = "!" ]; then
+		[ "$rc" -ne 0 ] && [ -z "$got" ] && echo "ok: byte $1 ignored" ||
+			{ echo "FAIL: byte $1 want ignored, got '$got' rc=$rc"
+				fails=$((fails + 1)); }
+	else
+		[ "$rc" -eq 0 ] && [ "$got" = "$2" ] && echo "ok: byte $1 -> $2" ||
+			{ echo "FAIL: byte $1 want '$2' got '$got' rc=$rc"
+				fails=$((fails + 1)); }
+	fi
+}
+kcheck 13 "K enter"
+kcheck 10 "K enter"
+kcheck 8  "K bs"
+kcheck 127 "K bs"
+kcheck 63 "K ?"
+kcheck 97 "K a"
+kcheck 32 "K  "
+kcheck 1  "!"
+kcheck 27 "!"
+
 # --- feed: the real event state machine on recorded input_events ----
 # Host struct input_event = timeval(16) + u16 type + u16 code + s32.
 # A working python3 (the WindowsApps stub only opens the Store).

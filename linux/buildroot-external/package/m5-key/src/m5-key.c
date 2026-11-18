@@ -21,6 +21,9 @@
  *                     read struct input_event records from FILE
  *                     (- = stdin) instead of the evdev node; the same
  *                     state machine a live run uses (host-test seam)
+ *   m5-key kmap BYTE  print the K token BYTE (decimal) would produce
+ *                     (host-test seam; nothing for a byte that is
+ *                     not reported)
  *
  * Exit: 0 an event was printed, 1 setup failed, 2 interrupted.
  * Host-buildable for tests: cc -o m5-key m5-key.c
@@ -197,6 +200,26 @@ static int feed_event(const struct input_event *e, int *row, int *col)
 	return 0;
 }
 
+/*
+ * One tty byte -> one K token.  Printable bytes keep the "K <char>"
+ * form (a literal '?' included); Enter and Backspace get names so the
+ * menu can tell them apart from a '?' that starts a passphrase.  Any
+ * other control byte cannot be a menu pick and reports nothing --
+ * the caller then keeps polling.  Returns 1 when a token was printed.
+ */
+static int emit_key(int c)
+{
+	if (c == '\r' || c == '\n')
+		puts("K enter");
+	else if (c == '\b' || c == 0x7f)
+		puts("K bs");
+	else if (c >= 32 && c < 127)
+		printf("K %c\n", c);
+	else
+		return 0;
+	return 1;
+}
+
 static int feed_stream(int fd)
 {
 	static struct input_event evs[16];
@@ -264,10 +287,13 @@ int main(int argc, char *argv[])
 		r = feed_stream(ffd);
 		return r ? 0 : 1;
 	}
+	if (argc == 3 && strcmp(argv[1], "kmap") == 0)
+		return emit_key(atoi(argv[2])) ? 0 : 1;
 	if (argc != 1) {
 		fputs("usage: m5-key | m5-key probe | "
 		      "m5-key map XRES YRES ROT COLS ROWS PX PY | "
-		      "m5-key feed FILE XRES YRES ROT COLS ROWS MAXX MAXY\n",
+		      "m5-key feed FILE XRES YRES ROT COLS ROWS MAXX MAXY | "
+		      "m5-key kmap BYTE\n",
 		      stderr);
 		return 1;
 	}
@@ -348,9 +374,11 @@ int main(int argc, char *argv[])
 					}
 					continue;
 				}
-				tcsetattr(0, TCSANOW, &saved);
-				printf("K %c\n", c >= 32 && c < 127 ? c : '?');
-				return 0;
+				if (emit_key(c)) {
+					tcsetattr(0, TCSANOW, &saved);
+					return 0;
+				}
+				continue;
 			}
 			break;
 		}

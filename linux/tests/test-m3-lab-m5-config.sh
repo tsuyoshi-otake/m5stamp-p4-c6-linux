@@ -393,6 +393,127 @@ echo "$out" | grep -q "rejected" && imgfile config.txt | grep -q 'hostname=ok-ho
 grep -n "trap '_cleanup; exit 130'" "$tool" >/dev/null &&
 	ok "signal traps exit after cleanup" || bad "trap does not exit"
 
+# 19. REVIEW 2: secrets typed through the touch path are never echoed.
+# System (main slot 1) -> "m5 password" (slot 1: rows 5-7, col 40) ->
+# ttext secret -> K n + typed rest; the value shows only as '*' and
+# lands in the image.
+printf 'T 6 50\nT 6 50\nK n\nT 20 10\nT 20 10\nT 20 10\n' > "$tmp/tscr/events"
+start_saver
+out=$(printf 'ewsecret99\n' | M5CFG_TSCRIPT="$tmp/tscr/events" \
+	sh "$tool" menu 2>&1)
+stop_saver
+case "$out" in *newsecret99*) bad "touch secret echoed: $out" ;; esac
+echo "$out" | grep -q 'value: ' && echo "$out" | grep -q '\*\*\*' &&
+	imgfile credentials.txt | grep -q '^password=newsecret99$' &&
+	ok "touch secret: stars shown, value saved, never echoed" ||
+	bad "touch secret: $out"
+
+# 20. '?' is a real first char now (K ? is a literal, not a control
+# token): a password may start with '?'.
+printf 'T 6 50\nT 6 50\nK ?\nT 20 10\nT 20 10\nT 20 10\n' > "$tmp/tscr/events"
+start_saver
+out=$(printf 'abc12345\n' | M5CFG_TSCRIPT="$tmp/tscr/events" \
+	sh "$tool" menu 2>&1)
+stop_saver
+imgfile credentials.txt | grep -q '^password=?abc12345$' &&
+	ok "K ? starts a password value" || bad "K ?: $out"
+
+# 21. Result messages live in the message area (row 14), not under the
+# nav block: a touch set shows "saving ..." then "saved to flash" at
+# the parked cursor, and the prompt sat at row 14 too.
+printf 'T 6 50\nT 6 10\nK b\nT 20 10\nT 20 10\nT 20 10\n' > "$tmp/tscr/events"
+start_saver
+out=$(printf 'ox-1\n' | M5CFG_TSCRIPT="$tmp/tscr/events" \
+	sh "$tool" menu 2>&1)
+stop_saver
+echo "$out" | grep -q 'saving \.\.\.' && echo "$out" | grep -q 'saved to flash' &&
+	echo "$out" | grep -q "$(printf '\033\[14;1H')value: " &&
+	ok "results print in the message area" || bad "msg area: $out"
+imgfile config.txt | grep -q 'hostname=box-1' &&
+	ok "touch set still saves" || bad "touch set"
+
+# 22. K enter/K bs in tadjust: Wi-Fi -> channel (slot 3, rows 8-10 col
+# 40) -> type 1 2, erase, 3, enter -> channel=13.
+printf 'T 6 10\nT 9 50\nK 1\nK 2\nK bs\nK 3\nK enter\nT 20 10\nT 20 10\nT 20 10\n' \
+	> "$tmp/tscr/events"
+start_saver
+out=$(M5CFG_TSCRIPT="$tmp/tscr/events" sh "$tool" menu </dev/null 2>&1)
+stop_saver
+imgfile config.txt | grep -q '^channel=13$' &&
+	ok "tadjust: digits + K bs + K enter" || bad "tadjust kbd: $out"
+
+# 23. K enter in tpick cancels without picking: wifi_mode stays ap.
+printf 'T 6 10\nT 6 10\nK enter\nT 20 10\nT 20 10\nT 20 10\n' > "$tmp/tscr/events"
+out=$(M5CFG_TSCRIPT="$tmp/tscr/events" sh "$tool" menu </dev/null 2>&1)
+imgfile config.txt | grep -q '^wifi_mode=ap$' &&
+	ok "K enter in tpick = back, no pick" || bad "tpick enter"
+
+# 24. Buttons are visible: every block draws reverse video.
+printf 'T 20 10\n' > "$tmp/tscr/events"
+out=$(M5CFG_TSCRIPT="$tmp/tscr/events" sh "$tool" menu </dev/null 2>&1)
+echo "$out" | grep -q "$(printf '\033\[7m')" &&
+	ok "blocks draw as reverse-video buttons" || bad "no buttons"
+
+# 25. Bluetooth: stub ble-kbd with two same-named keyboards.  Blocks
+# carry "NAME_(..:EE:FF)" labels; the tap resolves by slot index --
+# the SECOND keyboard's address must reach pair.  The pairing screen
+# shows the bold passkey line.
+cat > "$tmp/bin/ble-kbd" <<'EOF'
+#!/bin/sh
+echo "ble-kbd $*" >> "$M5CFG_BLELOG"
+case "$1" in
+scan|list) cat "$M5CFG_BLE_IN" ;;
+pair) printf 'pairing %s ...\n  type 654321 on the keyboard, then Enter\npaired + bonded\n' "$2" ;;
+forget) printf 'forgotten\n' ;;
+esac
+EOF
+chmod +x "$tmp/bin/ble-kbd"
+printf '  AA:BB:CC:DD:EE:01 type=1 rssi=-50 [HID] name=Kbd One\n' \
+	 > "$tmp/ble-in"
+printf '  AA:BB:CC:DD:EE:02 type=1 rssi=-60 [HID] name=Kbd One\n' \
+	>> "$tmp/ble-in"
+: > "$tmp/blelog"
+# "Bluetooth keyboard" is main slot 3 (rows 8-10, col 40) when the
+# stub makes the feature present; the 2nd scan entry is tpick slot 1.
+printf 'T 9 50\nT 6 10\nT 6 50\nT 20 10\nT 20 10\nT 20 10\n' > "$tmp/tscr/events"
+out=$(M5CFG_BLE_KBD="$tmp/bin/ble-kbd" M5CFG_BLELOG="$tmp/blelog" \
+	M5CFG_BLE_IN="$tmp/ble-in" M5CFG_TSCRIPT="$tmp/tscr/events" \
+	sh "$tool" menu </dev/null 2>&1)
+echo "$out" | grep -q 'EE:01' && echo "$out" | grep -q 'EE:02' &&
+	ok "same-named keyboards get distinct labels" || bad "ble labels: $out"
+grep -q 'pair AA:BB:CC:DD:EE:02' "$tmp/blelog" &&
+	ok "tap resolved by slot index (2nd addr)" ||
+	bad "slot resolve: $(cat "$tmp/blelog")"
+echo "$out" | grep -q 'pairing Kbd_One (AA:BB:CC:DD:EE:02)' &&
+	echo "$out" | grep -q "$(printf '\033\[1m')  type 654321" &&
+	ok "pairing screen + bold passkey line" || bad "pairing screen: $out"
+
+# 26. Status is a full text page: >19 lines page with [ more > ], the
+# nav block sits below, and a marker past row 19 shows on page 2.
+{
+	i=1; while [ "$i" -le 25 ]; do echo "status line $i"; i=$((i + 1)); done
+} > "$tmp/status.txt"
+cat > "$tmp/bin/sysinfo" <<'EOF'
+#!/bin/sh
+i=1; while [ "$i" -le 10 ]; do echo "sysinfo row $i MARKER$i"; i=$((i + 1)); done
+EOF
+chmod +x "$tmp/bin/sysinfo"
+cat > "$tmp/bin/usb-lun" <<'EOF'
+#!/bin/sh
+[ "$1" = state ] && echo host-owned
+EOF
+chmod +x "$tmp/bin/usb-lun"
+echo valid > "$tmp/sysboard/bootfat"
+# Status is main slot 4 (rows 11-13, col 0); [more] twice -> page 3.
+printf 'T 12 10\nT 20 65\nT 20 65\nT 20 10\nT 20 10\n' > "$tmp/tscr/events"
+out=$(M5CFG_STATUS_TXT="$tmp/status.txt" M5CFG_SYSINFO="$tmp/bin/sysinfo" \
+	M5CFG_USB_LUN="$tmp/bin/usb-lun" M5CFG_SYS_BOARD="$tmp/sysboard" \
+	M5CFG_TSCRIPT="$tmp/tscr/events" sh "$tool" menu </dev/null 2>&1)
+echo "$out" | grep -q 'status line 25' && echo "$out" | grep -q 'MARKER10' &&
+	echo "$out" | grep -q 'more 1/3' &&
+	echo "$out" | grep -q 'bootfat: valid' && echo "$out" | grep -q 'host-owned' &&
+	ok "status pages: 19-line pages + more nav" || bad "status page: $out"
+
 if [ "$fails" -gt 0 ]; then
 	echo "FAILED: $fails checks"
 	exit 1
