@@ -120,12 +120,31 @@ shared with boards that need it — on Tab5 it is a no-op.
 
 ## Memory
 
-Linux has ~1.5 MB free in the NOMMU pool; a 1280x720 RAW8 frame is
-921,600 B (1600x1200 = 1.92 MB does NOT fit).  Frame buffers must
-be a reserved-memory carve-out outside the Linux pool, exactly
-like the panel framebuffer (`fb @0x49000ec0`, handed over in the
-DT).  Same node pattern: `reserved-memory` child +
-`memory-region` reference on the camera node, ~1 MB.
+A 1280x720 RAW8 frame is 921,600 B (1600x1200 = 1.92 MB does not
+fit at all).  `dma_alloc_coherent()` on this NOMMU tree draws from
+the **kernel** page allocator — the buddy allocator over the RAM
+region the kernel manages — *not* from the userspace
+`nommu_pool` regions.  Two consequences:
+
+- The frame buffer is allocated at `CAM_PREPARE` (first open
+  work) and freed at `release()` — ~1 MiB of contiguous kernel
+  memory is not something to hold from boot for a camera nobody
+  uses.  `__GFP_NOWARN` is set and an allocation failure returns
+  `-ENOMEM` cleanly.
+- An earlier sketch proposed a fixed `reserved-memory` carve-out
+  at the top of PSRAM — rejected: the boot shim places the
+  display fb at a *runtime* PSRAM address and patches
+  `display_fb_res` per boot, so a static reservation could
+  silently overlap the live scanout buffer.  Buddy-allocated
+  memory can never collide with a `no-map` region (the
+  shim-patched `display_fb_res`, both NOMMU pools,
+  `i2s0_dma_sram`, the boot-partition staging area) by
+  construction.
+
+There are no kernel `MemFree`/`/proc/buddyinfo` numbers for the
+Tab5 in earlier reports — how much contiguous PSRAM is actually
+free at camera-open time is unmeasured and goes on the on-board
+checklist (order-8 `__get_free_pages`-class request, 225 pages).
 
 ## Interface proposal
 
@@ -158,3 +177,104 @@ not guessed.  Debayer/ISP processing stays a separate, larger item.
 - Do not assume 2 CSI lanes — production configs are 1 lane.
 - Do not leave `CAM_RST` high across suspend — the rail policy in
   the shim keeps it off; a driver must manage P6 itself.
+
+## Step-2 design — `/dev/cam0` one-shot capture (implemented in 0140)
+
+Register map verified against vendor `hw_ver3` structs; every value
+below is what the oracle's IDF sequence measured.
+
+### Memory map (cam node `reg`)
+
+| idx | base | span | use | mapping |
+|-----|------|------|-----|---------|
+| 0 | `0x5009F000` | 0x400 | MIPI-CSI host | exclusive (`devm_platform_ioremap_resource`) |
+| 1 | `0x5009F800` | 0x60 | CSI bridge | exclusive (same) |
+| 2 | `0x500A1000` | 0x80 | ISP input module (bypass) | exclusive (same) |
+| 3 | `0x50081000` | 0x500 | DW-GDMA (shared with dsi-scanout) | `devm_ioremap` — dsi-scanout claims it |
+| 4 | `0x500E6000` | 0xD0 | HP_SYS_CLKRST | `devm_ioremap` — i2s0 claims it |
+| 5 | `0x50115000` | 0x200 | PMU (ext_ldo) | `devm_ioremap` — tsens claims it when built |
+
+Shared-block RMW safety is by construction: every word written
+here is one no other driver touches — clkrst `0x14/0x18/0x3C/
+0xA8/0xAC/0xC0` (i2s uses `0x1C`, `0xC8`, `peri_clk_ctrl11-14`),
+pmu `ext_ldo[1]` `0x1C0/0x1C4` (tsens uses `rf_pwc` `0x15C`),
+gdma `cfg0` dmac_en + `chen0` per-channel atomic write-enable
+encodings (dsi-scanout owns only its shim-given channel; this
+driver refuses a channel that is enabled or equals
+`espressif,scanout-chan`, and never writes the block reset bit).
+
+Frame buffer: `dma_alloc_coherent()` inside `CAM_PREPARE` (~1 MiB
+contiguous kernel PSRAM, `__GFP_NOWARN`, `-ENOMEM` on failure),
+freed at `release()` — see the Memory section for why there is no
+static `reserved-memory` carve-out.  `arch_sync_dma_for_device/cpu`
+bracket the transfer (non-coherent DMA, same pattern as 0124 i2s).
+
+### Block order (mirror of the measured oracle sequence)
+
+`CAM_PREPARE` ioctl:
+1. `CAM_RST` (`reset-gpios` = `exp0` P6) high, 20 ms.
+2. LDO chan 3 (MIPI D-PHY rail, 2.5 V): `PMU.ext_ldo[1]` @
+   `0x501151C0`/`0x1C4`.  The DSI panel normally keeps it lit
+   (xpd=1); if it is off the driver programs the ideal-constant
+   `dref=9, mul=6` (~2.5 V uncalibrated) + `xpd=1` and logs it.
+3. clkrst `0x500E6000`: `soc_clk_ctrl0` @0x14 bit13 (gdma cpu),
+   `soc_clk_ctrl1` @0x18 bit5 (gdma sys) + bit10 (csi_brg) +
+   bit11 (csi_host), `peri_clk_ctrl03` @0x3C bit4 (csi dphy cfg
+   clk; src_sel[3:2]=0 → PLL_F20M), `peri_clk_ctrl25` @0xA8
+   src_sel=1 (PLL160M) + bit25 (isp clk en), `peri_clk_ctrl26`
+   @0xAC = 2 → 80 MHz ISP.  Reset pulse `hp_rst_en0` @0xC0
+   bit27/28/29 (host/brg/isp) — **never bit21 (gdma)**: the
+   dsi-scanout channel shares that block.
+4. CSI host `0x5009F000`: `phy_shutdownz`/`dphy_rstz`/`csi2_resetn`
+   all 0; PHY test-clock reset (`test_ctrl0` 1→0); test write
+   `0x44` ← `0x0e` (hs_freq_sel=7 for 576 Mbps) via
+   `test_ctrl1`/`test_ctrl0` bit-bang; release shutdownz→rstz→
+   resetn; `n_lanes=0` (1 lane); `vc_extension=1` (VCX off);
+   `scrambling=0`; clear all `int_st_*` latches (write ~0).
+5. ISP input `0x500A1000`: `clk_en=1`, `cntl=1`
+   (`mipi_data_en=1`,`isp_in_src=0`), `hsync_cnt=7`,
+   `frame_cfg=0x0013F2CF` (hadr=ceil(1280·8/32)−1=319,
+   vadr=720−1=719).
+6. CSI bridge `0x5009F800`: `host_ctrl=3`, `clk_en=1`,
+   `dma_req_cfg=0x20200` (burst 512 + bridge flow ctl),
+   `buf_flow_ctl=960`, `data_type_cfg=0x2F12` (0x12..0x2f),
+   `frame_cfg=0x012D0500` (has_hsync + hadr=720 + vadr=1280 —
+   IDF swaps height/width names), `endian_mode=0`.
+7. DW-GDMA channel (`espressif,dma-chan`, default 1; probe refuses
+   to arm a channel that is enabled or equals `scanout-chan`):
+   `sar0=0x50104000`, `dar0=fb pa`, `block_ts0=115199`
+   (frame/64−1), `ctl0=0x221B44` (sms=CSI-port0, dms=mem-port1,
+   sinc fixed, dinc incr, 64-bit both, msize 512 items both),
+   `ctl1=0x4108840` (arlen/awlen 16, ioc_blktfr), `cfg0=0`
+   (contiguous), `cfg1=0x2A820084` (tt_fc=P2M_SRC, src_per=CSI,
+   ch_prior=1, osr_lmt 5/5), `llp0=0`, `int_clr0=~0`,
+   `int_st_ena0=0x3FFF` (status only), `int_sig_ena0=0` — **no
+   IRQ line used**.
+8. `csi_en=1` — pipeline armed, waiting for stream-on.
+
+`read()`: polls `ch.int_st0` (done bit1 / error bits 5..13,30,31),
+≤3 s timeout.  On done: `arch_sync_dma_for_cpu`, `copy_to_user`,
+disarm (`csi_en=0`, `chen=0x100<<ch`).  `*f_pos==0` → capture a
+fresh frame; later reads drain the captured buffer.
+
+### Userspace contract (cam-dump)
+
+`open /dev/cam0` → `ioctl(CAM_PREPARE)` (powers the rail, allocates
+the frame buffer, arms the pipe) → SCCB via `/dev/i2c-0`
+(chip-ID `0xeb52`, 131-reg init table, `0x0100=0x01` stream-on)
+→ `read()` returns the armed frame → `close()` disarms, drops
+`CAM_RST` and frees the buffer — the camera is powered only while
+`/dev/cam0` is open.  A second frame therefore needs a fresh
+open → PREPARE → SCCB-table + stream-on cycle (cam-dump does a
+full cold capture per `-n` frame; the sensor loses its registers
+on the power drop).
+
+### Failure policy
+
+- Timeout → `-ETIMEDOUT` + kernel log dump: host `int_st_*`,
+  phy_rx/stopstate, bridge `int_raw`/`int_st`/`buf_flow_ctl`,
+  gdma `status0`/`int_st0`.
+- Error bits → `-EIO` + same dump.
+- Prepare never touches the GDMA reset line or a running channel;
+  LDO is only programmed if found off; `CAM_RST` drops at
+  `remove()` (never left high across driver teardown).
