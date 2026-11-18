@@ -249,85 +249,17 @@ struct mgmt_ev_new_conn_param {
 static uint8_t rxbuf[4200];
 static uint8_t txbuf[sizeof(struct mgmt_hdr) + 640];
 
-/* ---- uhid ABI (subset of include/uapi/linux/uhid.h) ---- */
-#define UHID_CREATE2		11
-#define UHID_DESTROY		1
-#define UHID_INPUT2		12
-#define UHID_OUTPUT		6
-#define UHID_OUTPUT_EV		9
-#define UHID_START		2
-#define UHID_STOP		3
-#define UHID_OPEN		4
-#define UHID_CLOSE		5
-#define UHID_GET_REPORT		7
-#define UHID_GET_REPORT_REPLY	8
-#define UHID_SET_REPORT		10
-#define UHID_SET_REPORT_REPLY	11
-
-struct uhid_create2_req {
-	uint8_t	 name[128];
-	uint8_t	 phys[64];
-	uint8_t	 uniq[64];
-	uint16_t rd_size;
-	uint8_t	 rd_data[4096];
-	uint16_t bus;
-	uint32_t vendor;
-	uint32_t product;
-	uint32_t version;
-	uint32_t country;
-} __attribute__((packed));
-
-struct uhid_input2_req {
-	uint16_t size;
-	uint8_t  data[1024];
-} __attribute__((packed));
-
-struct uhid_output_req {
-	uint16_t size;
-	uint8_t  data[1024];
-	uint8_t  rtype;
-} __attribute__((packed));
-
-struct uhid_get_report_req {
-	uint32_t id;
-	uint8_t  rnum;
-	uint8_t  rtype;
-} __attribute__((packed));
-
-struct uhid_get_report_reply_req {
-	uint32_t id;
-	uint16_t err;
-	uint16_t size;
-	uint8_t  data[1024];
-} __attribute__((packed));
-
-struct uhid_set_report_reply_req {
-	uint32_t id;
-	uint16_t err;
-} __attribute__((packed));
-
-struct uhid_set_report_req {
-	uint32_t id;
-	uint8_t  rnum;
-	uint8_t  rtype;
-	uint16_t size;
-	uint8_t  data[1024];
-} __attribute__((packed));
-
-struct uhid_event {
-	uint32_t type;
-	union {
-		struct uhid_create2_req		create2;
-		struct uhid_input2_req		input2;
-		struct uhid_output_req		output;
-		struct uhid_get_report_req	get_report;
-		struct uhid_get_report_reply_req	get_report_reply;
-		struct uhid_set_report_req	set_report;
-		struct uhid_set_report_reply_req	set_report_reply;
-	} u;
-} __attribute__((packed));
-
+/* Real UHID ABI from the toolchain sysroot (uapi).  struct uhid_event is
+ * ~4.4 KB — it must never live on a NOMMU bFLT stack, hence the statics
+ * below. */
+#include <linux/uhid.h>
+#ifndef BUS_BLUETOOTH
 #define BUS_BLUETOOTH		0x05
+#endif
+/* Old HID cores may still emit the legacy event. */
+#ifndef UHID_OUTPUT_EV
+#define UHID_OUTPUT_EV		7
+#endif
 
 /* ---- ATT protocol ---- */
 #define ATT_OP_ERROR		0x01
@@ -956,65 +888,94 @@ static int uhid_open(void)
 	return open("/dev/uhid", O_RDWR | O_CLOEXEC);
 }
 
+/* struct uhid_event is ~4.4 KB (4096-byte data arrays): never on the
+ * NOMMU bFLT stack — statics only. */
+static struct uhid_event uhid_ev_w;
+
 static int uhid_create(int fd, const struct hogp *h, const char *name)
 {
-	struct uhid_event ev;
-	memset(&ev, 0, sizeof(ev));
-	ev.type = UHID_CREATE2;
-	snprintf((char *)ev.u.create2.name, 128, "%s", name);
-	snprintf((char *)ev.u.create2.phys, 64, "ble-kbd/hogp");
-	snprintf((char *)ev.u.create2.uniq, 64, "hogp");
-	ev.u.create2.rd_size = h->map_len;
-	memcpy(ev.u.create2.rd_data, h->report_map, h->map_len);
-	ev.u.create2.bus = BUS_BLUETOOTH;
-	ev.u.create2.vendor = 0x0001;
-	ev.u.create2.product = 0x0001;
-	ev.u.create2.version = 1;
-	ev.u.create2.country = 0;
-	return write(fd, &ev, sizeof(ev)) < 0 ? -1 : 0;
+	struct uhid_event *evp = &uhid_ev_w;
+	memset(evp, 0, sizeof(*evp));
+	evp->type = UHID_CREATE2;
+	snprintf((char *)evp->u.create2.name, 128, "%s", name);
+	snprintf((char *)evp->u.create2.phys, 64, "ble-kbd/hogp");
+	snprintf((char *)evp->u.create2.uniq, 64, "hogp");
+	evp->u.create2.rd_size = h->map_len;
+	memcpy(evp->u.create2.rd_data, h->report_map, h->map_len);
+	evp->u.create2.bus = BUS_BLUETOOTH;
+	evp->u.create2.vendor = 0x0001;
+	evp->u.create2.product = 0x0001;
+	evp->u.create2.version = 1;
+	evp->u.create2.country = 0;
+	return write(fd, evp, sizeof(*evp)) < 0 ? -1 : 0;
 }
 
 static int uhid_input(int fd, const uint8_t *data, int len)
 {
-	struct uhid_event ev;
-	if (len > (int)sizeof(ev.u.input2.data)) return -1;
-	memset(&ev, 0, sizeof(ev));
-	ev.type = UHID_INPUT2;
-	ev.u.input2.size = len;
-	memcpy(ev.u.input2.data, data, len);
+	struct uhid_event *evp = &uhid_ev_w;
+	if (len > (int)sizeof(evp->u.input2.data)) return -1;
+	memset(evp, 0, sizeof(*evp));
+	evp->type = UHID_INPUT2;
+	evp->u.input2.size = len;
+	memcpy(evp->u.input2.data, data, len);
 	int sz = offsetof(struct uhid_event, u.input2.data) + len;
-	return write(fd, &ev, sz) < 0 ? -1 : 0;
+	return write(fd, evp, sz) < 0 ? -1 : 0;
 }
 
 static int uhid_destroy(int fd)
 {
-	struct uhid_event ev;
-	memset(&ev, 0, sizeof(ev));
-	ev.type = UHID_DESTROY;
-	return write(fd, &ev, offsetof(struct uhid_event, u)) < 0 ? -1 : 0;
+	struct uhid_event *evp = &uhid_ev_w;
+	memset(evp, 0, sizeof(*evp));
+	evp->type = UHID_DESTROY;
+	return write(fd, evp, offsetof(struct uhid_event, u)) < 0 ? -1 : 0;
 }
 
-/* forward LED output reports (UHID_OUTPUT/OUTPUT_EV/SET_REPORT) */
-static void uhid_forward_output(struct hogp *h, const uint8_t *data,
-				int len, int rtype)
+/* GET_REPORT must always be answered — an unanswered request stalls the
+ * HID core ~5 s.  We keep no readable state, so reply err=EIO. */
+static void uhid_get_report_reply(int fd, uint32_t id)
 {
-	/* find matching output report char */
+	struct uhid_event *evp = &uhid_ev_w;
+	memset(evp, 0, sizeof(*evp));
+	evp->type = UHID_GET_REPORT_REPLY;
+	evp->u.get_report_reply.id = id;
+	evp->u.get_report_reply.err = EIO;
+	write(fd, evp, offsetof(struct uhid_event, u.get_report_reply.data));
+}
+
+/* SET_REPORT: forward to the keyboard, then ack so the HID core unblocks. */
+static void uhid_set_report_reply(int fd, uint32_t id, uint16_t err)
+{
+	struct uhid_event *evp = &uhid_ev_w;
+	memset(evp, 0, sizeof(*evp));
+	evp->type = UHID_SET_REPORT_REPLY;
+	evp->u.set_report_reply.id = id;
+	evp->u.set_report_reply.err = err;
+	write(fd, evp, offsetof(struct uhid_event, u) +
+		     sizeof(evp->u.set_report_reply));
+}
+
+/* forward LED output reports.  UHID_OUTPUT keeps the report ID in
+ * data[0] when the map uses IDs; UHID_SET_REPORT carries it in rnum and
+ * the payload is raw.  rid < 0 means "ID is data[0]" (OUTPUT path). */
+static void uhid_forward_output(struct hogp *h, const uint8_t *data,
+				int len, int rid)
+{
 	for (int i = 0; i < h->nreports; i++) {
 		struct report_desc *r = &h->reports[i];
 		if (r->report_type != 2) continue;
-		uint8_t w[32];
-		int wn = 0;
-		if (h->uses_report_ids && data[0] == r->report_id) {
-			att_write(r->val_handle, data + 1, len - 1);
+		if (h->uses_report_ids) {
+			if (rid < 0) {
+				if (data[0] != r->report_id) continue;
+				att_write(r->val_handle, data + 1, len - 1);
+			} else {
+				if (rid != r->report_id) continue;
+				att_write(r->val_handle, data, len);
+			}
 			return;
 		}
-		if (!h->uses_report_ids) {
-			(void)w; (void)wn;
-			att_write(r->val_handle, data, len);
-			return;
-		}
+		att_write(r->val_handle, data, len);
+		return;
 	}
-	(void)rtype;
 }
 
 /* ---- daemon session: connect -> hogp -> uhid -> pump ---- */
@@ -1108,15 +1069,21 @@ static int hogp_session(const bdaddr_t *addr, uint8_t atype,
 		}
 		if (pf[0].revents & (POLLERR | POLLHUP)) break;
 		if (pf[1].revents & POLLIN) {
-			struct uhid_event ev;
+			static struct uhid_event ev;
 			ssize_t n = read(ufd, &ev, sizeof(ev));
 			if (n <= 0) continue;
-			if (ev.type == UHID_OUTPUT || ev.type == UHID_OUTPUT_EV)
+			if (ev.type == UHID_OUTPUT ||
+			    ev.type == __UHID_LEGACY_OUTPUT_EV)
 				uhid_forward_output(&h, ev.u.output.data,
-						    ev.u.output.size, 1);
-			else if (ev.type == UHID_SET_REPORT)
+						    ev.u.output.size, -1);
+			else if (ev.type == UHID_GET_REPORT)
+				uhid_get_report_reply(ufd, ev.u.get_report.id);
+			else if (ev.type == UHID_SET_REPORT) {
 				uhid_forward_output(&h, ev.u.set_report.data,
-						    ev.u.set_report.size, 0);
+						    ev.u.set_report.size,
+						    ev.u.set_report.rnum);
+				uhid_set_report_reply(ufd, ev.u.set_report.id, 0);
+			}
 		}
 	}
 	rc = 0;
