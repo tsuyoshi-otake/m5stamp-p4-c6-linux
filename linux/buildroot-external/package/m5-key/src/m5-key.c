@@ -17,6 +17,10 @@
  *   m5-key probe      print the touch device path; exit 1 when absent
  *   m5-key map XRES YRES ROT COLS ROWS PX PY
  *                     print "ROW COL" for a pixel (host-test seam)
+ *   m5-key feed FILE XRES YRES ROT COLS ROWS MAXX MAXY
+ *                     read struct input_event records from FILE
+ *                     (- = stdin) instead of the evdev node; the same
+ *                     state machine a live run uses (host-test seam)
  *
  * Exit: 0 an event was printed, 1 setup failed, 2 interrupted.
  * Host-buildable for tests: cc -o m5-key m5-key.c
@@ -53,11 +57,13 @@ static void on_stop(int sig)
 }
 
 /* Find the first evdev node that has BTN_TOUCH + ABS_X/ABS_Y.  Returns
- * an open fd or -1.  When path is not NULL it receives the node name. */
+ * an open fd or -1.  When path is not NULL it receives the node name.
+ * The capability bitmaps are byte arrays: unsigned long is 32 bits on
+ * RV32, so /64 indexing would probe the wrong bit. */
 static int open_touch(char *path, size_t plen)
 {
 	char buf[40];
-	unsigned long bits[16];
+	unsigned char bits[(KEY_MAX + 8) / 8];
 	int i, fd;
 
 	for (i = 0; i < 16; i++) {
@@ -67,11 +73,12 @@ static int open_touch(char *path, size_t plen)
 			continue;
 		memset(bits, 0, sizeof(bits));
 		if (ioctl(fd, EVIOCGBIT(EV_KEY, sizeof(bits)), bits) > 0 &&
-		    (bits[BTN_TOUCH / 64] & (1UL << (BTN_TOUCH % 64)))) {
+		    (bits[BTN_TOUCH / 8] & (1 << (BTN_TOUCH % 8)))) {
 			memset(bits, 0, sizeof(bits));
-			if (ioctl(fd, EVIOCGBIT(EV_ABS, sizeof(bits)), bits) > 0 &&
-			    (bits[ABS_X / 64] & (1UL << (ABS_X % 64))) &&
-			    (bits[ABS_Y / 64] & (1UL << (ABS_Y % 64)))) {
+			if (ioctl(fd, EVIOCGBIT(EV_ABS, sizeof(bits)),
+				  bits) > 0 &&
+			    (bits[ABS_X / 8] & (1 << (ABS_X % 8))) &&
+			    (bits[ABS_Y / 8] & (1 << (ABS_Y % 8)))) {
 				if (path)
 					snprintf(path, plen, "%s", buf);
 				return fd;
@@ -128,25 +135,98 @@ static int tap_to_cell(int pw, int ph, int rot, int cols, int rows,
 	return 0;
 }
 
-static long ms_now(void)
-{
-	struct timeval tv;
+/* Touch state for one run; the feed loop below is the single place
+ * that updates it, for both the evdev and the file-driven paths. */
+static int ax = -1, ay = -1;          /* last abs position */
+static int touching;                  /* contact down right now */
+static int prev_frame_touching;       /* contact at last SYN_REPORT */
+static long down_sec, down_usec;
+static int geometry[7];               /* xres yres rot cols rows maxx maxy */
 
-	gettimeofday(&tv, NULL);
-	return tv.tv_sec * 1000L + tv.tv_usec / 1000;
+static long ms_between(long s0, long u0, long s1, long u1)
+{
+	return (s1 - s0) * 1000L + (u1 - u0) / 1000;
+}
+
+/*
+ * One input event through the state machine.  A frame = events up to a
+ * SYN_REPORT; the release is reported when prev_frame_touching goes
+ * 1 -> 0 (BTN_TOUCH-up and SYN_REPORT are different events, so a
+ * per-event "was" never sees the transition).  Returns 1 and fills
+ * row/col when a tap completes, 0 otherwise.
+ */
+static int feed_event(const struct input_event *e, int *row, int *col)
+{
+	if (e->type == EV_ABS) {
+		if (e->code == ABS_X || e->code == ABS_MT_POSITION_X)
+			ax = e->value;
+		else if (e->code == ABS_Y || e->code == ABS_MT_POSITION_Y)
+			ay = e->value;
+		if (e->code == ABS_MT_TRACKING_ID) {
+			if (e->value >= 0 && !touching) {
+				down_sec = e->input_event_sec;
+				down_usec = e->input_event_usec;
+			}
+			touching = e->value >= 0;
+		}
+	} else if (e->type == EV_KEY && e->code == BTN_TOUCH) {
+		if (e->value && !touching) {
+			down_sec = e->input_event_sec;
+			down_usec = e->input_event_usec;
+		}
+		touching = e->value != 0;
+	} else if (e->type == EV_SYN && e->code == SYN_REPORT) {
+		int released = prev_frame_touching && !touching;
+		int px, py;
+
+		prev_frame_touching = touching;
+		if (!released || ax < 0 || ay < 0)
+			return 0;
+		/* the event's own timestamp, not wall time: a file-fed
+		 * replay must keep the same duration semantics */
+		if (ms_between(down_sec, down_usec,
+			       e->input_event_sec,
+			       e->input_event_usec) < MIN_TOUCH_MS)
+			return 0;
+		px = ax * (geometry[0] - 1) / geometry[5];
+		py = ay * (geometry[1] - 1) / geometry[6];
+		return tap_to_cell(geometry[0], geometry[1], geometry[2],
+				   geometry[3], geometry[4],
+				   px, py, row, col) == 0;
+	}
+	return 0;
+}
+
+static int feed_stream(int fd)
+{
+	static struct input_event evs[16];
+	ssize_t n;
+	int off, row, col;
+
+	while (!stopped && (n = read(fd, evs, sizeof(evs))) > 0) {
+		for (off = 0; off + (int)sizeof(struct input_event) <= n;
+		     off += (int)sizeof(struct input_event)) {
+			const struct input_event *e =
+				(const struct input_event *)
+				((const char *)evs + off);
+
+			if (feed_event(e, &row, &col)) {
+				printf("T %d %d\n", row, col);
+				return 1;
+			}
+		}
+	}
+	return 0;
 }
 
 int main(int argc, char *argv[])
 {
 	static struct input_absinfo abx, aby;
 	static struct fb_var_screeninfo var;
-	static struct input_event evs[16];
 	static struct termios saved, raw;
 	struct winsize ws;
 	char tpath[40];
-	int tfd = -1, fbfd = -1, rot, max_x, max_y;
-	int ax = -1, ay = -1, touching = 0;
-	long down_ms = 0;
+	int tfd = -1, fbfd = -1, row, col;
 	fd_set rfds;
 	int r;
 
@@ -158,8 +238,6 @@ int main(int argc, char *argv[])
 		return 0;
 	}
 	if (argc == 9 && strcmp(argv[1], "map") == 0) {
-		int row, col;
-
 		if (tap_to_cell(atoi(argv[2]), atoi(argv[3]),
 				atoi(argv[4]), atoi(argv[5]),
 				atoi(argv[6]), atoi(argv[7]),
@@ -169,9 +247,27 @@ int main(int argc, char *argv[])
 		}
 		return 1;
 	}
+	if (argc == 10 && strcmp(argv[1], "feed") == 0) {
+		int ffd;
+
+		geometry[0] = atoi(argv[3]);
+		geometry[1] = atoi(argv[4]);
+		geometry[2] = atoi(argv[5]);
+		geometry[3] = atoi(argv[6]);
+		geometry[4] = atoi(argv[7]);
+		geometry[5] = atoi(argv[8]);
+		geometry[6] = atoi(argv[9]);
+		ffd = strcmp(argv[2], "-") == 0 ? 0 : open(argv[2], O_RDONLY);
+		if (ffd < 0)
+			return 1;
+		setvbuf(stdout, NULL, _IONBF, 0);
+		r = feed_stream(ffd);
+		return r ? 0 : 1;
+	}
 	if (argc != 1) {
 		fputs("usage: m5-key | m5-key probe | "
-		      "m5-key map XRES YRES ROT COLS ROWS PX PY\n",
+		      "m5-key map XRES YRES ROT COLS ROWS PX PY | "
+		      "m5-key feed FILE XRES YRES ROT COLS ROWS MAXX MAXY\n",
 		      stderr);
 		return 1;
 	}
@@ -197,16 +293,22 @@ int main(int argc, char *argv[])
 		fputs("m5-key: stdin is not a console tty\n", stderr);
 		return 1;
 	}
-	rot = read_int_file(ROTATE_NODE, 0);
-	if (rot < 0 || rot > 3)
-		rot = 0;
-
-	max_x = abx.maximum > 0 ? abx.maximum : (int)var.xres - 1;
-	max_y = aby.maximum > 0 ? aby.maximum : (int)var.yres - 1;
+	r = read_int_file(ROTATE_NODE, 0);
+	if (r < 0 || r > 3)
+		r = 0;
+	geometry[0] = (int)var.xres;
+	geometry[1] = (int)var.yres;
+	geometry[2] = r;
+	geometry[3] = ws.ws_col;
+	geometry[4] = ws.ws_row;
+	geometry[5] = abx.maximum > 0 ? abx.maximum : (int)var.xres - 1;
+	geometry[6] = aby.maximum > 0 ? aby.maximum : (int)var.yres - 1;
 
 	tcgetattr(0, &saved);
 	raw = saved;
 	raw.c_lflag &= ~(ICANON | ECHO);
+	raw.c_cc[VMIN] = 1;
+	raw.c_cc[VTIME] = 0;
 	tcsetattr(0, TCSANOW, &raw);
 	signal(SIGINT, on_stop);
 	signal(SIGTERM, on_stop);
@@ -226,64 +328,35 @@ int main(int argc, char *argv[])
 			unsigned char c;
 
 			if (read(0, &c, 1) == 1) {
+				if (c == 0x1b) {
+					/* swallow the rest of an escape
+					 * sequence (arrow keys etc.) so
+					 * '[' 'A' are not menu picks */
+					char junk[8];
+					struct timeval tv = { 0, 50000 };
+					fd_set ef;
+
+					FD_ZERO(&ef);
+					FD_SET(0, &ef);
+					while (select(1, &ef, NULL, NULL,
+						      &tv) > 0 &&
+					       read(0, junk, sizeof(junk)) > 0) {
+						FD_ZERO(&ef);
+						FD_SET(0, &ef);
+						tv.tv_sec = 0;
+						tv.tv_usec = 50000;
+					}
+					continue;
+				}
 				tcsetattr(0, TCSANOW, &saved);
 				printf("K %c\n", c >= 32 && c < 127 ? c : '?');
 				return 0;
 			}
 			break;
 		}
-		if (FD_ISSET(tfd, &rfds)) {
-			ssize_t n = read(tfd, evs, sizeof(evs));
-			int off;
-
-			if (n <= 0)
-				continue;
-			for (off = 0;
-			     off + (int)sizeof(struct input_event) <= n;
-			     off += (int)sizeof(struct input_event)) {
-				const struct input_event *e =
-					(const struct input_event *)
-					((const char *)evs + off);
-				int was = touching;
-
-				if (e->type == EV_ABS) {
-					if (e->code == ABS_X ||
-					    e->code == ABS_MT_POSITION_X)
-						ax = e->value;
-					else if (e->code == ABS_Y ||
-						 e->code == ABS_MT_POSITION_Y)
-						ay = e->value;
-					if (e->code == ABS_MT_TRACKING_ID) {
-						touching = e->value >= 0;
-						if (touching && !was)
-							down_ms = ms_now();
-					}
-				} else if (e->type == EV_KEY &&
-					   e->code == BTN_TOUCH) {
-					touching = e->value != 0;
-					if (touching && !was)
-						down_ms = ms_now();
-				} else if (e->type == EV_SYN &&
-					   e->code == SYN_REPORT &&
-					   was && !touching &&
-					   ax >= 0 && ay >= 0) {
-					int px, py, row, col;
-
-					if (ms_now() - down_ms < MIN_TOUCH_MS)
-						continue;
-					px = ax * ((int)var.xres - 1) / max_x;
-					py = ay * ((int)var.yres - 1) / max_y;
-					if (tap_to_cell((int)var.xres,
-							(int)var.yres, rot,
-							ws.ws_col, ws.ws_row,
-							px, py,
-							&row, &col) == 0) {
-						tcsetattr(0, TCSANOW, &saved);
-						printf("T %d %d\n", row, col);
-						return 0;
-					}
-				}
-			}
+		if (FD_ISSET(tfd, &rfds) && feed_stream(tfd)) {
+			tcsetattr(0, TCSANOW, &saved);
+			return 0;
 		}
 	}
 	tcsetattr(0, TCSANOW, &saved);

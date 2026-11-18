@@ -28,14 +28,17 @@ else
 	exit 0
 fi
 
-run() { # args -> stdout of the helper
+run() { # args -> stdout of the helper; stdin is passed through
 	if [ "${bin#docker:}" != "$bin" ]; then
-		MSYS_NO_PATHCONV=1 docker exec "${bin#docker:}" \
+		MSYS_NO_PATHCONV=1 docker exec -i "${bin#docker:}" \
 			/tmp/m5-key-h "$@"
 	else
 		"$bin" "$@"
 	fi
 }
+
+tmp=/tmp/m5-key-t-$$
+mkdir -p "$tmp"
 
 fails=0
 # $1 description, $2..$8 map args, $9 "row col" expected (or ! for rc!=0)
@@ -83,5 +86,76 @@ r=$(run map 720 1280 3 80 22 5 1000)
 [ "$r" = "0 17" ] && echo "ok: header tap -> row 0 (no block)" ||
 	{ echo "FAIL: header tap got '$r'"; fails=$((fails + 1)); }
 
-rm -f "$bin" 2>/dev/null
+# --- feed: the real event state machine on recorded input_events ----
+# Host struct input_event = timeval(16) + u16 type + u16 code + s32.
+# A working python3 (the WindowsApps stub only opens the Store).
+PY=
+for c in "${PYTHON:-}" "py -3" python3 python; do
+	[ -n "$c" ] && $c -c 'import struct' 2>/dev/null && { PY=$c; break; }
+done
+if [ -z "$PY" ]; then
+	echo "SKIP: no working python for feed-event tests"
+else
+
+gen() { # python writes the event stream for a scenario
+	$PY - "$tmp/ev.bin" "$1" <<'PYEOF'
+import struct, sys
+out, kind = sys.argv[1], sys.argv[2]
+EV_SYN, EV_KEY, EV_ABS = 0x00, 0x01, 0x03
+BTN_TOUCH, ABS_X, ABS_Y = 0x14a, 0x00, 0x01
+MTX, MTY, MTID, SYN = 0x35, 0x36, 0x39, 0x00
+recs = []
+def ev(sec, usec, t, c, v):
+    recs.append(struct.pack("<qqHHi", sec, usec, t, c, v))
+if kind == "btn":      # BTN_TOUCH tap at abs(300,600), 100 ms
+    ev(0,0,EV_KEY,BTN_TOUCH,1);  ev(0,50000,EV_ABS,ABS_X,300)
+    ev(0,60000,EV_ABS,ABS_Y,600); ev(0,70000,EV_SYN,SYN,0)
+    ev(0,170000,EV_KEY,BTN_TOUCH,0); ev(0,170000,EV_SYN,SYN,0)
+elif kind == "mt":     # MT-B tap at abs(100,200)
+    ev(1,0,EV_ABS,MTID,7); ev(1,10000,EV_ABS,MTX,100)
+    ev(1,10000,EV_ABS,MTY,200); ev(1,10000,EV_SYN,SYN,0)
+    ev(1,200000,EV_ABS,MTID,-1); ev(1,200000,EV_SYN,SYN,0)
+elif kind == "short":  # 10 ms contact: jitter, no tap
+    ev(2,0,EV_KEY,BTN_TOUCH,1); ev(2,0,EV_ABS,ABS_X,300)
+    ev(2,0,EV_ABS,ABS_Y,300); ev(2,0,EV_SYN,SYN,0)
+    ev(2,10000,EV_KEY,BTN_TOUCH,0); ev(2,10000,EV_SYN,SYN,0)
+elif kind == "drag":   # drag ends at abs(500,900)
+    ev(3,0,EV_KEY,BTN_TOUCH,1); ev(3,0,EV_ABS,ABS_X,10)
+    ev(3,0,EV_ABS,ABS_Y,20); ev(3,0,EV_SYN,SYN,0)
+    for i in range(1,6):
+        ev(3,i*30000,EV_ABS,ABS_X,10+i*98)
+        ev(3,i*30000,EV_ABS,ABS_Y,20+i*176)
+        ev(3,i*30000,EV_SYN,SYN,0)
+    ev(3,400000,EV_KEY,BTN_TOUCH,0); ev(3,400000,EV_SYN,SYN,0)
+elif kind == "two":    # two complete taps in one read(): first wins
+    ev(4,0,EV_KEY,BTN_TOUCH,1); ev(4,0,EV_ABS,ABS_X,300)
+    ev(4,0,EV_ABS,ABS_Y,600); ev(4,0,EV_SYN,SYN,0)
+    ev(4,100000,EV_KEY,BTN_TOUCH,0); ev(4,100000,EV_SYN,SYN,0)
+    ev(4,500000,EV_KEY,BTN_TOUCH,1); ev(4,500000,EV_ABS,ABS_X,10)
+    ev(4,500000,EV_ABS,ABS_Y,10); ev(4,500000,EV_SYN,SYN,0)
+    ev(4,600000,EV_KEY,BTN_TOUCH,0); ev(4,600000,EV_SYN,SYN,0)
+open(out, "wb").write(b"".join(recs))
+PYEOF
+}
+
+fcase() { # $1 desc, $2 want ("T r c" or !), $3 scenario
+	gen "$3" || { echo "FAIL: gen $3"; fails=$((fails + 1)); return; }
+	got=$(run feed - 720 1280 3 80 22 719 1279 < "$tmp/ev.bin"); rc=$?
+	if [ "$2" = "!" ]; then
+		[ "$rc" -ne 0 ] && echo "ok: $1" ||
+			{ echo "FAIL: $1 got '$got'"; fails=$((fails + 1)); }
+	else
+		[ "$got" = "$2" ] && echo "ok: $1" ||
+			{ echo "FAIL: $1 want '$2' got '$got'"; fails=$((fails + 1)); }
+	fi
+}
+
+fcase "BTN_TOUCH protocol tap"      "T 9 42"  btn
+fcase "MT protocol B tap"           "T 3 67"  mt
+fcase "contact shorter than 30 ms"  "!"       short
+fcase "drag reports release point"  "T 15 23" drag
+fcase "two taps one read: first"    "T 9 42"  two
+fi
+
+rm -rf "$tmp"; [ "${bin#docker:}" = "$bin" ] && rm -f "$bin"
 [ "$fails" -eq 0 ] && echo PASS || { echo "FAILED: $fails checks"; exit 1; }
