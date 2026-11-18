@@ -2530,6 +2530,8 @@ if $lab_profile; then
 		set_config_value "${br_output}/.config" BR2_PACKAGE_HCI_TOOLS y
 		# BLE keyboard: mgmt pair/bond + HOGP->UHID client (#41).
 		set_config_value "${br_output}/.config" BR2_PACKAGE_BLE_KBD y
+		# One-shot camera frame tool for /dev/cam0 (0140).
+		set_config_value "${br_output}/.config" BR2_PACKAGE_CAM_DUMP y
 	else
 		set_config_value "${br_output}/.config" BR2_PACKAGE_WIFI_QR "# BR2_PACKAGE_WIFI_QR is not set"
 		set_config_value "${br_output}/.config" BR2_PACKAGE_TOUCH_DOTS "# BR2_PACKAGE_TOUCH_DOTS is not set"
@@ -2539,6 +2541,7 @@ if $lab_profile; then
 		set_config_value "${br_output}/.config" BR2_PACKAGE_PCM_PLAY "# BR2_PACKAGE_PCM_PLAY is not set"
 		set_config_value "${br_output}/.config" BR2_PACKAGE_HCI_TOOLS "# BR2_PACKAGE_HCI_TOOLS is not set"
 		set_config_value "${br_output}/.config" BR2_PACKAGE_BLE_KBD "# BR2_PACKAGE_BLE_KBD is not set"
+		set_config_value "${br_output}/.config" BR2_PACKAGE_CAM_DUMP "# BR2_PACKAGE_CAM_DUMP is not set"
 	fi
 else
 	set_config_value "${br_output}/.config" BR2_PACKAGE_BOOT_COMMIT "# BR2_PACKAGE_BOOT_COMMIT is not set"
@@ -2549,6 +2552,7 @@ else
 	set_config_value "${br_output}/.config" BR2_PACKAGE_PCM_REC "# BR2_PACKAGE_PCM_REC is not set"
 	set_config_value "${br_output}/.config" BR2_PACKAGE_PCM_PLAY "# BR2_PACKAGE_PCM_PLAY is not set"
 	set_config_value "${br_output}/.config" BR2_PACKAGE_HCI_TOOLS "# BR2_PACKAGE_HCI_TOOLS is not set"
+	set_config_value "${br_output}/.config" BR2_PACKAGE_CAM_DUMP "# BR2_PACKAGE_CAM_DUMP is not set"
 fi
 set_config_value "${br_output}/.config" BR2_ROOTFS_OVERLAY "\"${rootfs_overlay}\""
 set_config_value "${br_output}/.config" BR2_ROOTFS_POST_BUILD_SCRIPT "\"${post_build_scripts}\""
