@@ -23,11 +23,11 @@ dsi-scanout driver; this driver never touches the block reset,
 and refuses to arm a channel that is enabled or equals the
 shim-patched espressif,scanout-chan.
 
- 2 files changed, 565 insertions(+)
+ 2 files changed, 575 insertions(+)
 
 --- /dev/null
 +++ b/drivers/misc/esp32p4_cam.c
-@@ -0,0 +1,564 @@
+@@ -0,0 +1,574 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * ESP32-P4 MIPI-CSI one-shot raw capture (Tab5 camera bring-up).
@@ -187,19 +187,19 @@ shim-patched espressif,scanout-chan.
 +	writel((readl(base + reg) & ~mask) | val, base + reg);
 +}
 +
-+static void cam_ldo3(struct esp32p4_cam *c)
++static int cam_ldo3(struct esp32p4_cam *c)
 +{
 +	u32 ctrl = readl(c->pmu + PMU_LDO3_CTRL);
 +
 +	if (ctrl & PMU_LDO_XPD)
-+		return;	/* DSI D-PHY already lit the shared rail */
-+	/* Panel-less boot: program ~2.5 V with the ideal-constant
-+	 * dref/mul (no eFuse readback available here) and enable. */
-+	writel(PMU_LDO3_ANA_2V5, c->pmu + PMU_LDO3_ANA);
-+	writel(ctrl | PMU_LDO_FORCE_TIEH_SEL | PMU_LDO_XPD,
-+	       c->pmu + PMU_LDO3_CTRL);
-+	msleep(2);
-+	dev_warn(c->dev, "LDO3 was off; lit at ~2.5 V uncalibrated\n");
++		return 0;	/* DSI D-PHY already lit the shared rail */
++	/* Panel-less boot: fail closed rather than program an
++	 * uncalibrated ~2.5 V into the shared D-PHY rail -- no eFuse
++	 * readback here, and a wrong PHY voltage is worse than no
++	 * camera.  On the Tab5 the DSI path always lights LDO3, so
++	 * a panel-less boot simply has no camera. */
++	return dev_err_probe(c->dev, -ENODEV,
++			     "LDO3/D-PHY rail is off (no DSI panel); refusing uncalibrated power-up\n");
 +}
 +
 +static void cam_clocks(struct esp32p4_cam *c)
@@ -311,6 +311,8 @@ shim-patched espressif,scanout-chan.
 +
 +static int cam_prepare(struct esp32p4_cam *c)
 +{
++	int ret;
++
 +	if (c->prepared)
 +		return 0;
 +
@@ -332,7 +334,9 @@ shim-patched espressif,scanout-chan.
 +	gpiod_set_value_cansleep(c->rst, 1);
 +	msleep(20);
 +
-+	cam_ldo3(c);
++	ret = cam_ldo3(c);
++	if (ret)
++		goto err_power;
 +	cam_clocks(c);
 +	cam_host_init(c);
 +	cam_isp_init(c);
@@ -349,6 +353,12 @@ shim-patched espressif,scanout-chan.
 +	dev_info(c->dev, "pipeline armed (gdma ch%u), waiting for stream-on\n",
 +		 c->chan);
 +	return 0;
++
++err_power:
++	gpiod_set_value_cansleep(c->rst, 0);
++	dma_free_coherent(c->dev, CAM_FRAME_BYTES, c->fb_va, c->fb_pa);
++	c->fb_va = NULL;
++	return ret;
 +}
 +
 +static void cam_dump_state(struct esp32p4_cam *c)

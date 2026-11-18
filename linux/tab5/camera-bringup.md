@@ -195,12 +195,15 @@ below is what the oracle's IDF sequence measured.
 | 5 | `0x50115000` | 0x200 | PMU (ext_ldo) | `devm_ioremap` — tsens claims it when built |
 
 Shared-block RMW safety is by construction: every word written
-here is one no other driver touches — clkrst `0x14/0x18/0x3C/
-0xA8/0xAC/0xC0` (i2s uses `0x1C`, `0xC8`, `peri_clk_ctrl11-14`),
-pmu `ext_ldo[1]` `0x1C0/0x1C4` (tsens uses `rf_pwc` `0x15C`),
-gdma `cfg0` dmac_en + `chen0` per-channel atomic write-enable
-encodings (dsi-scanout owns only its shim-given channel; this
-driver refuses a channel that is enabled or equals
+here is one no other driver touches *at runtime* — clkrst
+`0x14/0x18/0x3C/0xA8/0xAC/0xC0` (i2s uses `0x1C`, `0xC8`,
+`peri_clk_ctrl11-14` at runtime; `soc_clk_ctrl1` `0x18` is the one
+word i2s0 also writes, but only once inside `esp32p4_i2s_probe` —
+dsi-scanout writes no clkrst word at all, so nothing can
+interleave), pmu `ext_ldo[1]` `0x1C0/0x1C4` (tsens uses `rf_pwc`
+`0x15C`), gdma `cfg0` dmac_en + `chen0` per-channel atomic
+write-enable encodings (dsi-scanout owns only its shim-given
+channel; this driver refuses a channel that is enabled or equals
 `espressif,scanout-chan`, and never writes the block reset bit).
 
 Frame buffer: `dma_alloc_coherent()` inside `CAM_PREPARE` (~1 MiB
@@ -215,8 +218,12 @@ bracket the transfer (non-coherent DMA, same pattern as 0124 i2s).
 1. `CAM_RST` (`reset-gpios` = `exp0` P6) high, 20 ms.
 2. LDO chan 3 (MIPI D-PHY rail, 2.5 V): `PMU.ext_ldo[1]` @
    `0x501151C0`/`0x1C4`.  The DSI panel normally keeps it lit
-   (xpd=1); if it is off the driver programs the ideal-constant
-   `dref=9, mul=6` (~2.5 V uncalibrated) + `xpd=1` and logs it.
+   (xpd=1) and the driver leaves it alone.  If it is off the
+   driver **fails closed**: `CAM_PREPARE` returns `-ENODEV`
+   ("no DSI panel; refusing uncalibrated power-up") instead of
+   programming the ideal-constant `dref=9, mul=6` — no eFuse
+   readback exists here, and a wrong PHY voltage is worse than
+   no camera.
 3. clkrst `0x500E6000`: `soc_clk_ctrl0` @0x14 bit13 (gdma cpu),
    `soc_clk_ctrl1` @0x18 bit5 (gdma sys) + bit10 (csi_brg) +
    bit11 (csi_host), `peri_clk_ctrl03` @0x3C bit4 (csi dphy cfg
