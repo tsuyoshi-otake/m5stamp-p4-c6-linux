@@ -653,6 +653,11 @@ case "$out" in
 		ok "ESC]R exactly once, after the last repaint" ;;
 	*) bad "no palette sequence in output" ;;
 esac
+# The 0600 event file (can hold a secret's first byte) is gone at
+# session end, not left in RUN_DIR for the next reader.
+ls "$tmp/run"/.m5cfg-ev.* >/dev/null 2>&1 &&
+	bad "event file left behind" ||
+	ok "event file removed at session end"
 
 # A TERM after the save still runs the session cleanup: ESC]R once,
 # rc 130.  (Before the split the save had already cleared the traps,

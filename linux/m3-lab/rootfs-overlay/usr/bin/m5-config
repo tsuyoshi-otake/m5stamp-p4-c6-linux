@@ -417,6 +417,7 @@ _cleanup() {
 	trap - EXIT HUP INT TERM
 	[ "$_pal_on" = 1 ] && _pal_restore
 	"$STTY" echo 2>/dev/null || busybox stty echo 2>/dev/null || :
+	rm -f "$EVF" 2>/dev/null || :
 	_drive_clean
 }
 
@@ -784,8 +785,10 @@ touch_ok() {
 	(umask 077; : > "$EVF") 2>/dev/null || return 1
 	tty > "$EVF" 2>/dev/null || return 1
 	IFS= read -r _tty < "$EVF" || return 1
-	case "$_tty" in /dev/tty[0-9]*|/dev/console) ;; *) return 1 ;; esac
-	"$M5KEY" probe >/dev/null 2>&1 || return 1
+	case "$_tty" in /dev/tty[0-9]*|/dev/console) ;;
+		*) rm -f "$EVF" 2>/dev/null; return 1 ;;
+	esac
+	"$M5KEY" probe >/dev/null 2>&1 || { rm -f "$EVF" 2>/dev/null; return 1; }
 	_TOUCH=1
 	_touch_init
 }
@@ -1132,6 +1135,10 @@ ttext() {
 	done
 	if [ "$_sec" = 1 ]; then
 		"$STTY" echo 2>/dev/null || busybox stty echo 2>/dev/null || :
+		# The event file still holds the 'K x' line -- the first byte
+		# of the secret.  Truncate it now rather than leaving it for
+		# the next event or the session cleanup.
+		: > "$EVF" 2>/dev/null || :
 		# Back to the session trap, not "no trap": a signal later in
 		# the session must still reach _cleanup (palette, tty, EVF).
 		trap '_cleanup; exit 130' HUP INT TERM
