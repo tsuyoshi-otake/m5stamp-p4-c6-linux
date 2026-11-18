@@ -1,0 +1,7 @@
+config BR2_PACKAGE_M5_KEY
+	bool "m5-key touch/key event helper"
+	help
+	  Prints one console input event (a tty byte or a touchscreen
+	  tap mapped to a console cell) for the m5-config touch menus
+	  (#42).  Tab5 only: it needs the panel console and the ST712x
+	  touchscreen.

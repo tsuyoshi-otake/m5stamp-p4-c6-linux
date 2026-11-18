@@ -246,6 +246,52 @@ for d in "$tmp/run"/.m5-config.lock "$tmp/run"/.m5cfg-mnt.* "$tmp/pub"/.m5cfg-im
 done
 ok "no leftovers"
 
+# 15. touch layer (#42 NEW REQ): a stub m5-key plays back scripted
+# events; the real item/menu_pick code draws 3-row blocks, maps taps
+# to items and handles the nav zones.
+mkdir -p "$tmp/bin" "$tmp/tscr"
+cat > "$tmp/bin/m5-key" <<'EOF'
+#!/bin/sh
+[ "$1" = probe ] && exit 0
+IFS= read -r ev < "$M5CFG_TSCRIPT" 2>/dev/null || exit 1
+tail -n +2 "$M5CFG_TSCRIPT" > "$M5CFG_TSCRIPT.n" 2>/dev/null || :
+mv -f "$M5CFG_TSCRIPT.n" "$M5CFG_TSCRIPT" 2>/dev/null || :
+printf '%s\n' "$ev"
+EOF
+chmod +x "$tmp/bin/m5-key"
+export M5CFG_FORCE_TOUCH=1 M5CFG_M5_KEY="$tmp/bin/m5-key" \
+	M5CFG_TSCRIPT="$tmp/tscr/events"
+
+# The main menu header is: title, board, blank = 3 say lines, so item
+# blocks start at row 3, 3 rows each; with _rows=22 the page capacity
+# is (22-3-4)/3 = 5 items and the nav block sits at rows 18-20.
+# A tap inside the "Wi-Fi" block (rows 3-5) opens the Wi-Fi menu; the
+# nav-left zone is Back everywhere, and Back on the main menu exits.
+printf 'T 4 10\nT 19 5\nT 19 5\n' > "$tmp/tscr/events"
+out=$(M5CFG_TSCRIPT="$tmp/tscr/events" sh "$tool" menu </dev/null 2>&1)
+echo "$out" | grep -q "== Wi-Fi ==" &&
+	ok "tap on item block opens Wi-Fi" || bad "tap select: $out"
+# A tap in the header (row 1, above all blocks) is ignored: the main
+# menu is drawn again, not a submenu.
+printf 'T 1 40\nT 19 5\n' > "$tmp/tscr/events"
+out=$(M5CFG_TSCRIPT="$tmp/tscr/events" sh "$tool" menu </dev/null 2>&1)
+echo "$out" | grep -q "== m5-config ==" &&
+	! echo "$out" | grep -q "== Wi-Fi ==" &&
+	ok "tap outside any block is ignored" ||
+	bad "header tap escaped the menu: $out"
+# Right nav zone = "more": force 2 items/page so the 5 visible main
+# items span three pages; a right-third tap turns it, then Back exits.
+printf 'T 10 70\nT 10 5\n' > "$tmp/tscr/events"
+out=$(M5CFG_TCAP=2 M5CFG_TSCRIPT="$tmp/tscr/events" \
+	sh "$tool" menu </dev/null 2>&1)
+echo "$out" | grep -q "page 2 of" &&
+	ok "more-zone tap turns the page" || bad "page nav: $out"
+# A key byte still reaches the menu while touch is on (panel keyboard).
+printf 'K 1\nT 19 5\nT 19 5\n' > "$tmp/tscr/events"
+out=$(M5CFG_TSCRIPT="$tmp/tscr/events" sh "$tool" menu </dev/null 2>&1)
+echo "$out" | grep -q "== Wi-Fi ==" &&
+	ok "key byte selects while touch is on" || bad "key select: $out"
+
 if [ "$fails" -gt 0 ]; then
 	echo "FAILED: $fails checks"
 	exit 1

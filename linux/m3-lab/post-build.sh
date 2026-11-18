@@ -185,7 +185,7 @@ if [ -x "${FLTHDR}" ]; then
 	done
 	# Small helpers only need BusyBox's floor.
 	for bin in usr/sbin/respawn usr/sbin/mdnsd usr/sbin/run-system \
-		usr/bin/wifi-qr usr/bin/touch-dots \
+		usr/bin/wifi-qr usr/bin/touch-dots usr/bin/m5-key \
 		usr/bin/hci-scan usr/bin/hci-adv \
 		usr/bin/ble-kbd \
 		usr/bin/pcm-sine usr/bin/pcm-rec usr/bin/pcm-play; do

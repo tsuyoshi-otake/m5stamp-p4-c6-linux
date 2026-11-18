@@ -550,9 +550,120 @@ do_set() {
 
 # ------------------------------------------------------------- menu ----
 
-scr_clear() { printf '\033[2J\033[H'; }
+scr_clear() {
+	printf '\033[2J\033[H'
+	_trow=0
+	_iord=0
+	_itop=""
+	[ -z "${_tkeep:-}" ] && _tpage=0
+	_tkeep=""
+}
 
-say() { echo "$1"; }
+say() { echo "$1"; _trow=$((_trow + 1)); }
+
+# --- touch layer (#42): only on the panel console with a touchscreen
+# and the m5-key helper.  Serial/SSH keep the plain single-line menus.
+_TOUCH=0
+_trow=0 _iord=0 _tpage=0 _itop="" _tkeep="" _tcap=0 _navtop=0 _cols=80
+M5KEY="${M5CFG_M5_KEY:-/usr/bin/m5-key}"
+touch_ok() {
+	[ "$_TOUCH" = 1 ] && return 0
+	[ -n "${M5CFG_FORCE_TOUCH:-}" ] && { _TOUCH=1; return; }
+	[ -x "$M5KEY" ] || return 1
+	_tty=$(tty 2>/dev/null) || return 1
+	case "$_tty" in /dev/tty[0-9]*|/dev/console) ;; *) return 1 ;; esac
+	"$M5KEY" probe >/dev/null 2>&1 || return 1
+	_TOUCH=1
+}
+
+# item KEY LABEL: a menu choice.  Plain mode prints " KEY LABEL"; touch
+# mode prints a three-row block and remembers its top row for the tap
+# hit-test.  Items that do not fit the current page are skipped (the
+# nav block in menu_pick pages through them).  Key 0 is never drawn --
+# the nav block always has a Back zone.
+item() {
+	_k=$1; _l=$2
+	[ "$_TOUCH" = 0 ] && { say " $_k $_l"; return; }
+	if [ "$_iord" = 0 ]; then
+		set -- $(stty size 2>/dev/null)
+		_rows=${1:-22}; _cols=${2:-80}
+		# nav block (3 rows) + prompt line below the items
+		_tcap=${M5CFG_TCAP:-$(( (_rows - _trow - 4) / 3 ))}
+		[ "$_tcap" -lt 1 ] && _tcap=1
+	fi
+	# key 0 is not drawn: the nav block carries Back on every page.
+	[ "$_k" = 0 ] && return
+	if [ $((_iord / _tcap)) != "$_tpage" ]; then
+		_iord=$((_iord + 1))
+		return
+	fi
+	_iord=$((_iord + 1))
+	eval "_itop_$_k=$_trow"
+	_itop="$_itop$_k "
+	echo "  ------"
+	echo "   $_k $_l"
+	echo ""
+	_trow=$((_trow + 3))
+}
+
+# menu_pick: touch-mode replacement for 'ask "? "'.  Reads ONE event
+# from m5-key: a key byte becomes REPLY directly (the panel keyboard
+# keeps working), a tap becomes the tapped item's key, highlighted for
+# a moment.  The nav block's zones do Back / Prev / More internally;
+# Prev/More just change the page and return an empty REPLY so the menu
+# loop redraws.
+menu_pick() {
+	[ "$_TOUCH" = 0 ] && { ask "? "; return; }
+	_npages=$(( (_iord + _tcap - 1) / _tcap ))
+	_navtop=$_trow
+	echo "  ------"
+	if [ "$_npages" -gt 1 ]; then
+		echo "   [back]   [< prev]  [more >]"
+		echo "   page $((_tpage + 1)) of $_npages"
+	else
+		echo "   [back]"
+		echo ""
+	fi
+	_trow=$((_trow + 3))
+	_ev=$("$M5KEY") || { REPLY=""; return; }
+	case "$_ev" in
+		K\ *) REPLY=${_ev#K } ;;
+		T\ *)
+			set -- ${_ev#T }
+			_tr=$1; _tc=$2
+			REPLY=""
+			if [ "$_tr" -ge "$_navtop" ]; then
+				_third=$((_cols / 3))
+				if [ "$_npages" -le 1 ]; then
+					REPLY=0
+				elif [ "$_tc" -lt "$_third" ]; then
+					REPLY=0
+				elif [ "$_tc" -lt $((_third * 2)) ]; then
+					[ "$_tpage" -gt 0 ] &&
+						_tpage=$((_tpage - 1))
+					_tkeep=1
+				else
+					[ "$_tpage" -lt $((_npages - 1)) ] &&
+						_tpage=$((_tpage + 1))
+					_tkeep=1
+				fi
+				return
+			fi
+			for _k in $_itop; do
+				eval "_t=\$_itop_$_k"
+				[ "$_tr" -ge "$_t" ] &&
+					[ "$_tr" -lt $((_t + 3)) ] || continue
+				# flash the block in reverse, briefly
+				printf '\033[%s;1H\033[7m' "$_t"
+				printf '  ------\n   %s\n\n\033[0m' \
+					"$_k tapped"
+				usleep 200000 2>/dev/null || :
+				REPLY=$_k
+				return
+			done ;;
+		*) REPLY="" ;;
+	esac
+}
 
 ask() { # $1 prompt -> REPLY
 	printf '%s' "$1"
@@ -614,13 +725,13 @@ menu_wifi() {
 		say " ip:   ${ip:-none}"
 		nosave_note
 		say ""
-		say " 1 mode (ap or sta)"
-		say " 2 SSID"
-		say " 3 passphrase"
-		say " 4 channel (SoftAP)"
-		say " 5 PMF on/off"
-		say " 0 back"
-		ask "? "
+		item 1 "mode (ap or sta)"
+		item 2 SSID
+		item 3 passphrase
+		item 4 "channel (SoftAP)"
+		item 5 "PMF on/off"
+		item 0 back
+		menu_pick
 		case "$REPLY" in
 			1)
 				if is_ssh; then
@@ -648,10 +759,10 @@ menu_keys() { # $1 = authorized_keys|root_authorized_keys, $2 label
 		n=0; [ -f "$kf" ] && n=$(grep -c . "$kf" 2>/dev/null || echo 0)
 		say "== SSH keys: $2 =="
 		say " installed: $n key(s)"
-		say " 1 add a key (paste a line)"
-		say " 2 remove all"
-		say " 0 back"
-		ask "? "
+		item 1 "add a key (paste a line)"
+		item 2 "remove all"
+		item 0 back
+		menu_pick
 		case "$REPLY" in
 			1)
 				say "  paste the public key line:"
@@ -673,14 +784,14 @@ menu_system() {
 		say " hostname: $(hostname 2>/dev/null || cfg_get hostname)"
 		nosave_note
 		say ""
-		say " 1 hostname"
-		say " 2 m5 password"
-		say " 3 root password"
-		say " 4 SSH password login on/off"
-		say " 5 SSH keys for m5"
-		say " 6 SSH keys for root"
-		say " 0 back"
-		ask "? "
+		item 1 hostname
+		item 2 "m5 password"
+		item 3 "root password"
+		item 4 "SSH password login on/off"
+		item 5 "SSH keys for m5"
+		item 6 "SSH keys for root"
+		item 0 back
+		menu_pick
 		case "$REPLY" in
 			1) menu_set hostname ;;
 			2) menu_secret password ;;
@@ -753,10 +864,10 @@ menu_sound() {
 	while :; do
 		scr_clear
 		say "== Sound =="
-		say " 1 test tone (2 s)"
-		say " 2 record 3 s and play back"
-		say " 0 back"
-		ask "? "
+		item 1 "test tone (2 s)"
+		item 2 "record 3 s and play back"
+		item 0 back
+		menu_pick
 		case "$REPLY" in
 			1) /usr/bin/pcm-sine 0 2 440 -12 || say "  tone failed" ;;
 			2)
@@ -779,10 +890,10 @@ menu_ports() {
 		say "== Ports (expander) =="
 		say " ext5v_en:  $(cfg_get ext5v_en 2>/dev/null || echo 0)"
 		say " ext_ant_en:$(cfg_get ext_ant_en 2>/dev/null || echo 0)"
-		say " 1 ext5v_en 0/1 (EXT header 5 V)"
-		say " 2 ext_ant_en 0/1 (MMCX antenna)"
-		say " 0 back"
-		ask "? "
+		item 1 "ext5v_en 0/1 (EXT header 5 V)"
+		item 2 "ext_ant_en 0/1 (MMCX antenna)"
+		item 0 back
+		menu_pick
 		case "$REPLY" in
 			1) menu_set ext5v_en ;;
 			2) menu_set ext_ant_en ;;
@@ -795,12 +906,12 @@ menu_blekbd() {
 	while :; do
 		scr_clear
 		say "== Bluetooth keyboard =="
-		say " 1 scan for keyboards"
-		say " 2 pair a keyboard (addr)"
-		say " 3 list paired"
-		say " 4 forget (addr or all)"
-		say " 0 back"
-		ask "? "
+		item 1 "scan for keyboards"
+		item 2 "pair a keyboard (addr)"
+		item 3 "list paired"
+		item 4 "forget (addr or all)"
+		item 0 back
+		menu_pick
 		case "$REPLY" in
 			1) /usr/bin/ble-kbd scan 8 ;;
 			2)
@@ -829,14 +940,14 @@ menu_power() {
 	while :; do
 		scr_clear
 		say "== Power =="
-		say " 1 reboot"
+		item 1 reboot
 		[ -w /sys/kernel/board/deep_sleep ] &&
-			say " 2 deep sleep (wake timer)"
+			item 2 "deep sleep (wake timer)"
 		[ -d /sys/kernel/board/lp_core ] &&
-			say " 3 LP core settings"
-		pwroff_support && say " 4 power off"
-		say " 0 back"
-		ask "? "
+			item 3 "LP core settings"
+		pwroff_support && item 4 "power off"
+		item 0 back
+		menu_pick
 		case "$REPLY" in
 			1) say " rebooting"; sync; reboot ;;
 			2)
@@ -860,11 +971,11 @@ menu_lpcore() {
 		say " lp_core:   $(cfg_get lp_core 2>/dev/null || echo '(default always)')"
 		say " lp_program:$(cfg_get lp_program 2>/dev/null || echo '(lp.bin)')"
 		say " lp_period: $(cfg_get lp_period 2>/dev/null || echo '(1s)')"
-		say " 1 lp_core (always|sleep|off)"
-		say " 2 lp_program (file name)"
-		say " 3 lp_period (e.g. 1s)"
-		say " 0 back"
-		ask "? "
+		item 1 "lp_core (always|sleep|off)"
+		item 2 "lp_program (file name)"
+		item 3 "lp_period (e.g. 1s)"
+		item 0 back
+		menu_pick
 		case "$REPLY" in
 			1) menu_set lp_core ;;
 			2) menu_set lp_program ;;
@@ -894,8 +1005,9 @@ menu_status() {
 			say " battery: ${c}% ${st}"
 		done
 		say ""
-		say " 1 sysinfo  0 back"
-		ask "? "
+		item 1 sysinfo
+		item 0 back
+		menu_pick
 		case "$REPLY" in
 			1) scr_clear; /usr/sbin/sysinfo; pause ;;
 			0) return ;;
@@ -922,17 +1034,17 @@ menu_main() {
 		say " board: ${m:-unknown}"
 		nosave_note
 		say ""
-		say " 1 Wi-Fi"
-		say " 2 System"
-		say " 3 Date/time"
-		[ "$dsp" -eq 1 ] && say " 4 Display"
-		[ "$snd" -eq 1 ] && say " 5 Sound"
-		[ "$prt" -eq 1 ] && say " 6 Ports"
-		[ "$ble" -eq 1 ] && say " 7 Bluetooth keyboard"
-		say " 8 Power"
-		say " 9 Status"
-		say " 0 exit"
-		ask "? "
+		item 1 Wi-Fi
+		item 2 System
+		item 3 "Date/time"
+		[ "$dsp" -eq 1 ] && item 4 Display
+		[ "$snd" -eq 1 ] && item 5 Sound
+		[ "$prt" -eq 1 ] && item 6 Ports
+		[ "$ble" -eq 1 ] && item 7 "Bluetooth keyboard"
+		item 8 Power
+		item 9 Status
+		item 0 exit
+		menu_pick
 		case "$REPLY" in
 			1) menu_wifi ;;
 			2) menu_system ;;
@@ -951,7 +1063,7 @@ menu_main() {
 # -------------------------------------------------------------- main ----
 
 case "${1:-menu}" in
-	menu) menu_main ;;
+	menu) touch_ok; menu_main ;;
 	list) do_list ;;
 	get) [ $# -eq 2 ] || usage; do_get "$2" ;;
 	set)

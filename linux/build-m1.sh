@@ -2511,6 +2511,9 @@ if $lab_profile; then
 	if [[ "$board" == tab5 ]]; then
 		set_config_value "${br_output}/.config" BR2_PACKAGE_WIFI_QR y
 		set_config_value "${br_output}/.config" BR2_PACKAGE_TOUCH_DOTS y
+		# TTY+touch one-shot event reader for the m5-config
+		# panel-console touch menus (#42).
+		set_config_value "${br_output}/.config" BR2_PACKAGE_M5_KEY y
 		set_config_value "${br_output}/.config" BR2_PACKAGE_PCM_SINE y
 		set_config_value "${br_output}/.config" BR2_PACKAGE_PCM_REC y
 		set_config_value "${br_output}/.config" BR2_PACKAGE_PCM_PLAY y
@@ -2521,6 +2524,7 @@ if $lab_profile; then
 	else
 		set_config_value "${br_output}/.config" BR2_PACKAGE_WIFI_QR "# BR2_PACKAGE_WIFI_QR is not set"
 		set_config_value "${br_output}/.config" BR2_PACKAGE_TOUCH_DOTS "# BR2_PACKAGE_TOUCH_DOTS is not set"
+		set_config_value "${br_output}/.config" BR2_PACKAGE_M5_KEY "# BR2_PACKAGE_M5_KEY is not set"
 		set_config_value "${br_output}/.config" BR2_PACKAGE_PCM_SINE "# BR2_PACKAGE_PCM_SINE is not set"
 		set_config_value "${br_output}/.config" BR2_PACKAGE_PCM_REC "# BR2_PACKAGE_PCM_REC is not set"
 		set_config_value "${br_output}/.config" BR2_PACKAGE_PCM_PLAY "# BR2_PACKAGE_PCM_PLAY is not set"
@@ -2531,6 +2535,7 @@ else
 	set_config_value "${br_output}/.config" BR2_PACKAGE_BOOT_COMMIT "# BR2_PACKAGE_BOOT_COMMIT is not set"
 	set_config_value "${br_output}/.config" BR2_PACKAGE_WIFI_QR "# BR2_PACKAGE_WIFI_QR is not set"
 	set_config_value "${br_output}/.config" BR2_PACKAGE_TOUCH_DOTS "# BR2_PACKAGE_TOUCH_DOTS is not set"
+	set_config_value "${br_output}/.config" BR2_PACKAGE_M5_KEY "# BR2_PACKAGE_M5_KEY is not set"
 	set_config_value "${br_output}/.config" BR2_PACKAGE_PCM_SINE "# BR2_PACKAGE_PCM_SINE is not set"
 	set_config_value "${br_output}/.config" BR2_PACKAGE_PCM_REC "# BR2_PACKAGE_PCM_REC is not set"
 	set_config_value "${br_output}/.config" BR2_PACKAGE_PCM_PLAY "# BR2_PACKAGE_PCM_PLAY is not set"
@@ -2830,6 +2835,10 @@ if $ssh_profile; then
 			}
 			[[ -x "${br_output}/target/usr/bin/touch-dots" ]] || {
 				echo "m3-lab check failed: touch-dots missing" >&2
+				exit 1
+			}
+			[[ -x "${br_output}/target/usr/bin/m5-key" ]] || {
+				echo "m3-lab check failed: m5-key missing" >&2
 				exit 1
 			}
 		fi
