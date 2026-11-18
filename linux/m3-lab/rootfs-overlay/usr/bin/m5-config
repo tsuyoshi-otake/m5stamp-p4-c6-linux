@@ -422,7 +422,8 @@ drive_write() {
 		mkdir "$LOCK" 2>/dev/null || { echo "m5-config: could not lock" >&2; return 1; }
 	fi
 	echo $$ > "$LOCK/pid" 2>/dev/null
-	trap _cleanup EXIT HUP INT TERM
+	trap _cleanup EXIT
+	trap '_cleanup; exit 130' HUP INT TERM
 
 	mkdir -p "$MNT" 2>/dev/null || { _cleanup; return 1; }
 	cp -f "$BOOT_IMG" "$WORK_IMG" 2>/dev/null || {
@@ -555,27 +556,38 @@ do_list() {
 	done
 }
 
+# do_set returns its status; only the CLI top level exits on it, so a
+# rejected value inside the menu prints the reason and asks again.
 do_set() {
 	_k=$1; _v=$2; _from_stdin=${3:-0}
-	key_known "$_k" || {
-		_x=$(key_explained "$_k") && die "$_x"
-		die "unknown key '$_k' (see: m5-config list)" 64; }
-	key_present "$_k" || die "$_k is not present on this board" 1
+	if ! key_known "$_k"; then
+		_x=$(key_explained "$_k")
+		[ -n "$_x" ] && echo "m5-config: $_x" >&2 ||
+			echo "m5-config: unknown key '$_k' (see: m5-config list)" >&2
+		return 64
+	fi
+	key_present "$_k" ||
+		{ echo "m5-config: $_k is not present on this board" >&2; return 1; }
 	if [ "$_from_stdin" = 1 ]; then
-		IFS= read -r _v || die "no value on stdin" 64
+		IFS= read -r _v ||
+			{ echo "m5-config: no value on stdin" >&2; return 64; }
 		_v=${_v%"$CR"}
 	fi
 	if [ -z "$_v" ]; then
-		key_unset_ok "$_k" || die "$_k cannot be removed; set a new value"
+		key_unset_ok "$_k" || {
+			echo "m5-config: $_k cannot be removed; set a new value" >&2
+			return 1; }
 		drive_write "$_k" "" del
 		return $?
 	fi
-	validate "$_k" "$_v" || die "rejected: $VALIDATE_MSG" 1
+	validate "$_k" "$_v" ||
+		{ echo "m5-config: rejected: $VALIDATE_MSG" >&2; return 1; }
 	# ssh_password_auth=no without installed keys is ignored by S85ssh
 	# anyway; reject early with a clear reason instead of saving a no-op.
 	if [ "$_k" = ssh_password_auth ] && [ "$_v" = no ] &&
 		[ ! -s "$HOME_M5/.ssh/authorized_keys" ]; then
-		die "rejected: no authorized_keys installed for m5; key-only login would have no keys" 1
+		echo "m5-config: rejected: no authorized_keys installed for m5; key-only login would have no keys" >&2
+		return 1
 	fi
 	drive_write "$_k" "$_v" set
 	return $?
@@ -728,19 +740,24 @@ nosave_note() {
 	return 1
 }
 
-# One validated edit; do_set prints the result.  $1 key.
+# One validated edit; do_set prints the result.  $1 key.  A rejected
+# value shows the reason and asks again; empty cancels.
 menu_set() {
-	ask "  new $1 (empty cancels): "
-	[ -z "$REPLY" ] && { say "  unchanged"; pause; return; }
-	do_set "$1" "$REPLY" || true
+	while :; do
+		ask "  new $1 (empty cancels): " || return
+		[ -z "$REPLY" ] && { say "  unchanged"; pause; return; }
+		do_set "$1" "$REPLY" && break
+	done
 	say "  -> $1: $(do_get "$1" 2>/dev/null || echo '?')"
 	pause
 }
 
 menu_secret() {
-	ask_secret "  new $1 (empty cancels): "
-	[ -z "$REPLY" ] && { say "  unchanged"; pause; return; }
-	do_set "$1" "$REPLY" || true
+	while :; do
+		ask_secret "  new $1 (empty cancels): " || return
+		[ -z "$REPLY" ] && { say "  unchanged"; pause; return; }
+		do_set "$1" "$REPLY" && break
+	done
 	pause
 }
 

@@ -347,6 +347,19 @@ stop_saver
 imgfile config.txt | od -c | grep -q '7  \\r' &&
 	ok "CRLF line keeps its CR" || bad "CR lost: $(imgfile config.txt | grep channel | od -c | head -1)"
 
+# 17. REVIEW 1 group C: a rejected value keeps the menu alive.
+# (plain menu: touch seam off so ask() reads the piped lines)
+printf '2\n1\n-bad-\nok-host\n\n0\n0\n' > "$tmp/menuin"
+start_saver
+out=$(env -u M5CFG_FORCE_TOUCH -u M5CFG_TSCRIPT \
+	sh "$tool" menu < "$tmp/menuin" 2>&1); rc=$?
+stop_saver
+echo "$out" | grep -q "rejected" && imgfile config.txt | grep -q 'hostname=ok-host' &&
+	ok "rejected value: menu continues, next value saved" ||
+	bad "menu died on reject rc=$rc: $(echo "$out" | tail -3)"
+grep -n "trap '_cleanup; exit 130'" "$tool" >/dev/null &&
+	ok "signal traps exit after cleanup" || bad "trap does not exit"
+
 if [ "$fails" -gt 0 ]; then
 	echo "FAILED: $fails checks"
 	exit 1
