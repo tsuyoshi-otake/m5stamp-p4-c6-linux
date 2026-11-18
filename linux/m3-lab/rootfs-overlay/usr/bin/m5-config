@@ -402,11 +402,22 @@ lun_file() { # -> LF
 	LF=""; return 1
 }
 
+# _drive_clean: drive_write's own resources only.  It runs on every
+# save, mid-session, so it must NOT touch traps, the palette, or the
+# tty -- those belong to the session teardown below.
+_drive_clean() {
+	umount "$MNT" 2>/dev/null
+	rm -rf "$MNT" "$WORK_IMG" "$LOCK"
+}
+
+# _cleanup: session teardown, runs once at session end (EXIT trap or
+# the signal handler).  _drive_clean is in it too so a signal in the
+# middle of a save still drops the mount and the lock dir.
 _cleanup() {
 	trap - EXIT HUP INT TERM
 	[ "$_pal_on" = 1 ] && _pal_restore
-	umount "$MNT" 2>/dev/null
-	rm -rf "$MNT" "$WORK_IMG" "$LOCK"
+	"$STTY" echo 2>/dev/null || busybox stty echo 2>/dev/null || :
+	_drive_clean
 }
 
 # $1 = key, $2 = value, $3 = set|del.  Edits a working copy of the image,
@@ -446,35 +457,35 @@ drive_write() {
 	trap _cleanup EXIT
 	trap '_cleanup; exit 130' HUP INT TERM
 
-	mkdir -p "$MNT" 2>/dev/null || { _cleanup; return 1; }
+	mkdir -p "$MNT" 2>/dev/null || { _drive_clean; return 1; }
 	cp -f "$BOOT_IMG" "$WORK_IMG" 2>/dev/null || {
 		echo "m5-config: no room in $PUB_DIR for a working copy" >&2
-		_cleanup; return 1; }
+		_drive_clean; return 1; }
 	mount -t vfat -o "loop,rw,noatime,umask=0077" "$WORK_IMG" "$MNT" 2>/dev/null || {
 		echo "m5-config: the boot image is not a mountable FAT volume" >&2
-		_cleanup; return 1; }
+		_drive_clean; return 1; }
 
 	rc=0
 	apply_edit "$1" "$2" "$3" || rc=$?
 	sync
 	umount "$MNT" 2>/dev/null || {
 		echo "m5-config: could not unmount the working copy; nothing was changed" >&2
-		_cleanup; return 1; }
+		_drive_clean; return 1; }
 	[ "$rc" -eq 0 ] || {
 		echo "m5-config: the change failed; the drive is as it was" >&2
-		_cleanup; return 1; }
+		_drive_clean; return 1; }
 
-	img_hash "$WORK_IMG" || { _cleanup; return 1; }
+	img_hash "$WORK_IMG" || { _drive_clean; return 1; }
 	new=$HASH
-	img_hash "$BOOT_IMG" || { _cleanup; return 1; }
+	img_hash "$BOOT_IMG" || { _drive_clean; return 1; }
 	if [ "$new" = "$HASH" ]; then
 		echo "m5-config: no change"
-		_cleanup
+		_drive_clean
 		return 0
 	fi
 	mv -f "$WORK_IMG" "$BOOT_IMG" || {
 		echo "m5-config: could not replace $BOOT_IMG" >&2
-		_cleanup; return 1; }
+		_drive_clean; return 1; }
 
 	# A host holding the USB drive keeps the old (already-open) image
 	# until the gadget drops it.  The eject makes the host see the new
@@ -496,13 +507,13 @@ drive_write() {
 		[ -f "$FLASH_HASH_FILE" ] && read -r _saved < "$FLASH_HASH_FILE"
 		if [ "$_saved" = "$new" ]; then
 			echo "m5-config: saved to flash"
-			_cleanup
+			_drive_clean
 			return 0
 		fi
 		i=$((i + 1))
 	done
 	echo "m5-config: not confirmed after ${SAVE_WAIT} s; read the [bootsync] lines on the console" >&2
-	_cleanup
+	_drive_clean
 	return 3
 }
 

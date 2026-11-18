@@ -292,7 +292,7 @@ echo "$out" | grep -q "== m5-config ==" &&
 # emitted a second time before the back tap leaves.
 printf 'T 1 40\nT 20 10\n' > "$tmp/tscr/events"
 out=$(M5CFG_TSCRIPT="$tmp/tscr/events" sh "$tool" menu </dev/null 2>&1)
-[ "$(echo "$out" | grep -c '== m5-config ==')" -ge 2 ] &&
+[ "$(echo "$out" | grep -o '== m5-config ==' | wc -l)" -ge 2 ] &&
 	ok "dead-zone tap causes a full redraw" ||
 	bad "no redraw after dead tap: $out"
 # Pager: force 2 items/page so the 6 visible main items span three
@@ -551,6 +551,7 @@ IFS= read -r ev < "$M5CFG_TSCRIPT" 2>/dev/null || exit 1
 tail -n +2 "$M5CFG_TSCRIPT" > "$M5CFG_TSCRIPT.n" 2>/dev/null || :
 mv -f "$M5CFG_TSCRIPT.n" "$M5CFG_TSCRIPT" 2>/dev/null || :
 [ "$ev" = "INT" ] && { kill -INT "$PPID" 2>/dev/null; sleep 1; exit 0; }
+[ "$ev" = "TERM" ] && { kill -TERM "$PPID" 2>/dev/null; sleep 1; exit 0; }
 printf '%s\n' "$ev"
 EOF
 chmod +x "$tmp/bin/stty" "$tmp/bin/m5-key-log"
@@ -560,7 +561,10 @@ chmod +x "$tmp/bin/stty" "$tmp/bin/m5-key-log"
 # value proves the read happened before echo came back.
 echo_check() { # $1 desc; log is $tmp/m5.log
 	off=$(grep -n 'STTY -echo' "$tmp/m5.log" | tail -1 | cut -d: -f1)
-	on=$(grep -n 'STTY echo' "$tmp/m5.log" | tail -1 | cut -d: -f1)
+	# the ttext restore is the FIRST 'STTY echo' after '-echo'; the
+	# session cleanup adds a later safety 'stty echo' of its own.
+	on=$(awk -v a="$off" 'NR>a && /STTY echo/ { print NR; exit }' \
+		"$tmp/m5.log")
 	keys=$(awk -v a="$off" -v b="$on" 'NR>a && NR<b' \
 		"$tmp/m5.log" | grep -c M5KEY)
 	[ -n "$off" ] && [ -n "$on" ] && [ "$on" -gt "$off" ] &&
@@ -612,7 +616,8 @@ tail -1 "$tmp/m5.log" | grep -q 'STTY echo' && [ "$rc" -eq 130 ] &&
 	{ bad "stty order int rc=$rc: $(cat "$tmp/m5.log")"; }
 
 # 28. Non-secret ttext never touches stty (plain fields keep normal
-# echo): the same field edit through ttext logs no STTY lines at all.
+# echo): the same field edit through ttext logs no STTY -echo.  (The
+# session cleanup's final 'stty echo' safety restore is allowed.)
 printf 'T 4 50\nT 4 10\nK b\nT 20 10\nT 20 10\n' > "$tmp/tscr/events"
 : > "$tmp/m5.log"
 start_saver
@@ -620,12 +625,52 @@ out=$(printf 'ox-2\n' | M5LOG="$tmp/m5.log" M5CFG_STTY="$tmp/bin/stty" \
 	M5CFG_M5_KEY="$tmp/bin/m5-key-log" M5CFG_TSCRIPT="$tmp/tscr/events" \
 	sh "$tool" menu 2>&1)
 stop_saver
-! grep -q 'STTY' "$tmp/m5.log" &&
+! grep -q 'STTY -echo' "$tmp/m5.log" &&
 	imgfile config.txt | grep -q '^hostname=box-2$' &&
 	ok "non-secret ttext calls no stty" ||
 	{ bad "non-secret stty: $(cat "$tmp/m5.log")"; }
 
-# 29. B25 NOMMU lint: no $( ) inside the touch event/redraw path.
+# 29. REVIEW 1: a save mid-session must NOT drop the session traps or
+# the palette -- the save's own cleanup is _drive_clean; _cleanup runs
+# once at session end.  So ESC]R is emitted exactly once, after the
+# last repaint, and a signal arriving after the save still restores.
+escR=$(printf '\033]R'); escB=$(printf '\033[37;44m')
+# System(slot 1) -> hostname(slot 0) -> K b + stdin "ox-3" -> saved;
+# back to the System menu (which repaints), back to main, exit.
+printf 'T 4 50\nT 4 10\nK b\nT 20 10\nT 20 10\n' > "$tmp/tscr/events"
+start_saver
+out=$(printf 'ox-3\n' | M5CFG_TSCRIPT="$tmp/tscr/events" \
+	sh "$tool" menu 2>&1)
+stop_saver
+imgfile config.txt | grep -q '^hostname=box-3$' ||
+	bad "review1 save did not land"
+n=$(printf '%s' "$out" | grep -o "$escR" | wc -l)
+[ "$n" -eq 1 ] || bad "ESC]R emitted ${n}x"
+case "$out" in
+	*"$escR"*"$escB"*)
+		bad "palette restored before the last repaint" ;;
+	*"$escB"*"$escR"*)
+		ok "ESC]R exactly once, after the last repaint" ;;
+	*) bad "no palette sequence in output" ;;
+esac
+
+# A TERM after the save still runs the session cleanup: ESC]R once,
+# rc 130.  (Before the split the save had already cleared the traps,
+# so this died on the default disposition with no restore.)
+printf 'T 4 50\nT 4 10\nK b\nTERM\n' > "$tmp/tscr/events"
+: > "$tmp/m5.log"
+start_saver
+out=$(printf 'ox-4\n' | M5LOG="$tmp/m5.log" M5CFG_STTY="$tmp/bin/stty" \
+	M5CFG_M5_KEY="$tmp/bin/m5-key-log" M5CFG_TSCRIPT="$tmp/tscr/events" \
+	sh "$tool" menu 2>&1)
+rc=$?
+stop_saver
+n=$(printf '%s' "$out" | grep -o "$escR" | wc -l)
+[ "$rc" -eq 130 ] && [ "$n" -eq 1 ] &&
+	ok "signal after a save still restores the palette" ||
+	bad "signal after save rc=$rc ESC]R=$n"
+
+# 30. B25 NOMMU lint: no $( ) inside the touch event/redraw path.
 # Each $( ) forks a whole second hush (~480 KB contiguous on NOMMU);
 # in the input wait that is the difference between two idle processes
 # (m5-config + m5-key) and alloc failures.  Arithmetic $(( )) is fine;
@@ -637,7 +682,7 @@ menu_ports menu_blekbd menu_power menu_lpcore menu_status menu_main \
 status_lines menu_set menu_secret menu_choose menu_adjust menu_keys \
 _blescan touch_ok _touch_init _pal_set _pal_restore set_apply trun \
 cfg_get eff_file key_file keys_file eff_ssid key_explained lun_file \
-do_get is_key_line pwroff_support"
+do_get is_key_line pwroff_support _cleanup _drive_clean"
 _lint_hit=0
 for fn in $_lint_fns; do
 	awk -v f="$fn" 'index($0, f "()") == 1 { on = 1 }
