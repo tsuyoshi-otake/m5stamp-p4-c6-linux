@@ -39,7 +39,7 @@
 #define AF_BLUETOOTH	31
 #endif
 #define BTPROTO_HCI	1
-#define BTPROTO_L2CAP	3
+#define BTPROTO_L2CAP	0	/* 3 would be BTPROTO_RFCOMM */
 #define SOL_HCI		0
 #ifndef SOL_BLUETOOTH
 #define SOL_BLUETOOTH	274
@@ -239,7 +239,37 @@ struct mgmt_ev_new_conn_param {
 } __attribute__((packed));
 
 /* ---- HCI constants ---- */
-#define HCI_SCAN_LE		0x02
+/* mgmt Start/Stop Discovery `type` is an address-type bitmask, NOT an
+ * HCI scan type: BIT(BDADDR_LE_PUBLIC)|BIT(BDADDR_LE_RANDOM) = 0x06
+ * (kernel DISCOV_TYPE_LE); the old HCI-style 0x02 was rejected with
+ * MGMT_STATUS_INVALID_PARAMS (0x0d) on hardware.  Stop Discovery must
+ * repeat the same value -- the kernel rejects a type that does not
+ * match the active discovery. */
+#define MGMT_DISCOV_TYPE_LE	0x06
+
+/* Wire-format guards: sizes are the kernel mgmt.h layouts verbatim
+ * (addr_info 7, ltk 36, irk 23; see B32 audit). */
+_Static_assert(sizeof(struct mgmt_addr_info) == 7, "addr_info");
+_Static_assert(sizeof(struct mgmt_rp_read_info) == 280, "read_info");
+_Static_assert(sizeof(struct mgmt_ev_device_found) == 14, "dev_found");
+_Static_assert(sizeof(struct mgmt_ev_user_confirm_request) == 12, "ucfm_req");
+_Static_assert(sizeof(struct mgmt_ev_passkey_notify) == 12, "pk_notify");
+_Static_assert(sizeof(struct mgmt_ltk_info) == 36, "ltk_info");
+_Static_assert(sizeof(struct mgmt_ev_new_long_term_key) == 37, "new_ltk");
+_Static_assert(sizeof(struct mgmt_irk_info) == 23, "irk_info");
+_Static_assert(sizeof(struct mgmt_ev_new_irk) == 30, "new_irk");
+_Static_assert(sizeof(struct mgmt_ev_device_connected) == 13, "dev_conn");
+_Static_assert(sizeof(struct mgmt_ev_device_disconnected) == 8, "dev_disc");
+_Static_assert(sizeof(struct mgmt_ev_new_conn_param) == 16, "conn_param");
+_Static_assert(sizeof(struct mgmt_cp_pair_device) == 8, "pair_dev");
+_Static_assert(sizeof(struct mgmt_cp_unpair_device) == 8, "unpair_dev");
+_Static_assert(sizeof(struct mgmt_cp_load_ltks) == 2, "load_ltks");
+_Static_assert(sizeof(struct mgmt_cp_load_irks) == 2, "load_irks");
+_Static_assert(sizeof(struct mgmt_cp_start_discovery) == 1, "start_disc");
+_Static_assert(sizeof(struct mgmt_cp_stop_discovery) == 1, "stop_disc");
+_Static_assert(sizeof(struct mgmt_mode) == 1, "mode");
+_Static_assert(sizeof(struct mgmt_cp_set_io_capability) == 1, "io_cap");
+
 #define MGMT_SETTING_POWERED	(1U << 0)
 #define MGMT_SETTING_LE		(1U << 9)
 #define IO_KEYBOARD_DISPLAY	0x04
@@ -458,7 +488,7 @@ static int cmd_scan(int secs)
 		fprintf(stderr, "adapter power-on failed\n");
 	}
 
-	struct mgmt_cp_start_discovery sd = { .type = HCI_SCAN_LE };
+	struct mgmt_cp_start_discovery sd = { .type = MGMT_DISCOV_TYPE_LE };
 	if (mgmt_send(fd, MGMT_OP_START_DISCOVERY, HCI_DEV, &sd, 1)) {
 		perror("start discovery"); return 1; }
 	printf("scanning %d s ...\n", secs);
@@ -487,7 +517,7 @@ static int cmd_scan(int secs)
 		       name);
 		fflush(stdout);
 	}
-	struct mgmt_cp_stop_discovery sp = { .type = HCI_SCAN_LE };
+	struct mgmt_cp_stop_discovery sp = { .type = MGMT_DISCOV_TYPE_LE };
 	mgmt_send(fd, MGMT_OP_STOP_DISCOVERY, HCI_DEV, &sp, 1);
 	close(fd);
 	return 0;
@@ -1211,7 +1241,7 @@ static int cmd_pair(const char *addr_str)
 	cp.io_cap = IO_KEYBOARD_DISPLAY;
 
 	/* short discovery first so the kernel knows the addr type */
-	struct mgmt_cp_start_discovery sd = { .type = HCI_SCAN_LE };
+	struct mgmt_cp_start_discovery sd = { .type = MGMT_DISCOV_TYPE_LE };
 	mgmt_send(mgmt, MGMT_OP_START_DISCOVERY, HCI_DEV, &sd, 1);
 	for (int k = 0; k < 60; k++) {
 		int ev = mgmt_recv(mgmt, buf, sizeof(rxbuf), 250);
@@ -1223,7 +1253,7 @@ static int cmd_pair(const char *addr_str)
 			}
 		}
 	}
-	struct mgmt_cp_stop_discovery sp = { .type = HCI_SCAN_LE };
+	struct mgmt_cp_stop_discovery sp = { .type = MGMT_DISCOV_TYPE_LE };
 	mgmt_send(mgmt, MGMT_OP_STOP_DISCOVERY, HCI_DEV, &sp, 1);
 	usleep(200000);
 
@@ -1253,11 +1283,9 @@ static int cmd_pair(const char *addr_str)
 		}
 		case MGMT_EV_USER_CONFIRM_REQUEST: {
 			struct mgmt_ev_user_confirm_request *r = d;
-			struct mgmt_cp_pair_device rep;
-			memset(&rep, 0, sizeof(rep));
-			rep.addr = r->addr;
+			struct mgmt_addr_info rep = r->addr;
 			mgmt_send(mgmt, MGMT_OP_USER_CONFIRM_REPLY,
-				  HCI_DEV, &rep, MGMT_ADDR_INFO_SIZE);
+				  HCI_DEV, &rep, sizeof(rep));
 			printf("  just-works/confirm accepted\n");
 			break;
 		}
@@ -1460,8 +1488,8 @@ static int cmd_daemon(void)
 	usleep(200000);
 	printf("daemon: %d bond(s), keys loaded, scanning\n", nbonds);
 
-	struct mgmt_cp_start_discovery sd = { .type = HCI_SCAN_LE };
-	struct mgmt_cp_stop_discovery sp = { .type = HCI_SCAN_LE };
+	struct mgmt_cp_start_discovery sd = { .type = MGMT_DISCOV_TYPE_LE };
+	struct mgmt_cp_stop_discovery sp = { .type = MGMT_DISCOV_TYPE_LE };
 	int backoff = 1;
 	for (;;) {
 		mgmt_send(mgmt, MGMT_OP_START_DISCOVERY, HCI_DEV, &sd, 1);
