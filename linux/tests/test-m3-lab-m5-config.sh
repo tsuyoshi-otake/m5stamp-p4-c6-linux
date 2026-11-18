@@ -676,6 +676,22 @@ else
 	ok "non-touch Status leaves no scratch files"
 fi
 
+# touch_ok accepts only /dev/tty[0-9]*: on the Tab5, /dev/console is
+# the USB gadget serial (console=tty0 console=ttyGS1), not the panel
+# -- a run there must stay plain.  A fake tty shadows the real one.
+cat > "$tmp/bin/tty" <<'EOF'
+#!/bin/sh
+echo /dev/console
+EOF
+chmod +x "$tmp/bin/tty"
+printf '0\n' > "$tmp/tscr/kbd"
+out=$(M5CFG_FORCE_TOUCH= sh "$tool" menu < "$tmp/tscr/kbd" 2>&1)
+echo "$out" | grep -q "== m5-config ==" ||
+	bad "menu did not render with tty=/dev/console"
+echo "$out" | grep -q "$(printf '\033\]P')" &&
+	bad "/dev/console took the touch path" ||
+	ok "/dev/console stays plain mode"
+
 # A TERM after the save still runs the session cleanup: ESC]R once,
 # rc 130.  (Before the split the save had already cleared the traps,
 # so this died on the default disposition with no restore.)

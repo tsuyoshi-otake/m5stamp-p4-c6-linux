@@ -789,7 +789,12 @@ touch_ok() {
 	(umask 077; : > "$EVF") 2>/dev/null || return 1
 	tty > "$EVF" 2>/dev/null || { rm -f "$EVF" 2>/dev/null; return 1; }
 	IFS= read -r _tty < "$EVF" || { rm -f "$EVF" 2>/dev/null; return 1; }
-	case "$_tty" in /dev/tty[0-9]*|/dev/console) ;;
+	# /dev/tty[0-9]* only -- real VTs.  /dev/console must NOT match:
+	# on the Tab5 bootargs are 'console=tty0 console=ttyGS1', so
+	# /dev/console is the USB serial line, not the panel; taking the
+	# touch path there would paint the UI on the wire while taps land
+	# on a dark screen.
+	case "$_tty" in /dev/tty[0-9]*) ;;
 		*) rm -f "$EVF" 2>/dev/null; return 1 ;;
 	esac
 	"$M5KEY" probe >/dev/null 2>&1 || { rm -f "$EVF" 2>/dev/null; return 1; }
