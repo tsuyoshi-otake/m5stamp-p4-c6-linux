@@ -706,6 +706,23 @@ esp_err_t tab5_speaker_amp_set(bool on)
 	return ESP_OK;
 }
 
+esp_err_t tab5_cam_power_set(bool on)
+{
+	uint8_t out = 0;
+
+	if (!s_exp0)
+		return ESP_ERR_INVALID_STATE;
+	ESP_RETURN_ON_ERROR(expander_read(s_exp0, PI4IO_REG_OUT_SET, &out),
+			    TAG, "cam_rst read");
+	if (on)
+		out |= (1u << 6);
+	else
+		out &= (uint8_t)~(1u << 6);
+	ESP_RETURN_ON_ERROR(expander_write(s_exp0, PI4IO_REG_OUT_SET, out),
+			    TAG, "cam_rst write");
+	return ESP_OK;
+}
+
 /*
  * microSD slot 0 power: the dedicated pads CLK43 CMD44 D0..3=39..42 are
  * fed by the chip's LDO VO4 rail.  The kernel drives the slot over

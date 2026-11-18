@@ -80,4 +80,10 @@ void tab5_i2c_release(void);
 struct i2c_master_bus_t;
 typedef struct i2c_master_bus_t *tab5_i2c_bus_handle_t;
 tab5_i2c_bus_handle_t tab5_i2c_bus(void);
+
+/* CAMERA_ORACLE accessor: drives expander 0x43 P6 (CAM_RST) with a
+ * read-modify-write on OUT_SET, same as tab5_speaker_amp_set; high
+ * powers the sensor out of reset (the only camera control line --
+ * XCLK is the dedicated 24 MHz oscillator). */
+esp_err_t tab5_cam_power_set(bool on);
 esp_err_t tab5_speaker_amp_set(bool on);
