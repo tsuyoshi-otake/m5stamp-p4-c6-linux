@@ -283,5 +283,6 @@ on the power drop).
   gdma `status0`/`int_st0`.
 - Error bits → `-EIO` + same dump.
 - Prepare never touches the GDMA reset line or a running channel;
-  LDO is only programmed if found off; `CAM_RST` drops at
-  `remove()` (never left high across driver teardown).
+  the LDO3 rail is never programmed (off ⇒ `-ENODEV`, fail
+  closed); `CAM_RST` drops at `release()`/`remove()` (never left
+  high across driver teardown).

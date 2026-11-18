@@ -23,11 +23,11 @@ dsi-scanout driver; this driver never touches the block reset,
 and refuses to arm a channel that is enabled or equals the
 shim-patched espressif,scanout-chan.
 
- 2 files changed, 575 insertions(+)
+ 2 files changed, 582 insertions(+)
 
 --- /dev/null
 +++ b/drivers/misc/esp32p4_cam.c
-@@ -0,0 +1,574 @@
+@@ -0,0 +1,581 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * ESP32-P4 MIPI-CSI one-shot raw capture (Tab5 camera bring-up).
@@ -202,6 +202,13 @@ shim-patched espressif,scanout-chan.
 +			     "LDO3/D-PHY rail is off (no DSI panel); refusing uncalibrated power-up\n");
 +}
 +
++/* hp_sys_clkrst RMW safety: cam_set() below touches only these six
++ * words.  i2s0 (0120/0124) writes CTRL2 (0x1c), CTRL11-14 (0x44-0x50)
++ * and HP_RST_EN2 (0xc8) at runtime, plus CTRL1 (0x18) once inside
++ * esp32p4_i2s_probe; dsi-scanout writes no clkrst word at all.
++ * CTRL1 is the only word both sides touch and i2s0 never rewrites
++ * it after probe, so these RMWs cannot interleave with theirs and
++ * no shared lock is needed. */
 +static void cam_clocks(struct esp32p4_cam *c)
 +{
 +	cam_set(c, c->clkrst, CLKRST_SOC_CLK_CTRL0, BIT(13), BIT(13));
