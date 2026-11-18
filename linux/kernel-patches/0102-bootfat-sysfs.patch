@@ -25,8 +25,8 @@ index 1111111..2222222 100644
 @@ -75,4 +75,5 @@
  obj-y				+= amd-sbi/
  obj-$(CONFIG_MISC_RP1)		+= rp1/
- obj-$(CONFIG_ESP32P4_BOOTFLASH)	+= esp32p4-bootflash.o
 +obj-y				+= esp32p4_bootfat.o
+ obj-$(CONFIG_ESP32P4_BOOTFLASH)	+= esp32p4-bootflash.o
  obj-$(CONFIG_ESP32P4_SLEEP)	+= esp32p4-sleep.o
 --- /dev/null
 +++ b/drivers/misc/esp32p4_bootfat.c
