@@ -755,6 +755,7 @@ SYSINFO="${M5CFG_SYSINFO:-/usr/sbin/sysinfo}"
 USBLUN="${M5CFG_USB_LUN:-/usr/sbin/usb-lun}"
 STATUS_TXT="${M5CFG_STATUS_TXT:-/run/status.txt}"
 PSUPPLY="${M5CFG_PSUPPLY:-/sys/class/power_supply}"
+BLDIR="${M5CFG_BLDIR:-/sys/class/backlight}"
 EVF=$RUN_DIR/.m5cfg-ev.$$
 # _USF: scratch for single-shot helper output outside the touch event
 # loop (usb-lun state).  Kept separate from $EVF so a non-touch caller
@@ -881,8 +882,7 @@ menu_pick() {
 		T\ *) ;;
 		*) REPLY=""; _tkeep=1; return ;;
 	esac
-	set -- ${_ev#T }
-	_tr=$1; _tc=$2
+	_tr=${_ev#T }; _tc=${_tr#* }; _tr=${_tr%% *}
 	REPLY=""
 	if [ "$_tr" -ge "$NAVTOP" ]; then
 		if [ "$_tc" -lt 40 ]; then
@@ -981,8 +981,7 @@ tpick() {
 			T\ *) ;;
 			*) _need=1; continue ;;
 		esac
-		set -- ${_ev#T }
-		_tr=$1; _tc=$2
+		_tr=${_ev#T }; _tc=${_tr#* }; _tr=${_tr%% *}
 		if [ "$_tr" -ge "$NAVTOP" ]; then
 			[ "$_tc" -lt 40 ] && return 0
 			if [ "$_np" -gt 1 ]; then
@@ -1027,10 +1026,10 @@ tconfirm() {
 			T\ *) ;;
 			*) _need=1; continue ;;
 		esac
-		set -- ${_ev#T }
-		[ "$1" -ge "$ITOP" ] && [ "$1" -lt $((ITOP + 4)) ] ||
+		_tr=${_ev#T }; _tc=${_tr#* }; _tr=${_tr%% *}
+		[ "$_tr" -ge "$ITOP" ] && [ "$_tr" -lt $((ITOP + 4)) ] ||
 			{ _need=1; continue; }
-		[ "$2" -lt 40 ] && REPLY=yes || REPLY=no
+		[ "$_tc" -lt 40 ] && REPLY=yes || REPLY=no
 		return 0
 	done
 }
@@ -1066,10 +1065,10 @@ tadjust() {
 			T\ *) ;;
 			*) continue ;;
 		esac
-		set -- ${_ev#T }
-		[ "$1" -ge "$ITOP" ] && [ "$1" -lt $((ITOP + 4)) ] && {
+		_tr=${_ev#T }; _tc=${_tr#* }; _tr=${_tr%% *}
+		[ "$_tr" -ge "$ITOP" ] && [ "$_tr" -lt $((ITOP + 4)) ] && {
 			_buf=""
-			if [ "$2" -lt 40 ]; then
+			if [ "$_tc" -lt 40 ]; then
 				[ "$((_cur - $5))" -ge "$3" ] &&
 					_cur=$((_cur - $5)) || _cur=$3
 			else
@@ -1077,8 +1076,8 @@ tadjust() {
 					_cur=$((_cur + $5)) || _cur=$4
 			fi
 			continue; }
-		[ "$1" -ge $((ITOP + 4)) ] && [ "$1" -lt $((ITOP + 8)) ] && {
-			[ "$2" -lt 40 ] && REPLY=${_buf:-$_cur} || REPLY=""
+		[ "$_tr" -ge $((ITOP + 4)) ] && [ "$_tr" -lt $((ITOP + 8)) ] && {
+			[ "$_tc" -lt 40 ] && REPLY=${_buf:-$_cur} || REPLY=""
 			return 0; }
 	done
 }
@@ -1427,7 +1426,7 @@ menu_display() {
 	scr_clear
 	say "== Display =="
 	bl=""
-	for d in /sys/class/backlight/*/brightness; do
+	for d in "$BLDIR"/*/brightness; do
 		[ -f "$d" ] && { bl=$d; break; }
 	done
 	[ -z "$bl" ] && { say " no backlight device"; pause; return; }
@@ -1779,13 +1778,13 @@ tpage() {
 			T\ *) ;;
 			*) continue ;;
 		esac
-		set -- ${_ev#T }
-		[ "$1" -ge "$NAVTOP" ] || continue
-		if [ "$2" -lt 40 ]; then return
+		_tr=${_ev#T }; _tc=${_tr#* }; _tr=${_tr%% *}
+		[ "$_tr" -ge "$NAVTOP" ] || continue
+		if [ "$_tc" -lt 40 ]; then return
 		elif [ "$_pnp" -gt 1 ]; then
-			if [ "$2" -lt 60 ] && [ "$_pg" -gt 0 ]; then
+			if [ "$_tc" -lt 60 ] && [ "$_pg" -gt 0 ]; then
 				_pg=$((_pg - 1))
-			elif [ "$2" -ge 60 ] && [ "$_pg" -lt $((_pnp - 1)) ]; then
+			elif [ "$_tc" -ge 60 ] && [ "$_pg" -lt $((_pnp - 1)) ]; then
 				_pg=$((_pg + 1))
 			fi
 		fi
@@ -1834,7 +1833,7 @@ menu_main() {
 		[ -x /usr/bin/pcm-sine ] && [ "$_pcm" = 1 ] || snd=0
 		[ -x /usr/sbin/tab5-rails ] || prt=0
 		[ -x "$BLEKBD" ] || ble=0
-		_d=""; for d in /sys/class/backlight/*/brightness; do
+		_d=""; for d in "$BLDIR"/*/brightness; do
 			[ -f "$d" ] && { _d=$d; break; }
 		done
 		[ -z "$_d" ] && dsp=0

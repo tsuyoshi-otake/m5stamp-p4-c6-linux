@@ -729,10 +729,12 @@ for fn in $_lint_fns; do
 	[ -s "$tmp/fnbody" ] || { _lint_hit=1; bad "lint: $fn not found"; continue; }
 	grep -nE '\$\([^()]' "$tmp/fnbody" &&
 		{ _lint_hit=1; bad "lint: \$( ) inside $fn"; }
+	grep -n 'set -- ' "$tmp/fnbody" &&
+		{ _lint_hit=1; bad "lint: set -- inside $fn"; }
 done
 [ "$_lint_hit" -eq 0 ] &&
-	ok "lint: no \$( ) inside the touch event/redraw path" ||
-	bad "lint found \$( ) in touch functions"
+	ok "lint: no \$( ) or set -- inside the touch event/redraw path" ||
+	bad "lint found \$( ) or set -- in touch functions"
 
 # 31. B29: header colours must reach the panel as a real ESC byte, not
 # the four characters \033.  say() and the tpage pager pass the colour
@@ -755,6 +757,75 @@ out=$(M5CFG_STATUS_TXT="$tmp/status.txt" M5CFG_SYSINFO="$tmp/bin/sysinfo" \
 printf '%s' "$out" | grep -q "$(printf '\033\[36m')== Status ==" &&
 	ok "status header is a real ESC[36m, no literal \\033" ||
 	bad "status header colour: $out"
+
+# 32. B31: a `set -- ${_ev#T }` tap parse clobbered each touch
+# helper's own arguments -- tadjust lost MIN/MAX/STEP (arithmetic
+# syntax error on the panel), tpick/tconfirm repainted `== <row> ==`
+# as the title after any non-selecting tap.  These drive the same
+# screens with T events.  (M5CFG_BLDIR stubs the backlight glob so
+# the Display item exists at all.)
+mkdir -p "$tmp/bl/bl0"
+echo 1000 > "$tmp/bl/bl0/max_brightness"
+echo 500 > "$tmp/bl/bl0/brightness"
+# Display (slot 3 with dsp=1): 50 -5 -5 +5 = 45 -> writes 450.
+printf 'T 8 50\nT 4 10\nT 4 10\nT 4 50\nT 8 10\nT 20 10\nT 20 10\n' \
+	> "$tmp/tscr/events"
+out=$(M5CFG_BLDIR="$tmp/bl" M5CFG_TSCRIPT="$tmp/tscr/events" \
+	sh "$tool" menu </dev/null 2>&1)
+[ "$(cat "$tmp/bl/bl0/brightness")" = 450 ] &&
+	echo "$out" | grep -qF 'set to 45%' &&
+	! echo "$out" | grep -qi 'arithmetic' &&
+	[ "$(echo "$out" | grep -oF '== brightness ==' | wc -l)" -ge 2 ] &&
+	! echo "$out" | grep -qE '== [0-9]+ ==' &&
+	echo "$out" | grep -qF '5 .. 100' &&
+	ok "tadjust taps: -5 -5 +5 -> 45, title+range intact" ||
+	bad "tadjust taps: bl=$(cat "$tmp/bl/bl0/brightness") $out"
+# [-] at MIN clamps at 5: REPLY=5 -> writes 50.
+echo 50 > "$tmp/bl/bl0/brightness"
+printf 'T 8 50\nT 4 10\nT 8 10\nT 20 10\nT 20 10\n' > "$tmp/tscr/events"
+out=$(M5CFG_BLDIR="$tmp/bl" M5CFG_TSCRIPT="$tmp/tscr/events" \
+	sh "$tool" menu </dev/null 2>&1)
+[ "$(cat "$tmp/bl/bl0/brightness")" = 50 ] &&
+	echo "$out" | grep -qF 'set to 5%' &&
+	! echo "$out" | grep -qi 'arithmetic' &&
+	ok "tadjust [-] clamps at MIN" || bad "tadjust MIN: $out"
+# [+] at MAX clamps at 100: REPLY=100 -> writes 1000.
+echo 1000 > "$tmp/bl/bl0/brightness"
+printf 'T 8 50\nT 4 50\nT 8 10\nT 20 10\nT 20 10\n' > "$tmp/tscr/events"
+out=$(M5CFG_BLDIR="$tmp/bl" M5CFG_TSCRIPT="$tmp/tscr/events" \
+	sh "$tool" menu </dev/null 2>&1)
+[ "$(cat "$tmp/bl/bl0/brightness")" = 1000 ] &&
+	echo "$out" | grep -qF 'set to 100%' &&
+	! echo "$out" | grep -qi 'arithmetic' &&
+	ok "tadjust [+] clamps at MAX" || bad "tadjust MAX: $out"
+# tconfirm: a dead tap outside yes/no must not turn the question
+# into the tapped row number (System -> SSH keys m5 -> remove all).
+printf 'T 4 50\nT 12 10\nT 4 50\nT 1 40\nT 4 10\nT 20 10\nT 20 10\nT 20 10\nT 20 10\n' \
+	> "$tmp/tscr/events"
+start_saver
+out=$(M5CFG_TSCRIPT="$tmp/tscr/events" sh "$tool" menu </dev/null 2>&1)
+stop_saver
+[ "$(echo "$out" | grep -oF '== remove all m5 keys? ==' | wc -l)" -ge 2 ] &&
+	! echo "$out" | grep -qE '== [0-9]+ ==' &&
+	ok "tconfirm: dead tap redraws the same question" ||
+	bad "tconfirm title: $out"
+# tpick over two pages: [ more ] then [ back ]; the title after the
+# page turn is still the tpick title (9 scan entries > TPP=8).
+i=1; : > "$tmp/ble-in"
+while [ "$i" -le 9 ]; do
+	printf '  AA:BB:CC:DD:EE:%02d type=1 rssi=-50 [HID] name=Kbd %d\n' \
+		"$i" "$i" >> "$tmp/ble-in"
+	i=$((i + 1))
+done
+printf 'T 12 10\nT 4 10\nT 20 65\nT 20 10\nT 20 10\nT 20 10\n' \
+	> "$tmp/tscr/events"
+out=$(M5CFG_BLDIR="$tmp/bl" M5CFG_BLE_KBD="$tmp/bin/ble-kbd" \
+	M5CFG_BLELOG="$tmp/blelog" M5CFG_BLE_IN="$tmp/ble-in" \
+	M5CFG_TSCRIPT="$tmp/tscr/events" sh "$tool" menu </dev/null 2>&1)
+[ "$(echo "$out" | grep -oF '== pair which? ==' | wc -l)" -ge 2 ] &&
+	! echo "$out" | grep -qE '== [0-9]+ ==' &&
+	ok "tpick: [ more ] redraws the same title" ||
+	bad "tpick title: $out"
 
 if [ "$fails" -gt 0 ]; then
 	echo "FAILED: $fails checks"
