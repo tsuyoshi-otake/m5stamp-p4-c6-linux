@@ -659,6 +659,23 @@ ls "$tmp/run"/.m5cfg-ev.* >/dev/null 2>&1 &&
 	bad "event file left behind" ||
 	ok "event file removed at session end"
 
+# Non-touch mode has no session trap either: a Status visit (which
+# runs usb-lun through a scratch file) must still leave no .m5cfg-*.
+# Two separate assertions: the visit must actually show the usb-lun
+# line, and afterwards RUN_DIR must hold no scratch files.
+printf '9\n0\n0\n' > "$tmp/tscr/kbd"
+out=$(M5CFG_FORCE_TOUCH= M5CFG_STATUS_TXT="$tmp/status.txt" \
+	M5CFG_SYSINFO="$tmp/bin/sysinfo" M5CFG_USB_LUN="$tmp/bin/usb-lun" \
+	M5CFG_SYS_BOARD="$tmp/sysboard" sh "$tool" menu \
+	< "$tmp/tscr/kbd" 2>&1)
+echo "$out" | grep -q "host-owned" ||
+	bad "non-touch Status did not show usb-lun state"
+if ls "$tmp/run"/.m5cfg-* >/dev/null 2>&1; then
+	bad "non-touch Status left scratch files in RUN_DIR"
+else
+	ok "non-touch Status leaves no scratch files"
+fi
+
 # A TERM after the save still runs the session cleanup: ESC]R once,
 # rc 130.  (Before the split the save had already cleared the traps,
 # so this died on the default disposition with no restore.)
