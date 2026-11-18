@@ -141,7 +141,10 @@ static int tap_to_cell(int pw, int ph, int rot, int cols, int rows,
 /* Touch state for one run; the feed loop below is the single place
  * that updates it, for both the evdev and the file-driven paths. */
 static int ax = -1, ay = -1;          /* last abs position */
-static int touching;                  /* contact down right now */
+static int touching;                  /* any contact down right now */
+static int btn_touch;                 /* BTN_TOUCH state (type-A path) */
+static unsigned slots_down;           /* MT-B per-slot contact mask */
+static int cur_slot;                  /* ABS_MT_SLOT for MT events */
 static int prev_frame_touching;       /* contact at last SYN_REPORT */
 static long down_sec, down_usec;
 static int geometry[7];               /* xres yres rot cols rows maxx maxy */
@@ -157,27 +160,46 @@ static long ms_between(long s0, long u0, long s1, long u1)
  * 1 -> 0 (BTN_TOUCH-up and SYN_REPORT are different events, so a
  * per-event "was" never sees the transition).  Returns 1 and fills
  * row/col when a tap completes, 0 otherwise.
+ *
+ * MT protocol B (the Tab5 st7123-touch): every contact lives in an
+ * ABS_MT_SLOT, so a TRACKING_ID -1 only clears that slot's bit -- a
+ * second finger lifting while the first stays down must not report a
+ * tap.  Slot>0 positions never overwrite ax/ay; the pointer-emulation
+ * ABS_X/ABS_Y events that the real device sends in the same frame stay
+ * authoritative for the release position.
  */
 static int feed_event(const struct input_event *e, int *row, int *col)
 {
 	if (e->type == EV_ABS) {
-		if (e->code == ABS_X || e->code == ABS_MT_POSITION_X)
+		if (e->code == ABS_MT_SLOT) {
+			if (e->value >= 0 && e->value < 32)
+				cur_slot = e->value;
+		} else if (e->code == ABS_X ||
+			   (e->code == ABS_MT_POSITION_X &&
+			    cur_slot == 0)) {
 			ax = e->value;
-		else if (e->code == ABS_Y || e->code == ABS_MT_POSITION_Y)
+		} else if (e->code == ABS_Y ||
+			   (e->code == ABS_MT_POSITION_Y &&
+			    cur_slot == 0)) {
 			ay = e->value;
-		if (e->code == ABS_MT_TRACKING_ID) {
+		} else if (e->code == ABS_MT_TRACKING_ID) {
 			if (e->value >= 0 && !touching) {
 				down_sec = e->input_event_sec;
 				down_usec = e->input_event_usec;
 			}
-			touching = e->value >= 0;
+			if (e->value >= 0)
+				slots_down |= 1U << cur_slot;
+			else
+				slots_down &= ~(1U << cur_slot);
+			touching = btn_touch || slots_down != 0;
 		}
 	} else if (e->type == EV_KEY && e->code == BTN_TOUCH) {
 		if (e->value && !touching) {
 			down_sec = e->input_event_sec;
 			down_usec = e->input_event_usec;
 		}
-		touching = e->value != 0;
+		btn_touch = e->value != 0;
+		touching = btn_touch || slots_down != 0;
 	} else if (e->type == EV_SYN && e->code == SYN_REPORT) {
 		int released = prev_frame_touching && !touching;
 		int px, py;

@@ -680,6 +680,7 @@ ITOP=5; NAVTOP=19; TPP=${M5CFG_TPP:-10}; COLW=40
 MSGTOP=$((ITOP + 8))
 _trow=0 _iord=0 _tpage=0 _tkeep="" _navlabel=back _islots="" _msgrow=0
 M5KEY="${M5CFG_M5_KEY:-/usr/bin/m5-key}"
+STTY="${M5CFG_STTY:-stty}"
 BLEKBD="${M5CFG_BLE_KBD:-/usr/bin/ble-kbd}"
 SYSINFO="${M5CFG_SYSINFO:-/usr/sbin/sysinfo}"
 USBLUN="${M5CFG_USB_LUN:-/usr/sbin/usb-lun}"
@@ -933,39 +934,51 @@ ttext() {
 	say "  (type the value, then Enter)"
 	_tblock "$NAVTOP" 0 "[ back ]"
 	REPLY=""
+	_r=0
+	if [ "$_sec" = 1 ]; then
+		# Echo off BEFORE the first m5-key call: m5-key then saves
+		# and restores a termios that already has ECHO off, so a
+		# fast second character cannot echo in clear during the
+		# vfork+exec gap a later stty would leave.  The trap puts
+		# echo back if the field is killed mid-edit.
+		"$STTY" -echo 2>/dev/null || busybox stty -echo 2>/dev/null || :
+		trap '"$STTY" echo 2>/dev/null || busybox stty echo 2>/dev/null || :; exit 130' HUP INT TERM
+	fi
 	while :; do
-		_ev=$("$M5KEY") || return 1
+		_ev=$("$M5KEY") || { _r=1; break; }
 		case "$_ev" in
-			T\ *) return 0 ;;
+			T\ *) break ;;
 			K\ *) ;;
 			*) continue ;;
 		esac
 		_c=${_ev#K }
 		case "$_c" in
-			enter) return 0 ;;
+			enter) break ;;
 			bs) continue ;;
 		esac
 		printf '\033[%s;1Hvalue: \033[K' "$((MSGTOP + 1))"
 		if [ "$_sec" = 1 ]; then
 			printf '*'
-			stty -echo 2>/dev/null || busybox stty -echo 2>/dev/null || :
 		else
 			printf '%s' "$_c"
 		fi
 		if ! IFS= read -r _rest; then
-			[ "$_sec" = 1 ] && { stty echo 2>/dev/null ||
-				busybox stty echo 2>/dev/null || :; }
-			REPLY=$_c; return 0
+			REPLY=$_c
+			break
 		fi
 		if [ "$_sec" = 1 ]; then
-			stty echo 2>/dev/null || busybox stty echo 2>/dev/null || :
 			_s=""
 			while [ ${#_s} -lt ${#_rest} ]; do _s="$_s*"; done
 			printf '%s' "$_s"
 		fi
 		REPLY="$_c${_rest%"$CR"}"
-		return 0
+		break
 	done
+	if [ "$_sec" = 1 ]; then
+		"$STTY" echo 2>/dev/null || busybox stty echo 2>/dev/null || :
+		trap - HUP INT TERM
+	fi
+	return $_r
 }
 
 ask() { # $1 prompt -> REPLY; rc 1 on EOF so menus do not spin

@@ -514,6 +514,98 @@ echo "$out" | grep -q 'status line 25' && echo "$out" | grep -q 'MARKER10' &&
 	echo "$out" | grep -q 'bootfat: valid' && echo "$out" | grep -q 'host-owned' &&
 	ok "status pages: 19-line pages + more nav" || bad "status page: $out"
 
+# 27. REVIEW 3: ttext secret mode calls `stty -echo` BEFORE the first
+# m5-key call (m5-key then saves/restores a termios that already has
+# ECHO off, so a fast second char cannot echo in the vfork+exec gap)
+# and `stty echo` after the last read on every exit path -- value
+# typed, back tap, m5-key failure, and the INT/TERM trap.
+cat > "$tmp/bin/stty" <<'EOF'
+#!/bin/sh
+echo "STTY $*" >> "$M5LOG"
+exit 0
+EOF
+cat > "$tmp/bin/m5-key-log" <<'EOF'
+#!/bin/sh
+echo "M5KEY" >> "$M5LOG"
+[ "$1" = probe ] && exit 0
+IFS= read -r ev < "$M5CFG_TSCRIPT" 2>/dev/null || exit 1
+tail -n +2 "$M5CFG_TSCRIPT" > "$M5CFG_TSCRIPT.n" 2>/dev/null || :
+mv -f "$M5CFG_TSCRIPT.n" "$M5CFG_TSCRIPT" 2>/dev/null || :
+[ "$ev" = "INT" ] && { kill -INT "$PPID" 2>/dev/null; sleep 1; exit 0; }
+printf '%s\n' "$ev"
+EOF
+chmod +x "$tmp/bin/stty" "$tmp/bin/m5-key-log"
+
+# Between "STTY -echo" and the matching "STTY echo" exactly one M5KEY
+# line may appear (the first-byte call); on the typed path the saved
+# value proves the read happened before echo came back.
+echo_check() { # $1 desc; log is $tmp/m5.log
+	off=$(grep -n 'STTY -echo' "$tmp/m5.log" | tail -1 | cut -d: -f1)
+	on=$(grep -n 'STTY echo' "$tmp/m5.log" | tail -1 | cut -d: -f1)
+	keys=$(awk -v a="$off" -v b="$on" 'NR>a && NR<b' \
+		"$tmp/m5.log" | grep -c M5KEY)
+	[ -n "$off" ] && [ -n "$on" ] && [ "$on" -gt "$off" ] &&
+		[ "$keys" -eq 1 ] || return 1
+	return 0
+}
+
+# typed value: System(1) -> m5 password(1) -> K s + stdin "ekret999"
+printf 'T 6 50\nT 6 50\nK s\nT 20 10\n' > "$tmp/tscr/events"
+: > "$tmp/m5.log"
+start_saver
+out=$(printf 'ekret999\n' | M5LOG="$tmp/m5.log" M5CFG_STTY="$tmp/bin/stty" \
+	M5CFG_M5_KEY="$tmp/bin/m5-key-log" M5CFG_TSCRIPT="$tmp/tscr/events" \
+	sh "$tool" menu 2>&1)
+stop_saver
+echo_check && imgfile credentials.txt | grep -q '^password=sekret999$' &&
+	ok "stty order: -echo before first m5-key, echo after read" ||
+	{ bad "stty order typed: $(cat "$tmp/m5.log")"; }
+
+# back tap: same entry, T instead of a key -> STTY echo, nothing saved
+printf 'T 6 50\nT 6 50\nT 20 10\nT 20 10\n' > "$tmp/tscr/events"
+: > "$tmp/m5.log"
+out=$(M5LOG="$tmp/m5.log" M5CFG_STTY="$tmp/bin/stty" \
+	M5CFG_M5_KEY="$tmp/bin/m5-key-log" M5CFG_TSCRIPT="$tmp/tscr/events" \
+	sh "$tool" menu </dev/null 2>&1)
+echo_check && imgfile credentials.txt | grep -q '^password=sekret999$' &&
+	ok "stty echo on back tap" ||
+	{ bad "stty order back: $(cat "$tmp/m5.log")"; }
+
+# m5-key failure: events run out inside ttext -> failure exit, echo back
+printf 'T 6 50\nT 6 50\n' > "$tmp/tscr/events"
+: > "$tmp/m5.log"
+out=$(M5LOG="$tmp/m5.log" M5CFG_STTY="$tmp/bin/stty" \
+	M5CFG_M5_KEY="$tmp/bin/m5-key-log" M5CFG_TSCRIPT="$tmp/tscr/events" \
+	sh "$tool" menu </dev/null 2>&1)
+echo_check && ok "stty echo on m5-key failure" ||
+	{ bad "stty order eof: $(cat "$tmp/m5.log")"; }
+
+# INT/TERM trap: the stub's 3rd call hits the script with SIGINT mid-
+# ttext; the trap must put echo back (rc 130, STTY echo last).
+printf 'T 6 50\nT 6 50\nINT\n' > "$tmp/tscr/events"
+: > "$tmp/m5.log"
+out=$(M5LOG="$tmp/m5.log" M5CFG_STTY="$tmp/bin/stty" \
+	M5CFG_M5_KEY="$tmp/bin/m5-key-log" M5CFG_TSCRIPT="$tmp/tscr/events" \
+	sh "$tool" menu </dev/null 2>&1)
+rc=$?
+tail -1 "$tmp/m5.log" | grep -q 'STTY echo' && [ "$rc" -eq 130 ] &&
+	ok "INT trap restores echo (rc=130)" ||
+	{ bad "stty order int rc=$rc: $(cat "$tmp/m5.log")"; }
+
+# 28. Non-secret ttext never touches stty (plain fields keep normal
+# echo): the same field edit through ttext logs no STTY lines at all.
+printf 'T 6 50\nT 6 10\nK b\nT 20 10\nT 20 10\n' > "$tmp/tscr/events"
+: > "$tmp/m5.log"
+start_saver
+out=$(printf 'ox-2\n' | M5LOG="$tmp/m5.log" M5CFG_STTY="$tmp/bin/stty" \
+	M5CFG_M5_KEY="$tmp/bin/m5-key-log" M5CFG_TSCRIPT="$tmp/tscr/events" \
+	sh "$tool" menu 2>&1)
+stop_saver
+! grep -q 'STTY' "$tmp/m5.log" &&
+	imgfile config.txt | grep -q '^hostname=box-2$' &&
+	ok "non-secret ttext calls no stty" ||
+	{ bad "non-secret stty: $(cat "$tmp/m5.log")"; }
+
 if [ "$fails" -gt 0 ]; then
 	echo "FAILED: $fails checks"
 	exit 1

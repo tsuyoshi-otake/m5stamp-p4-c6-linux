@@ -128,7 +128,9 @@ import struct, sys
 out, kind = sys.argv[1], sys.argv[2]
 EV_SYN, EV_KEY, EV_ABS = 0x00, 0x01, 0x03
 BTN_TOUCH, ABS_X, ABS_Y = 0x14a, 0x00, 0x01
+ABS_PRESSURE = 0x18
 MTX, MTY, MTID, SYN = 0x35, 0x36, 0x39, 0x00
+MTSLOT, MTPRESSURE = 0x2f, 0x3a
 recs = []
 def ev(sec, usec, t, c, v):
     recs.append(struct.pack("<qqHHi", sec, usec, t, c, v))
@@ -159,6 +161,48 @@ elif kind == "two":    # two complete taps in one read(): first wins
     ev(4,500000,EV_KEY,BTN_TOUCH,1); ev(4,500000,EV_ABS,ABS_X,10)
     ev(4,500000,EV_ABS,ABS_Y,10); ev(4,500000,EV_SYN,SYN,0)
     ev(4,600000,EV_KEY,BTN_TOUCH,0); ev(4,600000,EV_SYN,SYN,0)
+elif kind == "st7123":
+    # Real Tab5 frame shape (st7123-touch, /dev/input/event0): MT
+    # protocol B + pointer emulation, so each frame carries
+    # TRACKING_ID and BTN_TOUCH and both coordinate pairs.
+    # Press at abs(100,200), two moves to (180,320), release ->
+    # one tap at the last position.
+    ev(5,0,EV_ABS,MTID,5);      ev(5,0,EV_ABS,MTX,100)
+    ev(5,0,EV_ABS,MTY,200);     ev(5,0,EV_ABS,MTPRESSURE,30)
+    ev(5,0,EV_KEY,BTN_TOUCH,1); ev(5,0,EV_ABS,ABS_X,100)
+    ev(5,0,EV_ABS,ABS_Y,200);   ev(5,0,EV_ABS,ABS_PRESSURE,30)
+    ev(5,0,EV_SYN,SYN,0)
+    for i, (x, y, p) in enumerate([(140,260,32), (180,320,28)]):
+        u = (i + 1) * 60000
+        ev(5,u,EV_ABS,MTX,x);       ev(5,u,EV_ABS,MTY,y)
+        ev(5,u,EV_ABS,MTPRESSURE,p)
+        ev(5,u,EV_ABS,ABS_X,x);     ev(5,u,EV_ABS,ABS_Y,y)
+        ev(5,u,EV_ABS,ABS_PRESSURE,p)
+        ev(5,u,EV_SYN,SYN,0)
+    ev(5,300000,EV_ABS,MTID,-1);     ev(5,300000,EV_ABS,MTPRESSURE,0)
+    ev(5,300000,EV_KEY,BTN_TOUCH,0); ev(5,300000,EV_ABS,ABS_PRESSURE,0)
+    ev(5,300000,EV_SYN,SYN,0)
+elif kind == "st7123two":
+    # Same device, two fingers: slot-0 finger down at abs(200,400),
+    # slot-1 finger down at abs(500,700) and lifts while slot 0 stays
+    # down (BTN_TOUCH stays 1, so no tap may fire at that frame),
+    # then slot 0 lifts -> one tap at slot 0's last position.
+    ev(6,0,EV_ABS,MTID,5);      ev(6,0,EV_ABS,MTX,200)
+    ev(6,0,EV_ABS,MTY,400);     ev(6,0,EV_ABS,MTPRESSURE,30)
+    ev(6,0,EV_KEY,BTN_TOUCH,1); ev(6,0,EV_ABS,ABS_X,200)
+    ev(6,0,EV_ABS,ABS_Y,400);   ev(6,0,EV_ABS,ABS_PRESSURE,30)
+    ev(6,0,EV_SYN,SYN,0)
+    ev(6,50000,EV_ABS,MTSLOT,1);   ev(6,50000,EV_ABS,MTID,6)
+    ev(6,50000,EV_ABS,MTX,500);    ev(6,50000,EV_ABS,MTY,700)
+    ev(6,50000,EV_ABS,MTPRESSURE,25); ev(6,50000,EV_SYN,SYN,0)
+    ev(6,80000,EV_ABS,MTSLOT,1);   ev(6,80000,EV_ABS,MTX,550)
+    ev(6,80000,EV_ABS,MTY,750);    ev(6,80000,EV_SYN,SYN,0)
+    ev(6,120000,EV_ABS,MTSLOT,1);  ev(6,120000,EV_ABS,MTID,-1)
+    ev(6,120000,EV_SYN,SYN,0)
+    ev(6,300000,EV_ABS,MTSLOT,0);  ev(6,300000,EV_ABS,MTID,-1)
+    ev(6,300000,EV_ABS,MTPRESSURE,0)
+    ev(6,300000,EV_KEY,BTN_TOUCH,0); ev(6,300000,EV_ABS,ABS_PRESSURE,0)
+    ev(6,300000,EV_SYN,SYN,0)
 open(out, "wb").write(b"".join(recs))
 PYEOF
 }
@@ -180,6 +224,10 @@ fcase "MT protocol B tap"           "T 3 67"  mt
 fcase "contact shorter than 30 ms"  "!"       short
 fcase "drag reports release point"  "T 15 23" drag
 fcase "two taps one read: first"    "T 9 42"  two
+# Real Tab5 st7123 frames: MT-B + emulation in every frame; and a
+# slot-1 finger lifting mid-contact must not report a tap.
+fcase "st7123 press/move/release"   "T 5 59"  st7123
+fcase "slot-1 lift, slot-0 still down" "T 6 54" st7123two
 fi
 
 rm -rf "$tmp"; [ "${bin#docker:}" = "$bin" ] && rm -f "$bin"
