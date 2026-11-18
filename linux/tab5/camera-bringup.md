@@ -36,47 +36,120 @@
   are `mipi_1lane_24Minput_*`; both D0/D1 pairs are routed in the
   pinmap but the production configs use lane 0 + clock pair).
 
-## Minimum useful capture path (no ISP)
+## Measured capture path (CAMERA_ORACLE, verified B20)
 
-P4 peripherals involved: MIPI-CSI-2 host (CAM/CSI controller at
-0x500E_xxxx-region dedicated pins), ISP DVP bypass not needed if we
-stay raw, AHB-GDMA or the CSI's own DMA writes frames to RAM.
+The oracle (`linux/boot-shim/main/camera_oracle.c`, off by default,
+`CAMERA_ORACLE=1` env at shim build) now captures a real 921,600-byte
+1280x720 RAW8 frame and proves it with a deterministic test pattern.
+The measured pipeline — every hop required:
 
-1. Driver skeleton (`media/platform/esp32p4/`, V4L2 or a char dev):
-   claim the CSI MMIO window + interrupt from DT, power the sensor
-   via the `0x43` P6 line (already a named gpio).
-2. SCCB client: i2c driver for sc202cs — needs only the ID check
-   (done above) and one of the published 1-lane init tables
-   (`sc202cs_mipi_1lane_24Minput_1600x1200_raw8_30fps.h`).
-3. CSI-2 → memory: program lane count=1, the sensor's clock rate,
-   and the CSI DMA address.  Raw Bayer frames land in a contiguous
-   buffer; expose via mmap/read or a V4L2 video node with the
-   `RAW8/RAW10 Bayer` fourcc.
-4. Userspace: `v4l2-ctl --stream-mmap` or a tiny reader dumps a
-   frame; validate by pointing the camera at light and checking
-   Bayer noise structure.
+    SC202CS -> MIPI D-PHY -> CSI host (0x5009F000)
+        -> **ISP input module, bypass mode** -> CSI bridge
+        -> DW-GDMA ch1 -> PSRAM buffer
 
-No ISP debayer, no auto-exposure loop, no media-controller graph —
-just SCCB init + CSI DMA + readout.  That is a buildable driver, not
-a port of the whole esp_video/ISP stack.
+Blocks Linux must program, in order:
 
-## Effort estimate
+1. **Sensor power**: expander `0x43` P6 `CAM_RST` high, ~20 ms
+   ramp.  MIPI D-PHY LDO = LDO channel 3 at 2.5 V (same rail the
+   DSI D-PHY uses).
+2. **SCCB**: internal I2C0 @ `0x36`, 16-bit reg addressing.  Chip ID
+   `0xeb52` at 0x3107/0x3108.  Published 1-lane 24 MHz-input
+   1280x720 RAW8 table (131 regs), then `0x0100=0x01` to stream.
+3. **CSI host**: 1 data lane (`n_lanes` reg encodes lanes-1, so the
+   correct write is 0), `lane_bit_rate_mbps=576`.  PHY
+   `hs_freq_sel=7` (readback via testbus reg 0x44 = 0x0e).  PHY
+   clock source = `PLL_F20M` (`clk_src=0`); the driver enables it
+   via `esp_clk_tree_enable_src`.
+4. **ISP input module — REQUIRED even for raw.**  The CSI host's
+   pixels reach the bridge *through* `ISP.input`: without it the
+   host decodes packets (bndry/seq errors visible) but `brg int_raw`
+   stays 0 and DW-GDMA never moves.  What the IDF bypass branch
+   programs (`esp_isp_new_processor`, `flags.bypass_isp`):
+   `cntl.isp_in_src=0` (CSI source) + `cntl.mipi_data_en=1`, ISP
+   module clock on, Hsize=`ceil(h_res*bpp/32)`, Vsize=`v_res`,
+   Bayer order BGGR, `clk_hz=80 MHz`.  `esp_isp_enable()` is NOT
+   called for a bypassed processor — it refuses.
+   Measured after one frame: `ISP cntl=0x00000001`,
+   `clk_en=0x00000001`, `frame_cfg=0x0013f2cf`,
+   `hsync_cnt=0x00000007`, `int_raw=0x18000000`, `int_st=0`.
+5. **CSI bridge**: claimed by the ISP path as
+   `MIPI_CSI_BRG_USER_SHARE` — `host_ctrl=0x3` (module clocks +
+   reset pulse), `clk_en=1`, `csi_en=1`, `frame_cfg` =
+   h_pixel/v_row fields (note the IDF hal maps frame_height ->
+   h_pixel, frame_width -> v_row — names are swapped in the
+   struct).  `has_hsync_e` (fcfg bit 24) defaults to 1 and is fine
+   left alone once the ISP feeds real data.
+6. **DW-GDMA ch1**: bridge FIFO `0x50104000` -> dst buffer,
+   64-bit width, burst_len 16, items_512, fixed src/increment dst.
+   **Upstream `drivers/dma/dw-axi-dmac` does NOT match** — the P4
+   block is a Synopsys DW-GDMA hw_ver3 register variant; the DSI
+   scanout driver (0095) already bit-bangs its registers for the
+   same reason.  Model on IDF `esp_driver_ddw_gdma` /
+   `dw_gdma_link_list_item_t` (64-byte LLI, uncached alias
+   +0x40000000).
+7. **Interrupts**: GDMA transfer-done on the channel -> frame
+   complete.  With `on_get_new_trans` registered the engine
+   free-runs — the ISR takes the next buffer from the callback
+   (its bool return is ignored); a Linux driver that wants
+   one-shot must leave the queue dry or disable the channel.
+   Clear `int_st_*` fatal latches in the CSI host before
+   stream-on: a mid-frame join latches `seq_frame_fatal` and
+   freezes the pipeline.
 
-- CSI host driver with raw-Bayer capture to DRAM: this is the
-  bulk of the work — new MMIO block, DMA descriptors again must
-  live in internal SRAM (same constraint as #24/B11), plus interrupt
-  handling and a V4L2/char-dev front end: **~3–5 days** including
-  on-board debugging (the CSI block has no Linux driver in this
-  tree and the TRM register-level docs are thin; expect register
-  reverse-engineering against the IDF `esp_driver_cam` sources).
-- sc202cs sensor init + ID/controls over SCCB: **~0.5 day**
-  (register tables already public).
-- DT wiring + rails/`CAM_RST` plumbing + userspace dump tool:
+Order that worked: CSI+ISP armed -> clear host `int_st_*` ->
+`0x0100=0x01` -> ~50 ms ramp -> frames.
+
+Verified sensor controls (sc202cs driver + oracle):
+- test pattern: `0x4501` bit 3 -> horizontal ramp
+  (`vstripes: 0 0 0 0 0 14 34 54 74 ... 214`, hstripes uniform)
+- gain: `0x3e06` dig coarse / `0x3e07` dig fine / `0x3e09` ana
+  coarse; map in `sc202cs_gain_map` (1x={0x80,0x00,0x00} ->
+  mean-16=2; 32x={0xfc,0x01,0x0f} -> mean-16=131, black level 16)
+- exposure: `0x3e00-0x3e02`, 1/16-line units, max = VTS-6;
+  VTS at `0x320e/0x320f` = 1250 (720p30)
+
+## XCLK — measured
+
+Dedicated 24 MHz oscillator (X2/PXT24M) through U35, confirmed on
+hardware: an `ORACLE_SKIP_XCLK=1` build that never drives GPIO36
+captures identical frames (chip ID, test pattern, gain response).
+GPIO36 is unconnected (R27/R109 not fitted).  The M5 BSP's
+`bsp_cam_osc_init` drives 24 MHz there anyway because the BSP is
+shared with boards that need it — on Tab5 it is a no-op.
+**Linux does not need a clock output for the camera.**
+
+## Memory
+
+Linux has ~1.5 MB free in the NOMMU pool; a 1280x720 RAW8 frame is
+921,600 B (1600x1200 = 1.92 MB does NOT fit).  Frame buffers must
+be a reserved-memory carve-out outside the Linux pool, exactly
+like the panel framebuffer (`fb @0x49000ec0`, handed over in the
+DT).  Same node pattern: `reserved-memory` child +
+`memory-region` reference on the camera node, ~1 MB.
+
+## Interface proposal
+
+`/dev/cam0` char device, smaller than V4L2 on this NOMMU tree:
+`read()` returns one complete raw frame (start -> arm DMA ->
+sleep on GDMA done -> return buffer).  No mmap needed for v1
+(read() copies out of the carve-out; the pool is tight but a
+single 921,600 B frame staged through a 64 KB bounce buffer works).
+V4L2 (`/dev/video0` + `RAW8 Bayer` fourcc) is the follow-on if a
+real consumer needs streaming; nothing on the board today does.
+
+## Effort estimate (updated)
+
+- CSI host + PHY + ISP-input + bridge + DW-GDMA raw capture
+  driver: the bulk — one MMIO cluster now fully documented by the
+  oracle dump, DW-GDMA needs a fresh driver (no upstream match),
+  interrupts + `int_st` hygiene per above: **~3–4 days**.
+- sc202cs SCCB driver (ID + table + controls above): **~0.5 day**.
+- DT (`reserved-memory` + camera node) + `/dev/cam0` + dump tool:
   **~0.5 day**.
 
-Total ~4–6 days to a proven raw-Bayer frame read.  Anything beyond
-(debayer, scaling, exposure control) is an ISP port and is a
-separate, larger item.
+Total ~4–5 days to a proven raw-Bayer frame read — one day lighter
+than estimated pre-oracle because the pipeline is now measured,
+not guessed.  Debayer/ISP processing stays a separate, larger item.
 
 ## Do NOT
 

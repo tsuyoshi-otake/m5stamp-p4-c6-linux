@@ -58,6 +58,19 @@ if("$ENV{AUDIO_ORACLE}" STREQUAL "1")
             AUDIO_ORACLE_MIC_ONLY=1)
     endif()
 endif()
+# #25 step-1 diagnostic, never in release: IDF esp_driver_cam captures
+# one SC2356 RAW8 frame and dumps the CSI/bridge/GDMA/CLKRST registers
+# as the reference for the Linux camera port.
+if("$ENV{CAMERA_ORACLE}" STREQUAL "1")
+    if(NOT "$ENV{ES_BOARD}" STREQUAL "tab5")
+        message(FATAL_ERROR "CAMERA_ORACLE only builds for ES_BOARD=tab5")
+    endif()
+    target_sources(${COMPONENT_LIB} PRIVATE "camera_oracle.c")
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE CAMERA_ORACLE=1)
+    if("$ENV{ORACLE_SKIP_XCLK}" STREQUAL "1")
+        target_compile_definitions(${COMPONENT_LIB} PRIVATE ORACLE_SKIP_XCLK=1)
+    endif()
+endif()
 if("$ENV{CMD53_RETENTION_BB}" STREQUAL "1")
     target_sources(${COMPONENT_LIB} PRIVATE "cmd53_bb.c")
     target_include_directories(${COMPONENT_LIB} PRIVATE
