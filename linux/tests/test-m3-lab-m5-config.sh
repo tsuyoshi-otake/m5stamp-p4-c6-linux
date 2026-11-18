@@ -247,8 +247,11 @@ done
 ok "no leftovers"
 
 # 15. touch layer (#42 NEW REQ): a stub m5-key plays back scripted
-# events; the real item/menu_pick code draws 3-row blocks, maps taps
-# to items and handles the nav zones.
+# events; the real item/menu_pick code draws the two-column 80x22
+# grid, maps taps to items and handles the nav zones.  Layout: header
+# rows 0-4, item blocks at rows 5-18 in two 40-col halves (slot i ->
+# top 5+(i/2)*3, col (i%2)*40), nav at rows 19-21 (col<40 back/exit,
+# 40-59 prev, 60-79 more).
 mkdir -p "$tmp/bin" "$tmp/tscr"
 cat > "$tmp/bin/m5-key" <<'EOF'
 #!/bin/sh
@@ -262,37 +265,67 @@ chmod +x "$tmp/bin/m5-key"
 export M5CFG_FORCE_TOUCH=1 M5CFG_M5_KEY="$tmp/bin/m5-key" \
 	M5CFG_TSCRIPT="$tmp/tscr/events"
 
-# The main menu header is: title, board, blank = 3 say lines, so item
-# blocks start at row 3, 3 rows each; with _rows=22 the page capacity
-# is (22-3-4)/3 = 5 items and the nav block sits at rows 18-20.
-# A tap inside the "Wi-Fi" block (rows 3-5) opens the Wi-Fi menu; the
-# nav-left zone is Back everywhere, and Back on the main menu exits.
-printf 'T 4 10\nT 19 5\nT 19 5\n' > "$tmp/tscr/events"
+# A tap inside the "Wi-Fi" block (slot 0: rows 5-7, cols 0-39) opens
+# the Wi-Fi menu; nav-left is Back everywhere, and on the main menu it
+# is labelled [exit] and exits.
+printf 'T 6 10\nT 20 10\nT 20 10\n' > "$tmp/tscr/events"
 out=$(M5CFG_TSCRIPT="$tmp/tscr/events" sh "$tool" menu </dev/null 2>&1)
 echo "$out" | grep -q "== Wi-Fi ==" &&
 	ok "tap on item block opens Wi-Fi" || bad "tap select: $out"
-# A tap in the header (row 1, above all blocks) is ignored: the main
-# menu is drawn again, not a submenu.
-printf 'T 1 40\nT 19 5\n' > "$tmp/tscr/events"
+echo "$out" | grep -q "exit ]" &&
+	ok "main menu nav says [exit]" || bad "nav label: $out"
+# The right-hand column: item 2 (System) lives at rows 5-7, col 40-79.
+printf 'T 6 50\nT 20 10\nT 20 10\n' > "$tmp/tscr/events"
+out=$(M5CFG_TSCRIPT="$tmp/tscr/events" sh "$tool" menu </dev/null 2>&1)
+echo "$out" | grep -q "== System ==" &&
+	ok "tap in the right column opens System" || bad "col2: $out"
+# A tap in the header (row 2, above all blocks) is ignored: the menu
+# redraws and keeps waiting; a nav tap then leaves.
+printf 'T 2 40\nT 20 10\n' > "$tmp/tscr/events"
 out=$(M5CFG_TSCRIPT="$tmp/tscr/events" sh "$tool" menu </dev/null 2>&1)
 echo "$out" | grep -q "== m5-config ==" &&
 	! echo "$out" | grep -q "== Wi-Fi ==" &&
 	ok "tap outside any block is ignored" ||
 	bad "header tap escaped the menu: $out"
-# Right nav zone = "more": force 2 items/page so the 5 visible main
-# items span three pages; a right-third tap turns it, then Back exits.
-printf 'T 10 70\nT 10 5\n' > "$tmp/tscr/events"
-out=$(M5CFG_TCAP=2 M5CFG_TSCRIPT="$tmp/tscr/events" \
+# Pager: force 2 items/page so the 5 visible main items span three
+# pages; [more >] (col 60-79) turns, [< prev] (col 40-59) turns back.
+printf 'T 20 65\nT 20 45\nT 20 10\n' > "$tmp/tscr/events"
+out=$(M5CFG_TPP=2 M5CFG_TSCRIPT="$tmp/tscr/events" \
 	sh "$tool" menu </dev/null 2>&1)
-echo "$out" | grep -q "page 2 of" &&
-	ok "more-zone tap turns the page" || bad "page nav: $out"
+echo "$out" | grep -q " 2/3" && echo "$out" | grep -q " 1/3" &&
+	ok "more/prev zones turn the page" || bad "page nav: $out"
 # A key byte still reaches the menu while touch is on (panel keyboard).
-printf 'K 1\nT 19 5\nT 19 5\n' > "$tmp/tscr/events"
+printf 'K 1\nT 20 10\nT 20 10\n' > "$tmp/tscr/events"
 out=$(M5CFG_TSCRIPT="$tmp/tscr/events" sh "$tool" menu </dev/null 2>&1)
 echo "$out" | grep -q "== Wi-Fi ==" &&
 	ok "key byte selects while touch is on" || bad "key select: $out"
 
-# 16. REVIEW 1 group B: validation fixes.
+# 16. touch dead ends: a text field shows the keyboard note plus a
+# [back] block instead of a prompt; a tap leaves and returns to the
+# menu.  (menu_set -> ttext)
+printf 'T 6 50\nT 6 10\nT 20 10\nT 20 10\n' > "$tmp/tscr/events"
+out=$(M5CFG_TSCRIPT="$tmp/tscr/events" sh "$tool" menu </dev/null 2>&1)
+echo "$out" | grep -q "needs a keyboard" &&
+	ok "text field shows needs-a-keyboard + back" ||
+	bad "ttext: $out"
+# ... and a typed line still reaches it through the K-byte path.
+printf 'T 6 50\nT 6 10\nK h\nT 20 10\nT 20 10\n' > "$tmp/tscr/events"
+start_saver
+out=$(printf 'ost-9\n' | M5CFG_TSCRIPT="$tmp/tscr/events" \
+	sh "$tool" menu 2>&1)
+stop_saver
+imgfile config.txt | grep -q "hostname=host-9" &&
+	ok "K byte + typed rest still enters the value" || bad "ttext kbd: $out"
+# a chooser block picks the value by tap: Wi-Fi item 5 (PMF) is slot 4
+# (rows 11-13, col 0-39); inside tpick "0 1" value "1" is slot 1.
+printf 'T 6 10\nT 12 10\nT 6 50\nT 20 10\nT 20 10\n' > "$tmp/tscr/events"
+start_saver
+out=$(M5CFG_TSCRIPT="$tmp/tscr/events" sh "$tool" menu </dev/null 2>&1)
+stop_saver
+imgfile config.txt | grep -q 'wifi_pmf=1' &&
+	ok "chooser value picked by tap" || bad "tpick: $out"
+
+# 17. REVIEW 1 group B: validation fixes.
 before=$(md5sum "$img" | cut -d' ' -f1)
 for kv in "hostname ab!!c" "hostname -x" "hostname x-" \
 	"lp_period s" "lp_period ms" "lp_period 12345678901s" \
@@ -347,7 +380,7 @@ stop_saver
 imgfile config.txt | od -c | grep -q '7  \\r' &&
 	ok "CRLF line keeps its CR" || bad "CR lost: $(imgfile config.txt | grep channel | od -c | head -1)"
 
-# 17. REVIEW 1 group C: a rejected value keeps the menu alive.
+# 18. REVIEW 1 group C: a rejected value keeps the menu alive.
 # (plain menu: touch seam off so ask() reads the piped lines)
 printf '2\n1\n-bad-\nok-host\n\n0\n0\n' > "$tmp/menuin"
 start_saver
