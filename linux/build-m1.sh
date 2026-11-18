@@ -1037,6 +1037,9 @@ fi
 patches+=(0100-gpio-pi4ioe5v6408.patch)
 # ESP32-P4 LEDC PWM (Tab5 uses channel 0 for the LCD backlight boost).
 patches+=(0101-pwm-esp32p4-ledc.patch)
+# /sys/kernel/board/bootfat: the shim's CRC-verdict for the boot FAT
+# (#43).  Board-agnostic; the DTB property only exists on new DTBs.
+patches+=(0102-bootfat-sysfs.patch)
 for patch_name in "${patches[@]}"; do
 	if [[ "$patch_name" == 0000-esp32-serial-resurrect.patch ||
 	      "$patch_name" == 0022-esp32p4-systimer-level-trigger.patch ||

@@ -249,6 +249,11 @@ static bool write_boot_metadata(const esp_partition_t *meta,
 	return memcmp(&readback, record, sizeof(readback)) == 0;
 }
 
+/* #43: whether a CRC-checked A/B record selected this boot's image.
+ * "valid" tells Linux the flash really holds a good boot FAT, so an
+ * unreadable PSRAM copy is a kernel problem, not a corrupt image. */
+static bool s_boot_meta_valid;
+
 /* Select an already verified image, optionally committing a Linux-staged
  * update.  The inactive slot and inactive metadata sector are the only flash
  * erase targets, leaving a bootable image and metadata record on power loss. */
@@ -287,6 +292,7 @@ static const esp_partition_t *select_boot_partition(void)
 		selected_slot = records[selected_meta].slot;
 	else
 		ESP_LOGW(TAG, "boot metadata unavailable; falling back to slot0");
+	s_boot_meta_valid = (selected_meta >= 0);
 
 	if (boot_update_request_valid(&request)) {
 		uint32_t active_crc = 0;
@@ -324,6 +330,10 @@ static const esp_partition_t *select_boot_partition(void)
 				selected_slot = inactive_slot;
 				selected_meta = selected_meta == 0 ? 1 : 0;
 				records[selected_meta] = next;
+				/* The committed slot was erased, written and
+				 * CRC-verified above, so this boot's image is
+				 * proven good regardless of the earlier verdict. */
+				s_boot_meta_valid = true;
 				ESP_LOGI(TAG, "boot update committed: generation=%" PRIu32
 					 " slot=%" PRIu32 " crc=%08" PRIx32,
 					 next.generation, next.slot, next.image_crc32);
@@ -350,14 +360,8 @@ static const esp_partition_t *select_boot_partition(void)
 			 records[selected_meta].slot, records[selected_meta].image_crc32);
 	else
 		ESP_LOGW(TAG, "boot selection: legacy fallback slot0");
-	s_boot_meta_valid = (selected_meta >= 0);
 	return slots[selected_slot];
 }
-
-/* #43: whether a CRC-checked A/B record selected this boot's image.
- * "valid" tells Linux the flash really holds a good boot FAT, so an
- * unreadable PSRAM copy is a kernel problem, not a corrupt image. */
-static bool s_boot_meta_valid;
 
 static void fatal_restart(const char *reason)
 {
