@@ -199,7 +199,16 @@ For everything the userland shares with the Stamp-P4 build (the shell, `vi`, Mic
 
 ### 6. Change the configuration
 
-The Stamp-P4 README tells you to open the USB drive and edit `config.txt`, `credentials.txt`, `wpa_supplicant.conf`, `authorized_keys` or the autorun program there. The Tab5 has no USB drive, so do the same on the board, as root, with `boot-edit`:
+The easiest path is `m5-config` (#42), a settings menu in the style of `raspi-config`. It runs on the serial console, over SSH and on the panel console, shows only the entries the running board actually has (Wi-Fi, hostname and passwords, SSH keys, date and time, display brightness, sound tests, the EXT rails, the Bluetooth keyboard, power, and a status page), and is also scriptable:
+
+```sh
+m5-config              # the menu; digits + Enter is all you need
+m5-config list         # every managed key and its current value
+m5-config get hostname
+m5-config set hostname desk-01
+```
+
+`set` validates the value, writes it to the same boot image, waits for the flash save and applies it — the same save path `boot-edit` uses, so the `[bootsync] Saved to flash` console line and the exit status tell you the same thing. Passwords are typed with echo off and never shown; `list`/`get` mask them. When the boot FAT could not be read this boot (see §3), `m5-config` says so and refuses to claim a save. To change a file by hand — the autorun program, or any file the menu does not cover — use `boot-edit` on the board, as root:
 
 ```sh
 boot-edit --ls                      # what is on the drive
@@ -209,7 +218,7 @@ boot-edit --put authorized_keys < /tmp/id_ed25519.pub
 boot-edit --rm main.py
 ```
 
-Everything else is as on the Stamp-P4: a change is checked, written to flash and applied about three seconds later, and the console shows the same `[bootsync] Saved to flash` line. `boot-edit` waits for that line's result and says `saved to flash`, or tells you that the save was not confirmed.
+On the Stamp-P4 the same files are also reachable as a USB drive. `m5-config` works there too: while the drive is plugged into a PC it briefly detaches it to save, then hands it back — the `[bootsync]` lines on the console show the same write-save-apply cycle.
 
 Two `config.txt` keys drive the expander-0x43 power rails (#35); both default off and are applied at boot and on a live save:
 
