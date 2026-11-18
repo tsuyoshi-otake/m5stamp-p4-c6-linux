@@ -673,7 +673,7 @@ say() {
 		_c=$_DIM
 		[ "$_trow" = 0 ] && _c=$_TTL
 		[ -n "$_saycol" ] && _c=$_saycol
-		printf '\033[%s;1H%s%.80s\033[K\033[0m' \
+		printf '\033[%s;1H%b%.80s\033[K\033[0m' \
 			"$((_trow + 1))" "$_c" "$1"
 		_trow=$((_trow + 1))
 		return
@@ -1761,7 +1761,7 @@ tpage() {
 			[ "$_d" -gt "$NAVTOP" ] && break
 			case "$_l" in
 				==*)
-					printf '\033[%s;1H%s%.80s\033[K\033[0m' \
+					printf '\033[%s;1H%b%.80s\033[K\033[0m' \
 						"$_d" "$_TTL" "$_l" ;;
 				*)
 					printf '\033[%s;1H\033[0m%.80s\033[K' \

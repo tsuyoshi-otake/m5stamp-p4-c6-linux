@@ -734,6 +734,28 @@ done
 	ok "lint: no \$( ) inside the touch event/redraw path" ||
 	bad "lint found \$( ) in touch functions"
 
+# 31. B29: header colours must reach the panel as a real ESC byte, not
+# the four characters \033.  say() and the tpage pager pass the colour
+# variable through %b so busybox printf interprets its escapes; a %s
+# slot would print the backslash text verbatim on the panel.
+printf 'T 20 10\n' > "$tmp/tscr/events"
+out=$(M5CFG_TSCRIPT="$tmp/tscr/events" sh "$tool" menu </dev/null 2>&1)
+! printf '%s' "$out" | grep -qF '\033' ||
+	bad "menu emitted literal \\033 text"
+printf '%s' "$out" | grep -q "$(printf '\033\[36m')== m5-config ==" &&
+	ok "menu header is a real ESC[36m, no literal \\033" ||
+	bad "menu header colour: $out"
+# the tpage pager paints ==* lines with the same colour slot.
+printf 'T 12 10\nT 20 10\n' > "$tmp/tscr/events"
+out=$(M5CFG_STATUS_TXT="$tmp/status.txt" M5CFG_SYSINFO="$tmp/bin/sysinfo" \
+	M5CFG_USB_LUN="$tmp/bin/usb-lun" M5CFG_SYS_BOARD="$tmp/sysboard" \
+	M5CFG_TSCRIPT="$tmp/tscr/events" sh "$tool" menu </dev/null 2>&1)
+! printf '%s' "$out" | grep -qF '\033' ||
+	bad "status emitted literal \\033 text"
+printf '%s' "$out" | grep -q "$(printf '\033\[36m')== Status ==" &&
+	ok "status header is a real ESC[36m, no literal \\033" ||
+	bad "status header colour: $out"
+
 if [ "$fails" -gt 0 ]; then
 	echo "FAILED: $fails checks"
 	exit 1
