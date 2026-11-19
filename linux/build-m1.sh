@@ -856,6 +856,11 @@ if [[ "${NOMMU_USER_RESERVE:-0}" == "1" ]]; then
 	# fails ENOMEM directly instead of storming the buddy allocator.
 	# Depends on 0090's gate; applies last by filename order.
 	patches+=(0103-nommu-user-denied-nofallback.patch)
+	# #42: a pure reserve refusal is policy, not an error -- log it
+	# info-ratelimited and keep it (and the binfmt_flat ENOMEM echo)
+	# off the loglevel-4 panel console.  Needs 0103's flag and
+	# 0090/0091's classifier; applies last by filename order.
+	patches+=(0104-nommu-reserve-refusal-info.patch)
 fi
 # #50 round 4: PR_SET_SYSTEM_WORK lets system scripts clear the ancestry
 # user-mark (console/SSH-started restarts).  Needs 0090's classifier.
