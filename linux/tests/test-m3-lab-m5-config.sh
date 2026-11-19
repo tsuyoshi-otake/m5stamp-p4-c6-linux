@@ -772,10 +772,140 @@ if command -v cc >/dev/null 2>&1; then
 	else
 		bad "native build: $(head -3 "$tmp/cc.err")"
 	fi
+	# #44 item 2, the testable half: with no bond file the daemon
+	# must still exit at once -- the adapter retry sits AFTER the
+	# no-bonds check.  (The retry itself is a mgmt-socket path;
+	# board-validated.)
+	rm -f "$tmp/ble-bonds.dat"
+	out=$(BLE_KBD_BONDS="$tmp/ble-bonds.dat" \
+		"$tmp/ble-kbd-real" daemon 2>&1); rc=$?
+	[ "$rc" -eq 0 ] && echo "$out" | grep -q 'no bonds' &&
+		ok "daemon exits at once with no bond store" ||
+		bad "no-bonds daemon rc=$rc: $out"
+	# ...and the retry/re-arm paths are in the source.
+	grep -q 'retrying every 2 s' \
+		"$repo_root/linux/buildroot-external/package/ble-kbd/src/ble-kbd.c" &&
+	grep -q 'MGMT_EV_INDEX_REMOVED' \
+		"$repo_root/linux/buildroot-external/package/ble-kbd/src/ble-kbd.c" &&
+		ok "daemon retries adapter_up + re-arms on index events" ||
+		bad "daemon retry/re-arm missing from ble-kbd.c"
 	rm -f "$tmp/ble-kbd-real"
 else
-	echo "skip: no host cc; ble-kbd list check needs a compiler"
+	echo "skip: no host cc; ble-kbd list/daemon checks need a compiler"
 fi
+
+# 28f. #44 item 1: the menu runs ble-kbd in stage-only mode (rc 8) and
+# persists the staged store itself through drive_put -- one applet
+# exec per step, the load a config save already costs.  The fake pair
+# writes a valid staged store like the real tool does under
+# BLE_KBD_PERSIST=0, prints the staged result line, exits 8.
+cat > "$tmp/bin/ble-kbd" <<'EOF'
+#!/bin/sh
+echo "ble-kbd $*" >> "$M5CFG_BLELOG"
+case "$1" in
+scan|list) cat "$M5CFG_BLE_IN" ;;
+pair)
+	printf 'pairing %s ...\n' "$2"
+	{ printf '\001KBB\001\000\000\000'
+	  printf '\314\252\125\021\042\063\001\001'
+	  head -c 64 /dev/zero; } > "$M5CFG_BLE_BONDS"
+	printf 'paired + bonded (staged; the caller persists it)\n'
+	exit 8 ;;
+forget)
+	printf '\001KBB\000\000\000\000' > "$M5CFG_BLE_BONDS"
+	printf 'forgot %s (staged)\n' "$2"
+	exit 8 ;;
+esac
+EOF
+chmod +x "$tmp/bin/ble-kbd"
+printf '  33:22:11:55:AA:CC type=1 ltk name=Syn Kbd\n' > "$tmp/ble-in"
+: > "$tmp/blelog"; : > "$tmp/initlog"
+rm -f "$tmp/run/.boot-nosave"
+printf 'T 8 50\nT 4 10\nT 4 10\nT 20 10\nT 20 10\nT 20 10\n' \
+	> "$tmp/tscr/events"
+start_saver
+out=$(M5CFG_BLE_KBD="$tmp/bin/ble-kbd" M5CFG_BLELOG="$tmp/blelog" \
+	M5CFG_BLE_IN="$tmp/ble-in" M5CFG_TSCRIPT="$tmp/tscr/events" \
+	M5CFG_BLE_INITD="$tmp/bin/S95blekbd" M5CFG_INITLOG="$tmp/initlog" \
+	M5CFG_BOOT_MNT="$tmp/boot" M5CFG_RUN_DIR="$tmp/run" \
+	sh "$tool" menu </dev/null 2>&1)
+stop_saver
+echo "$out" | grep -q 'bond saved to the boot image' &&
+	imgfile ble-bonds.dat | md5sum | cut -d' ' -f1 |
+	grep -q "$(md5sum "$tmp/ble-bonds.dat" | cut -d' ' -f1)" &&
+	ok "rc8 pair -> menu persists the staged store to the image" ||
+	bad "rc8 persist: $(echo "$out" | tail -8)"
+grep -q 'initd restart' "$tmp/initlog" &&
+	ok "rc8 still restarts the daemon on the staged bond" ||
+	bad "rc8 initd: $(cat "$tmp/initlog")"
+
+# 28g. Same path under nosave: drive_put refuses at once (rc 2), the
+# menu says the bond is this-boot-only, the image gets nothing.
+# Rebuild the image clean first: 28f's save left a ble-bonds.dat in it.
+pack "$seed" "$img"
+echo 'kernel could not read the boot image' > "$tmp/run/.boot-nosave"
+: > "$tmp/blelog"; : > "$tmp/initlog"
+printf 'T 8 50\nT 4 10\nT 4 10\nT 20 10\nT 20 10\nT 20 10\n' \
+	> "$tmp/tscr/events"
+out=$(M5CFG_BLE_KBD="$tmp/bin/ble-kbd" M5CFG_BLELOG="$tmp/blelog" \
+	M5CFG_BLE_IN="$tmp/ble-in" M5CFG_TSCRIPT="$tmp/tscr/events" \
+	M5CFG_BLE_INITD="$tmp/bin/S95blekbd" M5CFG_INITLOG="$tmp/initlog" \
+	M5CFG_BOOT_MNT="$tmp/boot" M5CFG_RUN_DIR="$tmp/run" \
+	sh "$tool" menu </dev/null 2>&1)
+echo "$out" | grep -q 'this boot only' &&
+	! imgfile ble-bonds.dat >/dev/null 2>&1 &&
+	ok "nosave -> 'this boot only', image untouched" ||
+	bad "nosave rc8: $(echo "$out" | tail -8)"
+rm -f "$tmp/run/.boot-nosave"
+
+# 28h. Denied execs inside the persist path (a 139-rc cp, the NOMMU
+# wall): bounded retries, then an honest "this boot only" -- never a
+# false "saved".
+cat > "$tmp/bin/cp" <<'EOF'
+#!/bin/sh
+exit 139
+EOF
+chmod +x "$tmp/bin/cp"
+pack "$seed" "$img"
+: > "$tmp/blelog"; : > "$tmp/initlog"
+printf 'T 8 50\nT 4 10\nT 4 10\nT 20 10\nT 20 10\nT 20 10\n' \
+	> "$tmp/tscr/events"
+out=$(M5CFG_BLE_KBD="$tmp/bin/ble-kbd" M5CFG_BLELOG="$tmp/blelog" \
+	M5CFG_BLE_IN="$tmp/ble-in" M5CFG_TSCRIPT="$tmp/tscr/events" \
+	M5CFG_BLE_INITD="$tmp/bin/S95blekbd" M5CFG_INITLOG="$tmp/initlog" \
+	M5CFG_BOOT_MNT="$tmp/boot" M5CFG_RUN_DIR="$tmp/run" \
+	sh "$tool" menu </dev/null 2>&1)
+rm -f "$tmp/bin/cp"
+echo "$out" | grep -q 'this boot only' &&
+	! echo "$out" | grep -q 'bond saved to the boot image' &&
+	! imgfile ble-bonds.dat >/dev/null 2>&1 &&
+	ok "denied execs -> honest 'this boot only', no false save" ||
+	bad "denied-exec rc8: $(echo "$out" | tail -8)"
+
+# 28i. Menu forget in stage-only mode: the staged header-only store is
+# persisted into the image and the daemon is stopped on the empty
+# store.
+{ printf '\001KBB\001\000\000\000'; printf '\314\252\125\021\042\063\001\001'
+  head -c 64 /dev/zero; } > "$tmp/ble-bonds.dat"
+# Rebuild the image WITH a bond file present, other files intact.
+mkdir -p "$tmp/pub-put"
+cp -r "$seed"/. "$tmp/pub-put/"
+cp "$tmp/ble-bonds.dat" "$tmp/pub-put/ble-bonds.dat"
+pack "$tmp/pub-put" "$img"
+: > "$tmp/blelog"; : > "$tmp/initlog"
+printf 'T 8 50\nT 10 10\nT 4 10\nT 4 10\nT 20 10\nT 20 10\nT 20 10\n' \
+	> "$tmp/tscr/events"
+start_saver
+out=$(M5CFG_BLE_KBD="$tmp/bin/ble-kbd" M5CFG_BLELOG="$tmp/blelog" \
+	M5CFG_BLE_IN="$tmp/ble-in" M5CFG_TSCRIPT="$tmp/tscr/events" \
+	M5CFG_BLE_INITD="$tmp/bin/S95blekbd" M5CFG_INITLOG="$tmp/initlog" \
+	M5CFG_BOOT_MNT="$tmp/boot" M5CFG_RUN_DIR="$tmp/run" \
+	sh "$tool" menu </dev/null 2>&1)
+stop_saver
+[ $(imgfile ble-bonds.dat | wc -c) -eq 8 ] &&
+	grep -q 'initd stop' "$tmp/initlog" &&
+	ok "rc8 forget -> removal persisted, daemon stopped" ||
+	bad "rc8 forget: $(cat "$tmp/initlog"); $(echo "$out" | tail -6)"
 
 # 29. Status is a full text page: >19 lines page with [ more > ], the
 # nav block sits below, and a marker past row 19 shows on page 2.

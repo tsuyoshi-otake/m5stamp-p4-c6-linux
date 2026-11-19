@@ -460,10 +460,20 @@ _x() {
 	return $_rc
 }
 
-# $1 = key, $2 = value, $3 = set|del.  Edits a working copy of the image,
-# swaps it in, ejects the LUN if a host holds it, and waits for the
-# bootsyncd save hash like boot-edit does.  Prints one result line.
-drive_write() {
+# drive_write KEY VALUE set|del -- edit a key=value file in the image.
+# drive_put SRC NAME            -- copy SRC into the image as NAME
+#                                  (binary files like ble-bonds.dat).
+# Both share _drive_save: working copy -> loop mount -> edit step ->
+# swap -> eject -> bootsyncd wait.  The edit step runs inside this
+# shell, one applet exec at a time -- that is what keeps a save
+# affordable while the menu holds most of the user pool (#44).
+drive_write() { _drive_save apply_edit "$@"; }
+drive_put()   { _drive_save _file_put "$@"; }
+_file_put()   { _x cp -f "$1" "$MNT/$2"; }
+
+# _drive_save EDITFN ARGS...: the shared save path.  Prints one result
+# line; rc 0 saved/no-change, 1 failed/rejected, 2 nosave, 3 unconfirmed.
+_drive_save() {
 	if [ -f "$NOSAVE_MARK" ]; then
 		_reason=""
 		read -r _reason < "$NOSAVE_MARK" 2>/dev/null || true
@@ -516,7 +526,7 @@ drive_write() {
 		_drive_clean; return 1; }
 
 	rc=0
-	apply_edit "$1" "$2" "$3" || rc=$?
+	"$@" || rc=$?
 	sync
 	_x umount "$MNT" 2>/dev/null || {
 		[ "$?" = 4 ] &&
@@ -524,7 +534,9 @@ drive_write() {
 			echo "m5-config: could not unmount the working copy; nothing was changed" >&2
 		_drive_clean; return 1; }
 	[ "$rc" -eq 0 ] || {
-		echo "m5-config: the change failed; the drive is as it was" >&2
+		[ "$rc" = 4 ] &&
+			echo "m5-config: busy (low memory); nothing was changed" >&2 ||
+			echo "m5-config: the change failed; the drive is as it was" >&2
 		_drive_clean; return 1; }
 
 	img_hash "$WORK_IMG" || {
@@ -814,6 +826,11 @@ BLEKBD="${M5CFG_BLE_KBD:-/usr/bin/ble-kbd}"
 BLEKBD_INITD="${M5CFG_BLE_INITD:-/etc/init.d/S95blekbd}"
 # Runtime store is the staged copy; /boot is unmounted after S05tmpfs.
 BLE_BONDS="${M5CFG_BLE_BONDS:-/tmp/ble-bonds.dat}"
+# The menu persists bonds itself through drive_put (one applet exec
+# per step -- the nested ble-bond-store -> boot-edit shell chain is
+# denied under NOMMU while the menu is up, #44).  Stage-only mode for
+# every ble-kbd it runs: pair/forget return rc 8, we save, we report.
+export BLE_KBD_PERSIST=0
 SYSINFO="${M5CFG_SYSINFO:-/usr/sbin/sysinfo}"
 USBLUN="${M5CFG_USB_LUN:-/usr/sbin/usb-lun}"
 STATUS_TXT="${M5CFG_STATUS_TXT:-/run/status.txt}"
@@ -1900,27 +1917,63 @@ _blescan() {
 	done < "$1"
 }
 
+# ble_persist_bonds: push the staged bond store into the boot image
+# through the same drive machinery as a config save -- one applet
+# exec per step from this shell, so it still works while the menu is
+# up (the ble-kbd -> ble-bond-store -> boot-edit shell chain gets its
+# execs denied under NOMMU at that pressure, #44).  Retries a few
+# times with _spin pacing like the other denied-exec paths (#42);
+# nosave (2) and unconfirmed (3) return at once.
+ble_persist_bonds() {
+	_i=0
+	while :; do
+		drive_put "$BLE_BONDS" ble-bonds.dat
+		_rc=$?
+		[ "$_rc" -eq 0 ] && return 0
+		case "$_rc" in 2|3) return $_rc ;; esac
+		_i=$((_i + 1))
+		[ "$_i" -ge 4 ] && return 1
+		_busy; _spin
+	done
+}
+
 # After a bond ($1 = pair rc): get the daemon onto the new bond at
-# once and say what happened to persistence.  rc 7 means the staged
-# copy was written but the image update failed (nosave, mount, exec
-# denied) -- the tool already printed "paired, but the bond could not
-# be saved: <why>", so the wording here follows the real outcome.
+# once and say what happened to persistence.  The menu runs ble-kbd
+# in stage-only mode (BLE_KBD_PERSIST=0 -> rc 8) and persists here,
+# so the wording follows the real outcome: rc 7 means the staged
+# write itself failed (the tool printed why).
 ble_after_pair() {
-	case "$1" in 0|7) ;; *) return ;; esac
+	case "$1" in 0|7|8) ;; *) return ;; esac
 	"$BLEKBD_INITD" restart >/dev/null 2>&1
-	if [ "$1" -eq 7 ]; then
-		say "  bond works this boot only (not saved)"
-	else
-		say "  bond saved to the boot image"
-	fi
+	case "$1" in
+		0) say "  bond saved to the boot image" ;;
+		8) if ble_persist_bonds; then
+			say "  bond saved to the boot image"
+		else
+			say "  bond works this boot only (not saved)"
+		fi ;;
+		*) say "  bond works this boot only (not saved)" ;;
+	esac
 	say "  press a key on the keyboard to connect"
 }
 
-# After a forget: stop the daemon when no bond is left (the store is
-# an 8-byte header + entries).  Only a positive "empty" answer may
-# stop it: when the wc exec is refused (NOMMU reserve) _sz comes back
-# empty and must not read as 0 -- the daemon keeps serving the bonds
-# that are still there (#41 review).
+# After a forget: the tool ran stage-only (rc 8), so persist the
+# removal through the menu's own save path, then stop the daemon
+# when no bond is left (the store is an 8-byte header + entries).
+# Only a positive "empty" answer may stop it: when the wc exec is
+# refused (NOMMU reserve) _sz comes back empty and must not read as
+# 0 -- the daemon keeps serving the bonds that are still there
+# (#41 review).
+ble_after_forget() {
+	case "$1" in
+		8) ble_persist_bonds ||
+			say "  not saved -- the removal is this boot only" ;;
+		0) ;;
+		*) return ;;
+	esac
+	ble_maybe_stop_daemon
+}
+
 ble_maybe_stop_daemon() {
 	if [ -f "$BLE_BONDS" ]; then
 		_sz=$("$WC" -c < "$BLE_BONDS" 2>/dev/null) || _sz=
@@ -1988,14 +2041,14 @@ menu_blekbd() {
 					eval "_addr=\$_bta_$TPIDX; _name=\$_btn_$TPIDX"
 					tconfirm "forget $_name?" || continue
 					[ "$REPLY" = yes ] || continue
-					trun "$BLEKBD" forget "$_addr"
-					ble_maybe_stop_daemon
+					trun "$BLEKBD" forget "$_addr"; _frc=$?
+					ble_after_forget "$_frc"
 				else
 					"$BLEKBD" list
 					ask "  address or all (empty cancels): " || continue
 					if [ -n "$REPLY" ]; then
-						"$BLEKBD" forget "$REPLY"
-						ble_maybe_stop_daemon
+						"$BLEKBD" forget "$REPLY"; _frc=$?
+						ble_after_forget "$_frc"
 					fi
 				fi
 				pause ;;
