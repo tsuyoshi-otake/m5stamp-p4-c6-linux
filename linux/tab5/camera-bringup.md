@@ -258,11 +258,17 @@ there is no static `reserved-memory` carve-out.
    `ctl1=0x4108840` (arlen/awlen 16, ioc_blktfr), `cfg0=0`
    (contiguous), `cfg1=0x2A820084` (tt_fc=P2M_SRC, src_per=CSI,
    ch_prior=1, osr_lmt 5/5), `llp0=0`, `int_clr0=~0`,
-   `int_st_ena0=0x3FFF` (status only), `int_sig_ena0=0` — **no
-   IRQ line used**.
-8. `csi_en=1` — pipeline armed, waiting for stream-on.
-
-`read()`: polls `ch.int_st0` (done bit1 / error bits 5..13,30,31),
+   `int_st_ena0=0x80003FE3` (status only), `int_sig_ena0=0` — **no
+   IRQ line used**.  The channel is **programmed but left
+   disabled** at PREPARE and `csi_en` stays 0: armed-idle the
+   channel sees a spurious request edge and auto-disables within
+   ~1 s (`int_st0` bit30 — a normal end state, not an error, and
+   no longer classed as one), after which a live stream would
+   overflow the undrained bridge FIFO and wedge the interconnect
+   (observed on board as an instant hard freeze).  `cam_capture()`
+   enables channel + `csi_en` only for the transfer window.
+8. `read()` → `cam_capture()`: `GDMA_CHEN_EN` + `csi_en=1`, then
+   polls `ch.int_st0` (done bit1 / error bits 5..13,31),
 ≤3 s timeout.  On done: `arch_sync_dma_for_cpu`, `copy_to_user`,
 disarm (`csi_en=0`, `chen=0x100<<ch`).  `*f_pos==0` → capture a
 fresh frame; later reads drain the captured buffer.

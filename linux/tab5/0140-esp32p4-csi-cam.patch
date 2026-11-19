@@ -23,11 +23,11 @@ dsi-scanout driver; this driver never touches the block reset,
 and refuses to arm a channel that is enabled or equals the
 shim-patched espressif,scanout-chan.
 
- 2 files changed, 584 insertions(+)
+ 2 files changed, 592 insertions(+)
 
 --- /dev/null
 +++ b/drivers/misc/esp32p4_cam.c
-@@ -0,0 +1,583 @@
+@@ -0,0 +1,591 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * ESP32-P4 MIPI-CSI one-shot raw capture (Tab5 camera bring-up).
@@ -157,7 +157,10 @@ shim-patched espressif,scanout-chan.
 +
 +#define GDMA_EV_BLOCK_DONE	BIT(0)
 +#define GDMA_EV_DMA_DONE	BIT(1)
-+#define GDMA_EV_ERRORS		(0x3fe0 | BIT(30) | BIT(31))
++/* bit30 is the channel's normal auto-disable state, not an error
++ * (the dsi-scanout driver classes it as re-arm); treat only the
++ * transfer-fault bits 5..13 and bit31 as real errors. */
++#define GDMA_EV_ERRORS		(0x3fe0 | BIT(31))
 +#define GDMA_EV_MASK		(GDMA_EV_BLOCK_DONE | GDMA_EV_DMA_DONE | \
 +				 GDMA_EV_ERRORS)
 +
@@ -348,12 +351,17 @@ shim-patched espressif,scanout-chan.
 +	/* dmac_en=1; int_en untouched -- it is the block's global IRQ
 +	 * gate and the dsi-scanout channel may rely on it. */
 +	cam_set(c, c->gdma, GDMA_CFG0, 1, 1);
++	/* Program the channel but do NOT enable it and keep csi_en
++	 * low: armed-idle the channel sees a spurious request edge and
++	 * auto-disables within ~1 s (int_st0 bit30).  If the sensor
++	 * then streams into a dead channel the bridge FIFO overflows
++	 * and back-pressure wedges the interconnect -- observed on
++	 * board as an instant hard freeze.  cam_capture() enables the
++	 * channel + csi_en only for the actual transfer window. */
 +	cam_gdma_arm(c);
-+	writel(GDMA_CHEN_EN(c->chan), c->gdma + GDMA_CHEN0);
-+	writel(1, c->brg + BRG_CSI_EN);
 +
 +	c->prepared = true;
-+	dev_info(c->dev, "pipeline armed (gdma ch%u), waiting for stream-on\n",
++	dev_info(c->dev, "pipeline programmed (gdma ch%u), waiting for stream-on\n",
 +		 c->chan);
 +	return 0;
 +
