@@ -1034,14 +1034,21 @@ tconfirm() {
 	done
 }
 
-# tadjust TITLE CUR MIN MAX STEP (touch only): [-]/[+] buttons plus
-# [OK]/[cancel].  Keyboard: digits build a value, K bs erases one,
-# K enter = OK, 'c' = cancel, other bytes are ignored.  REPLY = the
-# value or "" on cancel.  The screen is redrawn after every event so
-# the value line and hit zones never drift apart.
+# tadjust TITLE CUR MIN MAX STEP [PREVIEW] (touch only): [-]/[+]
+# buttons plus [OK]/[cancel].  Keyboard: digits build a value, K bs
+# erases one, K enter = OK, 'c' = cancel, other bytes are ignored.
+# REPLY = the value or "" on cancel.  The screen is redrawn after
+# every event so the value line and hit zones never drift apart.
+# With PREVIEW (a function name, called with the new value) every
+# [-]/[+] tap applies the change at once; cancel, EOF/m5-key loss
+# and a signal inside the screen call it once more with the value
+# that was current on entry so nothing is left previewed.
 tadjust() {
 	[ "$_TOUCH" = 1 ] || return 1
-	_cur=$2; _buf=""
+	_cur=$2; _buf=""; _pvf=${6:-}; _pvin=$2
+	REPLY=""
+	[ -n "$_pvf" ] &&
+		trap '"$_pvf" "$_pvin"; exit 130' HUP INT TERM
 	while :; do
 		scr_clear
 		say "== $1 =="
@@ -1052,15 +1059,15 @@ tadjust() {
 		_tblock $((ITOP + 4)) 40 "[ cancel ]"
 		printf '\033[%s;1Hvalue: %-20s\033[K' "$((MSGTOP + 1))" \
 			"${_buf:-$_cur}"
-		_tget || { REPLY=""; return 0; }
+		_tget || break
 		case "$_ev" in
 			K\ *)
 				_c=${_ev#K }
 				case "$_c" in
 					[0-9]) _buf="$_buf$_c" ;;
 					bs) _buf=${_buf%?} ;;
-					enter) REPLY=${_buf:-$_cur}; return 0 ;;
-					c) REPLY=""; return 0 ;;
+					enter) REPLY=${_buf:-$_cur}; break ;;
+					c) break ;;
 				esac ;;
 			T\ *) ;;
 			*) continue ;;
@@ -1075,11 +1082,19 @@ tadjust() {
 				[ "$((_cur + $5))" -le "$4" ] &&
 					_cur=$((_cur + $5)) || _cur=$4
 			fi
+			[ -n "$_pvf" ] && "$_pvf" "$_cur"
 			continue; }
 		[ "$_tr" -ge $((ITOP + 4)) ] && [ "$_tr" -lt $((ITOP + 8)) ] && {
-			[ "$_tc" -lt 40 ] && REPLY=${_buf:-$_cur} || REPLY=""
-			return 0; }
+			[ "$_tc" -lt 40 ] && REPLY=${_buf:-$_cur}
+			break; }
 	done
+	if [ -n "$_pvf" ]; then
+		# Back to the session trap, not "no trap": a signal later in
+		# the session must still reach _cleanup.
+		trap '_cleanup; exit 130' HUP INT TERM
+		[ -z "$REPLY" ] && "$_pvf" "$_pvin"
+	fi
+	return 0
 }
 
 # ttext TITLE [secret] (touch only): a text field has no on-screen
@@ -1422,6 +1437,16 @@ menu_datetime() {
 	pause
 }
 
+# _bl_preview PCT: the tadjust preview hook for brightness (#42) --
+# writes PCT to the backlight menu_display probed ($bl/$mx) so a tap
+# on [-]/[+] is visible at once.  Builtin echo only: no subprocess,
+# no $(...), so a NOMMU hush never forks mid-menu.
+_bl_preview() {
+	if [ -n "$bl" ] && [ "$mx" -gt 0 ]; then
+		echo $(($1 * mx / 100)) > "$bl" 2>/dev/null || :
+	fi
+}
+
 menu_display() {
 	scr_clear
 	say "== Display =="
@@ -1439,8 +1464,9 @@ menu_display() {
 	say " brightness: ${pct}%"
 	if [ "$_TOUCH" = 1 ]; then
 		# never below ~5% from a tap: a touch-only user cannot
-		# recover a black panel.
-		tadjust "brightness" "$pct" 5 100 5 || return
+		# recover a black panel.  _bl_preview makes [-]/[+] live;
+		# cancel restores the value read above.
+		tadjust "brightness" "$pct" 5 100 5 _bl_preview || return
 	else
 		ask "  new brightness 5-100 (empty cancels): " || return
 	fi

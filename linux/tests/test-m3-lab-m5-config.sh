@@ -257,9 +257,22 @@ mkdir -p "$tmp/bin" "$tmp/tscr"
 cat > "$tmp/bin/m5-key" <<'EOF'
 #!/bin/sh
 [ "$1" = probe ] && exit 0
+# B33: when M5CFG_BLWATCH names a file, append its content to
+# <file>.log before each event -- the value the previous event left
+# behind, which makes a live-preview write sequence observable.
+[ -n "$M5CFG_BLWATCH" ] &&
+	cat "$M5CFG_BLWATCH" >> "$M5CFG_BLWATCH.log" 2>/dev/null
 IFS= read -r ev < "$M5CFG_TSCRIPT" 2>/dev/null || exit 1
 tail -n +2 "$M5CFG_TSCRIPT" > "$M5CFG_TSCRIPT.n" 2>/dev/null || :
 mv -f "$M5CFG_TSCRIPT.n" "$M5CFG_TSCRIPT" 2>/dev/null || :
+# 'S <secs>' blocks inside m5-key: the caller then sits in wait(),
+# the state a signal test needs to hit.  TERM/INT signal the caller
+# like m5-key-log does (the parent is mid-wait -> its trap fires).
+case "$ev" in
+	S\ *)	sleep "${ev#S }"; exit 1 ;;
+	INT)	kill -INT "$PPID" 2>/dev/null; sleep 1; exit 0 ;;
+	TERM)	kill -TERM "$PPID" 2>/dev/null; sleep 1; exit 0 ;;
+esac
 printf '%s\n' "$ev"
 EOF
 chmod +x "$tmp/bin/m5-key"
@@ -826,6 +839,70 @@ out=$(M5CFG_BLDIR="$tmp/bl" M5CFG_BLE_KBD="$tmp/bin/ble-kbd" \
 	! echo "$out" | grep -qE '== [0-9]+ ==' &&
 	ok "tpick: [ more ] redraws the same title" ||
 	bad "tpick title: $out"
+
+# 33. B33: brightness follows the taps in tadjust (#42) -- every
+# [-]/[+] tap writes the probed backlight at once, [OK] keeps it,
+# while [cancel], events-EOF/m5-key loss and a signal all restore
+# the value that was current on entry.  The stub appends the file's
+# content to <BLWATCH>.log before each event, so log line N is the
+# value event N-1's processing left behind.
+BLW="$tmp/bl/bl0/brightness"
+# [-] [-] [+] [OK]: previews write 450,400,450 in order, [OK] keeps.
+echo 500 > "$BLW"; : > "$BLW.log"
+printf 'T 8 50\nT 4 10\nT 4 10\nT 4 50\nT 8 10\nT 20 10\nT 20 10\n' \
+	> "$tmp/tscr/events"
+out=$(M5CFG_BLDIR="$tmp/bl" M5CFG_BLWATCH="$BLW" \
+	M5CFG_TSCRIPT="$tmp/tscr/events" sh "$tool" menu </dev/null 2>&1)
+[ "$(cat "$BLW")" = 450 ] &&
+	echo "$out" | grep -qF 'set to 45%' &&
+	[ "$(sed -n '3,5p' "$BLW.log" | tr '\n' ' ')" = "450 400 450 " ] &&
+	ok "brightness previews each tap, [OK] keeps it" ||
+	bad "preview OK: log=$(tr '\n' ' ' < "$BLW.log") \
+bl=$(cat "$BLW") $out"
+# [-] [cancel]: the previewed 45% rolls back to the entry value.
+echo 500 > "$BLW"; : > "$BLW.log"
+printf 'T 8 50\nT 4 10\nT 8 60\nT 20 10\nT 20 10\n' > "$tmp/tscr/events"
+out=$(M5CFG_BLDIR="$tmp/bl" M5CFG_BLWATCH="$BLW" \
+	M5CFG_TSCRIPT="$tmp/tscr/events" sh "$tool" menu </dev/null 2>&1)
+[ "$(cat "$BLW")" = 500 ] &&
+	echo "$out" | grep -qF 'unchanged' &&
+	[ "$(sed -n '3p' "$BLW.log")" = 450 ] &&
+	[ "$(sed -n '4p' "$BLW.log")" = 500 ] &&
+	ok "brightness [cancel] restores the entry value" ||
+	bad "preview cancel: log=$(tr '\n' ' ' < "$BLW.log") \
+bl=$(cat "$BLW") $out"
+# Events run out inside tadjust (m5-key EOF): same restore.
+echo 500 > "$BLW"; : > "$BLW.log"
+printf 'T 8 50\nT 4 10\n' > "$tmp/tscr/events"
+out=$(M5CFG_BLDIR="$tmp/bl" M5CFG_BLWATCH="$BLW" \
+	M5CFG_TSCRIPT="$tmp/tscr/events" sh "$tool" menu </dev/null 2>&1)
+[ "$(cat "$BLW")" = 500 ] &&
+	[ "$(sed -n '3p' "$BLW.log")" = 450 ] &&
+	[ "$(sed -n '4p' "$BLW.log")" = 500 ] &&
+	ok "brightness EOF restores the entry value" ||
+	bad "preview EOF: log=$(tr '\n' ' ' < "$BLW.log") \
+bl=$(cat "$BLW") $out"
+# A signal inside tadjust: the trap restores before exit (rc 130).
+echo 500 > "$BLW"; : > "$BLW.log"
+printf 'T 8 50\nT 4 10\nTERM\n' > "$tmp/tscr/events"
+out=$(M5CFG_BLDIR="$tmp/bl" M5CFG_BLWATCH="$BLW" \
+	M5CFG_TSCRIPT="$tmp/tscr/events" sh "$tool" menu </dev/null 2>&1)
+rc=$?
+[ "$rc" -eq 130 ] &&
+	[ "$(cat "$BLW")" = 500 ] &&
+	[ "$(sed -n '3p' "$BLW.log")" = 450 ] &&
+	ok "brightness signal restores the entry value" ||
+	bad "preview signal: rc=$rc log=$(tr '\n' ' ' < "$BLW.log") \
+bl=$(cat "$BLW") $out"
+# Plain mode is unchanged: the ask path still writes once, on Enter.
+printf '4\n70\n\n0\n' > "$tmp/tscr/kbd"
+echo 500 > "$BLW"
+out=$(env -u M5CFG_FORCE_TOUCH M5CFG_BLDIR="$tmp/bl" \
+	sh "$tool" menu < "$tmp/tscr/kbd" 2>&1)
+[ "$(cat "$BLW")" = 700 ] &&
+	echo "$out" | grep -qF 'set to 70%' &&
+	ok "plain mode still writes once, on entry" ||
+	bad "plain brightness: bl=$(cat "$BLW") $out"
 
 if [ "$fails" -gt 0 ]; then
 	echo "FAILED: $fails checks"
