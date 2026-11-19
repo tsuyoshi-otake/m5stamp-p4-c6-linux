@@ -998,7 +998,7 @@ menu_pick() {
 	# waiting -- the menu must not die of low memory (#42).
 	while :; do
 		_tget; _tg=$?
-		[ "$_tg" = 2 ] && { _busy; continue; }
+		[ "$_tg" = 2 ] && { _busy; _spin; continue; }
 		[ "$_tg" = 1 ] && { REPLY=""; return 1; }
 		break
 	done
@@ -1106,7 +1106,7 @@ tpick() {
 			_need=0
 		fi
 		_tget; _tg=$?
-		[ "$_tg" = 2 ] && { _need=1; _tbz=1; continue; }
+		[ "$_tg" = 2 ] && { _need=1; _tbz=1; _spin; continue; }
 		[ "$_tg" = 1 ] && return 0
 		case "$_ev" in
 			K\ *)
@@ -1163,7 +1163,7 @@ tconfirm() {
 			_need=0
 		fi
 		_tget; _tg=$?
-		[ "$_tg" = 2 ] && { _need=1; _tbz=1; continue; }
+		[ "$_tg" = 2 ] && { _need=1; _tbz=1; _spin; continue; }
 		[ "$_tg" = 1 ] && return 0
 		case "$_ev" in
 			K\ *) [ "${_ev#K }" = y ] && REPLY=yes; return 0 ;;
@@ -1208,7 +1208,7 @@ tadjust() {
 			"${_buf:-$_cur}"
 		[ "$_tbz" = 1 ] && { _busy; _tbz=0; }
 		_tget; _tg=$?
-		[ "$_tg" = 2 ] && { _tbz=1; continue; }
+		[ "$_tg" = 2 ] && { _tbz=1; _spin; continue; }
 		[ "$_tg" = 1 ] && break
 		case "$_ev" in
 			K\ *)
@@ -1449,7 +1449,7 @@ ttext() {
 		[ "$_tg" = 1 ] && { _r=1; break; }
 		# A denied exec is not the end of the field: keep the
 		# buffer, the grid and the layer; just say busy (#42).
-		[ "$_tg" = 2 ] && { _busy; continue; }
+		[ "$_tg" = 2 ] && { _busy; _spin; continue; }
 		: > "$EVF" 2>/dev/null || :
 		case "$_ev" in
 			T\ *) ;;
