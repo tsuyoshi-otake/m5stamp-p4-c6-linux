@@ -126,11 +126,17 @@ the **kernel** page allocator — the buddy allocator over the RAM
 region the kernel manages — *not* from the userspace
 `nommu_pool` regions.  Two consequences:
 
-- The frame buffer is allocated at `CAM_PREPARE` (first open
-  work) and freed at `release()` — ~1 MiB of contiguous kernel
-  memory is not something to hold from boot for a camera nobody
-  uses.  `__GFP_NOWARN` is set and an allocation failure returns
-  `-ENOMEM` cleanly.
+- The frame buffer is allocated at **probe** and freed at
+  `remove()` — i.e. held for the life of the boot.  That is the
+  only time an order-8 block exists: measured on board (B37),
+  once userspace is up `/proc/buddyinfo` shows order-8 free
+  count 0, largest free block 512 KiB, and NOMMU has no
+  compaction, so a `CAM_PREPARE`-time allocation always failed
+  `-ENOMEM`.  Cost: 921,600 B request rounds up to one order-8
+  block = 1 MiB of kernel-pool PSRAM permanently; the user
+  `nommu_pool` numbers are unchanged (the pools are disjoint
+  reserved-memory regions).  `__GFP_NOWARN` is set and an
+  allocation failure returns `-ENOMEM` cleanly.
 - An earlier sketch proposed a fixed `reserved-memory` carve-out
   at the top of PSRAM — rejected: the boot shim places the
   display fb at a *runtime* PSRAM address and patches
@@ -139,12 +145,11 @@ region the kernel manages — *not* from the userspace
   memory can never collide with a `no-map` region (the
   shim-patched `display_fb_res`, both NOMMU pools,
   `i2s0_dma_sram`, the boot-partition staging area) by
-  construction.
-
-There are no kernel `MemFree`/`/proc/buddyinfo` numbers for the
-Tab5 in earlier reports — how much contiguous PSRAM is actually
-free at camera-open time is unmeasured and goes on the on-board
-checklist (order-8 `__get_free_pages`-class request, 225 pages).
+  construction.  For the same reason the camera has no opt-in
+  switch: the buffer costs kernel headroom only, and a config
+  gate would have to drop and re-probe the driver while an
+  order-8 block still exists — only at boot, which is when it
+  already probes.
 
 ## Interface proposal
 
@@ -269,18 +274,30 @@ there is no static `reserved-memory` carve-out.
    enables channel + `csi_en` only for the transfer window.
 8. `read()` → `cam_capture()`: `GDMA_CHEN_EN` + `csi_en=1`, then
    polls `ch.int_st0` (done bit1 / error bits 5..13,31),
-≤3 s timeout.  On done: `arch_sync_dma_for_cpu`, `copy_to_user`,
-disarm (`csi_en=0`, `chen=0x100<<ch`).  `*f_pos==0` → capture a
-fresh frame; later reads drain the captured buffer.
+≤3 s timeout.  The bridge is the transfer's source flow
+controller and **discards the first post-stream-on frame**
+(~6 lines in — `discard_int_raw` bit2 latches, the DMA block
+ends short): the IDF hides it because `receive()` is called
+~50 ms after stream-on and the partial frame lands in
+`backup_buffer`.  So `cam_capture()` does not trust one done:
+after each done it checks the channel's `DAR0`; if fewer than
+`CAM_FRAME_BYTES` landed it re-arms (`cam_gdma_arm` already
+disables + flushes first) and waits again until a full frame
+has advanced.  On a full frame: `arch_sync_dma_for_cpu`,
+`copy_to_user`, disarm (`csi_en=0`, `chen=0x100<<ch`).
+`*f_pos==0` → capture a fresh frame; later reads drain the
+captured buffer.
 
 ### Userspace contract (cam-dump)
 
-`open /dev/cam0` → `ioctl(CAM_PREPARE)` (powers the rail, allocates
-the frame buffer, arms the pipe) → SCCB via `/dev/i2c-0`
+`open /dev/cam0` → `ioctl(CAM_PREPARE)` (powers the rail, arms
+the pipe — the frame buffer itself was claimed at **probe**,
+see the Memory section) → SCCB via `/dev/i2c-0`
 (chip-ID `0xeb52`, 131-reg init table, `0x0100=0x01` stream-on)
-→ `read()` returns the armed frame → `close()` disarms, drops
-`CAM_RST` and frees the buffer — the camera is powered only while
-`/dev/cam0` is open.  A second frame therefore needs a fresh
+→ `read()` returns the armed frame → `close()` disarms and
+drops `CAM_RST` — the camera is powered only while
+`/dev/cam0` is open (the buffer lives until `remove()`).  A
+second frame therefore needs a fresh
 open → PREPARE → SCCB-table + stream-on cycle (cam-dump does a
 full cold capture per `-n` frame; the sensor loses its registers
 on the power drop).
