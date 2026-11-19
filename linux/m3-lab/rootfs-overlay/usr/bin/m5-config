@@ -415,7 +415,10 @@ apply_edit() {
 
 img_hash() {
 	HASH=""
-	_line=$(md5sum "$1" 2>/dev/null) || return 1
+	_line=$(md5sum "$1" 2>/dev/null)
+	_rc=$?
+	case $_rc in 126|127|139) return 4 ;; esac
+	[ "$_rc" -eq 0 ] || return 1
 	HASH=${_line%% *}
 	[ -n "$HASH" ]
 }
@@ -441,9 +444,20 @@ _drive_clean() {
 _cleanup() {
 	trap - EXIT HUP INT TERM
 	[ "$_pal_on" = 1 ] && _pal_restore
-	"$STTY" echo 2>/dev/null || busybox stty echo 2>/dev/null || :
+	_echo_on
 	rm -f "$EVF" "$USF" 2>/dev/null || :
 	_drive_clean
+}
+
+# _x CMD...: one of drive_write's external steps.  A denied exec
+# (126/127/139 -- the same low-memory wall the menu survives) becomes
+# rc 4 so the caller can say "busy" instead of a misleading
+# no-space/corrupt-image reason (#42).
+_x() {
+	"$@"
+	_rc=$?
+	case $_rc in 126|127|139) return 4 ;; esac
+	return $_rc
 }
 
 # $1 = key, $2 = value, $3 = set|del.  Edits a working copy of the image,
@@ -469,7 +483,10 @@ drive_write() {
 	fi
 	[ -f "$BOOT_IMG" ] || { echo "m5-config: $BOOT_IMG is missing" >&2; return 1; }
 
-	if ! mkdir "$LOCK" 2>/dev/null; then
+	_x mkdir "$LOCK" 2>/dev/null || {
+		[ "$?" = 4 ] && {
+			echo "m5-config: busy (low memory); nothing was changed" >&2
+			return 1; }
 		_p=""
 		[ -f "$LOCK/pid" ] && read -r _p < "$LOCK/pid"
 		if [ -n "$_p" ] && kill -0 "$_p" 2>/dev/null; then
@@ -478,39 +495,56 @@ drive_write() {
 		fi
 		rm -rf "$LOCK"
 		mkdir "$LOCK" 2>/dev/null || { echo "m5-config: could not lock" >&2; return 1; }
-	fi
+	}
 	echo $$ > "$LOCK/pid" 2>/dev/null
 	trap _cleanup EXIT
 	trap '_cleanup; exit 130' HUP INT TERM
 
-	mkdir -p "$MNT" 2>/dev/null || { _drive_clean; return 1; }
-	cp -f "$BOOT_IMG" "$WORK_IMG" 2>/dev/null || {
-		echo "m5-config: no room in $PUB_DIR for a working copy" >&2
+	_x mkdir -p "$MNT" 2>/dev/null || {
+		[ "$?" = 4 ] &&
+			echo "m5-config: busy (low memory); nothing was changed" >&2
 		_drive_clean; return 1; }
-	mount -t vfat -o "loop,rw,noatime,umask=0077" "$WORK_IMG" "$MNT" 2>/dev/null || {
-		echo "m5-config: the boot image is not a mountable FAT volume" >&2
+	_x cp -f "$BOOT_IMG" "$WORK_IMG" 2>/dev/null || {
+		[ "$?" = 4 ] &&
+			echo "m5-config: busy (low memory); nothing was changed" >&2 ||
+			echo "m5-config: no room in $PUB_DIR for a working copy" >&2
+		_drive_clean; return 1; }
+	_x mount -t vfat -o "loop,rw,noatime,umask=0077" "$WORK_IMG" "$MNT" 2>/dev/null || {
+		[ "$?" = 4 ] &&
+			echo "m5-config: busy (low memory); nothing was changed" >&2 ||
+			echo "m5-config: the boot image is not a mountable FAT volume" >&2
 		_drive_clean; return 1; }
 
 	rc=0
 	apply_edit "$1" "$2" "$3" || rc=$?
 	sync
-	umount "$MNT" 2>/dev/null || {
-		echo "m5-config: could not unmount the working copy; nothing was changed" >&2
+	_x umount "$MNT" 2>/dev/null || {
+		[ "$?" = 4 ] &&
+			echo "m5-config: busy (low memory); nothing was changed" >&2 ||
+			echo "m5-config: could not unmount the working copy; nothing was changed" >&2
 		_drive_clean; return 1; }
 	[ "$rc" -eq 0 ] || {
 		echo "m5-config: the change failed; the drive is as it was" >&2
 		_drive_clean; return 1; }
 
-	img_hash "$WORK_IMG" || { _drive_clean; return 1; }
+	img_hash "$WORK_IMG" || {
+		[ "$?" = 4 ] &&
+			echo "m5-config: busy (low memory); nothing was changed" >&2
+		_drive_clean; return 1; }
 	new=$HASH
-	img_hash "$BOOT_IMG" || { _drive_clean; return 1; }
+	img_hash "$BOOT_IMG" || {
+		[ "$?" = 4 ] &&
+			echo "m5-config: busy (low memory); nothing was changed" >&2
+		_drive_clean; return 1; }
 	if [ "$new" = "$HASH" ]; then
 		echo "m5-config: no change"
 		_drive_clean
 		return 0
 	fi
-	mv -f "$WORK_IMG" "$BOOT_IMG" || {
-		echo "m5-config: could not replace $BOOT_IMG" >&2
+	_x mv -f "$WORK_IMG" "$BOOT_IMG" || {
+		[ "$?" = 4 ] &&
+			echo "m5-config: busy (low memory); nothing was changed" >&2 ||
+			echo "m5-config: could not replace $BOOT_IMG" >&2
 		_drive_clean; return 1; }
 
 	# A host holding the USB drive keeps the old (already-open) image
@@ -528,7 +562,8 @@ drive_write() {
 	[ "$_TOUCH" = 1 ] && { _tmsg; printf 'saving ...\n'; }
 	i=0
 	while [ "$i" -lt "$SAVE_WAIT" ]; do
-		sleep 1
+		# A denied sleep must not turn the wait into a hot loop.
+		sleep 1 2>/dev/null || _spin
 		_saved=""
 		[ -f "$FLASH_HASH_FILE" ] && read -r _saved < "$FLASH_HASH_FILE"
 		if [ "$_saved" = "$new" ]; then
@@ -823,9 +858,51 @@ touch_ok() {
 	case "$_tty" in /dev/tty[0-9]*) ;;
 		*) rm -f "$EVF" 2>/dev/null; return 1 ;;
 	esac
-	"$M5KEY" probe >/dev/null 2>&1 || { rm -f "$EVF" 2>/dev/null; return 1; }
+	_pi=0
+	while :; do
+		"$M5KEY" probe >/dev/null 2>&1 && break
+		if [ "$?" -ge 126 ]; then
+			_pi=$((_pi + 1))
+			[ "$_pi" -lt 4 ] ||
+				{ rm -f "$EVF" 2>/dev/null; return 1; }
+			_spin
+			continue
+		fi
+		rm -f "$EVF" 2>/dev/null; return 1
+	done
 	_TOUCH=1
 	_touch_init
+}
+
+# _busy: the low-memory notice for a denied helper exec, drawn into
+# the message strip -- the screen and any typed text stay put (#42).
+_busy() { msg "  busy (low memory), tap again"; }
+
+# _spin: a pure-builtin delay for tap flashes and exec retries.  hush
+# has no builtin sleep and usleep is one more flat-exec -- the very
+# allocation a low-memory panel cannot spare.
+_spin() {
+	_sp=0
+	while [ "$_sp" -lt "${M5CFG_SPIN:-60000}" ]; do _sp=$((_sp + 1)); done
+}
+
+# _echo_off/_echo_on: termios flips with a few retries -- a transient
+# exec denial must not leave a secret field echoed or the tty raw.
+_echo_off() {
+	_ei=0
+	while [ "$_ei" -lt 5 ]; do
+		"$STTY" -echo 2>/dev/null && return 0
+		busybox stty -echo 2>/dev/null && return 0
+		_ei=$((_ei + 1)); _spin
+	done
+}
+_echo_on() {
+	_ei=0
+	while [ "$_ei" -lt 5 ]; do
+		"$STTY" echo 2>/dev/null && return 0
+		busybox stty echo 2>/dev/null && return 0
+		_ei=$((_ei + 1)); _spin
+	done
 }
 
 # _tget: one m5-key event into _ev through the event file.  A direct
@@ -833,10 +910,26 @@ touch_ok() {
 # processes -- this hush and m5-key.  A $( ) would fork a second ~480
 # KB hush for every event; on NOMMU that is the difference between a
 # menu that fits and alloc failures (#40).
+# Returns 2 (not 1) when the event never arrived for a transient
+# reason -- the m5-key exec itself denied (126/127/139) or an empty
+# event file after a clean exit -- so callers can show "busy" and
+# retry instead of ending the menu (#42).  rc 1 stays a real loss.
 _tget() {
-	"$M5KEY" > "$EVF" 2>/dev/null || return 1
-	IFS= read -r _ev < "$EVF" || return 1
-	[ -n "$_ev" ]
+	"$M5KEY" > "$EVF" 2>/dev/null
+	_rc=$?
+	case $_rc in 126|127) return 2 ;; esac
+	if [ "$_rc" -ge 128 ]; then
+		# Died on a signal mid-read: its own termios restore
+		# never ran and the tty may be raw -- repair best-effort
+		# and treat the lost event as transient like any denied
+		# helper.
+		"$STTY" sane 2>/dev/null || busybox stty sane 2>/dev/null || :
+		return 2
+	fi
+	[ "$_rc" -eq 0 ] || return 1
+	IFS= read -r _ev < "$EVF" || return 2
+	[ -n "$_ev" ] || return 2
+	return 0
 }
 
 # item KEY LABEL: a menu choice.  Plain mode prints " KEY LABEL" (one
@@ -901,7 +994,14 @@ _navdraw() {
 menu_pick() {
 	[ "$_TOUCH" = 0 ] && { ask "? "; return; }
 	_navdraw
-	_tget || { REPLY=""; return 1; }
+	# A denied m5-key exec is transient: show "busy" and keep
+	# waiting -- the menu must not die of low memory (#42).
+	while :; do
+		_tget; _tg=$?
+		[ "$_tg" = 2 ] && { _busy; continue; }
+		[ "$_tg" = 1 ] && { REPLY=""; return 1; }
+		break
+	done
 	case "$_ev" in
 		K\ *) REPLY=${_ev#K }; return ;;
 		T\ *) ;;
@@ -940,7 +1040,7 @@ _tflash() { # brief tapped-colour redraw of the tapped button
 	_s=$_BTN; _BTN=$_TAP
 	_tblock "$_top" "$_col" "$_k $_l"
 	_BTN=$_s
-	usleep 200000 2>/dev/null || :
+	_spin
 }
 
 # pause: plain mode waits for Enter; touch mode draws a [tap to
@@ -948,7 +1048,20 @@ _tflash() { # brief tapped-colour redraw of the tapped button
 pause() {
 	if [ "$_TOUCH" = 1 ]; then
 		_tblock "$NAVTOP" 0 "[ tap to continue ]"
-		"$M5KEY" >/dev/null 2>&1 || true
+		# A denied exec must not skip the wait silently (#42): say
+		# busy and retry a bounded number of times before giving
+		# up -- a real m5-key loss (rc 1) still ends the pause.
+		_i=0
+		while :; do
+			"$M5KEY" >/dev/null 2>&1
+			_rc=$?
+			if [ "$_rc" -ge 126 ]; then
+				_i=$((_i + 1))
+				[ "$_i" -lt 30 ] || break
+				_busy; _spin; continue
+			fi
+			break
+		done
 		return
 	fi
 	ask "  [Enter] "
@@ -971,7 +1084,7 @@ tpick() {
 	_tn=$_i; _pg=0
 	_np=$(( (_tn + TPP - 1) / TPP )); [ "$_np" -lt 1 ] && _np=1
 	REPLY=""; TPIDX=""
-	_need=1
+	_need=1; _tbz=0
 	while :; do
 		if [ "$_need" = 1 ]; then
 			scr_clear; say "== $1 =="
@@ -989,9 +1102,12 @@ tpick() {
 				_tblock "$NAVTOP" 39 "[< prev ]" 16
 				_tblock "$NAVTOP" 59 "[ more $((_pg + 1))/$_np > ]" 16
 			fi
+			[ "$_tbz" = 1 ] && { _busy; _tbz=0; }
 			_need=0
 		fi
-		_tget || return 0
+		_tget; _tg=$?
+		[ "$_tg" = 2 ] && { _need=1; _tbz=1; continue; }
+		[ "$_tg" = 1 ] && return 0
 		case "$_ev" in
 			K\ *)
 				_c=${_ev#K }
@@ -1037,15 +1153,18 @@ tpick() {
 tconfirm() {
 	[ "$_TOUCH" = 1 ] || return 1
 	REPLY=no
-	_need=1
+	_need=1; _tbz=0
 	while :; do
 		if [ "$_need" = 1 ]; then
 			scr_clear; say "== $1 =="
 			_tblock $ITOP 0 "yes"
 			_tblock $ITOP 40 "no"
+			[ "$_tbz" = 1 ] && { _busy; _tbz=0; }
 			_need=0
 		fi
-		_tget || return 0
+		_tget; _tg=$?
+		[ "$_tg" = 2 ] && { _need=1; _tbz=1; continue; }
+		[ "$_tg" = 1 ] && return 0
 		case "$_ev" in
 			K\ *) [ "${_ev#K }" = y ] && REPLY=yes; return 0 ;;
 			T\ *) ;;
@@ -1074,7 +1193,7 @@ tconfirm() {
 tadjust() {
 	[ "$_TOUCH" = 1 ] || return 1
 	_cur=$2; _buf=""; _pvf=${6:-}; _pvin=$2
-	REPLY=""
+	REPLY=""; _tbz=0
 	[ -n "$_pvf" ] &&
 		trap '"$_pvf" "$_pvin" r; exit 130' HUP INT TERM
 	while :; do
@@ -1087,7 +1206,10 @@ tadjust() {
 		_tblock $((ITOP + 4)) 40 "[ cancel ]"
 		printf '\033[%s;1Hvalue: %-20s\033[K' "$((MSGTOP + 1))" \
 			"${_buf:-$_cur}"
-		_tget || break
+		[ "$_tbz" = 1 ] && { _busy; _tbz=0; }
+		_tget; _tg=$?
+		[ "$_tg" = 2 ] && { _tbz=1; continue; }
+		[ "$_tg" = 1 ] && break
 		case "$_ev" in
 			K\ *)
 				_c=${_ev#K }
@@ -1281,7 +1403,7 @@ _kb_press() {
 	_s=$_BTN; _BTN=$_TAP
 	_kblock "$3" "$4" "$5" "$_kwt"
 	_BTN=$_s
-	usleep 200000 2>/dev/null || :
+	_spin
 	case "$_kwt" in
 		"[ABC]") _kbl=1; _kb_keys ;;
 		"[abc]") _kbl=0; _kb_keys ;;
@@ -1312,16 +1434,22 @@ ttext() {
 		# and restores a termios that already has ECHO off, so a
 		# fast byte cannot echo in clear during the vfork+exec gap
 		# between two m5-key runs.  The trap puts echo back if the
-		# field is killed mid-edit.
-		"$STTY" -echo 2>/dev/null || busybox stty -echo 2>/dev/null || :
-		trap '"$STTY" echo 2>/dev/null || busybox stty echo 2>/dev/null || :; exit 130' HUP INT TERM
+		# field is killed mid-edit.  Both flips retry through
+		# _echo_off/_echo_on so a transient exec denial cannot
+		# strand the tty no-echo (#42).
+		_echo_off
+		trap '_echo_on; exit 130' HUP INT TERM
 	fi
 	scr_clear
 	say "== $1 =="
 	_kb_field
 	_kb_keys
 	while :; do
-		_tget || { _r=1; break; }
+		_tget; _tg=$?
+		[ "$_tg" = 1 ] && { _r=1; break; }
+		# A denied exec is not the end of the field: keep the
+		# buffer, the grid and the layer; just say busy (#42).
+		[ "$_tg" = 2 ] && { _busy; continue; }
 		: > "$EVF" 2>/dev/null || :
 		case "$_ev" in
 			T\ *) ;;
@@ -1348,7 +1476,7 @@ ttext() {
 			_kb_press "$_kri" "$_kj" "$_ktop" "$_kcol" "$_kkw"
 	done
 	if [ "$_sec" = 1 ]; then
-		"$STTY" echo 2>/dev/null || busybox stty echo 2>/dev/null || :
+		_echo_on
 		# Back to the session trap, not "no trap": a signal later in
 		# the session must still reach _cleanup (palette, tty, EVF).
 		trap '_cleanup; exit 130' HUP INT TERM
