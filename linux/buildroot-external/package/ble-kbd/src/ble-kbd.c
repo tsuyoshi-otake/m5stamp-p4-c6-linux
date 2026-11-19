@@ -90,6 +90,7 @@ struct mgmt_addr_info {
 #define MGMT_OP_SET_BONDABLE		0x0009
 #define MGMT_OP_SET_LE			0x000D
 #define MGMT_OP_LOAD_LONG_TERM_KEYS	0x0013
+#define MGMT_OP_GET_CONNECTIONS		0x0015
 #define MGMT_OP_SET_IO_CAPABILITY	0x0018
 #define MGMT_OP_PAIR_DEVICE		0x0019
 #define MGMT_OP_UNPAIR_DEVICE		0x001B
@@ -239,6 +240,11 @@ struct mgmt_ev_device_connected {
 struct mgmt_ev_device_disconnected {
 	struct mgmt_addr_info addr;
 	uint8_t  reason;
+} __attribute__((packed));
+
+struct mgmt_rp_get_connections {
+	uint16_t conn_count;
+	struct mgmt_addr_info addr[];
 } __attribute__((packed));
 
 struct mgmt_ev_new_conn_param {
@@ -1218,6 +1224,18 @@ static struct bond_entry *bond_find(const bdaddr_t *a)
 	return NULL;
 }
 
+/* a mgmt_addr_info belongs to a bond when its bdaddr is the stored
+ * address or the stored irk (resolved-RPA) address */
+static struct bond_entry *bonded_match(const struct mgmt_addr_info *a)
+{
+	struct bond_entry *b = bond_find(&a->bdaddr);
+	for (int i = 0; !b && i < nbonds; i++)
+		if (bonds[i].have_irk &&
+		    !memcmp(&bonds[i].irk_addr, &a->bdaddr, 6))
+			b = &bonds[i];
+	return b;
+}
+
 static struct bond_entry *bond_new(const bdaddr_t *a, uint8_t type)
 {
 	struct bond_entry *b = bond_find(a);
@@ -1608,6 +1626,35 @@ static int cmd_daemon(void)
 				bgscan = 0;
 		}
 	}
+	/* The drains above consume every event: a DEVICE_CONNECTED that
+	 * arrived in one of those windows is already gone.  And a
+	 * keyboard bonded seconds ago can still hold its pairing link
+	 * when the daemon (re)starts.  Ask the kernel who is connected
+	 * and serve the bonded ones before entering the wait loop. */
+	mgmt_send(mgmt, MGMT_OP_GET_CONNECTIONS, HCI_DEV, NULL, 0);
+	for (int k = 0; k < 40; k++) {
+		int ev = mgmt_recv(mgmt, buf, sizeof(rxbuf), 250);
+		if (ev <= 0) break;
+		if (ev != MGMT_EV_CMD_COMPLETE) continue;
+		struct mgmt_ev_cmd_complete *c = (void *)(buf + 6);
+		if (c->opcode != MGMT_OP_GET_CONNECTIONS || c->status)
+			continue;
+		struct mgmt_rp_get_connections *r = (void *)c->data;
+		struct mgmt_hdr *h = (void *)buf;
+		int n = r->conn_count;
+		int max = ((int)h->len - (int)sizeof(*c) - 2) /
+			  (int)sizeof(struct mgmt_addr_info);
+		if (n > max) n = max;
+		for (int i = 0; i < n; i++) {
+			struct bond_entry *b = bonded_match(&r->addr[i]);
+			if (!b) continue;
+			char a[18];
+			bdaddr_str(&r->addr[i].bdaddr, a);
+			printf("daemon: bonded device %s already connected\n", a);
+			hogp_session(&b->addr, b->type, mgmt, 1);
+		}
+		break;
+	}
 	if (bgscan)
 		printf("daemon: %d bond(s), kernel background scan + auto-connect\n",
 		       nbonds);
@@ -1638,13 +1685,7 @@ static int cmd_daemon(void)
 					(void *)(buf + 6);
 				da = &d->addr;
 			}
-			b = bond_find(&da->bdaddr);
-			/* also match resolved RPAs via stored irk addr */
-			for (int i = 0; !b && i < nbonds; i++)
-				if (bonds[i].have_irk &&
-				    !memcmp(&bonds[i].irk_addr,
-					    &da->bdaddr, 6))
-					b = &bonds[i];
+			b = bonded_match(da);
 			if (!b) continue;
 			char a[18];
 			bdaddr_str(&da->bdaddr, a);

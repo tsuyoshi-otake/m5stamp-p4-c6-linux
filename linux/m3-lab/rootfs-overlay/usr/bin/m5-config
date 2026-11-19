@@ -818,6 +818,7 @@ USBLUN="${M5CFG_USB_LUN:-/usr/sbin/usb-lun}"
 STATUS_TXT="${M5CFG_STATUS_TXT:-/run/status.txt}"
 PSUPPLY="${M5CFG_PSUPPLY:-/sys/class/power_supply}"
 BLDIR="${M5CFG_BLDIR:-/sys/class/backlight}"
+WC="${M5CFG_WC:-wc}"
 EVF=$RUN_DIR/.m5cfg-ev.$$
 # _USF: scratch for single-shot helper output outside the touch event
 # loop (usb-lun state).  Kept separate from $EVF so a non-touch caller
@@ -1914,11 +1915,16 @@ ble_after_pair() {
 }
 
 # After a forget: stop the daemon when no bond is left (the store is
-# an 8-byte header + entries).
+# an 8-byte header + entries).  Only a positive "empty" answer may
+# stop it: when the wc exec is refused (NOMMU reserve) _sz comes back
+# empty and must not read as 0 -- the daemon keeps serving the bonds
+# that are still there (#41 review).
 ble_maybe_stop_daemon() {
-	_sz=0
-	[ -f "$BLE_BONDS" ] && _sz=$(wc -c < "$BLE_BONDS" 2>/dev/null)
-	[ "${_sz:-0}" -le 8 ] && "$BLEKBD_INITD" stop >/dev/null 2>&1
+	if [ -f "$BLE_BONDS" ]; then
+		_sz=$("$WC" -c < "$BLE_BONDS" 2>/dev/null) || _sz=
+		[ -n "$_sz" ] && [ "$_sz" -le 8 ] || return 0
+	fi
+	"$BLEKBD_INITD" stop >/dev/null 2>&1
 	return 0
 }
 

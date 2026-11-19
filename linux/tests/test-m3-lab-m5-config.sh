@@ -630,7 +630,47 @@ out=$(M5CFG_BLE_KBD="$tmp/bin/ble-kbd" M5CFG_BLELOG="$tmp/blelog" \
 grep -q 'initd stop' "$tmp/initlog" &&
 	ok "forget of last bond stops the daemon" ||
 	bad "forget stop: $(cat "$tmp/initlog"); $out"
-rm -f "$tmp/ble-in" "$tmp/ble-cap" "$tmp/ble-cap2" "$tmp/ble-release"
+
+# 28b. Same path with a denied wc exec (NOMMU reserve): the size check
+# gets no answer, and the daemon must NOT be stopped while a bond
+# remains -- the fake forget leaves a 80-byte store (header + 1 entry).
+cat > "$tmp/bin/ble-kbd" <<'EOF'
+#!/bin/sh
+echo "ble-kbd $*" >> "$M5CFG_BLELOG"
+case "$1" in
+scan|list) cat "$M5CFG_BLE_IN" ;;
+pair) printf 'pairing %s ...\n' "$2" ;;
+forget)
+	{ printf 'M5b\0\0\0\0\0\x01\x00'; head -c 72 /dev/zero; } \
+		> "$M5CFG_BOOT_MNT/ble-bonds.dat"
+	printf 'forgotten\n' ;;
+esac
+EOF
+chmod +x "$tmp/bin/ble-kbd"
+cat > "$tmp/bin/wc" <<'EOF'
+#!/bin/sh
+# refused exec, like a NOMMU reserve denial
+exit 127
+EOF
+chmod +x "$tmp/bin/wc"
+: > "$tmp/blelog"; : > "$tmp/initlog"
+printf 'T 8 50\nT 10 10\nT 4 50\nT 4 10\nT 20 10\nT 20 10\nT 20 10\n' \
+	> "$tmp/tscr/events"
+out=$(M5CFG_BLE_KBD="$tmp/bin/ble-kbd" M5CFG_BLELOG="$tmp/blelog" \
+	M5CFG_BLE_IN="$tmp/ble-in" M5CFG_TSCRIPT="$tmp/tscr/events" \
+	M5CFG_BLE_INITD="$tmp/bin/S95blekbd" M5CFG_INITLOG="$tmp/initlog" \
+	M5CFG_WC="$tmp/bin/wc" \
+	M5CFG_BOOT_MNT="$tmp/boot" M5CFG_RUN_DIR="$tmp/run" \
+	sh "$tool" menu </dev/null 2>&1)
+grep -q 'ble-kbd forget' "$tmp/blelog" ||
+	bad "forget path not reached: $out"
+if grep -q 'initd stop' "$tmp/initlog"; then
+	bad "denied wc still stopped the daemon"
+else
+	ok "denied wc -> daemon keeps running"
+fi
+rm -f "$tmp/bin/wc" "$tmp/ble-in" "$tmp/ble-cap" "$tmp/ble-cap2" \
+	"$tmp/ble-release"
 
 # 29. Status is a full text page: >19 lines page with [ more > ], the
 # nav block sits below, and a marker past row 19 shows on page 2.
