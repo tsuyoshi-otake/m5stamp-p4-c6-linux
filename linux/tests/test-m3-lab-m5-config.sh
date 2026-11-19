@@ -321,22 +321,23 @@ out=$(M5CFG_TSCRIPT="$tmp/tscr/events" sh "$tool" menu </dev/null 2>&1)
 echo "$out" | grep -q "== Wi-Fi ==" &&
 	ok "key byte selects while touch is on" || bad "key select: $out"
 
-# 16. touch dead ends: a text field shows the keyboard note plus a
-# [back] block instead of a prompt; a tap leaves and returns to the
-# menu.  (menu_set -> ttext)
-printf 'T 4 50\nT 4 10\nT 20 10\nT 20 10\n' > "$tmp/tscr/events"
+# 16. touch text field (#42 step 2): the on-screen keyboard -- the
+# field line sits at row 1, three key layers cover printable ASCII,
+# nav is [cancel]/[OK].  A letter tap appends and repaints the field.
+printf 'T 4 50\nT 4 10\nT 6 6\nT 20 10\nT 20 10\n' > "$tmp/tscr/events"
 out=$(M5CFG_TSCRIPT="$tmp/tscr/events" sh "$tool" menu </dev/null 2>&1)
-echo "$out" | grep -q "needs a keyboard" &&
-	ok "text field shows needs-a-keyboard + back" ||
-	bad "ttext: $out"
-# ... and a typed line still reaches it through the K-byte path.
-printf 'T 4 50\nT 4 10\nK h\nT 20 10\nT 20 10\n' > "$tmp/tscr/events"
+echo "$out" | grep -q 'ABC' && echo "$out" | grep -q 'cancel' &&
+	echo "$out" | grep -q 'OK' && echo "$out" | grep -q '> a_' &&
+	ok "OSK draws layers+nav, a letter tap types" || bad "ttext: $out"
+# ... and a real keyboard types through the same field as K bytes;
+# K enter is [OK].
+printf 'T 4 50\nT 4 10\nK h\nK o\nK s\nK t\nK -\nK 9\nK enter\nT 20 10\nT 20 10\n' \
+	> "$tmp/tscr/events"
 start_saver
-out=$(printf 'ost-9\n' | M5CFG_TSCRIPT="$tmp/tscr/events" \
-	sh "$tool" menu 2>&1)
+out=$(M5CFG_TSCRIPT="$tmp/tscr/events" sh "$tool" menu </dev/null 2>&1)
 stop_saver
 imgfile config.txt | grep -q "hostname=host-9" &&
-	ok "K byte + typed rest still enters the value" || bad "ttext kbd: $out"
+	ok "K bytes type through the OSK too" || bad "ttext kbd: $out"
 # a chooser block picks the value by tap: Wi-Fi item 5 (PMF) is slot 4
 # (rows 11-14, col 0-39); inside tpick "0 1" value "1" is slot 1.
 printf 'T 4 10\nT 12 10\nT 4 50\nT 20 10\nT 20 10\n' > "$tmp/tscr/events"
@@ -416,39 +417,40 @@ grep -n "trap '_cleanup; exit 130'" "$tool" >/dev/null &&
 
 # 19. REVIEW 2: secrets typed through the touch path are never echoed.
 # System (main slot 1) -> "m5 password" (slot 1: rows 3-6, col 40) ->
-# ttext secret -> K n + typed rest; the value shows only as '*' and
-# lands in the image.
-printf 'T 4 50\nT 4 50\nK n\nT 20 10\nT 20 10\nT 20 10\n' > "$tmp/tscr/events"
+# ttext secret -> K bytes; the field shows only '*'s plus the length
+# and the plaintext lands in the image but never on the screen.
+printf 'T 4 50\nT 4 50\nK n\nK e\nK w\nK s\nK e\nK c\nK r\nK e\nK t\nK 9\nK 9\nK enter\nT 20 10\nT 20 10\nT 20 10\n' \
+	> "$tmp/tscr/events"
 start_saver
-out=$(printf 'ewsecret99\n' | M5CFG_TSCRIPT="$tmp/tscr/events" \
-	sh "$tool" menu 2>&1)
+out=$(M5CFG_TSCRIPT="$tmp/tscr/events" sh "$tool" menu </dev/null 2>&1)
 stop_saver
 case "$out" in *newsecret99*) bad "touch secret echoed: $out" ;; esac
-echo "$out" | grep -q 'value: ' && echo "$out" | grep -q '\*\*\*' &&
+echo "$out" | grep -q '\*\*\*' && echo "$out" | grep -q '(11)' &&
 	imgfile credentials.txt | grep -q '^password=newsecret99$' &&
-	ok "touch secret: stars shown, value saved, never echoed" ||
+	ok "touch secret: stars+length shown, saved, never echoed" ||
 	bad "touch secret: $out"
 
-# 20. '?' is a real first char now (K ? is a literal, not a control
-# token): a password may start with '?'.
-printf 'T 4 50\nT 4 50\nK ?\nT 20 10\nT 20 10\nT 20 10\n' > "$tmp/tscr/events"
+# 20. '?' is a real key now (K ? is a literal, not a control token):
+# a password may start with '?'.
+printf 'T 4 50\nT 4 50\nK ?\nK a\nK b\nK c\nK 1\nK 2\nK 3\nK 4\nK 5\nK enter\nT 20 10\nT 20 10\nT 20 10\n' \
+	> "$tmp/tscr/events"
 start_saver
-out=$(printf 'abc12345\n' | M5CFG_TSCRIPT="$tmp/tscr/events" \
-	sh "$tool" menu 2>&1)
+out=$(M5CFG_TSCRIPT="$tmp/tscr/events" sh "$tool" menu </dev/null 2>&1)
 stop_saver
 imgfile credentials.txt | grep -q '^password=?abc12345$' &&
 	ok "K ? starts a password value" || bad "K ?: $out"
 
-# 21. Result messages live in the message strip (row 19 = MSGTOP+1),
+# 21. Result messages live in the message strip (row 18 = MSGTOP),
 # not under the nav block: a touch set shows "saving ..." then
-# "saved to flash" at the parked cursor, and the prompt sat at row 19.
-printf 'T 4 50\nT 4 10\nK b\nT 20 10\nT 20 10\nT 20 10\n' > "$tmp/tscr/events"
+# "saved to flash" at the parked cursor, and the OSK field line at
+# row 1 showed the typed value.
+printf 'T 4 50\nT 4 10\nK b\nK o\nK x\nK -\nK 1\nK enter\nT 20 10\nT 20 10\nT 20 10\n' \
+	> "$tmp/tscr/events"
 start_saver
-out=$(printf 'ox-1\n' | M5CFG_TSCRIPT="$tmp/tscr/events" \
-	sh "$tool" menu 2>&1)
+out=$(M5CFG_TSCRIPT="$tmp/tscr/events" sh "$tool" menu </dev/null 2>&1)
 stop_saver
 echo "$out" | grep -q 'saving \.\.\.' && echo "$out" | grep -q 'saved to flash' &&
-	echo "$out" | grep -q "$(printf '\033\[19;1H')value: " &&
+	echo "$out" | grep -q "$(printf '\033\[2;1H')$(printf '\033\[0m')> box-1_" &&
 	ok "results print in the message area" || bad "msg area: $out"
 imgfile config.txt | grep -q 'hostname=box-1' &&
 	ok "touch set still saves" || bad "touch set"
@@ -569,9 +571,10 @@ printf '%s\n' "$ev"
 EOF
 chmod +x "$tmp/bin/stty" "$tmp/bin/m5-key-log"
 
-# Between "STTY -echo" and the matching "STTY echo" exactly one M5KEY
-# line may appear (the first-byte call); on the typed path the saved
-# value proves the read happened before echo came back.
+# Between "STTY -echo" and the matching "STTY echo" every field byte
+# is one m5-key call now (no cooked read), so the window holds N >= 1
+# M5KEY lines; on the typed path the saved value proves all reads
+# happened before echo came back.
 echo_check() { # $1 desc; log is $tmp/m5.log
 	off=$(grep -n 'STTY -echo' "$tmp/m5.log" | tail -1 | cut -d: -f1)
 	# the ttext restore is the FIRST 'STTY echo' after '-echo'; the
@@ -581,17 +584,18 @@ echo_check() { # $1 desc; log is $tmp/m5.log
 	keys=$(awk -v a="$off" -v b="$on" 'NR>a && NR<b' \
 		"$tmp/m5.log" | grep -c M5KEY)
 	[ -n "$off" ] && [ -n "$on" ] && [ "$on" -gt "$off" ] &&
-		[ "$keys" -eq 1 ] || return 1
+		[ "$keys" -ge 1 ] || return 1
 	return 0
 }
 
-# typed value: System(1) -> m5 password(1) -> K s + stdin "ekret999"
-printf 'T 4 50\nT 4 50\nK s\nT 20 10\n' > "$tmp/tscr/events"
+# typed value: System(1) -> m5 password(1) -> K bytes "sekret999"
+printf 'T 4 50\nT 4 50\nK s\nK e\nK k\nK r\nK e\nK t\nK 9\nK 9\nK 9\nK enter\nT 20 10\n' \
+	> "$tmp/tscr/events"
 : > "$tmp/m5.log"
 start_saver
-out=$(printf 'ekret999\n' | M5LOG="$tmp/m5.log" M5CFG_STTY="$tmp/bin/stty" \
+out=$(M5LOG="$tmp/m5.log" M5CFG_STTY="$tmp/bin/stty" \
 	M5CFG_M5_KEY="$tmp/bin/m5-key-log" M5CFG_TSCRIPT="$tmp/tscr/events" \
-	sh "$tool" menu 2>&1)
+	sh "$tool" menu </dev/null 2>&1)
 stop_saver
 echo_check && imgfile credentials.txt | grep -q '^password=sekret999$' &&
 	ok "stty order: -echo before first m5-key, echo after read" ||
@@ -631,12 +635,13 @@ tail -1 "$tmp/m5.log" | grep -q 'STTY echo' && [ "$rc" -eq 130 ] &&
 # 28. Non-secret ttext never touches stty (plain fields keep normal
 # echo): the same field edit through ttext logs no STTY -echo.  (The
 # session cleanup's final 'stty echo' safety restore is allowed.)
-printf 'T 4 50\nT 4 10\nK b\nT 20 10\nT 20 10\n' > "$tmp/tscr/events"
+printf 'T 4 50\nT 4 10\nK b\nK o\nK x\nK -\nK 2\nK enter\nT 20 10\nT 20 10\n' \
+	> "$tmp/tscr/events"
 : > "$tmp/m5.log"
 start_saver
-out=$(printf 'ox-2\n' | M5LOG="$tmp/m5.log" M5CFG_STTY="$tmp/bin/stty" \
+out=$(M5LOG="$tmp/m5.log" M5CFG_STTY="$tmp/bin/stty" \
 	M5CFG_M5_KEY="$tmp/bin/m5-key-log" M5CFG_TSCRIPT="$tmp/tscr/events" \
-	sh "$tool" menu 2>&1)
+	sh "$tool" menu </dev/null 2>&1)
 stop_saver
 ! grep -q 'STTY -echo' "$tmp/m5.log" &&
 	imgfile config.txt | grep -q '^hostname=box-2$' &&
@@ -648,12 +653,12 @@ stop_saver
 # once at session end.  So ESC]R is emitted exactly once, after the
 # last repaint, and a signal arriving after the save still restores.
 escR=$(printf '\033]R'); escB=$(printf '\033[37;44m')
-# System(slot 1) -> hostname(slot 0) -> K b + stdin "ox-3" -> saved;
+# System(slot 1) -> hostname(slot 0) -> K bytes "box-3" -> saved;
 # back to the System menu (which repaints), back to main, exit.
-printf 'T 4 50\nT 4 10\nK b\nT 20 10\nT 20 10\n' > "$tmp/tscr/events"
+printf 'T 4 50\nT 4 10\nK b\nK o\nK x\nK -\nK 3\nK enter\nT 20 10\nT 20 10\n' \
+	> "$tmp/tscr/events"
 start_saver
-out=$(printf 'ox-3\n' | M5CFG_TSCRIPT="$tmp/tscr/events" \
-	sh "$tool" menu 2>&1)
+out=$(M5CFG_TSCRIPT="$tmp/tscr/events" sh "$tool" menu </dev/null 2>&1)
 stop_saver
 imgfile config.txt | grep -q '^hostname=box-3$' ||
 	bad "review1 save did not land"
@@ -708,12 +713,12 @@ echo "$out" | grep -q "$(printf '\033\]P')" &&
 # A TERM after the save still runs the session cleanup: ESC]R once,
 # rc 130.  (Before the split the save had already cleared the traps,
 # so this died on the default disposition with no restore.)
-printf 'T 4 50\nT 4 10\nK b\nTERM\n' > "$tmp/tscr/events"
+printf 'T 4 50\nT 4 10\nK b\nK o\nK x\nK -\nK 4\nTERM\n' > "$tmp/tscr/events"
 : > "$tmp/m5.log"
 start_saver
-out=$(printf 'ox-4\n' | M5LOG="$tmp/m5.log" M5CFG_STTY="$tmp/bin/stty" \
+out=$(M5LOG="$tmp/m5.log" M5CFG_STTY="$tmp/bin/stty" \
 	M5CFG_M5_KEY="$tmp/bin/m5-key-log" M5CFG_TSCRIPT="$tmp/tscr/events" \
-	sh "$tool" menu 2>&1)
+	sh "$tool" menu </dev/null 2>&1)
 rc=$?
 stop_saver
 n=$(printf '%s' "$out" | grep -o "$escR" | wc -l)
@@ -733,7 +738,8 @@ menu_ports menu_blekbd menu_power menu_lpcore menu_status menu_main \
 status_lines menu_set menu_secret menu_choose menu_adjust menu_keys \
 _blescan touch_ok _touch_init _pal_set _pal_restore set_apply trun \
 cfg_get eff_file key_file keys_file eff_ssid key_explained lun_file \
-do_get is_key_line pwroff_support _cleanup _drive_clean"
+do_get is_key_line pwroff_support _cleanup _drive_clean key_maxlen \
+_kbroww _kblock _kb_keys _kb_field _kb_char _kb_hit _kb_press"
 _lint_hit=0
 for fn in $_lint_fns; do
 	awk -v f="$fn" 'index($0, f "()") == 1 { on = 1 }
@@ -1034,6 +1040,100 @@ M5CFG_BLDIR="$tmp/s07bl" M5CFG_CONFIG_TXT="$tmp/s07/config.txt" \
 	sh "$S07" start 2>/dev/null; rc=$?
 [ "$rc" -eq 0 ] && ok "S07backlight no-panel no-op" ||
 	bad "s07 nopanel rc=$rc"
+
+# 35. B38 / #42 step 2: the on-screen keyboard end to end -- "Ab1 !~"
+# typed with a one-shot shift, a layer switch and [del]; [cancel]
+# keeps the old value; the field-limit cap; the kept text after a
+# reject; and the layout table covering every printable ASCII byte.
+#
+# Wi-Fi(main slot 0) -> SSID(item 2 = slot 1).  Taps (row,col):
+# [ABC] r2s0 (9,5) -> 'A' r1s0 (6,6) -> 'b' r2s5 (9,55) -- on the
+# lower layer again, which proves the one-shot revert -- [123] r4s0
+# (15,10) -> '1' r0s0 (3,3) -> [spc] r4s1 (15,40) -> '!' r1s0 (6,3)
+# -> '~' r3s9 (12,75) -> [del] r4s2 (15,60) -> '~' again -> OK (20,60).
+printf 'T 4 10\nT 4 50\nT 9 5\nT 6 6\nT 9 55\nT 15 10\nT 3 3\nT 15 40\nT 6 3\nT 12 75\nT 15 60\nT 12 75\nT 20 60\nT 20 10\nT 20 10\nT 20 10\n' \
+	> "$tmp/tscr/events"
+start_saver
+out=$(M5CFG_TSCRIPT="$tmp/tscr/events" sh "$tool" menu </dev/null 2>&1)
+stop_saver
+imgfile config.txt | grep -qF 'wifi_ssid=Ab1 !~' &&
+	echo "$out" | grep -qF 'layer 123+sym' &&
+	echo "$out" | grep -qF 'layer ABC' &&
+	ok "OSK types 'Ab1 !~' via shift+layer+del" || bad "osk type: $out"
+# the tapped key flashes in _TAP (37;45) per tap
+echo "$out" | grep -q "$(printf '\033\[37;45m')" &&
+	ok "key tap flashes in the _TAP colour" || bad "no key flash: $out"
+# [cancel] returns an empty REPLY: the saved value stays, the msg is
+# "unchanged".
+printf 'T 4 10\nT 4 50\nT 6 6\nT 20 10\nT 20 10\nT 20 10\nT 20 10\n' \
+	> "$tmp/tscr/events"
+start_saver
+out=$(M5CFG_TSCRIPT="$tmp/tscr/events" sh "$tool" menu </dev/null 2>&1)
+stop_saver
+imgfile config.txt | grep -qF 'wifi_ssid=Ab1 !~' &&
+	[ "$(imgfile config.txt | grep -c '^wifi_ssid=')" = 1 ] &&
+	echo "$out" | grep -qF 'unchanged' &&
+	ok "[cancel] keeps the previous value" || bad "osk cancel: $out"
+# passphrase field (Wi-Fi item 3 = slot 2, rows 7-9 col 0): 63 'a'
+# taps -> the 63-char edge passes the validator and saves; the secret
+# field shows stars + the length, never the value.
+{
+	printf 'T 4 10\nT 8 10\n'
+	_i=0; while [ "$_i" -lt 63 ]; do printf 'T 6 6\n'; _i=$((_i + 1)); done
+	printf 'T 20 60\nT 20 10\nT 20 10\nT 20 10\n'
+} > "$tmp/tscr/events"
+_p63=$(printf 'a%.0s' $(seq 63))
+start_saver
+out=$(M5CFG_TSCRIPT="$tmp/tscr/events" sh "$tool" menu </dev/null 2>&1)
+stop_saver
+imgfile config.txt | grep -qF "wifi_psk=$_p63" &&
+	echo "$out" | grep -qF '(63)' &&
+	! echo "$out" | grep -qF "$_p63" &&
+	ok "63-char passphrase types on the OSK" || bad "63 psk: $out"
+# field limit: wifi_ssid caps at 32 while typing -- the 33rd char tap
+# is refused (msg) and the saved value is exactly 32 chars.
+{
+	printf 'T 4 10\nT 4 50\n'
+	_i=0; while [ "$_i" -lt 32 ]; do printf 'T 6 6\n'; _i=$((_i + 1)); done
+	printf 'T 9 55\nT 20 60\nT 20 10\nT 20 10\nT 20 10\n'
+} > "$tmp/tscr/events"
+_p32=$(printf 'a%.0s' $(seq 32))
+start_saver
+out=$(M5CFG_TSCRIPT="$tmp/tscr/events" sh "$tool" menu </dev/null 2>&1)
+stop_saver
+imgfile config.txt | grep -qF "wifi_ssid=$_p32" &&
+	echo "$out" | grep -qF 'limit: 32' &&
+	! imgfile config.txt | grep -qF "wifi_ssid=${_p32}b" &&
+	ok "typing cap: 33rd char refused, 32 saved" || bad "osk limit: $out"
+# a rejected value reopens the field with the typed text kept: '-bad'
+# is rejected by the hostname validator, the field comes back showing
+# '> -bad_' (2nd render proves the INIT), [del]x4 + 'ok9' then saves.
+printf 'T 4 50\nT 4 10\nT 15 10\nT 9 10\nT 15 10\nT 9 55\nT 6 6\nT 6 25\nT 20 60\nT 20 10\nT 15 60\nT 15 60\nT 15 60\nT 15 60\nT 3 67\nT 6 65\nT 15 10\nT 3 67\nT 20 60\nT 20 10\nT 20 10\nT 20 10\n' \
+	> "$tmp/tscr/events"
+start_saver
+out=$(M5CFG_TSCRIPT="$tmp/tscr/events" sh "$tool" menu </dev/null 2>&1)
+stop_saver
+[ "$(echo "$out" | grep -oF '> -bad_' | wc -l)" -ge 2 ] &&
+	imgfile config.txt | grep -q '^hostname=ok9$' &&
+	ok "rejected value reopens with text kept" || bad "osk retry: $out"
+# layout coverage: the _kbdump seam lists every row spec; the set of
+# one-char keys plus ' ' (from [spc]) must be all of 0x20-0x7e.
+have=" "
+out=$(sh "$tool" _kbdump)
+set -f
+for _w in $out; do
+	[ ${#_w} -eq 1 ] && have="$have$_w"
+done
+set +f
+miss=""
+_i=32
+while [ "$_i" -le 126 ]; do
+	_c=$(printf "\\$(printf '%03o' "$_i")")
+	[ "${have#*"$_c"}" = "$have" ] && miss="$miss $_i"
+	_i=$((_i + 1))
+done
+[ -z "$miss" ] && ok "OSK covers every printable ASCII (0x20-0x7e)" ||
+	bad "OSK missing bytes:$miss"
 
 if [ "$fails" -gt 0 ]; then
 	echo "FAILED: $fails checks"
