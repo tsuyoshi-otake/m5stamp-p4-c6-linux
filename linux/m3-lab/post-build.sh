@@ -45,12 +45,26 @@ for path in \
 	fi
 done
 
+# Board-conditional must-exist: etc/board/default-hostname is shipped only
+# by rootfs-overlay-tab5 (same marker the config.txt template below uses),
+# so this fails the Tab5 build without requiring a Tab5 file on Stamp.
+if [ -r "${TARGET_DIR}/etc/board/default-hostname" ]; then
+	if [ ! -f "${TARGET_DIR}/etc/init.d/S07backlight" ]; then
+		echo "M3-lab file missing from rootfs: ${TARGET_DIR}/etc/init.d/S07backlight" >&2
+		exit 1
+	fi
+fi
+
 chmod 0755 "${TARGET_DIR}/etc/init.d/S05tmpfs"
 chmod 0755 "${TARGET_DIR}/etc/init.d/S40network"
 chmod 0755 "${TARGET_DIR}/etc/init.d/S45bootsync"
 chmod 0755 "${TARGET_DIR}/etc/init.d/S85ssh"
 chmod 0755 "${TARGET_DIR}/etc/init.d/S90watchdog"
 chmod 0755 "${TARGET_DIR}/etc/init.d/S95blekbd"
+# Every surviving rcS entry must be executable — including board-specific
+# overlays (e.g. Tab5-only S07backlight) the fixed list above does not name.
+# The must-exist loop has already run, so the glob always matches.
+chmod 0755 "${TARGET_DIR}"/etc/init.d/S[0-9][0-9]*
 chmod 0755 "${TARGET_DIR}/usr/sbin/bootsyncd"
 chmod 0755 "${TARGET_DIR}/usr/sbin/boot-classify"
 chmod 0755 "${TARGET_DIR}/usr/sbin/usb-lun"

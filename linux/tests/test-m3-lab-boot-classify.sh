@@ -167,6 +167,20 @@ else
 	fails=$((fails + 1))
 fi
 
+# 11. Every overlay init.d script must be committed executable (100755).
+# post-build.sh chmods the S?? glob now, but S07backlight shipped 0644
+# before the glob existed and rcS silently skipped it at boot.
+s_init_bad=$(git -C "$repo_root" ls-files -s 'linux/m3-lab/' |
+	awk '$4 ~ /rootfs-overlay[^\/]*\/etc\/init\.d\/S[0-9][0-9][^\/]*$/ &&
+		$1 == "100644" { print $4 }')
+if [ -z "$s_init_bad" ]; then
+	echo "ok: overlay init.d scripts are 100755 in the git index"
+else
+	echo "FAIL: init.d scripts committed without exec bit:"
+	printf '%s\n' "$s_init_bad"
+	fails=$((fails + 1))
+fi
+
 if [ "$fails" -gt 0 ]; then
 	echo "FAILED: $fails checks"
 	exit 1
