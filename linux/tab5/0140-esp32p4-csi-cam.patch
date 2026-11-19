@@ -23,11 +23,11 @@ dsi-scanout driver; this driver never touches the block reset,
 and refuses to arm a channel that is enabled or equals the
 shim-patched espressif,scanout-chan.
 
- 2 files changed, 626 insertions(+)
+ 2 files changed, 637 insertions(+)
 
 --- /dev/null
 +++ b/drivers/misc/esp32p4_cam.c
-@@ -0,0 +1,629 @@
+@@ -0,0 +1,636 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * ESP32-P4 MIPI-CSI one-shot raw capture (Tab5 camera bring-up).
@@ -145,6 +145,7 @@ shim-patched espressif,scanout-chan.
 +#define GDMA_CH_CFG1		0x24
 +#define GDMA_CH_LLP0		0x28
 +#define GDMA_CH_STATUS0		0x30
++#define GDMA_CH_SSTATAR0	0x70
 +#define GDMA_CH_INT_ST_ENA0	0x80
 +#define GDMA_CH_INT_ST0		0x88
 +#define GDMA_CH_INT_SIG_ENA0	0x90
@@ -337,13 +338,19 @@ shim-patched espressif,scanout-chan.
 +	writel(CSI_MEM_FIFO, ch + GDMA_CH_SAR0);
 +	writel((u32)c->fb_pa, ch + GDMA_CH_DAR0);
 +	writel(CAM_XFER_WORDS - 1, ch + GDMA_CH_BLOCK_TS0);
++	/* Source-peripheral status fetch = the bridge FIFO base, as the IDF
++	 * channel alloc's `status_fetch_addr`.  With sstatar left 0 the
++	 * source-FC handshake fetched the periph status from address 0 and
++	 * ended the transfer at the first block boundary -- captures came
++	 * back with only ~one bridge-buffer (afull, 960 items) of the frame. */
++	writel(CSI_MEM_FIFO, ch + GDMA_CH_SSTATAR0);
 +	writel(GDMA_CTL0_VAL, ch + GDMA_CH_CTL0);
 +	writel(GDMA_CTL1_VAL, ch + GDMA_CH_CTL1);
 +	writel(0, ch + GDMA_CH_CFG0);
 +	writel(GDMA_CFG1_VAL, ch + GDMA_CH_CFG1);
 +	writel(0, ch + GDMA_CH_LLP0);
 +	writel(~0u, ch + GDMA_CH_INT_CLR0);
-+	writel(GDMA_EV_MASK, ch + GDMA_CH_INT_ST_ENA0);
++	writel(~0u, ch + GDMA_CH_INT_ST_ENA0);	/* latch every event class, as the IDF channel alloc does */
 +	writel(0, ch + GDMA_CH_INT_SIG_ENA0);	/* polled, no IRQ line */
 +}
 +
