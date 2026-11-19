@@ -297,9 +297,30 @@ int main(int argc, char **argv)
 			goto out;
 		}
 		stats(fb);
-		if (i == frames - 1 && write(ofd, fb, got) != got) {
-			perror("write output");
-			goto out;
+		if (i == frames - 1) {
+			/* write(2) may return short without setting
+			 * errno (tmpfs under memory pressure did on
+			 * board): loop until the frame is out, and
+			 * only fail on a real error or a zero write. */
+			size_t woff = 0;
+
+			while (woff < (size_t)got) {
+				ssize_t w = write(ofd, fb + woff,
+						  (size_t)got - woff);
+				if (w < 0) {
+					if (errno == EINTR)
+						continue;
+					perror("write output");
+					goto out;
+				}
+				if (!w) {
+					fprintf(stderr,
+						"write output: wrote 0 of %zd left\n",
+						got - (ssize_t)woff);
+					goto out;
+				}
+				woff += (size_t)w;
+			}
 		}
 	}
 	rc = 0;
