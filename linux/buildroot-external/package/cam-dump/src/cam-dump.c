@@ -234,6 +234,14 @@ int main(int argc, char **argv)
 	if (frames < 1)
 		frames = 1;
 
+	/* The gate in S08camera unbinds the driver unless camera=on,
+	 * so a missing node means "off", not "broken". */
+	if (access("/dev/cam0", F_OK) < 0) {
+		fprintf(stderr,
+			"camera is off: set camera=on (m5-config set camera on) and reboot\n");
+		return 1;
+	}
+
 	i2c = open("/dev/i2c-0", O_RDWR);
 	if (i2c < 0) {
 		perror("open /dev/i2c-0");

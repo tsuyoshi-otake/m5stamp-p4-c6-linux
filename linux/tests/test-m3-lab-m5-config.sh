@@ -1437,6 +1437,80 @@ M5CFG_BLDIR="$tmp/s07bl" M5CFG_CONFIG_TXT="$tmp/s07/config.txt" \
 [ "$rc" -eq 0 ] && ok "S07backlight no-panel no-op" ||
 	bad "s07 nopanel rc=$rc"
 
+# 34b. B46 / #25: the camera key -- managed like brightness, gated by
+# the esp32p4-csi-cam driver dir being present in sysfs; S08camera
+# unbinds the platform device unless config.txt says camera=on.
+mkdir -p "$tmp/camdrv/5009f000.cam" "$tmp/camdrv/module"
+: > "$tmp/camdrv/unbind"
+start_saver
+out=$(M5CFG_CAM_DRV="$tmp/camdrv" sh "$tool" set camera on 2>&1); rc=$?
+stop_saver
+[ "$rc" -eq 0 ] && echo "$out" | grep -qF 'saved to flash' &&
+	[ "$(imgfile config.txt | grep -c '^camera=on')" = 1 ] &&
+	ok "set camera saves through drive_write" ||
+	bad "set camera: rc=$rc $out"
+# bootsyncd republishes /tmp/config.txt after a save; mirror it.
+imgfile config.txt > "$tmp/pub/config.txt"
+out=$(M5CFG_CAM_DRV="$tmp/camdrv" sh "$tool" get camera 2>&1)
+[ "$out" = "on" ] && ok "get camera returns the saved value" ||
+	bad "get camera: $out"
+echo "$out" >/dev/null
+out=$(M5CFG_CAM_DRV="$tmp/camdrv" sh "$tool" list 2>&1)
+echo "$out" | grep -q 'camera' &&
+	ok "list shows camera" || bad "list camera: $out"
+for v in 2 yes enable ON onx; do
+	out=$(M5CFG_CAM_DRV="$tmp/camdrv" sh "$tool" set camera "$v" 2>&1); rc=$?
+	[ "$rc" -ne 0 ] ||
+		bad "set camera '$v' not rejected: rc=$rc $out"
+done
+ok "camera non-on/off values rejected (2,yes,enable,ON,onx)"
+# no driver (Stamp): the key is hidden and rejected like brightness.
+out=$(env -u M5CFG_CAM_DRV sh "$tool" set camera on 2>&1); rc=$?
+[ "$rc" -ne 0 ] &&
+	ok "no driver: set camera rejected" ||
+	bad "nodrv set camera: rc=$rc $out"
+out=$(env -u M5CFG_CAM_DRV sh "$tool" list 2>&1)
+echo "$out" | grep -q 'camera' &&
+	bad "no driver: list still shows camera" ||
+	ok "no driver: list hides camera"
+# Ports menu entry exists and is gated on the driver being present.
+grep -n 'key_present camera && item 3 "camera on/off' "$tool" >/dev/null &&
+	ok "Ports menu item gated on key_present camera" ||
+	bad "Ports menu camera item missing/ungated"
+# S08camera gate: fake sysfs driver dir.  camera=on keeps the binding
+# (unbind file untouched); off/missing/garbage values unbind the
+# 5009f000.cam device dir; the module/ entry must never be unbound.
+S08="$repo_root/linux/m3-lab/rootfs-overlay-tab5/etc/init.d/S08camera"
+mkdir -p "$tmp/s08"
+printf 'camera=on\n' > "$tmp/s08/config.txt"
+M5CFG_CAM_DRV="$tmp/camdrv" M5CFG_CONFIG_TXT="$tmp/s08/config.txt" \
+	sh "$S08" start
+[ ! -s "$tmp/camdrv/unbind" ] &&
+	ok "S08camera camera=on keeps the driver bound" ||
+	bad "s08 on: unbind=$(cat "$tmp/camdrv/unbind")"
+for v in off junk ""; do
+	: > "$tmp/camdrv/unbind"
+	printf 'camera=%s\n' "$v" > "$tmp/s08/config.txt"
+	M5CFG_CAM_DRV="$tmp/camdrv" M5CFG_CONFIG_TXT="$tmp/s08/config.txt" \
+		sh "$S08" start
+	[ "$(cat "$tmp/camdrv/unbind")" = "5009f000.cam" ] ||
+		bad "s08 '$v': unbind=$(cat "$tmp/camdrv/unbind")"
+done
+ok "S08camera off/junk/empty unbinds the cam device"
+printf 'hostname=desk-01\n' > "$tmp/s08/config.txt"
+: > "$tmp/camdrv/unbind"
+M5CFG_CAM_DRV="$tmp/camdrv" M5CFG_CONFIG_TXT="$tmp/s08/config.txt" \
+	sh "$S08" start
+[ "$(cat "$tmp/camdrv/unbind")" = "5009f000.cam" ] &&
+	ok "S08camera missing key defaults to off" ||
+	bad "s08 missing: unbind=$(cat "$tmp/camdrv/unbind")"
+# no driver dir at all: silent no-op.
+rm -rf "$tmp/camdrv"
+M5CFG_CAM_DRV="$tmp/camdrv" M5CFG_CONFIG_TXT="$tmp/s08/config.txt" \
+	sh "$S08" start 2>/dev/null; rc=$?
+[ "$rc" -eq 0 ] && ok "S08camera no-driver no-op" ||
+	bad "s08 nodrv rc=$rc"
+
 # 35. B38 / #42 step 2: the on-screen keyboard end to end -- "Ab1 !~"
 # typed with a one-shot shift, a layer switch and [del]; [cancel]
 # keeps the old value; the field-limit cap; the kept text after a

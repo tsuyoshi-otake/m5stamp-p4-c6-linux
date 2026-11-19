@@ -145,11 +145,31 @@ region the kernel manages — *not* from the userspace
   memory can never collide with a `no-map` region (the
   shim-patched `display_fb_res`, both NOMMU pools,
   `i2s0_dma_sram`, the boot-partition staging area) by
-  construction.  For the same reason the camera has no opt-in
-  switch: the buffer costs kernel headroom only, and a config
-  gate would have to drop and re-probe the driver while an
-  order-8 block still exists — only at boot, which is when it
-  already probes.
+  construction.
+
+### Off by default (`camera=` key, #25)
+
+The 1 MiB above is real headroom the Wi-Fi/SDIO/BLE buffers share,
+and the camera is a one-shot tool, so `S08camera` (runs right
+after `S05tmpfs` has staged `config.txt`) **unbinds the
+`esp32p4-csi-cam` platform device unless `config.txt` has
+`camera=on`**.  Unbind runs the driver's `remove()` — `CAM_RST`
+drops, `/dev/cam0` goes away, and the coherent frame buffer goes
+back to the buddy pool, which puts `MemFree`/`MemAvailable` back
+at the no-camera level.  `m5-config get/set camera` accepts only
+`on|off`, the key is hidden wherever the driver is not in the
+kernel (Stamp-P4), and the menu entry sits under Ports.
+
+- **Apply = reboot.**  `camera=on` is honored by the *next* boot's
+  gate; there is no supported runtime rebind.  Once userspace has
+  run, the buddy pool is fragmented below order-8, so a late
+  `bind` would probe straight into `-ENOMEM` (see the
+  `CAM_PREPARE`-time measurements above).  `cam-dump` without
+  `/dev/cam0` prints
+  `camera is off: set camera=on (m5-config set camera on) and reboot`
+  and exits 1.
+- Any value other than `on` — including no key at all — means
+  off.
 
 ## Interface proposal
 

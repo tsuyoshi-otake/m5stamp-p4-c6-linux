@@ -76,9 +76,11 @@ key_maxlen() {
 }
 # A key that can only be set where its apply path exists.
 SYSBOARD=${M5CFG_SYS_BOARD:-/sys/kernel/board}
+CAMDRV=${M5CFG_CAM_DRV:-/sys/bus/platform/drivers/esp32p4-csi-cam}
 key_present() {
 	case "$1" in
 		ext5v_en|ext_ant_en) [ -x /usr/sbin/tab5-rails ] ;;
+		camera) [ -d "$CAMDRV" ] ;;
 		lp_core|lp_program|lp_period) [ -d "$SYSBOARD/lp_core" ] ;;
 		brightness)
 			# only where a backlight exists (Tab5 panel); on the
@@ -97,7 +99,7 @@ key_known() {
 		hostname|wifi_mode|wifi_ssid|wifi_psk|wifi_pmf|channel|country|\
 		ntp_server|debug|sdio_mhz|ssh_password_auth|watchdog|deepsleep|\
 		auto_reboot|autorun|autorun_restart|lp_core|lp_program|lp_period|\
-		ext5v_en|ext_ant_en|brightness|password|root_password|\
+		ext5v_en|ext_ant_en|brightness|camera|password|root_password|\
 		authorized_keys|root_authorized_keys) return 0 ;;
 		*) return 1 ;;
 	esac
@@ -303,6 +305,9 @@ validate() { # $1 key, $2 value
 				*[!A-Za-z0-9._-]*) bad "lp_program is a file name on the drive" ;;
 				*) return 0 ;;
 			esac ;;
+		camera)
+			case "$v" in on|off) return 0 ;; esac
+			bad "camera is on or off" ;;
 		lp_period)
 			# Mirror S05tmpfs exactly: "0, 500ms, 1s, 1m ... up to 1h"
 			# (1-9 digits + ms|s|m|h, or bare seconds; <= 3600000 ms).
@@ -652,6 +657,7 @@ do_list() {
 		country ntp_server debug sdio_mhz ssh_password_auth watchdog \
 		deepsleep auto_reboot autorun autorun_restart \
 		lp_core lp_program lp_period ext5v_en ext_ant_en brightness \
+		camera \
 		password root_password authorized_keys root_authorized_keys; do
 		key_present "$k" || continue
 		case "$k" in
@@ -1871,11 +1877,15 @@ menu_ports() {
 		say " ext5v_en:$_e5  ext_ant_en:$CFG_VAL"
 		item 1 "ext5v_en 0/1 (EXT header 5 V)"
 		item 2 "ext_ant_en 0/1 (MMCX antenna)"
+		key_present camera && item 3 "camera on/off (reboot to apply)"
 		item 0 back
 		menu_pick || return
 		case "$REPLY" in
 			1) menu_set ext5v_en ;;
 			2) menu_set ext_ant_en ;;
+			3) key_present camera &&
+				{ menu_choose camera "on off" "camera"
+				  msg "  camera: applies at reboot" ; } ;;
 			0) return ;;
 		esac
 	done
