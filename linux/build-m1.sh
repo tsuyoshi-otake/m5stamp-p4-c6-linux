@@ -852,6 +852,10 @@ fi
 # #51 experiment: user-alloc reserve/watermark on the NOMMU user pool.
 if [[ "${NOMMU_USER_RESERVE:-0}" == "1" ]]; then
 	patches+=(0090-nommu-user-reserve.patch)
+	# #42: a reserve-denied user alloc at/above the bFLT-exec order
+	# fails ENOMEM directly instead of storming the buddy allocator.
+	# Depends on 0090's gate; applies last by filename order.
+	patches+=(0103-nommu-user-denied-nofallback.patch)
 fi
 # #50 round 4: PR_SET_SYSTEM_WORK lets system scripts clear the ancestry
 # user-mark (console/SSH-started restarts).  Needs 0090's classifier.
