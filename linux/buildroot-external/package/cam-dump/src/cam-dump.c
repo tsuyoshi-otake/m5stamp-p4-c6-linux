@@ -212,6 +212,7 @@ int main(int argc, char **argv)
 {
 	const char *out = "/tmp/cam0.raw";
 	int frames = 1, pattern = 0, i2c = -1, ofd = -1, rc = 1;
+	int pause_ms = 0;
 	uint8_t *fb;
 	int i;
 
@@ -220,11 +221,13 @@ int main(int argc, char **argv)
 			out = argv[++i];
 		else if (!strcmp(argv[i], "-n") && i + 1 < argc)
 			frames = atoi(argv[++i]);
+		else if (!strcmp(argv[i], "-P") && i + 1 < argc)
+			pause_ms = atoi(argv[++i]);
 		else if (!strcmp(argv[i], "-p"))
 			pattern = 1;
 		else {
 			fprintf(stderr,
-				"usage: cam-dump [-o out.raw|-] [-n frames] [-p]\n");
+				"usage: cam-dump [-o out.raw|-] [-n frames] [-p] [-P pause_ms]\n");
 			return 2;
 		}
 	}
@@ -271,6 +274,11 @@ int main(int argc, char **argv)
 			close(cam);
 			goto out;
 		}
+		/* -P: hold here with the pipeline armed but the sensor
+		 * not yet streaming, so a parallel devmem can snapshot
+		 * the armed register state right before stream-on. */
+		if (pause_ms)
+			usleep(pause_ms * 1000);
 		if (sensor_setup(i2c, pattern)) {
 			close(cam);
 			goto out;
