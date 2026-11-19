@@ -272,6 +272,14 @@ case "$ev" in
 	S\ *)	sleep "${ev#S }"; exit 1 ;;
 	INT)	kill -INT "$PPID" 2>/dev/null; sleep 1; exit 0 ;;
 	TERM)	kill -TERM "$PPID" 2>/dev/null; sleep 1; exit 0 ;;
+	# B40: a refused flat-exec looks exactly like these to the
+	# caller -- the script's own exit code is all the menu sees.
+	D)	exit 127 ;;
+	D6)	exit 126 ;;
+	D9)	exit 139 ;;
+	# B40: a clean exit that produced no event at all -- the
+	# "missing required output" case.
+	E)	exit 0 ;;
 esac
 printf '%s\n' "$ev"
 EOF
@@ -1134,6 +1142,75 @@ while [ "$_i" -le 126 ]; do
 done
 [ -z "$miss" ] && ok "OSK covers every printable ASCII (0x20-0x7e)" ||
 	bad "OSK missing bytes:$miss"
+
+# 33. B40: a denied helper exec is transient, not fatal (#42).  D/D6/D9
+# make the stub exit 127/126/139 like a refused flat-exec; E exits 0
+# with no event (missing required output).  The menu must say
+# "busy (low memory), tap again" and keep waiting; inside ttext the
+# typed buffer survives.
+printf 'D\nT 4 10\nT 20 10\nT 20 10\n' > "$tmp/tscr/events"
+out=$(M5CFG_TSCRIPT="$tmp/tscr/events" sh "$tool" menu </dev/null 2>&1)
+echo "$out" | grep -qF 'busy (low memory), tap again' &&
+	echo "$out" | grep -q "== Wi-Fi ==" &&
+	ok "denied exec: busy, then the next tap works" || bad "busy pick: $out"
+# 126/139 and the empty-event case take the same transient path.
+printf 'D9\nD6\nE\nT 4 10\nT 20 10\nT 20 10\n' > "$tmp/tscr/events"
+out=$(M5CFG_TSCRIPT="$tmp/tscr/events" sh "$tool" menu </dev/null 2>&1)
+echo "$out" | grep -q "== Wi-Fi ==" &&
+	ok "126/139/empty-output are all transient" || bad "busy variants: $out"
+# ttext: 'a' + denial + 'b' -> the buffer 'ab' survives, busy shows in
+# the strip, [OK] still saves.
+printf 'T 4 10\nT 4 50\nT 6 6\nD\nT 9 55\nT 20 60\nT 20 10\nT 20 10\nT 20 10\n' \
+	> "$tmp/tscr/events"
+start_saver
+out=$(M5CFG_TSCRIPT="$tmp/tscr/events" sh "$tool" menu </dev/null 2>&1)
+stop_saver
+echo "$out" | grep -qF 'busy (low memory), tap again' &&
+	imgfile config.txt | grep -qF 'wifi_ssid=ab' &&
+	ok "ttext keeps typed text through a denied exec" || bad "busy ttext: $out"
+# the save path: a denied cp says busy, not a wrong "no room" reason,
+# and nothing was changed.
+cat > "$tmp/bin/cp" <<'EOF'
+#!/bin/sh
+exit 127
+EOF
+chmod +x "$tmp/bin/cp"
+out=$(sh "$tool" set hostname busy9 2>&1)
+echo "$out" | grep -qF 'busy (low memory)' &&
+	! imgfile config.txt | grep -q 'hostname=busy9' &&
+	ok "save says busy on a denied exec, image untouched" || bad "busy save: $out"
+rm -f "$tmp/bin/cp"
+# a real m5-key loss (stream end, rc 1) still leaves the field and the
+# menu -- it is not a "busy" and must not loop.
+printf 'T 4 10\nT 4 50\nT 6 6\n' > "$tmp/tscr/events"
+out=$(M5CFG_TSCRIPT="$tmp/tscr/events" sh "$tool" menu </dev/null 2>&1)
+! echo "$out" | grep -qF 'busy (low memory)' &&
+	ok "stream end still leaves the field (no busy)" || bad "eof busy: $out"
+# the echo-restore retries through denials: stty stub refuses twice,
+# then succeeds -- the secret field's exit still gets echo back.
+cat > "$tmp/bin/stty-deny" <<EOF
+#!/bin/sh
+# Only 'echo' calls are refused (the restore path being tested);
+# '-echo' succeeds at once so the counter is not spent early.
+echo "stty \$1" >> "$tmp/sttylog"
+[ "\$1" = echo ] || exit 0
+n=0
+[ -f "$tmp/sttyn" ] && read -r n < "$tmp/sttyn"
+n=\$((n + 1)); echo "\$n" > "$tmp/sttyn"
+[ "\$n" -le 2 ] && exit 127
+exit 0
+EOF
+chmod +x "$tmp/bin/stty-deny"
+rm -f "$tmp/sttyn" "$tmp/sttylog"
+printf 'T 4 10\nT 8 10\nT 6 6\nT 20 60\nT 20 10\nT 20 10\nT 20 10\n' \
+	> "$tmp/tscr/events"
+start_saver
+out=$(M5CFG_STTY="$tmp/bin/stty-deny" M5CFG_TSCRIPT="$tmp/tscr/events" \
+	sh "$tool" menu </dev/null 2>&1)
+stop_saver
+[ "$(grep -c 'stty echo' "$tmp/sttylog" 2>/dev/null)" -ge 3 ] &&
+	ok "stty echo retried through denied execs" ||
+	bad "stty retry: $(cat "$tmp/sttylog" 2>/dev/null)"
 
 if [ "$fails" -gt 0 ]; then
 	echo "FAILED: $fails checks"
