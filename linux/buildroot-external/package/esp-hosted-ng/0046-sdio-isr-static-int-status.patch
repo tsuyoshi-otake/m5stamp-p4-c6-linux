@@ -1,0 +1,80 @@
+From: Stamp-P4 maintainers <noreply@example.invalid>
+Subject: [PATCH] sdio: drop the 4-byte GFP_ATOMIC kmalloc in esp_handle_isr (#42)
+
+esp_handle_isr() allocated a 4-byte buffer with GFP_ATOMIC on every
+interrupt to hold the INT_ST read and the INT_CLR write-back.  When the
+allocation failed the callback returned without writing INT_CLR, which
+per 0011's own analysis leaves the slave asserting DAT1: dw_mmc re-arms
+the SDIO bit after every callback, so the IRQ spins in the exact window
+a memory-pressure event creates.  kmalloc(4) in atomic context during
+an order-7 reclaim storm is precisely the allocation most likely to
+fail.
+
+There is no need for a per-call allocation at all.  Replace it with a
+static u32 next to the existing empty_isr_streak static:
+
+  - SDIO IRQ callbacks for a function are serialized, and this driver
+    owns exactly one sdio_func, so static storage cannot race.  The
+    function already relies on that serialization for empty_isr_streak.
+
+  - The buffer still has to be DMA-safe storage, not a stack local:
+    register traffic is CMD52 bytewise today, but the opt-in
+    es_reg_cmd53 probe routes reads through sdio_memcpy_fromio, and
+    dw_mmc IDMAC descriptors must not point at stack addresses.
+    A static (.bss) u32 satisfies the DMA API under both paths, so the
+    debug probe keeps working without a probe-time allocation in the
+    context struct.
+
+With the allocation gone, every exit past the context check reaches
+the INT_CLR write: the acknowledge-on-all-paths invariant 0011/0017/
+0018/0020 established no longer has an alloc-failure escape.  The
+!func, host_sleep and !context guards above it are unchanged -- a
+missing context still cannot issue CMD52, and the sleep gate is a
+deliberate suspend-state decision, not a failure.
+
+---
+ sdio/esp_sdio.c | 16 ++++++++--------
+ 1 file changed, 8 insertions(+), 8 deletions(-)
+
+--- a/sdio/esp_sdio.c
++++ b/sdio/esp_sdio.c
+@@ -367,8 +367,14 @@
+ {
+ 	/* SDIO IRQ context only, one function at a time: no locking needed. */
+ 	static u32 empty_isr_streak;
++	/*
++	 * Read/ack scratch for this callback: static storage, DMA-safe even
++	 * when es_reg_cmd53 routes register reads through sdio_memcpy_fromio,
++	 * and never fails the way the removed 4-byte GFP_ATOMIC kmalloc did.
++	 */
++	static u32 int_status_store;
+ 	struct esp_sdio_context *context = NULL;
+-	u32 *int_status;
++	u32 *int_status = &int_status_store;
+ 	u32 status_read;
+ 	u32 raw;
+ 	int raw_ret;
+@@ -401,12 +407,6 @@
+ 	dispatch = context->adapter &&
+ 		   atomic_read(&context->adapter->state) >= ESP_CONTEXT_RX_READY;
+ 
+-	int_status = kmalloc(sizeof(u32), GFP_ATOMIC);
+-
+-	if (!int_status) {
+-		return;
+-	}
+-
+ 	/* Read interrupt status register */
+ 	ret = esp_read_reg(context, ESP_SLAVE_INT_ST_REG,
+ 			(u8 *) int_status, sizeof(*int_status), LOCK_ALREADY_ACQUIRED);
+@@ -505,8 +505,6 @@
+ 	ret = esp_write_reg(context, ESP_SLAVE_INT_CLR_REG,
+ 			(u8 *) int_status, sizeof(*int_status), LOCK_ALREADY_ACQUIRED);
+ 	CHECK_SDIO_RW_ERROR(ret);
+-
+-	kfree(int_status);
+ }
+ 
+ int generate_slave_intr(void *context, u8 data)
+--
+2.43.0

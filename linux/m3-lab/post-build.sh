@@ -25,13 +25,16 @@ for path in \
 	"${TARGET_DIR}/etc/init.d/S45bootsync" \
 	"${TARGET_DIR}/etc/init.d/S85ssh" \
 	"${TARGET_DIR}/etc/init.d/S90watchdog" \
+	"${TARGET_DIR}/etc/init.d/S95blekbd" \
 	"${TARGET_DIR}/usr/sbin/bootsyncd" \
+	"${TARGET_DIR}/usr/sbin/boot-classify" \
 	"${TARGET_DIR}/usr/sbin/usb-lun" \
 	"${TARGET_DIR}/usr/sbin/watchdog-feed" \
 	"${TARGET_DIR}/usr/sbin/update-status" \
 	"${TARGET_DIR}/usr/sbin/autorun" \
 	"${TARGET_DIR}/usr/sbin/deepsleep" \
 	"${TARGET_DIR}/usr/sbin/boot-edit" \
+	"${TARGET_DIR}/usr/bin/m5-config" \
 	"${TARGET_DIR}/usr/lib/micropython/deepsleep.py" \
 	"${TARGET_DIR}/usr/lib/micropython/lpcore.py" \
 	"${TARGET_DIR}/usr/lib/board/autorun.sh" \
@@ -42,12 +45,28 @@ for path in \
 	fi
 done
 
+# Board-conditional must-exist: etc/board/default-hostname is shipped only
+# by rootfs-overlay-tab5 (same marker the config.txt template below uses),
+# so this fails the Tab5 build without requiring a Tab5 file on Stamp.
+if [ -r "${TARGET_DIR}/etc/board/default-hostname" ]; then
+	if [ ! -f "${TARGET_DIR}/etc/init.d/S07backlight" ]; then
+		echo "M3-lab file missing from rootfs: ${TARGET_DIR}/etc/init.d/S07backlight" >&2
+		exit 1
+	fi
+fi
+
 chmod 0755 "${TARGET_DIR}/etc/init.d/S05tmpfs"
 chmod 0755 "${TARGET_DIR}/etc/init.d/S40network"
 chmod 0755 "${TARGET_DIR}/etc/init.d/S45bootsync"
 chmod 0755 "${TARGET_DIR}/etc/init.d/S85ssh"
 chmod 0755 "${TARGET_DIR}/etc/init.d/S90watchdog"
+chmod 0755 "${TARGET_DIR}/etc/init.d/S95blekbd"
+# Every surviving rcS entry must be executable — including board-specific
+# overlays (e.g. Tab5-only S07backlight) the fixed list above does not name.
+# The must-exist loop has already run, so the glob always matches.
+chmod 0755 "${TARGET_DIR}"/etc/init.d/S[0-9][0-9]*
 chmod 0755 "${TARGET_DIR}/usr/sbin/bootsyncd"
+chmod 0755 "${TARGET_DIR}/usr/sbin/boot-classify"
 chmod 0755 "${TARGET_DIR}/usr/sbin/usb-lun"
 chmod 0755 "${TARGET_DIR}/usr/sbin/watchdog-feed"
 chmod 0755 "${TARGET_DIR}/usr/sbin/update-status"
@@ -55,6 +74,7 @@ chmod 0755 "${TARGET_DIR}/usr/sbin/sysinfo"
 chmod 0755 "${TARGET_DIR}/usr/sbin/autorun"
 chmod 0755 "${TARGET_DIR}/usr/sbin/deepsleep"
 chmod 0755 "${TARGET_DIR}/usr/sbin/boot-edit"
+chmod 0755 "${TARGET_DIR}/usr/bin/m5-config"
 chmod 0644 "${TARGET_DIR}/usr/lib/micropython/deepsleep.py"
 chmod 0644 "${TARGET_DIR}/usr/lib/micropython/lpcore.py"
 # Overrides Buildroot's udhcpc script: the m3-lab copy sources its *.d
@@ -179,8 +199,9 @@ if [ -x "${FLTHDR}" ]; then
 	done
 	# Small helpers only need BusyBox's floor.
 	for bin in usr/sbin/respawn usr/sbin/mdnsd usr/sbin/run-system \
-		usr/bin/wifi-qr usr/bin/touch-dots \
+		usr/bin/wifi-qr usr/bin/touch-dots usr/bin/m5-key \
 		usr/bin/hci-scan usr/bin/hci-adv \
+		usr/bin/ble-kbd \
 		usr/bin/pcm-sine usr/bin/pcm-rec usr/bin/pcm-play; do
 		if [ -f "${TARGET_DIR}/${bin}" ]; then
 			"${FLTHDR}" -s 16384 "${TARGET_DIR}/${bin}"

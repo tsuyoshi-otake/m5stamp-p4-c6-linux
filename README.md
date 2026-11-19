@@ -364,6 +364,7 @@ esptool.py --chip esp32p4 --port COM10 --baud 460800 \
 2. **Optional USB Mass Storage Configuration**: If using the [USB carrier](#optional-hardware-usb-mass-storage-carrier), disconnect the Stamp-P4 USB-C cable after flashing, then plug the carrier's USB Type-A connection into your PC. Do not power USB-A and USB-C simultaneously. A 256KB FAT drive (volume `STAMP_P4`) will appear with `cmdline.txt`, `config.txt`, and `wpa_supplicant.conf`. Without this carrier or equivalent USB wiring, skip this step and use Wi-Fi/SSH or the USB-C serial console.
    - Edit and save the configuration. Once the host has not written to the drive for 3 seconds, `bootsyncd` copies the image, validates the FAT snapshot, applies it and writes it to flash (`Saved to flash` in the serial log; the flash write takes under a second for a small edit and about 4 seconds when most of the drive changed). No eject or reboot is needed; wait about 5 seconds after saving a small edit before unplugging, and about 10 seconds after copying larger files. The host's **Eject / Safely Remove** action still works and imports at once, which is the safe choice for hosts that cache writes (macOS and Linux may hold them until the eject).
    - Invalid or incomplete FAT images are rejected and the previous runtime configuration remains active; the next save is checked again.
+   - If the kernel could not read or mount the flashed boot image at boot time, the drive instead carries the template files plus a `NOT-SAVED.txt` explaining why: the board runs from that template for the boot, `bootsyncd` logs `NOT saved: …` and writes nothing back to flash, and `boot-edit` refuses changes until the next successful boot read (#43).
    - Live network status is available as `/run/status.txt` over SSH or serial. The exported USB drive is strictly dedicated to boot configuration (`cmdline.txt`, `config.txt`, `wpa_supplicant.conf`).
    - Network settings (`wpa_supplicant.conf`, `config.txt`), `password=`/`root_password=` and `authorized_keys`/`root_authorized_keys` take effect at once. Saving a `config.txt` applies only the keys that changed (#39): `debug`, `hostname`, `country` and `ntp_server` update without touching Wi-Fi (the new hostname answers `.local` queries immediately); `wifi_ssid`/`wifi_psk`/`wifi_pmf` and `wpa_supplicant.conf` reload the running `wpa_supplicant` with SIGHUP and renew the DHCP lease instead of re-execing it, falling back to a full restart if the new settings do not associate (the reload still re-associates, so the link drops for about as long as a restart; correcting a wrong PSK brings the address back without a reboot); `wifi_mode` and unknown keys still do a full restart; and boot-only keys such as `sdio_mhz`, `ssh_password_auth`, `watchdog` and `maxcpus` just log `ES_CONFIG: <key>= changed; applies at the next boot`. Overlapping saves queue instead of running two restarts. `cmdline.txt` is only a copy of `/proc/cmdline` for reference: the kernel command line comes from the DTB, and editing the file has no effect.
    - The kernel (`/sys/kernel/board/boot_commit`, patch `0072`) writes the image to the inactive flash slot, verifies its CRC, and only then writes the metadata that switches slots, in the format the boot shim checks at every boot. It rewrites only the sectors that differ from what the slot already holds and rests between flash operations, so Wi-Fi and SSH keep working during the write (#43). Power loss during the write leaves the previous slot active. If the kernel cannot write flash, the image is staged in PSRAM and the board reboots so the boot shim writes it (`Rebooting to commit the image to flash`); `auto_reboot=no` in `config.txt` turns that fallback reboot off.
@@ -379,6 +380,23 @@ esptool.py --chip esp32p4 --port COM10 --baud 460800 \
    vi hello.py
    python3 hello.py
    ```
+
+### 4. Settings menu
+
+`m5-config` on the serial console (115200 baud) is the board's
+`raspi-config`: a numbered menu — type a digit, press Enter.  It
+edits the same `config.txt` / `credentials.txt` files the USB drive
+exposes, validates each value, then briefly detaches the drive,
+writes the image to flash and hands it back — the
+`[bootsync] Saved to flash` line on the console is the same
+write-save-apply cycle you see after editing the files on a PC.
+`m5-config list` prints every managed key and its current value
+(passwords and the Wi-Fi passphrase masked); `m5-config get KEY` and
+`m5-config set KEY VALUE` do the same thing without the menu, so it
+is scriptable.  Most keys apply on save; a few (`sdio_mhz`,
+`watchdog`, `ssh_password_auth`, the LP-core program) take effect at
+the next boot.  If the boot-time FAT read failed, the menu says so
+and refuses to claim a save — check for `NOT-SAVED.txt` on the drive.
 
 ---
 

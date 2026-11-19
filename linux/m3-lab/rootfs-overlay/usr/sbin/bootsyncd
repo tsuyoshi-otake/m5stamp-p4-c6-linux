@@ -8,6 +8,8 @@ BOOT_IMG="/tmp/boot.img"
 LUN_CTL="/usr/sbin/usb-lun"
 BOOT_COMMIT="/usr/sbin/boot-commit"
 MNT_POINT="/run/mnt_snap"
+# #43 marker: kernel could not read/mount the flashed image this boot.
+NOSAVE_MARK="${BOOT_NOSAVE_MARK:-/run/.boot-nosave}"
 # Snapshots and staged files carry credentials and the Wi-Fi PSK (#11).
 umask 077
 
@@ -238,6 +240,14 @@ netreq_check() {
 # Validate a snapshot of the drive, save it to flash and apply what changed.
 # Returns 1 when the snapshot was not imported.
 import_snapshot() {
+	# #43: while the kernel could not read/mount the flashed boot image,
+	# /boot is the template; nothing in it may reach flash.
+	if [ -f "$NOSAVE_MARK" ]; then
+		reason=""
+		read -r reason < "$NOSAVE_MARK" 2>/dev/null || true
+		log "NOT saved: ${reason:-kernel could not read the boot image}"
+		return 0
+	fi
 	SNAP_IMG="/run/boot-snap.$$"
 	STAGE="/run/.bootsync-stage.$$"
 	rm -rf "$SNAP_IMG" "$STAGE"
@@ -291,7 +301,7 @@ import_snapshot() {
 
 	VALID=1
 	mkdir -p "$STAGE"
-	for name in wpa_supplicant.conf config.txt credentials.txt authorized_keys root_authorized_keys; do
+	for name in wpa_supplicant.conf config.txt credentials.txt authorized_keys root_authorized_keys ble-bonds.dat; do
 		path="$MNT_POINT/$name"
 		[ ! -e "$path" ] && continue
 		size=$(wc -c < "$path" 2>/dev/null || echo 65537)

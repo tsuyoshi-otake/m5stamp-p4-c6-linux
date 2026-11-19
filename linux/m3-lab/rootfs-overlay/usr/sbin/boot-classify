@@ -1,0 +1,71 @@
+#!/bin/sh
+# Classify the PSRAM-restored boot FAT image (#43).
+#
+# Usage: boot-classify /tmp/boot.img
+# Prints one word on stdout:
+#   ok            262144-byte image, FAT boot-sector signature, mounts ro
+#   mount-fail    right size + signature, but the kernel cannot mount it
+#   read-fail     missing/unreadable/wrong-size image, or a signature-less
+#                 image while the boot shim proved flash holds a valid slot
+#                 (the kernel could not read what the shim staged)
+#   no-signature  readable 262144 bytes without a FAT signature AND the
+#                 boot shim reports "blank" (no CRC-valid A/B record), so
+#                 regenerating is safe — or the old-shim fallback below
+#
+# mount-fail and read-fail mean the kernel is the problem, not the image,
+# so callers must NOT let the template-derived image overwrite flash
+# (/run/.boot-nosave).  Only busybox applets are used.
+#
+# The shim verdict arrives as /sys/kernel/board/bootfat:
+#   valid    an A/B metadata record passed its CRC -> flash holds a good
+#            image; a signature-less PSRAM copy is a kernel read failure
+#   blank    no record validated -> flash really holds nothing to lose
+#   unknown  old shim without the handoff -> legacy fallback: the missing
+#            signature alone decides, exactly as before the guard existed
+#
+# Board test hook: es_bootfat=read-fail|mount-fail on the kernel command
+# line forces that state.  There is deliberately no way to force a state
+# that permits a flash save.
+
+CMDLINE="${BOOT_CLASSIFY_CMDLINE:-/proc/cmdline}"
+MNT="${BOOT_CLASSIFY_MNT:-/tmp/.classify_mnt}"
+SYSFS="${BOOT_CLASSIFY_SYSFS:-/sys/kernel/board/bootfat}"
+IMG="${1:-/tmp/boot.img}"
+
+# Forced-state word for board testing (honoured before any real checks).
+if [ -r "$CMDLINE" ]; then
+	line=""
+	read -r line < "$CMDLINE" 2>/dev/null || true
+	case " $line " in
+	*" es_bootfat=read-fail "*)	echo read-fail; exit 0 ;;
+	*" es_bootfat=mount-fail "*)	echo mount-fail; exit 0 ;;
+	esac
+fi
+
+[ -r "$IMG" ] || { echo read-fail; exit 0; }
+IMG_SZ=$(wc -c < "$IMG" 2>/dev/null || echo 0)
+[ "$IMG_SZ" = 262144 ] || { echo read-fail; exit 0; }
+
+# FAT signature: bytes-per-sector 512 (BPB offset 11) and 55 aa at 510.
+bpb=$(dd if="$IMG" bs=1 skip=11 count=2 2>/dev/null | od -An -tx1 2>/dev/null | tr -d ' \n')
+sig=$(dd if="$IMG" bs=1 skip=510 count=2 2>/dev/null | od -An -tx1 2>/dev/null | tr -d ' \n')
+if [ "$bpb" != "0002" ] || [ "$sig" != "55aa" ]; then
+	verdict=""
+	[ -r "$SYSFS" ] && read -r verdict < "$SYSFS" || true
+	case "$verdict" in
+	valid)	echo read-fail ;;	# flash is proven good; the copy failed
+	*)	echo no-signature ;;	# blank, or old shim: legacy behaviour
+	esac
+	exit 0
+fi
+
+mkdir -p "$MNT" 2>/dev/null
+if mount -t vfat -o ro,loop "$IMG" "$MNT" 2>/dev/null; then
+	umount "$MNT" 2>/dev/null || true
+	rmdir "$MNT" 2>/dev/null || true
+	echo ok
+else
+	rmdir "$MNT" 2>/dev/null || true
+	echo mount-fail
+fi
+exit 0

@@ -284,28 +284,35 @@ start() {
 			es_log "ES_BOOT_FAT: attempting restore from PSRAM 0x499c0000"
 			dd if=/dev/mem bs=4096 skip=301504 count=64 of=/tmp/boot.img 2>/dev/null || true
 		fi
-		# Verify whether /tmp/boot.img is a valid 256KB FAT image (test mount)
-		IMG_SZ=$(wc -c < /tmp/boot.img 2>/dev/null || echo 0)
-		VALID_FAT=0
-		if [ "$IMG_SZ" -eq 262144 ]; then
-			mkdir -p /tmp/.test_mnt_fat
-			if mount -t vfat -o ro,loop /tmp/boot.img /tmp/.test_mnt_fat 2>/dev/null; then
-				umount /tmp/.test_mnt_fat 2>/dev/null || true
-				VALID_FAT=1
-			fi
-			rm -rf /tmp/.test_mnt_fat 2>/dev/null || true
-		fi
-		if [ "$VALID_FAT" -ne 1 ]; then
-			es_log "ES_BOOT_FAT: PSRAM image invalid or empty; using boot-template.img"
-			if [ -f /etc/board/boot-template.img ]; then
-				cp -f /etc/board/boot-template.img /tmp/boot.img
-			fi
-		else
+		# Classify the staged image (#43): "read-fail" or "mount-fail"
+		# means the kernel could not read/mount what the shim staged,
+		# not that the flash content is corrupt — in that case the
+		# template is used for this boot only and must NOT overwrite
+		# flash (/run/.boot-nosave).  "no-signature" means the flash
+		# content really is blank/corrupt: regenerate and save as before.
+		BOOT_FAT_STATE=$(/usr/sbin/boot-classify /tmp/boot.img)
+		case "$BOOT_FAT_STATE" in
+		ok)
 			es_log "ES_BOOT_FAT: successfully restored valid FAT image from PSRAM"
 			# What flash holds; bootsync writes only an image that
 			# differs from it.
 			md5sum /tmp/boot.img 2>/dev/null | cut -d' ' -f1 > /run/.boot-flash-md5 || true
-		fi
+			;;
+		no-signature)
+			es_log "ES_BOOT_FAT: PSRAM image invalid or empty; using boot-template.img"
+			if [ -f /etc/board/boot-template.img ]; then
+				cp -f /etc/board/boot-template.img /tmp/boot.img
+			fi
+			;;
+		read-fail|mount-fail)
+			es_log "ES_BOOT_FAT NOT-SAVED: kernel $BOOT_FAT_STATE; using template for this boot, flash is not overwritten"
+			if [ -f /etc/board/boot-template.img ]; then
+				cp -f /etc/board/boot-template.img /tmp/boot.img
+			fi
+			echo "kernel $BOOT_FAT_STATE: boot image in flash could not be read/mounted; changes this boot are not saved" \
+				> /run/.boot-nosave
+			;;
+		esac
 	fi
 	# The image holds credentials.txt and the Wi-Fi PSK (#11).
 	chmod 600 /tmp/boot.img 2>/dev/null || true
@@ -322,6 +329,24 @@ start() {
 	else
 		mkdir -p /tmp/boot
 		mount --bind /tmp/boot /boot 2>/dev/null || true
+	fi
+
+	# When the kernel could not read/mount the flashed image (#43), the
+	# drive shows the template for this boot; say so on the drive so a
+	# Stamp user opening it understands nothing is being saved.
+	if [ -f /run/.boot-nosave ]; then
+		reason=""
+		read -r reason < /run/.boot-nosave 2>/dev/null || true
+		printf '%s\r\n' \
+			"This boot drive is a temporary copy." \
+			"" \
+			"The firmware could not read the saved settings" \
+			"($reason)." \
+			"" \
+			"The settings in flash are unchanged. Changes made" \
+			"here are NOT saved this boot. Update or reflash the" \
+			"firmware; details are on the serial console." \
+			> /boot/NOT-SAVED.txt 2>/dev/null || true
 	fi
 
 	# The boot shim leaves "FAIL" in the update request when it could not
@@ -454,7 +479,10 @@ EOF
 		# the kernel cannot write flash it stays staged and boot-shim writes
 		# it at the next normal reboot; until then a power cycle loses it and
 		# the next boot generates new values.
-		if [ "${CRED_NEW:-0}" -eq 1 ] && [ -f /tmp/boot.img ] && [ -x /usr/sbin/boot-commit ]; then
+		# #43: when the kernel could not read/mount the flashed image the
+		# drive is the template — saving it would overwrite the real
+		# settings in flash, so fresh credentials live only until reboot.
+		if [ "${CRED_NEW:-0}" -eq 1 ] && [ ! -f /run/.boot-nosave ] && [ -f /tmp/boot.img ] && [ -x /usr/sbin/boot-commit ]; then
 			rc=0
 			/usr/sbin/boot-commit /tmp/boot.img || rc=$?
 			case "$rc" in

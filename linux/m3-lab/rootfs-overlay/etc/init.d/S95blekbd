@@ -1,0 +1,26 @@
+#!/bin/sh
+# BLE keyboard daemon (#41).  Runs only while at least one bond exists
+# in the boot FAT, so a board with no paired keyboard keeps no resident
+# BLE process at all.
+
+BONDS=/boot/ble-bonds.dat
+
+case "${1:-start}" in
+	start)
+		[ -s "$BONDS" ] || exit 0
+		/usr/bin/ble-kbd daemon >/dev/null 2>&1 &
+		;;
+	stop)
+		killall ble-kbd 2>/dev/null || true
+		;;
+	restart)
+		"$0" stop
+		"$0" start
+		;;
+	*)
+		echo "Usage: $0 {start|stop|restart}" >&2
+		exit 1
+		;;
+esac
+
+exit 0

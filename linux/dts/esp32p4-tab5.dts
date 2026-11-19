@@ -80,6 +80,22 @@
 		 * 90 deg turn has to be done in fbcon, the panel cannot).
 		 */
 		bootargs = "earlycon=esp32p4usbjtag,mmio32,0x500d2000 console=tty0 console=ttyGS1,115200n8 loglevel=4 consoleblank=0 fbcon=font:TER16x32 fbcon=rotate:3 root=/dev/mtdblock0 rootfstype=squashfs ro init=/sbin/init maxcpus=1";
+		/*
+		 * Filled in by the boot shim's tab5_detect_panel() before the
+		 * Linux jump (fixed 8-byte field, patched in place):
+		 * "st7121", "st7123", "ili9881c" or "none".  "nopanel0" means
+		 * the shim never ran the patcher (old shim vs new DTB).
+		 * Read back as /sys/kernel/board/panel.
+		 */
+		m5stack,panel = "nopanel0";
+		/*
+		 * Filled in by the boot shim after boot-slot selection (fixed
+		 * 8-byte field, patched in place): "valid" when a CRC-checked
+		 * A/B record selected the boot FAT, "blank" when none did.
+		 * "nobootft" means the shim never ran the patcher (old shim vs
+		 * new DTB).  Read back as /sys/kernel/board/bootfat.
+		 */
+		m5stack,bootfat = "nobootft";
 	};
 
 	/*

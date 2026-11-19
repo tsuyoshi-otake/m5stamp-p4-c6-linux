@@ -1,0 +1,200 @@
+Subject: [PATCH] stamp-p4: reserve-denied big user allocs skip the buddy fallback (#42)
+
+When the #51 reserve gate refuses a marked-task allocation, the mmap
+callsite falls back to alloc_pages_exact() for the full power-of-two
+rounding.  For the ~480 KiB bFLT exec region of busybox-sized tools
+that is an order-7 request against a ~2 MiB-fragmented normal zone: a
+guaranteed page allocation failure plus a direct-reclaim storm in the
+victim context -- and the exec dies anyway most of the time.  During
+the B33 storm run the SDIO link survived (the C6 side never lost a
+CMD53), but every denied exec still cost the kernel a reclaim storm
+and the console several seconds of lock contention.
+
+Give the gate a nofallback order: a reserve-denied user request with
+get_order(size) >= user_nofallback_order returns NULL with the
+caller-side nofallback flag set, and nommu.c's do_mmap_private skips
+alloc_pages_exact and goes straight to -ENOMEM.  The default order is
+7 because that is the bFLT-exec signature: order-7-and-larger user
+requests can essentially never be served from this buddy zone anyway
+(the whole normal zone is 13 MB and already heavily fragmented), so
+the fallback buys nothing there while smaller user allocations --
+stacks, brk growth, small mmaps -- keep falling back legitimately.
+run-system (0091) stays the escape hatch for a big exec that must not
+be reserve-gated at all.
+
+Counters: user_denied still counts every reserve refusal; the new
+user_denied_nofallback counts the subset that skipped the buddy
+attempt; fallback now counts buddy attempts only (previously it also
+counted denials that went on to attempt, so its meaning narrows by
+exactly user_denied_nofallback).  user_nofallback_order is read/write
+under /sys/kernel/board/ like the reserve knobs: 0 makes every reserve
+denial skip the buddy path, ULONG_MAX disables the check.  Staged only
+when NOMMU_USER_RESERVE=1, same as 0090/0091.
+
+---
+--- a/mm/nommu.c
++++ b/mm/nommu.c
+@@ -924,6 +924,7 @@
+ {
+ 	unsigned long total, point;
+ 	void *base;
++	bool pool_nofallback = false;
+ 	int ret, order;
+ 
+ 	/*
+@@ -974,11 +975,12 @@
+ 	 * Pool allocations are not power-of-two rounded â there is no
+ 	 * need, the pool can give exactly point pages.
+ 	 */
+-	base = nommu_userspace_pool_alloc(point << PAGE_SHIFT);
++	base = nommu_userspace_pool_alloc(point << PAGE_SHIFT,
++					  &pool_nofallback);
+ 	if (base) {
+ 		total = point;
+ 		region->vm_from_pool = 1;
+-	} else {
++	} else if (!pool_nofallback) {
+ 		base = alloc_pages_exact(total << PAGE_SHIFT, GFP_KERNEL);
+ 	}
+ 	if (!base)
+--- a/include/linux/nommu_userspace_pool.h
++++ b/include/linux/nommu_userspace_pool.h
+@@ -25,8 +25,12 @@
+  * Try to allocate a contiguous range of @size bytes (page-aligned by the
+  * caller) from the configured reserved pool. Returns a kernel-virtual
+  * pointer on success, NULL if the pool is unavailable or out of space.
++ * @nofallback may be NULL; when non-NULL it is set to false on entry and
++ * to true when the request was refused by a policy that forbids the
++ * buddy-allocator fallback (a user-reserve denial whose order is too
++ * large to storm reclaim over -- see user_nofallback_order).
+  */
+-void *nommu_userspace_pool_alloc(size_t size);
++void *nommu_userspace_pool_alloc(size_t size, bool *nofallback);
+ 
+ /*
+  * Free a region previously returned by nommu_userspace_pool_alloc().
+@@ -38,7 +42,8 @@
+ 
+ #define board_kobj ((struct kobject *)0)
+ 
+-static inline void *nommu_userspace_pool_alloc(size_t size)
++static inline void *nommu_userspace_pool_alloc(size_t size,
++					       bool *nofallback)
+ {
+ 	return NULL;
+ }
+--- a/mm/nommu_userspace_pool.c
++++ b/mm/nommu_userspace_pool.c
+@@ -58,6 +58,21 @@
+ 
+ /* #51: reserve-gate counters and knobs (bytes). */
+ static atomic_long_t pool_user_denied;	/* marked-task alloc refused */
++static atomic_long_t pool_user_denied_nofb; /* refused AND buddy skipped */
++
++/*
++ * Reserve-denied user requests at or above this buddy order fail with
++ * ENOMEM at once instead of falling back to alloc_pages_exact.  The
++ * denied exec that this protects against is the ~480 KiB bFLT text/data
++ * region of busybox-sized tools, which the buddy path always rounds to
++ * order 7 (512 KiB): each denied exec was a guaranteed page allocation
++ * failure plus a direct-reclaim storm in the victim context.  Requests
++ * below order 7 -- user stacks, brk growth, small mmaps -- keep the
++ * fallback: they can often be served from fragmented normal memory and
++ * they are not the storm.  0 denies nothing extra (all reserve denials
++ * skip buddy); ULONG_MAX disables the check entirely.
++ */
++static unsigned long user_nofallback_order = 7;
+ static atomic_long_t pool_system_fail;	/* pool missed an unmarked alloc */
+ 
+ static unsigned long user_reserve_contig = 1200 * SZ_1K;
+@@ -197,11 +212,14 @@
+ 		(first >= rcontig && first - rcontig >= size);
+ }
+ 
+-void *nommu_userspace_pool_alloc(size_t size)
++void *nommu_userspace_pool_alloc(size_t size, bool *nofallback)
+ {
+ 	unsigned long va;
+ 	bool user;
+ 
++	if (nofallback)
++		*nofallback = false;
++
+ 	if (!user_pool || !size) {
+ 		atomic_long_inc(&pool_fallback);
+ 		return NULL;
+@@ -210,6 +228,12 @@
+ 	user = nommu_task_is_user();
+ 	if (user && !nommu_reserve_ok(size)) {
+ 		atomic_long_inc(&pool_user_denied);
++		if (get_order(size) >= READ_ONCE(user_nofallback_order)) {
++			atomic_long_inc(&pool_user_denied_nofb);
++			if (nofallback)
++				*nofallback = true;
++			return NULL;
++		}
+ 		atomic_long_inc(&pool_fallback);
+ 		return NULL;
+ 	}
+@@ -357,6 +381,8 @@
+ 			 "total %lu\nused %lu\nlargest_free %lu\n"
+ 			 "alloc_fail %ld\nfallback %ld\n"
+ 			 "user_denied %ld\nsystem_alloc_fail %ld\n"
++			 "user_denied_nofallback %ld\n"
++			 "user_nofallback_order %lu\n"
+ 			 "user_reserve_contig %lu\nuser_reserve_total %lu\n"
+ 			 "regions %d\n",
+ 			 total, total - avail, best << order,
+@@ -364,6 +390,8 @@
+ 			 atomic_long_read(&pool_fallback),
+ 			 atomic_long_read(&pool_user_denied),
+ 			 atomic_long_read(&pool_system_fail),
++			 atomic_long_read(&pool_user_denied_nofb),
++			 READ_ONCE(user_nofallback_order),
+ 			 READ_ONCE(user_reserve_contig),
+ 			 READ_ONCE(user_reserve_total),
+ 			 pool_count);
+@@ -439,10 +467,43 @@
+ static struct kobj_attribute system_alloc_fail_attr =
+ 	__ATTR_RO(system_alloc_fail);
+ 
++static ssize_t user_denied_nofallback_show(struct kobject *kobj,
++					 struct kobj_attribute *attr, char *buf)
++{
++	return sysfs_emit(buf, "%ld\n",
++			  atomic_long_read(&pool_user_denied_nofb));
++}
++static struct kobj_attribute user_denied_nofallback_attr =
++	__ATTR_RO(user_denied_nofallback);
++
++static ssize_t user_nofallback_order_show(struct kobject *kobj,
++					struct kobj_attribute *attr, char *buf)
++{
++	return sysfs_emit(buf, "%lu\n", READ_ONCE(user_nofallback_order));
++}
++
++static ssize_t user_nofallback_order_store(struct kobject *kobj,
++					   struct kobj_attribute *attr,
++					   const char *buf, size_t count)
++{
++	unsigned long v;
++	int r;
++
++	r = kstrtoul(buf, 10, &v);
++	if (r)
++		return r;
++	WRITE_ONCE(user_nofallback_order, v);
++	return count;
++}
++static struct kobj_attribute user_nofallback_order_attr =
++	__ATTR_RW(user_nofallback_order);
++
+ static struct attribute *nommu_reserve_attrs[] = {
+ 	&user_reserve_contig_attr.attr,
+ 	&user_reserve_total_attr.attr,
+ 	&user_denied_attr.attr,
++	&user_denied_nofallback_attr.attr,
++	&user_nofallback_order_attr.attr,
+ 	&system_alloc_fail_attr.attr,
+ 	NULL,
+ };

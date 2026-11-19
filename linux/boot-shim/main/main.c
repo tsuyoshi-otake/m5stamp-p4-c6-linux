@@ -49,6 +49,9 @@
 #ifdef AUDIO_ORACLE
 #include "audio_oracle.h"
 #endif
+#ifdef CAMERA_ORACLE
+#include "camera_oracle.h"
+#endif
 
 #ifdef CMD53_RETENTION_BB
 #include "cmd53_bb_boot.h"
@@ -246,6 +249,11 @@ static bool write_boot_metadata(const esp_partition_t *meta,
 	return memcmp(&readback, record, sizeof(readback)) == 0;
 }
 
+/* #43: whether a CRC-checked A/B record selected this boot's image.
+ * "valid" tells Linux the flash really holds a good boot FAT, so an
+ * unreadable PSRAM copy is a kernel problem, not a corrupt image. */
+static bool s_boot_meta_valid;
+
 /* Select an already verified image, optionally committing a Linux-staged
  * update.  The inactive slot and inactive metadata sector are the only flash
  * erase targets, leaving a bootable image and metadata record on power loss. */
@@ -284,6 +292,7 @@ static const esp_partition_t *select_boot_partition(void)
 		selected_slot = records[selected_meta].slot;
 	else
 		ESP_LOGW(TAG, "boot metadata unavailable; falling back to slot0");
+	s_boot_meta_valid = (selected_meta >= 0);
 
 	if (boot_update_request_valid(&request)) {
 		uint32_t active_crc = 0;
@@ -321,6 +330,10 @@ static const esp_partition_t *select_boot_partition(void)
 				selected_slot = inactive_slot;
 				selected_meta = selected_meta == 0 ? 1 : 0;
 				records[selected_meta] = next;
+				/* The committed slot was erased, written and
+				 * CRC-verified above, so this boot's image is
+				 * proven good regardless of the earlier verdict. */
+				s_boot_meta_valid = true;
 				ESP_LOGI(TAG, "boot update committed: generation=%" PRIu32
 					 " slot=%" PRIu32 " crc=%08" PRIx32,
 					 next.generation, next.slot, next.image_crc32);
@@ -576,7 +589,60 @@ static bool patch_display_window(uint8_t *dtb, uint32_t total,
 	memcpy(dtb + status_at, "okay", 5);
 	return ok;
 }
+
+/* #36: hand tab5_detect_panel()'s result to Linux.  The chosen node
+ * carries the fixed 8-byte placeholder "nopanel0"; it is overwritten
+ * in place with the panel name ("st7121", "st7123", "ili9881c" or
+ * "none", NUL-padded) and shows up as /sys/kernel/board/panel. */
+static bool patch_panel_name(uint8_t *dtb, uint32_t total)
+{
+	static const uint8_t needle[8] = "nopanel0";
+	static const char *const names[] = {
+		[TAB5_PANEL_NONE] = "none",
+		[TAB5_PANEL_ST7121] = "st7121",
+		[TAB5_PANEL_ST7123] = "st7123",
+		[TAB5_PANEL_ILI9881C] = "ili9881c",
+	};
+	enum tab5_panel p = tab5_display_panel();
+	const char *name = (unsigned)p < sizeof(names) / sizeof(names[0]) && names[p]
+			       ? names[p]
+			       : names[TAB5_PANEL_NONE];
+	uint8_t val[8] = {0};
+	size_t n = strlen(name);
+
+	if (n > sizeof(val))
+		n = sizeof(val);
+	memcpy(val, name, n);
+	for (uint32_t i = 0; i + sizeof(needle) <= total; ++i) {
+		if (!memcmp(dtb + i, needle, sizeof(needle))) {
+			memcpy(dtb + i, val, sizeof(val));
+			return true;
+		}
+	}
+	return false;
+}
 #endif /* BOARD_TAB5 */
+
+/* #43: hand the boot-slot verdict to Linux.  /chosen/m5stack,bootfat in
+ * the DTB carries the fixed 8-byte placeholder "nobootft"; it is
+ * overwritten in place with "valid" (an A/B record passed its CRC) or
+ * "blank" (no valid record), NUL-padded, and shows up as
+ * /sys/kernel/board/bootfat.  Both boards share this file. */
+static bool patch_bootfat_state(uint8_t *dtb, uint32_t total)
+{
+	static const uint8_t needle[8] = "nobootft";
+	uint8_t val[8] = {0};
+	const char *name = s_boot_meta_valid ? "valid" : "blank";
+
+	memcpy(val, name, strlen(name));
+	for (uint32_t i = 0; i + sizeof(needle) <= total; ++i) {
+		if (!memcmp(dtb + i, needle, sizeof(needle))) {
+			memcpy(dtb + i, val, sizeof(val));
+			return true;
+		}
+	}
+	return false;
+}
 
 static void IRAM_ATTR jump_to_linux(uint32_t entry, uint32_t dtb_pa)
 {
@@ -906,6 +972,16 @@ void app_main(void)
 	if (!audio_oracle_mic_run())
 		ESP_LOGW(TAG, "mic oracle reported failure; boot continues");
 #endif
+#ifdef CAMERA_ORACLE
+	/* #25 step-1 diagnostic build: IDF esp_driver_cam one-frame
+	 * capture + register dump, drawn on the panel for a few seconds.
+	 * Runs while the shim still owns the internal I2C bus (SCCB 0x36
+	 * and CAM_RST on expander 0x43 P6).  Never in release builds. */
+	if (!camera_oracle_run(
+		    s_tab5_fb.ok ? (uint16_t *)(uintptr_t)s_tab5_fb.pa : NULL,
+		    s_tab5_fb.bytes))
+		ESP_LOGW(TAG, "camera oracle reported failure; boot continues");
+#endif
 	#else
 	/* Enable Full-Speed USB OTG (DWC2) for Type-A USB Gadget */
 	usb_otg_init();
@@ -971,10 +1047,16 @@ void app_main(void)
 	if (tab5_display_panel() == TAB5_PANEL_ILI9881C &&
 	    !patch_gt911_node(dtb, total))
 		ESP_LOGW(TAG, "gt911 DTB patch failed; touch stays disabled");
+	if (!patch_panel_name(dtb, total))
+		ESP_LOGW(TAG, "panel-name DTB patch failed; Linux sees nopanel0");
 	if (s_tab5_fb.ok)
 		tab5_display_status();
 	tab5_i2c_release();
 #endif
+	/* Old DTBs lack the placeholder; the kernel then falls back to the
+	 * FAT signature check like before. */
+	if (!patch_bootfat_state(dtb, total))
+		ESP_LOGW(TAG, "bootfat DTB patch skipped; Linux falls back to the signature check");
 	cache_hal_writeback_addr(DTB_LOAD_PA, total);
 
 	ESP_LOGI(TAG, "Linux artifacts valid; kernel=%" PRIu32 " bytes, rootfs=%" PRIu32 " bytes", image_bytes, rootfs->size);

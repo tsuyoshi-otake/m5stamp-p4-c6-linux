@@ -1,0 +1,159 @@
+Subject: [PATCH] tab5: reserve refusal is policy, log it at info not error (#42)
+
+The #51 reserve gate refusing a marked-task allocation is the system
+doing exactly what it was configured to do -- yet the two printk sites
+it surfaces through both treat it as a fault.  do_mmap_private() ran
+pr_err plus show_mem(), which on the Tab5 (console=tty0, loglevel=4)
+paints a kernel error and a free-area dump over the panel framebuffer
+every time a low-memory exec is refused; the matching binfmt_flat
+"Unable to allocate RAM" line is KERN_ERR for the same reason.
+
+Demote both for the reserve path only.  mm/nommu.c: when 0103's
+pool_nofallback flag marks a pure reserve refusal, emit
+pr_info_ratelimited() with the same length/pid/comm and skip show_mem
+-- the line stays in dmesg but never reaches the panel, and the
+free-area dump stops burning the very memory the reserve protects.
+fs/binfmt_flat.c: route the three load-time ENOMEM printks through a
+flat_enomem_log() helper that drops to pr_info_ratelimited() when the
+failing task is user-class, i.e. when the reserve policy is the likely
+cause.  System-class tasks and every non-ENOMEM errno keep pr_err.
+
+To let binfmt_flat ask that question, nommu_task_is_user() is renamed
+nommu_current_is_user() and exported via the pool header (inline false
+stub when the pool is disabled).  The pool's own counters already
+record every refusal, so no accounting is lost.
+
+Staged under NOMMU_USER_RESERVE=1 alongside 0103.
+
+---
+--- a/fs/binfmt_flat.c
++++ b/fs/binfmt_flat.c
+@@ -35,6 +35,7 @@
+ #include <linux/personality.h>
+ #include <linux/init.h>
+ #include <linux/flat.h>
++#include <linux/nommu_userspace_pool.h>
+ #include <linux/uaccess.h>
+ #include <linux/vmalloc.h>
+ 
+@@ -403,6 +404,18 @@
+ 	return rp;
+ }
+ 
++/* #42: a user-class task's exec -ENOMEM is the user-pool/reserve
++ * contention policy at work, not a kernel fault -- KERN_INFO,
++ * ratelimited, still in dmesg, never on the loglevel-4 panel console.
++ * System-class tasks and non-ENOMEM errnos keep pr_err. */
++static void flat_enomem_log(int ret, const char *what)
++{
++	if (ret == -ENOMEM && nommu_current_is_user())
++		pr_info_ratelimited("Unable to %s, errno %d\n", what, ret);
++	else
++		pr_err("Unable to %s, errno %d\n", what, ret);
++}
++
+ static int load_flat_file(struct linux_binprm *bprm,
+ 		struct lib_info *libinfo, unsigned long *extra_stack)
+ {
+@@ -538,7 +551,7 @@
+ 			ret = textpos;
+ 			if (!textpos)
+ 				ret = -ENOMEM;
+-			pr_err("Unable to mmap process text, errno %d\n", ret);
++			flat_enomem_log(ret, "mmap process text");
+ 			goto err;
+ 		}
+ 
+@@ -552,8 +565,7 @@
+ 			ret = realdatastart;
+ 			if (!realdatastart)
+ 				ret = -ENOMEM;
+-			pr_err("Unable to allocate RAM for process data, "
+-			       "errno %d\n", ret);
++			flat_enomem_log(ret, "allocate RAM for process data");
+ 			vm_munmap(textpos, text_len);
+ 			goto err;
+ 		}
+@@ -599,8 +611,7 @@
+ 			ret = textpos;
+ 			if (!textpos)
+ 				ret = -ENOMEM;
+-			pr_err("Unable to allocate RAM for process text/data, "
+-			       "errno %d\n", ret);
++			flat_enomem_log(ret, "allocate RAM for process text/data");
+ 			goto err;
+ 		}
+ 
+--- a/include/linux/nommu_userspace_pool.h
++++ b/include/linux/nommu_userspace_pool.h
+@@ -33,6 +33,13 @@
+ void *nommu_userspace_pool_alloc(size_t size, bool *nofallback);
+ 
+ /*
++ * The #51 user classification: console/SSH-descended tasks the
++ * user-reserve gate applies to.  binfmt_flat uses it to keep a
++ * reserve-caused exec -ENOMEM out of the loglevel-4 console.
++ */
++bool nommu_current_is_user(void);
++
++/*
+  * Free a region previously returned by nommu_userspace_pool_alloc().
+  * @addr must be the exact pointer returned, @size the exact size passed.
+  */
+@@ -52,6 +59,11 @@
+ {
+ }
+ 
++static inline bool nommu_current_is_user(void)
++{
++	return false;
++}
++
+ #endif /* CONFIG_NOMMU_USERSPACE_POOL */
+ 
+ #endif /* _LINUX_NOMMU_USERSPACE_POOL_H */
+--- a/mm/nommu.c
++++ b/mm/nommu.c
+@@ -1030,9 +1030,19 @@
+ 	return ret;
+ 
+ enomem:
+-	pr_err("Allocation of length %lu from process %d (%s) failed\n",
+-	       len, current->pid, current->comm);
+-	show_mem();
++	/* #42: a pure user-reserve refusal (0103's nofallback flag) is
++	 * policy, not an error -- keep it out of the loglevel-4 console
++	 * and never run the free-area dump for it.  Everything else is
++	 * a real failure and keeps pr_err + show_mem. */
++	if (pool_nofallback)
++		pr_info_ratelimited("Allocation of length %lu from process "
++				    "%d (%s) refused by user reserve\n",
++				    len, current->pid, current->comm);
++	else {
++		pr_err("Allocation of length %lu from process %d (%s) failed\n",
++		       len, current->pid, current->comm);
++		show_mem();
++	}
+ 	return -ENOMEM;
+ }
+ 
+--- a/mm/nommu_userspace_pool.c
++++ b/mm/nommu_userspace_pool.c
+@@ -104,7 +104,7 @@
+  * the reserve and its transient helpers cannot be denied into real
+  * ENOMEMs.  The flag survives exec and inherits through fork.
+  */
+-static bool nommu_task_is_user(void)
++bool nommu_current_is_user(void)
+ {
+ 	struct task_struct *p, *next;
+ 	struct tty_struct *tty;
+@@ -225,7 +225,7 @@
+ 		return NULL;
+ 	}
+ 
+-	user = nommu_task_is_user();
++	user = nommu_current_is_user();
+ 	if (user && !nommu_reserve_ok(size)) {
+ 		atomic_long_inc(&pool_user_denied);
+ 		if (get_order(size) >= READ_ONCE(user_nofallback_order)) {

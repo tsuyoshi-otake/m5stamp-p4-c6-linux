@@ -852,6 +852,15 @@ fi
 # #51 experiment: user-alloc reserve/watermark on the NOMMU user pool.
 if [[ "${NOMMU_USER_RESERVE:-0}" == "1" ]]; then
 	patches+=(0090-nommu-user-reserve.patch)
+	# #42: a reserve-denied user alloc at/above the bFLT-exec order
+	# fails ENOMEM directly instead of storming the buddy allocator.
+	# Depends on 0090's gate; applies last by filename order.
+	patches+=(0103-nommu-user-denied-nofallback.patch)
+	# #42: a pure reserve refusal is policy, not an error -- log it
+	# info-ratelimited and keep it (and the binfmt_flat ENOMEM echo)
+	# off the loglevel-4 panel console.  Needs 0103's flag and
+	# 0090/0091's classifier; applies last by filename order.
+	patches+=(0104-nommu-reserve-refusal-info.patch)
 fi
 # #50 round 4: PR_SET_SYSTEM_WORK lets system scripts clear the ancestry
 # user-mark (console/SSH-started restarts).  Needs 0090's classifier.
@@ -1037,6 +1046,9 @@ fi
 patches+=(0100-gpio-pi4ioe5v6408.patch)
 # ESP32-P4 LEDC PWM (Tab5 uses channel 0 for the LCD backlight boost).
 patches+=(0101-pwm-esp32p4-ledc.patch)
+# /sys/kernel/board/bootfat: the shim's CRC-verdict for the boot FAT
+# (#43).  Board-agnostic; the DTB property only exists on new DTBs.
+patches+=(0102-bootfat-sysfs.patch)
 for patch_name in "${patches[@]}"; do
 	if [[ "$patch_name" == 0000-esp32-serial-resurrect.patch ||
 	      "$patch_name" == 0022-esp32p4-systimer-level-trigger.patch ||
@@ -1345,6 +1357,11 @@ CONFIG_MMC_SPI=y
 # (bluez5_utils depends on BR2_USE_MMU), so hci0 is raw-socket only.
 CONFIG_BT=y
 CONFIG_BT_LE=y
+
+# BLE keyboard (#41): ble-kbd's HOGP client feeds reports into the
+# input layer through /dev/uhid; SMP crypto comes from the BT selects
+# (CRYPTO_ECDH + CRYPTO_LIB_AES + CRYPTO_LIB_AES_CBC_MACS).
+CONFIG_UHID=y
 EOF
 	cat >>"${kernel_config_fragment}" <<EOF
 
@@ -2503,23 +2520,31 @@ if $lab_profile; then
 	if [[ "$board" == tab5 ]]; then
 		set_config_value "${br_output}/.config" BR2_PACKAGE_WIFI_QR y
 		set_config_value "${br_output}/.config" BR2_PACKAGE_TOUCH_DOTS y
+		# TTY+touch one-shot event reader for the m5-config
+		# panel-console touch menus (#42).
+		set_config_value "${br_output}/.config" BR2_PACKAGE_M5_KEY y
 		set_config_value "${br_output}/.config" BR2_PACKAGE_PCM_SINE y
 		set_config_value "${br_output}/.config" BR2_PACKAGE_PCM_REC y
 		set_config_value "${br_output}/.config" BR2_PACKAGE_PCM_PLAY y
 		# Raw-HCI LE scan/advertise tools for the C6 hci0 (#34).
 		set_config_value "${br_output}/.config" BR2_PACKAGE_HCI_TOOLS y
+		# BLE keyboard: mgmt pair/bond + HOGP->UHID client (#41).
+		set_config_value "${br_output}/.config" BR2_PACKAGE_BLE_KBD y
 	else
 		set_config_value "${br_output}/.config" BR2_PACKAGE_WIFI_QR "# BR2_PACKAGE_WIFI_QR is not set"
 		set_config_value "${br_output}/.config" BR2_PACKAGE_TOUCH_DOTS "# BR2_PACKAGE_TOUCH_DOTS is not set"
+		set_config_value "${br_output}/.config" BR2_PACKAGE_M5_KEY "# BR2_PACKAGE_M5_KEY is not set"
 		set_config_value "${br_output}/.config" BR2_PACKAGE_PCM_SINE "# BR2_PACKAGE_PCM_SINE is not set"
 		set_config_value "${br_output}/.config" BR2_PACKAGE_PCM_REC "# BR2_PACKAGE_PCM_REC is not set"
 		set_config_value "${br_output}/.config" BR2_PACKAGE_PCM_PLAY "# BR2_PACKAGE_PCM_PLAY is not set"
 		set_config_value "${br_output}/.config" BR2_PACKAGE_HCI_TOOLS "# BR2_PACKAGE_HCI_TOOLS is not set"
+		set_config_value "${br_output}/.config" BR2_PACKAGE_BLE_KBD "# BR2_PACKAGE_BLE_KBD is not set"
 	fi
 else
 	set_config_value "${br_output}/.config" BR2_PACKAGE_BOOT_COMMIT "# BR2_PACKAGE_BOOT_COMMIT is not set"
 	set_config_value "${br_output}/.config" BR2_PACKAGE_WIFI_QR "# BR2_PACKAGE_WIFI_QR is not set"
 	set_config_value "${br_output}/.config" BR2_PACKAGE_TOUCH_DOTS "# BR2_PACKAGE_TOUCH_DOTS is not set"
+	set_config_value "${br_output}/.config" BR2_PACKAGE_M5_KEY "# BR2_PACKAGE_M5_KEY is not set"
 	set_config_value "${br_output}/.config" BR2_PACKAGE_PCM_SINE "# BR2_PACKAGE_PCM_SINE is not set"
 	set_config_value "${br_output}/.config" BR2_PACKAGE_PCM_REC "# BR2_PACKAGE_PCM_REC is not set"
 	set_config_value "${br_output}/.config" BR2_PACKAGE_PCM_PLAY "# BR2_PACKAGE_PCM_PLAY is not set"
@@ -2819,6 +2844,10 @@ if $ssh_profile; then
 			}
 			[[ -x "${br_output}/target/usr/bin/touch-dots" ]] || {
 				echo "m3-lab check failed: touch-dots missing" >&2
+				exit 1
+			}
+			[[ -x "${br_output}/target/usr/bin/m5-key" ]] || {
+				echo "m3-lab check failed: m5-key missing" >&2
 				exit 1
 			}
 		fi
