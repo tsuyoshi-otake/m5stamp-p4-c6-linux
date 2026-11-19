@@ -206,11 +206,14 @@ write-enable encodings (dsi-scanout owns only its shim-given
 channel; this driver refuses a channel that is enabled or equals
 `espressif,scanout-chan`, and never writes the block reset bit).
 
-Frame buffer: `dma_alloc_coherent()` inside `CAM_PREPARE` (~1 MiB
-contiguous kernel PSRAM, `__GFP_NOWARN`, `-ENOMEM` on failure),
-freed at `release()` — see the Memory section for why there is no
-static `reserved-memory` carve-out.  `arch_sync_dma_for_device/cpu`
-bracket the transfer (non-coherent DMA, same pattern as 0124 i2s).
+Frame buffer: `dma_alloc_coherent()` at **probe**, freed at
+`remove()` — on-board measurement (B37) showed the NOMMU buddy
+cannot produce an order-8 block once userspace is up
+(order-8 free count 0, largest free block 512 KiB, no compaction),
+so the earlier open-time allocation always failed `-ENOMEM`.
+`arch_sync_dma_for_device/cpu` bracket the transfer (non-coherent
+DMA, same pattern as 0124 i2s).  See the Memory section for why
+there is no static `reserved-memory` carve-out.
 
 ### Block order (mirror of the measured oracle sequence)
 

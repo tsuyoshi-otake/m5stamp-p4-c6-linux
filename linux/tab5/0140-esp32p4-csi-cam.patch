@@ -23,11 +23,11 @@ dsi-scanout driver; this driver never touches the block reset,
 and refuses to arm a channel that is enabled or equals the
 shim-patched espressif,scanout-chan.
 
- 2 files changed, 582 insertions(+)
+ 2 files changed, 584 insertions(+)
 
 --- /dev/null
 +++ b/drivers/misc/esp32p4_cam.c
-@@ -0,0 +1,581 @@
+@@ -0,0 +1,583 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * ESP32-P4 MIPI-CSI one-shot raw capture (Tab5 camera bring-up).
@@ -327,14 +327,10 @@ shim-patched espressif,scanout-chan.
 +		return dev_err_probe(c->dev, -EBUSY,
 +				     "gdma ch%u is enabled; refusing to arm\n",
 +				     c->chan);
-+	/* Frame buffer lives only while cam0 is open -- ~1 MiB of
-+	 * contiguous kernel PSRAM is not something to hold from boot
-+	 * for a camera nobody uses. */
-+	c->fb_va = dma_alloc_coherent(c->dev, CAM_FRAME_BYTES, &c->fb_pa,
-+				      GFP_KERNEL | __GFP_NOWARN);
-+	if (!c->fb_va)
-+		return dev_err_probe(c->dev, -ENOMEM,
-+				     "frame buffer alloc failed\n");
++	/* The frame buffer was allocated at probe: a 1 MiB order-8
++	 * block exists only while the boot-time buddy is still
++	 * contiguous -- at open time the pool is fragmented and
++	 * NOMMU has no compaction, so a runtime alloc cannot work. */
 +
 +	/* CAM_RST sits on the i2c expander (pi4ioe5v6408): its
 +	 * gpio_chip can sleep, so _cansleep everywhere. */
@@ -363,8 +359,6 @@ shim-patched espressif,scanout-chan.
 +
 +err_power:
 +	gpiod_set_value_cansleep(c->rst, 0);
-+	dma_free_coherent(c->dev, CAM_FRAME_BYTES, c->fb_va, c->fb_pa);
-+	c->fb_va = NULL;
 +	return ret;
 +}
 +
@@ -466,7 +460,9 @@ shim-patched espressif,scanout-chan.
 +}
 +
 +/* The camera rail is powered only while /dev/cam0 is open: the
-+ * last close disarms the pipeline and drops CAM_RST. */
++ * last close disarms the pipeline and drops CAM_RST.  The frame
++ * buffer stays -- it is held for the driver's lifetime so every
++ * open gets the same working order-8 block. */
 +static int cam_release(struct inode *ino, struct file *f)
 +{
 +	struct esp32p4_cam *c =
@@ -477,11 +473,6 @@ shim-patched espressif,scanout-chan.
 +		writel(GDMA_CHEN_DIS(c->chan), c->gdma + GDMA_CHEN0);
 +		gpiod_set_value_cansleep(c->rst, 0);
 +		c->prepared = false;
-+	}
-+	if (c->fb_va) {
-+		dma_free_coherent(c->dev, CAM_FRAME_BYTES, c->fb_va,
-+				  c->fb_pa);
-+		c->fb_va = NULL;
 +	}
 +	return 0;
 +}
@@ -570,6 +561,17 @@ shim-patched espressif,scanout-chan.
 +		of_node_put(scan);
 +	}
 +	c->choff = GDMA_CH_BASE + c->chan * GDMA_CH_STRIDE;
++
++	/* ~1 MiB contiguous PSRAM for one frame.  Allocated at
++	 * probe, not at open: once userspace is up the NOMMU buddy
++	 * is fragmented and cannot coalesce an order-8 block
++	 * (measured on board: order-8 free count = 0, largest free
++	 * block 512 KiB).  Freed at remove. */
++	c->fb_va = dma_alloc_coherent(&pdev->dev, CAM_FRAME_BYTES,
++				      &c->fb_pa, GFP_KERNEL | __GFP_NOWARN);
++	if (!c->fb_va)
++		return dev_err_probe(&pdev->dev, -ENOMEM,
++				     "frame buffer alloc failed\n");
 +
 +	c->misc.minor = MISC_DYNAMIC_MINOR;
 +	c->misc.name = "cam0";
