@@ -330,7 +330,7 @@ static void dump_csi_regs(void)
 		 DW_GDMA.cfg0.val, DW_GDMA.chen0.val);
 	for (size_t c = 0;
 	     c < sizeof(DW_GDMA.ch) / sizeof(DW_GDMA.ch[0]); ++c) {
-		const dmac_channel_reg_t *r = &DW_GDMA.ch[c];
+		const volatile dmac_channel_reg_t *r = &DW_GDMA.ch[c];
 		ESP_LOGI(TAG,
 			 "R dwgdma.ch%u sar=0x%08" PRIx32
 			 " dar=0x%08" PRIx32 " bts=0x%08" PRIx32
