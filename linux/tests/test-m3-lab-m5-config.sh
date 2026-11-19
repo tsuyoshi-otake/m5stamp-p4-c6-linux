@@ -77,6 +77,8 @@ export M5CFG_HOME_M5="$tmp/home-m5" M5CFG_HOME_ROOT="$tmp/home-root"
 export RUN_SYSTEM_CLASS_UDC_ROOT="$tmp/udc" M5CFG_SAVE_WAIT=3 M5CFG_ASSUME_ROOT=1
 # The denied-exec retry delay is real on board but only slows the host.
 export M5CFG_SPIN=50
+# Runtime bond store is the staged /tmp copy (#43), never $BOOT_MNT.
+export M5CFG_BLE_BONDS="$tmp/ble-bonds.dat"
 
 fails=0
 ok() { echo "ok: $1"; }
@@ -549,9 +551,13 @@ pair)
 	while [ ! -f "$M5CFG_BLE_RELEASE" ] && [ "$_i" -lt 300 ]; do
 		_i=$((_i + 1)); sleep 0.1 2>/dev/null || sleep 1
 	done
+	if [ -f "$M5CFG_RUN_DIR/.boot-nosave" ]; then
+		printf 'paired, but the bond could not be saved: kernel could not read the boot image\n'
+		exit 7
+	fi
 	printf 'paired + bonded (keys stored, not shown)\n' ;;
 forget)
-	printf 'M5b\0\0\0\0\0' > "$M5CFG_BOOT_MNT/ble-bonds.dat"
+	printf 'M5b\0\0\0\0\0' > "$M5CFG_BLE_BONDS"
 	printf 'forgotten\n' ;;
 esac
 EOF
@@ -591,8 +597,9 @@ grep -q 'initd restart' "$tmp/initlog" &&
 grep -q 'press a key on the keyboard to connect' "$tmp/ble-cap" &&
 	ok "connect hint shown after bond" || bad "hint: $(tail -6 "$tmp/ble-cap")"
 
-# 27. #43 nosave gate: after bonding the menu says the bond file will
-# not be saved rather than pretending.
+# 27. #43 nosave gate: pair exits 7 (staged copy written, image update
+# refused), so the menu shows the tool's honest line, still restarts
+# the daemon on the staged bond, and adds the "this boot only" note.
 printf 'kernel could not read the boot image\n' > "$tmp/run/.boot-nosave"
 : > "$tmp/blelog"; : > "$tmp/initlog"
 rm -f "$tmp/ble-release"
@@ -611,15 +618,20 @@ while [ "$_i" -lt 200 ] && kill -0 "$_blepid" 2>/dev/null; do
 done
 touch "$tmp/ble-release"
 wait "$_blepid" 2>/dev/null
-grep -q 'not saved' "$tmp/ble-cap2" &&
-	ok "nosave -> 'not saved' wording" ||
+grep -q 'the bond could not be saved' "$tmp/ble-cap2" &&
+	grep -q 'this boot only' "$tmp/ble-cap2" &&
+	ok "nosave -> 'not saved' wording follows the real outcome" ||
 	bad "nosave: $(tail -8 "$tmp/ble-cap2")"
+grep -q 'initd restart' "$tmp/initlog" &&
+	ok "rc7 still restarts the daemon on the staged bond" ||
+	bad "rc7 initd: $(cat "$tmp/initlog")"
 rm -f "$tmp/run/.boot-nosave"
 
 # 28. forget of the last bond stops the daemon (the fake forget writes
-# an 8-byte header-only store, like the real tool does).
+# an 8-byte header-only store to the staged path, like the real tool
+# does).
 : > "$tmp/blelog"; : > "$tmp/initlog"
-printf 'M5b\0\0\0\0\0\x0f\x00' > "$tmp/boot/ble-bonds.dat"
+printf 'M5b\0\0\0\0\0\x0f\x00' > "$tmp/ble-bonds.dat"
 printf 'T 8 50\nT 10 10\nT 4 50\nT 4 10\nT 20 10\nT 20 10\nT 20 10\n' \
 	> "$tmp/tscr/events"
 out=$(M5CFG_BLE_KBD="$tmp/bin/ble-kbd" M5CFG_BLELOG="$tmp/blelog" \
@@ -642,7 +654,7 @@ scan|list) cat "$M5CFG_BLE_IN" ;;
 pair) printf 'pairing %s ...\n' "$2" ;;
 forget)
 	{ printf 'M5b\0\0\0\0\0\x01\x00'; head -c 72 /dev/zero; } \
-		> "$M5CFG_BOOT_MNT/ble-bonds.dat"
+		> "$M5CFG_BLE_BONDS"
 	printf 'forgotten\n' ;;
 esac
 EOF
@@ -671,6 +683,99 @@ else
 fi
 rm -f "$tmp/bin/wc" "$tmp/ble-in" "$tmp/ble-cap" "$tmp/ble-cap2" \
 	"$tmp/ble-release"
+
+# 28c. S95blekbd gates on the STAGED store, not /boot (#43 item 1):
+# the real init script, a fake ble-kbd that only records being run.
+s95="$repo_root/linux/m3-lab/rootfs-overlay/etc/init.d/S95blekbd"
+cat > "$tmp/bin/ble-kbd-s95" <<'EOF'
+#!/bin/sh
+echo "daemon $*" >> "$M5CFG_BLELOG"
+EOF
+chmod +x "$tmp/bin/ble-kbd-s95"
+: > "$tmp/blelog"
+printf 'M5b\0\0\0\0\0\x01\x00' > "$tmp/ble-bonds.dat"
+head -c 72 /dev/zero >> "$tmp/ble-bonds.dat"
+BLEKBD="$tmp/bin/ble-kbd-s95" BLE_BONDS="$tmp/ble-bonds.dat" \
+	M5CFG_BLELOG="$tmp/blelog" sh "$s95" start
+sleep 0.3
+grep -q 'daemon' "$tmp/blelog" &&
+	ok "S95 starts the daemon on a staged bond" ||
+	bad "S95 staged start: $(cat "$tmp/blelog")"
+: > "$tmp/blelog"
+rm -f "$tmp/ble-bonds.dat"
+BLEKBD="$tmp/bin/ble-kbd-s95" BLE_BONDS="$tmp/ble-bonds.dat" \
+	M5CFG_BLELOG="$tmp/blelog" sh "$s95" start
+sleep 0.3
+[ ! -s "$tmp/blelog" ] &&
+	ok "S95 stays down with no staged bond file" ||
+	bad "S95 empty start: $(cat "$tmp/blelog")"
+rm -f "$tmp/bin/ble-kbd-s95"
+
+# 28d. ble-bond-store pushes the staged file into the image through the
+# REAL boot-edit (tar-stub mount, fake saver) -- the same copy -> mount
+# -> write -> atomic swap -> bootsyncd wait path m5-config uses, and
+# the same .boot-nosave refusal (#43 items 2+3).
+store="$repo_root/linux/m3-lab/rootfs-overlay/usr/sbin/ble-bond-store"
+bootedit="$repo_root/linux/m3-lab/rootfs-overlay/usr/sbin/boot-edit"
+mkdir -p "$tmp/udc-empty"
+{ printf 'M5b\0\0\0\0\0\x01\x00'; head -c 72 /dev/zero; } \
+	> "$tmp/ble-bonds.dat"
+md5sum "$tmp/ble-bonds.dat" | cut -d' ' -f1 > "$tmp/bonds.md5"
+start_saver
+out=$(BLE_BONDS_TMP="$tmp/ble-bonds.dat" \
+	BLE_BOND_STORE_EDIT="$bootedit" \
+	BOOT_IMG="$img" BOOT_EDIT_RUN_DIR="$tmp/run" \
+	RUN_SYSTEM_CLASS_UDC_ROOT="$tmp/udc-empty" \
+	BOOT_EDIT_SAVE_WAIT=3 sh "$store" 2>&1); rc=$?
+[ "$rc" -eq 0 ] && imgfile ble-bonds.dat | md5sum | cut -d' ' -f1 \
+	| grep -qf "$tmp/bonds.md5" &&
+	ok "ble-bond-store persists the staged file into the image" ||
+	bad "bond-store rc=$rc: $out"
+# nosave refuses the image update and says so (rc nonzero).
+echo 'kernel could not read the boot image' > "$tmp/run/.boot-nosave"
+out=$(BLE_BONDS_TMP="$tmp/ble-bonds.dat" \
+	BLE_BOND_STORE_EDIT="$bootedit" \
+	BOOT_IMG="$img" BOOT_EDIT_RUN_DIR="$tmp/run" \
+	RUN_SYSTEM_CLASS_UDC_ROOT="$tmp/udc-empty" \
+	BOOT_EDIT_SAVE_WAIT=3 sh "$store" 2>&1); rc=$?
+[ "$rc" -ne 0 ] && echo "$out" | grep -q 'cannot be saved' &&
+	ok "nosave -> bond-store refuses with the reason" ||
+	bad "nosave store rc=$rc: $out"
+rm -f "$tmp/run/.boot-nosave"
+stop_saver
+# A missing staged file is an error, not a silent success.
+rm -f "$tmp/ble-bonds.dat"
+out=$(BLE_BONDS_TMP="$tmp/ble-bonds.dat" \
+	BLE_BOND_STORE_EDIT="$bootedit" sh "$store" 2>&1); rc=$?
+[ "$rc" -ne 0 ] &&
+	ok "missing staged store -> bond-store fails" ||
+	bad "missing store rc=$rc: $out"
+
+# 28e. Native-cc check (skipped where no compiler exists): the real
+# ble-kbd list reads the staged store via BLE_KBD_BONDS -- the C side
+# of the runtime path (#43 item 1).
+if command -v cc >/dev/null 2>&1; then
+	# Magic \001KBB + count 1 + a 72-byte entry (u16/u64 alignment):
+	# addr + type=1 + have_ltk=1.  Octal escapes: dash printf has no \x.
+	{ printf '\001KBB\001\000\000\000'
+	  printf '\314\252\125\021\042\063\001\001'
+	  head -c 64 /dev/zero
+	} > "$tmp/ble-bonds.dat"
+	if cc -o "$tmp/ble-kbd-real" \
+	    "$repo_root/linux/buildroot-external/package/ble-kbd/src/ble-kbd.c" \
+	    2>"$tmp/cc.err"; then
+		out=$(BLE_KBD_BONDS="$tmp/ble-bonds.dat" \
+			"$tmp/ble-kbd-real" list 2>&1)
+		echo "$out" | grep -q '33:22:11:55:AA:CC' &&
+			ok "ble-kbd list reads the staged store (native build)" ||
+			bad "native list: $out"
+	else
+		bad "native build: $(head -3 "$tmp/cc.err")"
+	fi
+	rm -f "$tmp/ble-kbd-real"
+else
+	echo "skip: no host cc; ble-kbd list check needs a compiler"
+fi
 
 # 29. Status is a full text page: >19 lines page with [ more > ], the
 # nav block sits below, and a marker past row 19 shows on page 2.

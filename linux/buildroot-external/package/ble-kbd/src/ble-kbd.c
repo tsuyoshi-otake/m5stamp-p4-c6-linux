@@ -32,6 +32,7 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 /* ---- minimal socket ABI ---- */
@@ -93,12 +94,14 @@ struct mgmt_addr_info {
 #define MGMT_OP_GET_CONNECTIONS		0x0015
 #define MGMT_OP_SET_IO_CAPABILITY	0x0018
 #define MGMT_OP_PAIR_DEVICE		0x0019
+#define MGMT_OP_CANCEL_PAIR_DEVICE	0x001A
 #define MGMT_OP_UNPAIR_DEVICE		0x001B
 #define MGMT_OP_USER_CONFIRM_REPLY	0x001C
 #define MGMT_OP_USER_PASSKEY_REPLY	0x001E
 #define MGMT_OP_USER_PASSKEY_NEG_REPLY	0x001F
 #define MGMT_OP_START_DISCOVERY		0x0023
 #define MGMT_OP_STOP_DISCOVERY		0x0024
+#define MGMT_OP_SET_SECURE_CONN		0x002D
 #define MGMT_OP_LOAD_IRKS		0x0030
 #define MGMT_OP_ADD_DEVICE		0x0033
 
@@ -475,6 +478,11 @@ static int adapter_up(int mgmt, int verbose)
 	struct mgmt_mode on = { .val = 1 };
 	uint8_t b[64];
 	mgmt_send(mgmt, MGMT_OP_SET_LE, HCI_DEV, &on, 1);
+	/* Ask for LE Secure Connections: the CACOE trace showed legacy
+	 * Just Works because our side never set the SC bit.  A stack
+	 * without SC support answers cmd_status != 0 and pairing just
+	 * falls back to legacy, so the reply is not checked. */
+	mgmt_send(mgmt, MGMT_OP_SET_SECURE_CONN, HCI_DEV, &on, 1);
 	mgmt_send(mgmt, MGMT_OP_SET_POWERED, HCI_DEV, &on, 1);
 	for (int k = 0; k < 30; k++) {
 		int ev = mgmt_recv(mgmt, b, sizeof(b), 250);
@@ -1156,10 +1164,15 @@ static int cmd_test_fake(const char *addr_str)
 }
 
 /* ================= bond store =================
- * /boot/ble-bonds.dat lives in the boot FAT; bootsyncd snapshots it to
- * flash like credentials.txt.  mode 0600, never logged or echoed.
+ * /boot is only mounted inside S05tmpfs and m5-config's drive_write;
+ * at runtime it is an empty directory on the read-only rootfs, so a
+ * store there can never be read or written.  The live store is the
+ * staged copy in /tmp (S05tmpfs copies it out of the boot FAT like
+ * config.txt); ble-bond-store pushes it back into the image so it
+ * survives a reboot.  mode 0600, never logged or echoed.
  */
-#define BOND_PATH	"/boot/ble-bonds.dat"
+#define BOND_PATH	"/tmp/ble-bonds.dat"
+#define BOND_STORE	"/usr/sbin/ble-bond-store"
 #define BOND_MAGIC	0x42424b01	/* "BBK\x01" */
 #define MAX_BONDS	8
 
@@ -1181,10 +1194,12 @@ struct bond_entry {
 static struct bond_entry bonds[MAX_BONDS];
 static int nbonds;
 
+static const char *bond_path(void);
+
 static int bonds_load(void)
 {
 	uint8_t hdr[8];
-	FILE *f = fopen(BOND_PATH, "rb");
+	FILE *f = fopen(bond_path(), "rb");
 	nbonds = 0;
 	if (!f) return 0;                       /* no store = no bonds */
 	if (fread(hdr, 1, 8, f) != 8 ||
@@ -1201,20 +1216,63 @@ static int bonds_load(void)
 	return 0;
 }
 
+static const char *bond_path(void)
+{
+	const char *p = getenv("BLE_KBD_BONDS");
+	return (p && *p) ? p : BOND_PATH;
+}
+
+/* last save/persist failure, for "could not be saved: <why>" lines */
+static char bond_err[96];
+
 static int bonds_save(void)
 {
 	uint8_t hdr[8] = { BOND_MAGIC & 0xff, (BOND_MAGIC >> 8) & 0xff,
 			   (BOND_MAGIC >> 16) & 0xff, (BOND_MAGIC >> 24) & 0xff,
 			   nbonds & 0xff, (nbonds >> 8) & 0xff, 0, 0 };
-	FILE *f = fopen(BOND_PATH, "wb");
-	if (!f) return -1;
-	fwrite(hdr, 1, 8, f);
-	if (nbonds) fwrite(bonds, sizeof(bonds[0]), nbonds, f);
-	fflush(f);
-	fsync(fileno(f));
-	fclose(f);
-	chmod(BOND_PATH, 0600);
+	FILE *f = fopen(bond_path(), "wb");
+	if (!f) {
+		snprintf(bond_err, sizeof(bond_err), "%s: %s",
+			 bond_path(), strerror(errno));
+		return -1;
+	}
+	int bad = fwrite(hdr, 1, 8, f) != 8 ||
+	    (nbonds && fwrite(bonds, sizeof(bonds[0]), nbonds, f) != (size_t)nbonds) ||
+	    fflush(f) != 0 || fsync(fileno(f)) != 0;
+	if (fclose(f) != 0) bad = 1;
+	if (bad) {
+		snprintf(bond_err, sizeof(bond_err), "write %s: %s",
+			 bond_path(), strerror(errno));
+		return -1;
+	}
+	chmod(bond_path(), 0600);
 	return 0;
+}
+
+/* push the staged store into the boot FAT image through the same
+ * copy -> loop-mount -> atomic-swap -> bootsyncd path m5-config uses
+ * (boot-edit --put).  Honors /run/.boot-nosave: the helper exits
+ * nonzero and the caller reports the bond as not saved. */
+static int bonds_persist(void)
+{
+	const char *h = getenv("BLE_KBD_BOND_STORE");
+	char cmd[256];
+	if (!h || !*h) h = BOND_STORE;
+	snprintf(cmd, sizeof(cmd), "exec %s", h);
+	int rc = system(cmd);
+	if (rc == -1 || !WIFEXITED(rc) || WEXITSTATUS(rc) != 0) {
+		snprintf(bond_err, sizeof(bond_err),
+			 "boot image update failed (rc %d)",
+			 rc == -1 ? -1 : WEXITSTATUS(rc));
+		return -1;
+	}
+	return 0;
+}
+
+/* staged write + image persist; bond_err holds the reason on -1 */
+static int bonds_commit(void)
+{
+	return bonds_save() == 0 && bonds_persist() == 0 ? 0 : -1;
 }
 
 static struct bond_entry *bond_find(const bdaddr_t *a)
@@ -1346,6 +1404,7 @@ static int cmd_pair(const char *addr_str)
 	 * the keyboard and typing 6 digits. */
 	int done = -1;
 	int auth_status = -1;
+	int connected = 0;
 	struct bond_entry *b = NULL;
 	for (int k = 0; k < 360 && done < 0; k++) {
 		int ev = mgmt_recv(mgmt, buf, sizeof(rxbuf), 250);
@@ -1353,6 +1412,11 @@ static int cmd_pair(const char *addr_str)
 		struct mgmt_hdr *h = (void *)buf;
 		void *d = buf + sizeof(*h);
 		switch (ev) {
+		case MGMT_EV_DEVICE_CONNECTED: {
+			struct mgmt_ev_device_connected *c2 = d;
+			if (!memcmp(&c2->addr.bdaddr, &a, 6)) connected = 1;
+			break;
+		}
 		case MGMT_EV_CMD_COMPLETE: {
 			struct mgmt_ev_cmd_complete *c = d;
 			if (c->opcode == MGMT_OP_PAIR_DEVICE)
@@ -1439,9 +1503,16 @@ static int cmd_pair(const char *addr_str)
 	}
 
 	if (done == 0 && b && b->have_ltk) {
-		bonds_save();
-		pair_result("paired + bonded (keys stored, not shown)");
-		return 0;
+		if (bonds_commit() == 0) {
+			pair_result("paired + bonded (keys stored, not shown)");
+			return 0;
+		}
+		char msg[160];
+		snprintf(msg, sizeof(msg),
+			 "paired, but the bond could not be saved: %s",
+			 bond_err);
+		pair_result(msg);
+		return 7;	/* bonded this boot; daemon restart still helps */
 	}
 	if (auth_status >= 0) {
 		char msg[64];
@@ -1451,15 +1522,24 @@ static int cmd_pair(const char *addr_str)
 		return 5;
 	}
 	if (done < 0) {
-		if (seen)
-			pair_result("timed out waiting for the keyboard");
-		else {
-			char msg[64];
-			snprintf(msg, sizeof(msg),
-				 "not found: %s never advertised", addr_str);
-			pair_result(msg);
+		/* stop the kernel's pending pair attempt so the next try
+		 * starts clean */
+		mgmt_send(mgmt, MGMT_OP_CANCEL_PAIR_DEVICE, HCI_DEV,
+			  &cp.addr, sizeof(cp.addr));
+		if (connected) {
+			pair_result("connected but pairing did not finish");
+			return 6;
 		}
-		return seen ? 4 : 3;
+		if (seen) {
+			pair_result("keyboard stopped advertising -- "
+				    "is it connected to another device?");
+			return 4;
+		}
+		char msg[64];
+		snprintf(msg, sizeof(msg),
+			 "not found: %s never advertised", addr_str);
+		pair_result(msg);
+		return 3;
 	}
 	pair_result(done == 0 ? "pair failed (no LTK received)"
 			    : "pair failed");
@@ -1500,7 +1580,11 @@ static int cmd_forget(const char *arg)
 			usleep(100000);
 		}
 		nbonds = 0;
-		bonds_save();
+		if (bonds_commit()) {
+			printf("bonds forgotten, but the store could not be "
+			       "saved: %s\n", bond_err);
+			return 1;
+		}
 		printf("all bonds forgotten\n");
 		return 0;
 	}
@@ -1518,7 +1602,11 @@ static int cmd_forget(const char *arg)
 		memmove(b, b + 1,
 			(nbonds - 1 - (b - bonds)) * sizeof(*b));
 		nbonds--;
-		bonds_save();
+		if (bonds_commit()) {
+			printf("forgot %s, but the store could not be "
+			       "saved: %s\n", arg, bond_err);
+			return 1;
+		}
 	}
 	printf("forgot %s\n", arg);
 	return 0;

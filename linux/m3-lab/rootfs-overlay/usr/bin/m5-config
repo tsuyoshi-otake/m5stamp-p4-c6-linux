@@ -812,7 +812,8 @@ M5KEY="${M5CFG_M5_KEY:-/usr/bin/m5-key}"
 STTY="${M5CFG_STTY:-stty}"
 BLEKBD="${M5CFG_BLE_KBD:-/usr/bin/ble-kbd}"
 BLEKBD_INITD="${M5CFG_BLE_INITD:-/etc/init.d/S95blekbd}"
-BLE_BONDS="$BOOT_MNT/ble-bonds.dat"
+# Runtime store is the staged copy; /boot is unmounted after S05tmpfs.
+BLE_BONDS="${M5CFG_BLE_BONDS:-/tmp/ble-bonds.dat}"
 SYSINFO="${M5CFG_SYSINFO:-/usr/sbin/sysinfo}"
 USBLUN="${M5CFG_USB_LUN:-/usr/sbin/usb-lun}"
 STATUS_TXT="${M5CFG_STATUS_TXT:-/run/status.txt}"
@@ -1899,15 +1900,16 @@ _blescan() {
 	done < "$1"
 }
 
-# After a successful bond ($1 = pair rc): get the daemon onto the new
-# bond at once, say whether the bond file will reach flash through
-# bootsyncd (the #43 nosave gate), and tell the person how to connect.
+# After a bond ($1 = pair rc): get the daemon onto the new bond at
+# once and say what happened to persistence.  rc 7 means the staged
+# copy was written but the image update failed (nosave, mount, exec
+# denied) -- the tool already printed "paired, but the bond could not
+# be saved: <why>", so the wording here follows the real outcome.
 ble_after_pair() {
-	[ "$1" -eq 0 ] || return
+	case "$1" in 0|7) ;; *) return ;; esac
 	"$BLEKBD_INITD" restart >/dev/null 2>&1
-	if [ -f "$NOSAVE_MARK" ]; then
-		_r=""; read -r _r < "$NOSAVE_MARK" 2>/dev/null || true
-		say "  bond not saved: ${_r:-kernel could not read the boot image}"
+	if [ "$1" -eq 7 ]; then
+		say "  bond works this boot only (not saved)"
 	else
 		say "  bond saved to the boot image"
 	fi
