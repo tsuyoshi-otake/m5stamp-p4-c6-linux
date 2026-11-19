@@ -27,7 +27,7 @@ shim-patched espressif,scanout-chan.
 
 --- /dev/null
 +++ b/drivers/misc/esp32p4_cam.c
-@@ -0,0 +1,636 @@
+@@ -0,0 +1,654 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * ESP32-P4 MIPI-CSI one-shot raw capture (Tab5 camera bring-up).
@@ -436,8 +436,8 @@ shim-patched espressif,scanout-chan.
 +static int cam_capture(struct esp32p4_cam *c)
 +{
 +	void __iomem *ch = c->gdma + c->choff;
-+	u32 st;
-+	int i;
++	u32 st, done;
++	int i, tries;
 +
 +	/* PREPARE armed the receiver before stream-on; a completed
 +	 * capture left the channel disarmed -- re-arm for the next
@@ -453,22 +453,40 @@ shim-patched espressif,scanout-chan.
 +		writel(1, c->brg + BRG_CSI_EN);
 +	}
 +
-+	for (i = 0; i < CAM_TIMEOUT_MS * 10; i++) {
-+		st = readl(ch + GDMA_CH_INT_ST0);
-+		if (st & GDMA_EV_ERRORS) {
-+			cam_dump_state(c);
-+			goto out_eio;
++	/* The bridge is the flow controller and ends a block at the
++	 * first frame boundary it decides; the first frame after
++	 * stream-on arrives incomplete (discard_int) -- the oracle
++	 * drains it through its backup buffer by queueing the real
++	 * buffer 50 ms late.  Loop instead: re-arm until DAR shows
++	 * a full frame was written. */
++	for (tries = 0; tries < 8; tries++) {
++		for (i = 0; i < CAM_TIMEOUT_MS * 10; i++) {
++			st = readl(ch + GDMA_CH_INT_ST0);
++			if (st & GDMA_EV_ERRORS) {
++				cam_dump_state(c);
++				goto out_eio;
++			}
++			if (st & GDMA_EV_DMA_DONE)
++				break;
++			usleep_range(80, 120);
 +		}
-+		if (st & GDMA_EV_DMA_DONE)
-+			break;
-+		usleep_range(80, 120);
-+	}
-+	if (i == CAM_TIMEOUT_MS * 10) {
-+		cam_dump_state(c);
-+		goto out_timeout;
-+	}
++		if (i == CAM_TIMEOUT_MS * 10) {
++			cam_dump_state(c);
++			goto out_timeout;
++		}
 +
-+	writel(~0u, ch + GDMA_CH_INT_CLR0);
++		writel(~0u, ch + GDMA_CH_INT_CLR0);
++		done = readl(ch + GDMA_CH_DAR0) - (u32)c->fb_pa;
++		if (done >= CAM_FRAME_BYTES)
++			break;
++		/* Short block (partial/discarded frame): re-arm and
++		 * catch the next one. */
++		cam_gdma_arm(c);
++		writel(GDMA_CHEN_EN(c->chan), c->gdma + GDMA_CHEN0);
++	}
++	if (tries == 8)
++		goto out_eio;
++
 +	writel(0, c->brg + BRG_CSI_EN);
 +	writel(GDMA_CHEN_DIS(c->chan), c->gdma + GDMA_CHEN0);
 +	arch_sync_dma_for_cpu(c->fb_pa, CAM_FRAME_BYTES, DMA_FROM_DEVICE);
