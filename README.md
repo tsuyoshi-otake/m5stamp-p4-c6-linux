@@ -208,7 +208,7 @@ m5-config get hostname
 m5-config set hostname desk-01
 ```
 
-`set` validates the value, writes it to the same boot image, waits for the flash save and applies it — the same save path `boot-edit` uses, so the `[bootsync] Saved to flash` console line and the exit status tell you the same thing. Passwords are typed with echo off and never shown; `list`/`get` mask them. When the boot FAT could not be read this boot (see §3), `m5-config` says so and refuses to claim a save. To change a file by hand — the autorun program, or any file the menu does not cover — use `boot-edit` on the board, as root:
+`set` validates the value, writes it to the same boot image, waits for the flash save and applies it — the same save path `boot-edit` uses, so the `[bootsync] Saved to flash` console line and the exit status tell you the same thing. Passwords are typed with echo off and never shown; `list`/`get` mask them. When the boot FAT could not be read this boot (see §3), `m5-config` says so and refuses to claim a save. One of the managed keys is `brightness` (5–100, percent): the Display screen saves it the same way, and on the Tab5 `S07backlight` applies it at boot. To change a file by hand — the autorun program, or any file the menu does not cover — use `boot-edit` on the board, as root:
 
 ```sh
 boot-edit --ls                      # what is on the drive

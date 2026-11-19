@@ -787,6 +787,15 @@ net_dispatch() {
 				# autorun_* is applied by bootsync's autorun_apply;
 				# auto_reboot is re-read on every save.
 				;;
+			brightness)
+				# Tab5 panel backlight (#42): applies live, no
+				# restart.  The script only ships in the Tab5
+				# image; on other boards the key is inert.
+				if [ -x /etc/init.d/S07backlight ]; then
+					/etc/init.d/S07backlight apply || net_note "ES_CONFIG: $k apply failed"
+				else
+					net_note "ES_CONFIG: $k applies to Tab5 only; ignored"
+				fi ;;
 			debug)
 				if [ "$(conf_get debug /tmp/config.txt "$NOSPACE")" = "1" ]; then
 					dmesg -n 8 2>/dev/null || true

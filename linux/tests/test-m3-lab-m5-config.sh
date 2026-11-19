@@ -917,6 +917,124 @@ out=$(env -u M5CFG_FORCE_TOUCH M5CFG_BLDIR="$tmp/bl" \
 	ok "plain mode still writes once, on entry" ||
 	bad "plain brightness: bl=$(cat "$BLW") $out"
 
+# 34. B33-C: brightness is a managed key (#42) -- set/get/list round
+# trip, bounds, the [OK]/typed saves, the S07backlight boot apply,
+# the no-backlight (Stamp) gate and the NOT-SAVED refusal.
+S07="$repo_root/linux/m3-lab/rootfs-overlay-tab5/etc/init.d/S07backlight"
+start_saver
+out=$(M5CFG_BLDIR="$tmp/bl" sh "$tool" set brightness 60 2>&1); rc=$?
+stop_saver
+[ "$rc" -eq 0 ] && echo "$out" | grep -qF 'saved to flash' &&
+	[ "$(imgfile config.txt | grep -c '^brightness=60')" = 1 ] &&
+	ok "set brightness saves through drive_write" ||
+	bad "set brightness: rc=$rc $out"
+# bootsyncd republishes /tmp/config.txt after a save; the fake saver
+# does not, so mirror it for the read-back checks.
+imgfile config.txt > "$tmp/pub/config.txt"
+out=$(M5CFG_BLDIR="$tmp/bl" sh "$tool" get brightness 2>&1)
+[ "$out" = "60" ] && ok "get brightness returns the saved value" ||
+	bad "get brightness: $out"
+out=$(M5CFG_BLDIR="$tmp/bl" sh "$tool" list 2>&1)
+echo "$out" | grep -qF 'brightness = 60' &&
+	ok "list shows brightness" || bad "list brightness: $out"
+for v in 0 4 101 abc "5x"; do
+	out=$(M5CFG_BLDIR="$tmp/bl" sh "$tool" set brightness "$v" 2>&1); rc=$?
+	[ "$rc" -ne 0 ] && echo "$out" | grep -qiF 'rejected' ||
+		bad "set brightness '$v' not rejected: rc=$rc $out"
+done
+ok "brightness bounds rejected (0,4,101,abc,5x)"
+out=$(M5CFG_BLDIR="$tmp/bl" sh "$tool" get brightness 2>&1)
+[ "$out" = "60" ] && ok "rejects left the saved value alone" ||
+	bad "post-reject get: $out"
+# [cancel] must not save: the saved value above is still the only
+# brightness= line in the image; nothing was written for the taps.
+echo 500 > "$BLW"
+printf 'T 8 50\nT 4 10\nT 8 60\nT 20 10\nT 20 10\n' > "$tmp/tscr/events"
+start_saver
+out=$(M5CFG_BLDIR="$tmp/bl" M5CFG_TSCRIPT="$tmp/tscr/events" \
+	sh "$tool" menu </dev/null 2>&1)
+stop_saver
+[ "$(imgfile config.txt | grep -c '^brightness=')" = 1 ] &&
+	[ "$(imgfile config.txt | grep -c '^brightness=60')" = 1 ] &&
+	ok "[cancel] saves nothing" ||
+	bad "cancel changed the key: $(imgfile config.txt | grep brightness)"
+# [-][-][+] [OK] saves once: exactly one brightness=45 in the image
+# and the panel keeps the previewed value.
+echo 500 > "$BLW"
+printf 'T 8 50\nT 4 10\nT 4 10\nT 4 50\nT 8 10\nT 20 10\nT 20 10\n' \
+	> "$tmp/tscr/events"
+start_saver
+out=$(M5CFG_BLDIR="$tmp/bl" M5CFG_TSCRIPT="$tmp/tscr/events" \
+	sh "$tool" menu </dev/null 2>&1)
+stop_saver
+[ "$(imgfile config.txt | grep -c '^brightness=45')" = 1 ] &&
+	[ "$(cat "$BLW")" = 450 ] &&
+	ok "[OK] saves once, panel keeps the preview" ||
+	bad "OK save: img=$(imgfile config.txt | grep brightness) bl=$(cat "$BLW") $out"
+# plain mode: typed value saves too.
+printf '4\n70\n\n0\n' > "$tmp/tscr/kbd"
+echo 500 > "$BLW"
+start_saver
+out=$(env -u M5CFG_FORCE_TOUCH M5CFG_BLDIR="$tmp/bl" \
+	sh "$tool" menu < "$tmp/tscr/kbd" 2>&1)
+stop_saver
+[ "$(cat "$BLW")" = 700 ] &&
+	[ "$(imgfile config.txt | grep -c '^brightness=70')" = 1 ] &&
+	ok "plain mode types and saves" ||
+	bad "plain save: img=$(imgfile config.txt | grep brightness) bl=$(cat "$BLW") $out"
+# Stamp gate: no M5CFG_BLDIR -> no backlight -> set is rejected,
+# list hides the key, get reads it as unset.
+out=$(env -u M5CFG_BLDIR sh "$tool" set brightness 60 2>&1); rc=$?
+[ "$rc" -eq 1 ] && echo "$out" | grep -qF 'not present' &&
+	ok "no backlight: set brightness rejected" ||
+	bad "stamp gate set: rc=$rc $out"
+out=$(env -u M5CFG_BLDIR sh "$tool" list 2>&1)
+echo "$out" | grep -q 'brightness' &&
+	bad "no backlight: list still shows brightness" ||
+	ok "no backlight: list hides brightness"
+# NOT-SAVED: the marker refuses the save with rc=2 and a reason,
+# and a valid value still lights the panel when set from the menu.
+echo 'boot image unreadable' > "$tmp/run/.boot-nosave"
+out=$(M5CFG_BLDIR="$tmp/bl" sh "$tool" set brightness 60 2>&1); rc=$?
+[ "$rc" -eq 2 ] && echo "$out" | grep -qF 'not saved' &&
+	ok "NOT-SAVED refuses with rc=2" ||
+	bad "nosave set: rc=$rc $out"
+rm -f "$tmp/run/.boot-nosave"
+# S07backlight boot apply: reads the staged config, writes
+# pct*mx/100; missing/invalid keys leave the panel as it was.
+mkdir -p "$tmp/s07bl/bl0" "$tmp/s07"
+echo 1000 > "$tmp/s07bl/bl0/max_brightness"
+echo 307 > "$tmp/s07bl/bl0/brightness"
+printf 'brightness=60\n' > "$tmp/s07/config.txt"
+M5CFG_BLDIR="$tmp/s07bl" M5CFG_CONFIG_TXT="$tmp/s07/config.txt" \
+	sh "$S07" start
+[ "$(cat "$tmp/s07bl/bl0/brightness")" = 600 ] &&
+	ok "S07backlight applies brightness=60 at boot" ||
+	bad "s07 apply: bl=$(cat "$tmp/s07bl/bl0/brightness")"
+echo 307 > "$tmp/s07bl/bl0/brightness"
+printf 'hostname=desk-01\n' > "$tmp/s07/config.txt"
+M5CFG_BLDIR="$tmp/s07bl" M5CFG_CONFIG_TXT="$tmp/s07/config.txt" \
+	sh "$S07" start
+[ "$(cat "$tmp/s07bl/bl0/brightness")" = 307 ] &&
+	ok "S07backlight missing key leaves the default" ||
+	bad "s07 missing: bl=$(cat "$tmp/s07bl/bl0/brightness")"
+for v in 3 101 abc "60junk"; do
+	echo 307 > "$tmp/s07bl/bl0/brightness"
+	printf 'brightness=%s\n' "$v" > "$tmp/s07/config.txt"
+	M5CFG_BLDIR="$tmp/s07bl" M5CFG_CONFIG_TXT="$tmp/s07/config.txt" \
+		sh "$S07" start
+	[ "$(cat "$tmp/s07bl/bl0/brightness")" = 307 ] ||
+		bad "s07 invalid '$v': bl=$(cat "$tmp/s07bl/bl0/brightness")"
+done
+ok "S07backlight invalid values leave the default"
+# no backlight at all: the script is a silent no-op.
+rm -rf "$tmp/s07bl"
+printf 'brightness=60\n' > "$tmp/s07/config.txt"
+M5CFG_BLDIR="$tmp/s07bl" M5CFG_CONFIG_TXT="$tmp/s07/config.txt" \
+	sh "$S07" start 2>/dev/null; rc=$?
+[ "$rc" -eq 0 ] && ok "S07backlight no-panel no-op" ||
+	bad "s07 nopanel rc=$rc"
+
 if [ "$fails" -gt 0 ]; then
 	echo "FAILED: $fails checks"
 	exit 1

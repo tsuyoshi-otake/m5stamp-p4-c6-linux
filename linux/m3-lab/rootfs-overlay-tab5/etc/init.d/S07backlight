@@ -1,0 +1,67 @@
+#!/bin/sh
+# Tab5 only (#42): apply brightness= from config.txt to the panel
+# backlight early in boot, so a value saved by m5-config survives a
+# reboot.  Runs right after S05tmpfs staged /tmp/config.txt and long
+# before the console/menu matters.  A missing or invalid key leaves
+# the DT/shim default; a board without a backlight is a soft no-op
+# (the file only ships in the Tab5 rootfs anyway).  Builtins only
+# except one printf for the CR byte: no $( ) storm on NOMMU.
+
+BLDIR=${M5CFG_BLDIR:-/sys/class/backlight}
+CFG=${M5CFG_CONFIG_TXT:-/tmp/config.txt}
+
+case "$1" in
+  start|restart|reload|apply)
+	bl=""
+	for d in "$BLDIR"/*/brightness; do
+		[ -f "$d" ] && { bl=$d; break; }
+	done
+	[ -n "$bl" ] || exit 0
+	mx=0
+	[ -f "${bl%brightness}max_brightness" ] &&
+		read -r mx < "${bl%brightness}max_brightness" 2>/dev/null || mx=0
+	[ "$mx" -gt 0 ] || exit 0
+	CR=$(printf '\r')
+	pct=""
+	if [ -f "$CFG" ]; then
+		while IFS= read -r _l || [ -n "$_l" ]; do
+			_l=${_l%"$CR"}
+			while :; do
+				case "$_l" in
+					" "*|"	"*) _l=${_l#?} ;;
+					*) break ;;
+				esac
+			done
+			case "$_l" in
+				brightness=*)
+					pct=${_l#brightness=}
+					while :; do
+						case "$pct" in
+							*" "|*"	") pct=${pct%?} ;;
+							*) break ;;
+						esac
+					done
+					while :; do
+						case "$pct" in
+							" "*|"	"*) pct=${pct#?} ;;
+							*) break ;;
+						esac
+					done
+					break ;;
+			esac
+		done < "$CFG"
+	fi
+	case "$pct" in
+		[5-9]|[1-9][0-9]|100) ;;
+		*) exit 0 ;;
+	esac
+	echo $((pct * mx / 100)) > "$bl" 2>/dev/null || true
+	;;
+  stop) ;;
+  *)
+	echo "Usage: $0 {start|stop}" >&2
+	exit 1
+	;;
+esac
+
+exit 0
