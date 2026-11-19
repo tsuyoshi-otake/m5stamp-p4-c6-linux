@@ -334,12 +334,16 @@ static void dump_csi_regs(void)
 		ESP_LOGI(TAG,
 			 "R dwgdma.ch%u sar=0x%08" PRIx32
 			 " dar=0x%08" PRIx32 " bts=0x%08" PRIx32
-			 " ctl0=0x%08" PRIx32 " cfg0=0x%08" PRIx32
+			 " ctl0=0x%08" PRIx32 " ctl1=0x%08" PRIx32
+			 " cfg0=0x%08" PRIx32 " cfg1=0x%08" PRIx32
 			 " llp=0x%08" PRIx32 " st0=0x%08" PRIx32
-			 " ist0=0x%08" PRIx32,
+			 " ist0=0x%08" PRIx32 " stena=0x%08" PRIx32
+			 " sigena=0x%08" PRIx32,
 			 (unsigned)c, r->sar0.val, r->dar0.val,
-			 r->block_ts0.val, r->ctl0.val, r->cfg0.val,
-			 r->llp0.val, r->status0.val, r->int_st0.val);
+			 r->block_ts0.val, r->ctl0.val, r->ctl1.val,
+			 r->cfg0.val, r->cfg1.val,
+			 r->llp0.val, r->status0.val, r->int_st0.val,
+			 r->int_st_ena0.val, r->int_sig_ena0.val);
 	}
 	ESP_LOGI(TAG, "R clkrst peri_clk_ctrl03 = 0x%08" PRIx32,
 		 HP_SYS_CLKRST.peri_clk_ctrl03.val);
@@ -380,6 +384,10 @@ static void dump_csi_regs(void)
 		 HP_SYS_CLKRST.peri_clk_ctrl25.val,
 		 HP_SYS_CLKRST.peri_clk_ctrl26.val,
 		 HP_SYS_CLKRST.hp_rst_en0.val);
+	/* PMU ext_ldo[1] = LDO chan 3 (the shared D-PHY rail): the same
+	 * two words the Linux driver's cam_ldo3() checks. */
+	ESP_LOGI(TAG, "R pmu ldo3 ctrl=0x%08" PRIx32 " ana=0x%08" PRIx32,
+		 *reg32(0x501151c0), *reg32(0x501151c4));
 }
 
 /* Average each 2x2 Bayer cell to grey and draw it centered on the
@@ -720,6 +728,12 @@ bool camera_oracle_run(uint16_t *fb, uint32_t fb_bytes)
 	MIPI_CSI_HOST.int_st_main.val = ~0u;
 	/* The published table is init-only; streaming needs the separate
 	 * 0x0100=0x01 write (sc202cs_set_stream in esp_cam_sensor). */
+#ifdef ORACLE_REG_DUMP
+	/* Armed-pipeline state right before stream-on: the reference for
+	 * the Linux driver's pre-stream register diff (B39). */
+	ESP_LOGI(TAG, "=== pre-stream-on snapshot ===");
+	dump_csi_regs();
+#endif
 	if (sccb_write(sccb, 0x0100, 0x01) != ESP_OK) {
 		ESP_LOGE(TAG, "stream-on write failed");
 		goto out;
