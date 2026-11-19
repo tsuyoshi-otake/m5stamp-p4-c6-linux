@@ -564,7 +564,18 @@ EOF
 chmod +x "$tmp/bin/ble-kbd"
 cat > "$tmp/bin/S95blekbd" <<'EOF'
 #!/bin/sh
-echo "initd $*" >> "$M5CFG_INITLOG"
+# At 'restart', record whether the bond is already in the image: the
+# restart must come AFTER the menu's own persist, not before it --
+# the daemon takes pool the save needs (#41 review).
+if [ "$1" = restart ]; then
+	if tar -tf "$M5CFG_BOOT_IMG" 2>/dev/null | grep -q ble-bonds.dat; then
+		echo "initd restart img=bond" >> "$M5CFG_INITLOG"
+	else
+		echo "initd restart img=nobond" >> "$M5CFG_INITLOG"
+	fi
+else
+	echo "initd $*" >> "$M5CFG_INITLOG"
+fi
 exit 0
 EOF
 chmod +x "$tmp/bin/S95blekbd"
@@ -835,9 +846,9 @@ echo "$out" | grep -q 'bond saved to the boot image' &&
 	grep -q "$(md5sum "$tmp/ble-bonds.dat" | cut -d' ' -f1)" &&
 	ok "rc8 pair -> menu persists the staged store to the image" ||
 	bad "rc8 persist: $(echo "$out" | tail -8)"
-grep -q 'initd restart' "$tmp/initlog" &&
-	ok "rc8 still restarts the daemon on the staged bond" ||
-	bad "rc8 initd: $(cat "$tmp/initlog")"
+grep -q 'initd restart img=bond' "$tmp/initlog" &&
+	ok "rc8 restarts the daemon AFTER the persist" ||
+	bad "rc8 initd order: $(cat "$tmp/initlog")"
 
 # 28g. Same path under nosave: drive_put refuses at once (rc 2), the
 # menu says the bond is this-boot-only, the image gets nothing.

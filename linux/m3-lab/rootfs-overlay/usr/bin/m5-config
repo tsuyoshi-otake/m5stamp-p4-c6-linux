@@ -1937,14 +1937,17 @@ ble_persist_bonds() {
 	done
 }
 
-# After a bond ($1 = pair rc): get the daemon onto the new bond at
-# once and say what happened to persistence.  The menu runs ble-kbd
-# in stage-only mode (BLE_KBD_PERSIST=0 -> rc 8) and persists here,
-# so the wording follows the real outcome: rc 7 means the staged
-# write itself failed (the tool printed why).
+# After a bond ($1 = pair rc): persist FIRST, then restart the
+# daemon -- the initd restart execs sh + killall and leaves a
+# resident daemon, taking pool the save itself needs while the menu
+# is up (#41 review).  The menu runs ble-kbd in stage-only mode
+# (BLE_KBD_PERSIST=0 -> rc 8) and persists here, so the wording
+# follows the real outcome: rc 7 means the staged write itself
+# failed (the tool printed why).  The restart still runs on every
+# accepted rc: the staged bond works this boot even when the save
+# did not reach flash.
 ble_after_pair() {
 	case "$1" in 0|7|8) ;; *) return ;; esac
-	"$BLEKBD_INITD" restart >/dev/null 2>&1
 	case "$1" in
 		0) say "  bond saved to the boot image" ;;
 		8) if ble_persist_bonds; then
@@ -1954,6 +1957,7 @@ ble_after_pair() {
 		fi ;;
 		*) say "  bond works this boot only (not saved)" ;;
 	esac
+	"$BLEKBD_INITD" restart >/dev/null 2>&1
 	say "  press a key on the keyboard to connect"
 }
 
