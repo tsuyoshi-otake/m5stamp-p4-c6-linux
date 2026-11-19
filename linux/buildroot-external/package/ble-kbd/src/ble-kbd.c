@@ -95,9 +95,11 @@ struct mgmt_addr_info {
 #define MGMT_OP_UNPAIR_DEVICE		0x001B
 #define MGMT_OP_USER_CONFIRM_REPLY	0x001C
 #define MGMT_OP_USER_PASSKEY_REPLY	0x001E
+#define MGMT_OP_USER_PASSKEY_NEG_REPLY	0x001F
 #define MGMT_OP_START_DISCOVERY		0x0023
 #define MGMT_OP_STOP_DISCOVERY		0x0024
 #define MGMT_OP_LOAD_IRKS		0x0030
+#define MGMT_OP_ADD_DEVICE		0x0033
 
 #define MGMT_EV_CMD_COMPLETE		0x0001
 #define MGMT_EV_CMD_STATUS		0x0002
@@ -207,6 +209,16 @@ struct mgmt_cp_unpair_device {
 	uint8_t  disconnect;
 } __attribute__((packed));
 
+struct mgmt_cp_add_device {
+	struct mgmt_addr_info addr;
+	uint8_t  action;	/* 1 = background scan + auto-connect */
+} __attribute__((packed));
+
+struct mgmt_ev_auth_failed {
+	struct mgmt_addr_info addr;
+	uint8_t  status;
+} __attribute__((packed));
+
 struct mgmt_cp_load_ltks {
 	uint16_t key_count;
 	struct mgmt_ltk_info keys[];
@@ -263,6 +275,8 @@ _Static_assert(sizeof(struct mgmt_ev_device_disconnected) == 8, "dev_disc");
 _Static_assert(sizeof(struct mgmt_ev_new_conn_param) == 16, "conn_param");
 _Static_assert(sizeof(struct mgmt_cp_pair_device) == 8, "pair_dev");
 _Static_assert(sizeof(struct mgmt_cp_unpair_device) == 8, "unpair_dev");
+_Static_assert(sizeof(struct mgmt_cp_add_device) == 8, "add_dev");
+_Static_assert(sizeof(struct mgmt_ev_auth_failed) == 8, "auth_fail");
 _Static_assert(sizeof(struct mgmt_cp_load_ltks) == 2, "load_ltks");
 _Static_assert(sizeof(struct mgmt_cp_load_irks) == 2, "load_irks");
 _Static_assert(sizeof(struct mgmt_cp_start_discovery) == 1, "start_disc");
@@ -1216,7 +1230,53 @@ static struct bond_entry *bond_new(const bdaddr_t *a, uint8_t type)
 	return b;
 }
 
-/* ================= pair ================= */
+/* ================= pair =================
+ * The passkey is rendered in 5-row block digits when stdout is a tty
+ * so it cannot be missed on a small panel; it is one-time display
+ * only -- never persisted, never logged anywhere else.
+ */
+static const char *const dig5[10][5] = {
+	{ " ### ", "#   #", "#   #", "#   #", " ### " }, /* 0 */
+	{ "  #  ", " ##  ", "  #  ", "  #  ", " ### " }, /* 1 */
+	{ " ### ", "#   #", "  ## ", " #   ", "#####" }, /* 2 */
+	{ "###  ", "   # ", " ##  ", "   # ", "###  " }, /* 3 */
+	{ "#  # ", "#  # ", "#####", "   # ", "   # " }, /* 4 */
+	{ "#####", "#    ", "#### ", "    #", "#### " }, /* 5 */
+	{ " ### ", "#    ", "#### ", "#   #", " ### " }, /* 6 */
+	{ "#####", "   # ", "  #  ", " #   ", "#    " }, /* 7 */
+	{ " ### ", "#   #", " ### ", "#   #", " ### " }, /* 8 */
+	{ " ### ", "#   #", " ####", "    #", " ### " }, /* 9 */
+};
+
+static void show_passkey(unsigned pk)
+{
+	char d[7];
+	snprintf(d, sizeof(d), "%06u", pk % 1000000u);
+	if (isatty(1)) {
+		printf("\033[1m  type this on the keyboard, then Enter:\n");
+		for (int r = 0; r < 5; r++) {
+			printf("   ");
+			for (int i = 0; i < 6; i++)
+				printf("%s", dig5[d[i] - '0'][r]);
+			printf("\n");
+		}
+		printf("  %s\033[0m\n", d);
+	} else {
+		printf("  type %s on the keyboard, then Enter\n", d);
+	}
+	fflush(stdout);
+}
+
+/* Final outcome lines: the menu keys on them (and on the rc). */
+static void pair_result(const char *s)
+{
+	if (isatty(1))
+		printf("\033[1m%s\033[0m\n", s);
+	else
+		printf("%s\n", s);
+	fflush(stdout);
+}
+
 static int cmd_pair(const char *addr_str)
 {
 	uint8_t *buf = rxbuf;
@@ -1240,7 +1300,9 @@ static int cmd_pair(const char *addr_str)
 	cp.addr.type = BDADDR_LE_PUBLIC;     /* updated on DEVICE_FOUND */
 	cp.io_cap = IO_KEYBOARD_DISPLAY;
 
-	/* short discovery first so the kernel knows the addr type */
+	/* short discovery first so the kernel knows the addr type
+	 * (60 x 250 ms = 15 s) */
+	int seen = 0;
 	struct mgmt_cp_start_discovery sd = { .type = MGMT_DISCOV_TYPE_LE };
 	mgmt_send(mgmt, MGMT_OP_START_DISCOVERY, HCI_DEV, &sd, 1);
 	for (int k = 0; k < 60; k++) {
@@ -1249,6 +1311,7 @@ static int cmd_pair(const char *addr_str)
 			struct mgmt_ev_device_found *d = (void *)(buf + 6);
 			if (!memcmp(&d->addr.bdaddr, &a, 6)) {
 				cp.addr.type = d->addr.type;
+				seen = 1;
 				break;
 			}
 		}
@@ -1261,9 +1324,12 @@ static int cmd_pair(const char *addr_str)
 	printf("pairing %s ...\n", addr_str);
 	fflush(stdout);
 
+	/* 360 x 250 ms = 90 s: connect + SMP exchange + a person finding
+	 * the keyboard and typing 6 digits. */
 	int done = -1;
+	int auth_status = -1;
 	struct bond_entry *b = NULL;
-	for (int k = 0; k < 240 && done < 0; k++) {
+	for (int k = 0; k < 360 && done < 0; k++) {
 		int ev = mgmt_recv(mgmt, buf, sizeof(rxbuf), 250);
 		if (ev <= 0) continue;
 		struct mgmt_hdr *h = (void *)buf;
@@ -1291,15 +1357,20 @@ static int cmd_pair(const char *addr_str)
 		}
 		case MGMT_EV_PASSKEY_NOTIFY: {
 			struct mgmt_ev_passkey_notify *p = d;
-			/* one-time display allowed; never persisted */
-			printf("  type %06u on the keyboard, then Enter\n",
-			       p->passkey);
-			fflush(stdout);
+			show_passkey(p->passkey);
 			break;
 		}
-		case MGMT_EV_USER_PASSKEY_REQUEST:
-			printf("  keyboard requested a passkey entry\n");
+		case MGMT_EV_USER_PASSKEY_REQUEST: {
+			/* The keyboard asks US to type a code: we can only
+			 * display one -- answer with a negative reply and
+			 * say so. */
+			struct mgmt_addr_info rep =
+				*(struct mgmt_addr_info *)d;
+			mgmt_send(mgmt, MGMT_OP_USER_PASSKEY_NEG_REPLY,
+				  HCI_DEV, &rep, sizeof(rep));
+			printf("  keyboard wants us to type a passkey; we can only display one -- declined\n");
 			break;
+		}
 		case MGMT_EV_NEW_LONG_TERM_KEY: {
 			struct mgmt_ev_new_long_term_key *k2 = d;
 			b = bond_new(&k2->key.addr.bdaddr, k2->key.addr.type);
@@ -1339,20 +1410,41 @@ static int cmd_pair(const char *addr_str)
 			}
 			break;
 		}
-		case MGMT_EV_AUTH_FAILED:
-			printf("  auth failed\n");
+		case MGMT_EV_AUTH_FAILED: {
+			struct mgmt_ev_auth_failed *f = d;
+			auth_status = f->status;
 			done = -2;
 			break;
+		}
 		}
 		(void)h;
 	}
 
 	if (done == 0 && b && b->have_ltk) {
 		bonds_save();
-		printf("paired + bonded (keys stored, not shown)\n");
+		pair_result("paired + bonded (keys stored, not shown)");
 		return 0;
 	}
-	printf("pair failed%s\n", done == 0 ? " (no LTK received)" : "");
+	if (auth_status >= 0) {
+		char msg[64];
+		snprintf(msg, sizeof(msg), "auth failed (status 0x%02x)",
+			 auth_status);
+		pair_result(msg);
+		return 5;
+	}
+	if (done < 0) {
+		if (seen)
+			pair_result("timed out waiting for the keyboard");
+		else {
+			char msg[64];
+			snprintf(msg, sizeof(msg),
+				 "not found: %s never advertised", addr_str);
+			pair_result(msg);
+		}
+		return seen ? 4 : 3;
+	}
+	pair_result(done == 0 ? "pair failed (no LTK received)"
+			    : "pair failed");
 	return 1;
 }
 
@@ -1486,30 +1578,83 @@ static int cmd_daemon(void)
 		if (ev <= 0) break;
 	}
 	usleep(200000);
-	printf("daemon: %d bond(s), keys loaded, scanning\n", nbonds);
+
+	/* Prefer the kernel's background scan + auto-connect: one
+	 * ADD_DEVICE action=1 per bond leaves the radio on a low-duty
+	 * background scan in the kernel instead of this daemon's
+	 * continuous mgmt discovery (the C6 shares one antenna between
+	 * Wi-Fi and BLE).  Fall back to the discovery loop when the
+	 * kernel refuses it. */
+	for (int i = 0; i < nbonds; i++) {
+		struct mgmt_cp_add_device ad;
+		memset(&ad, 0, sizeof(ad));
+		ad.addr.bdaddr = bonds[i].addr;
+		ad.addr.type = bonds[i].type;
+		ad.action = 1;
+		mgmt_send(mgmt, MGMT_OP_ADD_DEVICE, HCI_DEV, &ad, sizeof(ad));
+	}
+	usleep(200000);
+	int bgscan = 1;
+	for (int k = 0; k < 40; k++) {
+		int ev = mgmt_recv(mgmt, buf, sizeof(rxbuf), 250);
+		if (ev <= 0) break;
+		if (ev == MGMT_EV_CMD_COMPLETE) {
+			struct mgmt_ev_cmd_complete *c = (void *)(buf + 6);
+			if (c->opcode == MGMT_OP_ADD_DEVICE && c->status)
+				bgscan = 0;
+		} else if (ev == MGMT_EV_CMD_STATUS) {
+			struct mgmt_ev_cmd_status *s = (void *)(buf + 6);
+			if (s->opcode == MGMT_OP_ADD_DEVICE && s->status)
+				bgscan = 0;
+		}
+	}
+	if (bgscan)
+		printf("daemon: %d bond(s), kernel background scan + auto-connect\n",
+		       nbonds);
+	else
+		printf("daemon: %d bond(s), keys loaded, scanning\n", nbonds);
 
 	struct mgmt_cp_start_discovery sd = { .type = MGMT_DISCOV_TYPE_LE };
 	struct mgmt_cp_stop_discovery sp = { .type = MGMT_DISCOV_TYPE_LE };
 	int backoff = 1;
 	for (;;) {
-		mgmt_send(mgmt, MGMT_OP_START_DISCOVERY, HCI_DEV, &sd, 1);
+		if (!bgscan)
+			mgmt_send(mgmt, MGMT_OP_START_DISCOVERY, HCI_DEV,
+				  &sd, 1);
 		for (;;) {
 			int ev = mgmt_recv(mgmt, buf, sizeof(rxbuf), 1000);
 			if (ev < 0) break;
 			if (ev == 0) continue;
-			if (ev != MGMT_EV_DEVICE_FOUND) continue;
-			struct mgmt_ev_device_found *d = (void *)(buf + 6);
-			struct bond_entry *b = bond_find(&d->addr.bdaddr);
+			struct bond_entry *b = NULL;
+			struct mgmt_addr_info *da = NULL;
+			if (bgscan) {
+				if (ev != MGMT_EV_DEVICE_CONNECTED) continue;
+				struct mgmt_ev_device_connected *d =
+					(void *)(buf + 6);
+				da = &d->addr;
+			} else {
+				if (ev != MGMT_EV_DEVICE_FOUND) continue;
+				struct mgmt_ev_device_found *d =
+					(void *)(buf + 6);
+				da = &d->addr;
+			}
+			b = bond_find(&da->bdaddr);
 			/* also match resolved RPAs via stored irk addr */
-			int i;
-			for (i = 0; !b && i < nbonds; i++)
+			for (int i = 0; !b && i < nbonds; i++)
 				if (bonds[i].have_irk &&
 				    !memcmp(&bonds[i].irk_addr,
-					    &d->addr.bdaddr, 6))
+					    &da->bdaddr, 6))
 					b = &bonds[i];
 			if (!b) continue;
 			char a[18];
-			bdaddr_str(&d->addr.bdaddr, a);
+			bdaddr_str(&da->bdaddr, a);
+			if (bgscan) {
+				printf("daemon: bonded device %s connected\n",
+				       a);
+				hogp_session(&b->addr, b->type, mgmt, 1);
+				backoff = 1;
+				continue;
+			}
 			printf("daemon: bonded device %s adv -> connect\n", a);
 			mgmt_send(mgmt, MGMT_OP_STOP_DISCOVERY,
 				  HCI_DEV, &sp, 1);

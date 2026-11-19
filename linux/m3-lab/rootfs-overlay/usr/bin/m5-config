@@ -811,6 +811,8 @@ _trow=0 _iord=0 _tpage=0 _tkeep="" _navlabel=back _islots="" _msgrow=0 _saycol="
 M5KEY="${M5CFG_M5_KEY:-/usr/bin/m5-key}"
 STTY="${M5CFG_STTY:-stty}"
 BLEKBD="${M5CFG_BLE_KBD:-/usr/bin/ble-kbd}"
+BLEKBD_INITD="${M5CFG_BLE_INITD:-/etc/init.d/S95blekbd}"
+BLE_BONDS="$BOOT_MNT/ble-bonds.dat"
 SYSINFO="${M5CFG_SYSINFO:-/usr/sbin/sysinfo}"
 USBLUN="${M5CFG_USB_LUN:-/usr/sbin/usb-lun}"
 STATUS_TXT="${M5CFG_STATUS_TXT:-/run/status.txt}"
@@ -1896,6 +1898,30 @@ _blescan() {
 	done < "$1"
 }
 
+# After a successful bond ($1 = pair rc): get the daemon onto the new
+# bond at once, say whether the bond file will reach flash through
+# bootsyncd (the #43 nosave gate), and tell the person how to connect.
+ble_after_pair() {
+	[ "$1" -eq 0 ] || return
+	"$BLEKBD_INITD" restart >/dev/null 2>&1
+	if [ -f "$NOSAVE_MARK" ]; then
+		_r=""; read -r _r < "$NOSAVE_MARK" 2>/dev/null || true
+		say "  bond not saved: ${_r:-kernel could not read the boot image}"
+	else
+		say "  bond saved to the boot image"
+	fi
+	say "  press a key on the keyboard to connect"
+}
+
+# After a forget: stop the daemon when no bond is left (the store is
+# an 8-byte header + entries).
+ble_maybe_stop_daemon() {
+	_sz=0
+	[ -f "$BLE_BONDS" ] && _sz=$(wc -c < "$BLE_BONDS" 2>/dev/null)
+	[ "${_sz:-0}" -le 8 ] && "$BLEKBD_INITD" stop >/dev/null 2>&1
+	return 0
+}
+
 menu_blekbd() {
 	while :; do
 		scr_clear
@@ -1919,30 +1945,26 @@ menu_blekbd() {
 					tpick "pair which?" "$_picks" || continue
 					[ -z "$TPIDX" ] && continue
 					eval "_addr=\$_bta_$TPIDX; _name=\$_btn_$TPIDX"
-					# pairing screen: the passkey line has to be
-					# impossible to miss, so the tool's output
-					# gets the whole cleared screen from row 2
-					# down and digit/passkey lines go bold.
+					# pairing screen: the tool writes straight
+					# to the tty so the passkey appears the
+					# moment it exists (no file, no pipe -- a
+					# pipe would park a whole extra hush).
+					# ble-kbd itself renders the passkey in
+					# block digits + bold result lines.
 					scr_clear
 					printf '\033[1;1H\033[1m== pairing %s (%s) ==\033[0m\033[K' \
 						"$_name" "$_addr"
 					printf '\033[3;1H'
-					# through a file: a pipe would park a whole
-					# extra hush for the read side.
-					"$BLEKBD" pair "$_addr" > /tmp/ble-pair.txt 2>&1
-					while IFS= read -r _l; do
-						case "$_l" in
-							*[0-9][0-9][0-9][0-9]*|*asskey*|*nter*)
-								printf '\033[1m%s\033[0m\n' "$_l" ;;
-							*) printf '%s\n' "$_l" ;;
-						esac
-					done < /tmp/ble-pair.txt
-					rm -f /tmp/ble-pair.txt
+					"$BLEKBD" pair "$_addr"; _rc=$?
+					ble_after_pair "$_rc"
 				else
 					"$BLEKBD" scan 8
 					ask "  address AA:BB:.. (empty cancels): " || continue
 					_addr=$REPLY
-					[ -n "$_addr" ] && "$BLEKBD" pair "$_addr"
+					if [ -n "$_addr" ]; then
+						"$BLEKBD" pair "$_addr"; _rc=$?
+						ble_after_pair "$_rc"
+					fi
 				fi
 				pause ;;
 			2) trun "$BLEKBD" list; pause ;;
@@ -1959,10 +1981,14 @@ menu_blekbd() {
 					tconfirm "forget $_name?" || continue
 					[ "$REPLY" = yes ] || continue
 					trun "$BLEKBD" forget "$_addr"
+					ble_maybe_stop_daemon
 				else
 					"$BLEKBD" list
 					ask "  address or all (empty cancels): " || continue
-					[ -n "$REPLY" ] && "$BLEKBD" forget "$REPLY"
+					if [ -n "$REPLY" ]; then
+						"$BLEKBD" forget "$REPLY"
+						ble_maybe_stop_daemon
+					fi
 				fi
 				pause ;;
 			0) return ;;

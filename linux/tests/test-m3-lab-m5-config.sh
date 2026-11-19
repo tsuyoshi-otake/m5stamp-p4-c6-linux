@@ -528,11 +528,111 @@ echo "$out" | grep -q 'EE:01' && echo "$out" | grep -q 'EE:02' &&
 grep -q 'pair AA:BB:CC:DD:EE:02' "$tmp/blelog" &&
 	ok "tap resolved by slot index (2nd addr)" ||
 	bad "slot resolve: $(cat "$tmp/blelog")"
+# the tool's own output is verbatim (it does its own bolding on a
+# real tty) -- the menu only draws the header.
 echo "$out" | grep -q 'pairing Kbd_One (AA:BB:CC:DD:EE:02)' &&
-	echo "$out" | grep -q "$(printf '\033\[1m')  type 654321" &&
-	ok "pairing screen + bold passkey line" || bad "pairing screen: $out"
+	echo "$out" | grep -q 'type 654321 on the keyboard' &&
+	ok "pairing screen + passkey line" || bad "pairing screen: $out"
 
-# 26. Status is a full text page: >19 lines page with [ more > ], the
+# 26. BLE pairing writes straight to the tty: the passkey must reach
+# the capture while the tool is still running -- proof the line is not
+# parked behind a file/pipe.  The fake pair prints the passkey, then
+# waits on a release flag before the result line.
+cat > "$tmp/bin/ble-kbd" <<'EOF'
+#!/bin/sh
+echo "ble-kbd $*" >> "$M5CFG_BLELOG"
+case "$1" in
+scan|list) cat "$M5CFG_BLE_IN" ;;
+pair)
+	printf 'pairing %s ...\n  type 654321 on the keyboard, then Enter\n' "$2"
+	_i=0
+	while [ ! -f "$M5CFG_BLE_RELEASE" ] && [ "$_i" -lt 300 ]; do
+		_i=$((_i + 1)); sleep 0.1 2>/dev/null || sleep 1
+	done
+	printf 'paired + bonded (keys stored, not shown)\n' ;;
+forget)
+	printf 'M5b\0\0\0\0\0' > "$M5CFG_BOOT_MNT/ble-bonds.dat"
+	printf 'forgotten\n' ;;
+esac
+EOF
+chmod +x "$tmp/bin/ble-kbd"
+cat > "$tmp/bin/S95blekbd" <<'EOF'
+#!/bin/sh
+echo "initd $*" >> "$M5CFG_INITLOG"
+exit 0
+EOF
+chmod +x "$tmp/bin/S95blekbd"
+mkdir -p "$tmp/boot" "$tmp/run"
+printf '  AA:BB:CC:DD:EE:01 type=1 rssi=-50 [HID] name=Kbd One\n' > "$tmp/ble-in"
+printf '  AA:BB:CC:DD:EE:02 type=1 rssi=-60 [HID] name=Kbd One\n' >> "$tmp/ble-in"
+: > "$tmp/blelog"; : > "$tmp/initlog"
+rm -f "$tmp/ble-release" "$tmp/run/.boot-nosave"
+printf 'T 8 50\nT 4 10\nT 4 50\nT 20 10\nT 20 10\nT 20 10\n' > "$tmp/tscr/events"
+M5CFG_BLE_KBD="$tmp/bin/ble-kbd" M5CFG_BLELOG="$tmp/blelog" \
+	M5CFG_BLE_IN="$tmp/ble-in" M5CFG_TSCRIPT="$tmp/tscr/events" \
+	M5CFG_BLE_INITD="$tmp/bin/S95blekbd" M5CFG_INITLOG="$tmp/initlog" \
+	M5CFG_BLE_RELEASE="$tmp/ble-release" M5CFG_BOOT_MNT="$tmp/boot" \
+	M5CFG_RUN_DIR="$tmp/run" \
+	sh "$tool" menu > "$tmp/ble-cap" 2>&1 </dev/null &
+_blepid=$!
+_live=0; _i=0
+while [ "$_i" -lt 200 ]; do
+	grep -q 'type 654321' "$tmp/ble-cap" 2>/dev/null && { _live=1; break; }
+	kill -0 "$_blepid" 2>/dev/null || break
+	_i=$((_i + 1)); sleep 0.2
+done
+[ "$_live" = 1 ] && ! grep -q 'paired + bonded' "$tmp/ble-cap" &&
+	ok "passkey reaches the tty while pair is still running" ||
+	bad "live passkey: $(tail -6 "$tmp/ble-cap")"
+touch "$tmp/ble-release"
+wait "$_blepid" 2>/dev/null
+grep -q 'initd restart' "$tmp/initlog" &&
+	ok "bonded -> daemon restart" || bad "initd: $(cat "$tmp/initlog")"
+grep -q 'press a key on the keyboard to connect' "$tmp/ble-cap" &&
+	ok "connect hint shown after bond" || bad "hint: $(tail -6 "$tmp/ble-cap")"
+
+# 27. #43 nosave gate: after bonding the menu says the bond file will
+# not be saved rather than pretending.
+printf 'kernel could not read the boot image\n' > "$tmp/run/.boot-nosave"
+: > "$tmp/blelog"; : > "$tmp/initlog"
+rm -f "$tmp/ble-release"
+printf 'T 8 50\nT 4 10\nT 4 50\nT 20 10\nT 20 10\nT 20 10\n' > "$tmp/tscr/events"
+M5CFG_BLE_KBD="$tmp/bin/ble-kbd" M5CFG_BLELOG="$tmp/blelog" \
+	M5CFG_BLE_IN="$tmp/ble-in" M5CFG_TSCRIPT="$tmp/tscr/events" \
+	M5CFG_BLE_INITD="$tmp/bin/S95blekbd" M5CFG_INITLOG="$tmp/initlog" \
+	M5CFG_BLE_RELEASE="$tmp/ble-release" M5CFG_BOOT_MNT="$tmp/boot" \
+	M5CFG_RUN_DIR="$tmp/run" \
+	sh "$tool" menu > "$tmp/ble-cap2" 2>&1 </dev/null &
+_blepid=$!
+_i=0
+while [ "$_i" -lt 200 ] && kill -0 "$_blepid" 2>/dev/null; do
+	grep -q 'type 654321' "$tmp/ble-cap2" 2>/dev/null && break
+	_i=$((_i + 1)); sleep 0.2
+done
+touch "$tmp/ble-release"
+wait "$_blepid" 2>/dev/null
+grep -q 'not saved' "$tmp/ble-cap2" &&
+	ok "nosave -> 'not saved' wording" ||
+	bad "nosave: $(tail -8 "$tmp/ble-cap2")"
+rm -f "$tmp/run/.boot-nosave"
+
+# 28. forget of the last bond stops the daemon (the fake forget writes
+# an 8-byte header-only store, like the real tool does).
+: > "$tmp/blelog"; : > "$tmp/initlog"
+printf 'M5b\0\0\0\0\0\x0f\x00' > "$tmp/boot/ble-bonds.dat"
+printf 'T 8 50\nT 10 10\nT 4 50\nT 4 10\nT 20 10\nT 20 10\nT 20 10\n' \
+	> "$tmp/tscr/events"
+out=$(M5CFG_BLE_KBD="$tmp/bin/ble-kbd" M5CFG_BLELOG="$tmp/blelog" \
+	M5CFG_BLE_IN="$tmp/ble-in" M5CFG_TSCRIPT="$tmp/tscr/events" \
+	M5CFG_BLE_INITD="$tmp/bin/S95blekbd" M5CFG_INITLOG="$tmp/initlog" \
+	M5CFG_BOOT_MNT="$tmp/boot" M5CFG_RUN_DIR="$tmp/run" \
+	sh "$tool" menu </dev/null 2>&1)
+grep -q 'initd stop' "$tmp/initlog" &&
+	ok "forget of last bond stops the daemon" ||
+	bad "forget stop: $(cat "$tmp/initlog"); $out"
+rm -f "$tmp/ble-in" "$tmp/ble-cap" "$tmp/ble-cap2" "$tmp/ble-release"
+
+# 29. Status is a full text page: >19 lines page with [ more > ], the
 # nav block sits below, and a marker past row 19 shows on page 2.
 {
 	i=1; while [ "$i" -le 25 ]; do echo "status line $i"; i=$((i + 1)); done
