@@ -30,17 +30,31 @@
 #define SENSOR_ADDR		0x36
 #define SENSOR_PID		0xeb52
 
-/* Minimal i2c-dev ioctl plumbing (musl has no linux/i2c-dev.h here). */
-#define I2C_RDWR		0x0707
-#define I2C_M_RD		0x0001
-struct i2c_msg_local {
-	uint16_t addr, flags;
-	uint16_t len;
-	uint8_t *buf;
+/* Minimal i2c-dev ioctl plumbing (musl has no linux/i2c-dev.h here).
+ * The board's i2c-0 is i2c-gpio bit-banged: combined I2C_RDWR
+ * transactions fail on it (verified on board), so SCCB goes through
+ * plain I2C_SMBUS ioctls -- the same path i2cset/i2cget use:
+ *   write: command=reg_hi + word=(reg_lo | val<<8)  -> [hi][lo][val]
+ *   read:  BYTE_DATA command=reg_hi, data=reg_lo     -> [hi][lo]
+ *          then SMBUS_BYTE read                       -> [val]
+ */
+#define I2C_SLAVE		0x0703
+#define I2C_SMBUS		0x0720
+#define I2C_SMBUS_READ		1
+#define I2C_SMBUS_WRITE		0
+#define I2C_SMBUS_BYTE		1
+#define I2C_SMBUS_BYTE_DATA	2
+#define I2C_SMBUS_WORD_DATA	3
+union i2c_smbus_data_local {
+	uint8_t byte;
+	uint16_t word;
+	uint8_t block[34];
 };
-struct i2c_rdwr_local {
-	struct i2c_msg_local *msgs;
-	uint32_t nmsgs;
+struct i2c_smbus_ioctl_data_local {
+	uint8_t read_write;
+	uint8_t command;
+	uint32_t size;
+	union i2c_smbus_data_local *data;
 };
 
 /* cam0 is powered only while open: the driver drops CAM_RST on
@@ -88,35 +102,43 @@ static const uint16_t sensor_init[][2] = {
 	{0xffff, 0x00},
 };
 
-static int sccb_xfer(int fd, uint16_t reg, uint8_t *val, int rd)
-{
-	uint8_t wbuf[3] = { reg >> 8, reg & 0xff, *val };
-	struct i2c_msg_local msgs[2];
-	struct i2c_rdwr_local d = { msgs, 0 };
-
-	if (rd) {
-		msgs[0].addr = SENSOR_ADDR; msgs[0].flags = 0;
-		msgs[0].len = 2; msgs[0].buf = wbuf;
-		msgs[1].addr = SENSOR_ADDR; msgs[1].flags = I2C_M_RD;
-		msgs[1].len = 1; msgs[1].buf = val;
-		d.nmsgs = 2;
-	} else {
-		msgs[0].addr = SENSOR_ADDR; msgs[0].flags = 0;
-		msgs[0].len = 3; msgs[0].buf = wbuf;
-		d.nmsgs = 1;
-	}
-	return ioctl(fd, I2C_RDWR, &d);
-}
-
 static int sccb_write(int fd, uint16_t reg, uint8_t val)
 {
-	return sccb_xfer(fd, reg, &val, 0);
+	union i2c_smbus_data_local d;
+	struct i2c_smbus_ioctl_data_local a = {
+		.read_write = I2C_SMBUS_WRITE,
+		.command = (uint8_t)(reg >> 8),
+		.size = I2C_SMBUS_WORD_DATA,
+		.data = &d,
+	};
+	/* wire order is command, word low byte, word high byte:
+	 * [reg_hi][reg_lo][val] -- the 16-bit-reg SCCB write. */
+	d.word = (uint16_t)((reg & 0xff) | (val << 8));
+	return ioctl(fd, I2C_SMBUS, &a);
 }
 
 static int sccb_read(int fd, uint16_t reg, uint8_t *val)
 {
+	union i2c_smbus_data_local d;
+	struct i2c_smbus_ioctl_data_local a = {
+		.read_write = I2C_SMBUS_WRITE,
+		.command = (uint8_t)(reg >> 8),
+		.size = I2C_SMBUS_BYTE_DATA,
+		.data = &d,
+	};
 	*val = 0;
-	return sccb_xfer(fd, reg, val, 1);
+	/* pointer phase: [reg_hi][reg_lo], then a bare byte read. */
+	d.byte = reg & 0xff;
+	if (ioctl(fd, I2C_SMBUS, &a))
+		return -1;
+	memset(&a, 0, sizeof a);
+	a.read_write = I2C_SMBUS_READ;
+	a.size = I2C_SMBUS_BYTE;
+	a.data = &d;
+	if (ioctl(fd, I2C_SMBUS, &a))
+		return -1;
+	*val = d.byte;
+	return 0;
 }
 
 static void stats(const uint8_t *f)
@@ -148,7 +170,13 @@ static int sensor_setup(int i2c, int pattern)
 	uint8_t idh, idl;
 	int i;
 
-	if (sccb_read(i2c, 0x3107, &idh) || sccb_read(i2c, 0x3108, &idl)) {
+	for (i = 0; i < 5; i++) {
+		if (!sccb_read(i2c, 0x3107, &idh) &&
+		    !sccb_read(i2c, 0x3108, &idl))
+			break;
+		usleep(20000);
+	}
+	if (i == 5) {
 		fprintf(stderr, "chip-ID read failed (sensor powered?)\n");
 		return -1;
 	}
@@ -206,6 +234,10 @@ int main(int argc, char **argv)
 	i2c = open("/dev/i2c-0", O_RDWR);
 	if (i2c < 0) {
 		perror("open /dev/i2c-0");
+		return 1;
+	}
+	if (ioctl(i2c, I2C_SLAVE, SENSOR_ADDR) < 0) {
+		perror("I2C_SLAVE");
 		return 1;
 	}
 	if (!strcmp(out, "-"))
