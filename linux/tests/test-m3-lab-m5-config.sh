@@ -871,6 +871,19 @@ out=$(M5CFG_BLDIR="$tmp/bl" M5CFG_BLWATCH="$BLW" \
 	ok "brightness [cancel] restores the entry value" ||
 	bad "preview cancel: log=$(tr '\n' ' ' < "$BLW.log") \
 bl=$(cat "$BLW") $out"
+# REVIEW 1: the entry percent is rounded (499/1000 -> 49%), so a
+# restore computed from percent would write 490.  It must write back
+# the exact raw value the file had on entry.
+echo 499 > "$BLW"; : > "$BLW.log"
+printf 'T 8 50\nT 4 10\nT 8 60\nT 20 10\nT 20 10\n' > "$tmp/tscr/events"
+out=$(M5CFG_BLDIR="$tmp/bl" M5CFG_BLWATCH="$BLW" \
+	M5CFG_TSCRIPT="$tmp/tscr/events" sh "$tool" menu </dev/null 2>&1)
+[ "$(cat "$BLW")" = 499 ] &&
+	[ "$(sed -n '3p' "$BLW.log")" = 440 ] &&
+	[ "$(sed -n '4p' "$BLW.log")" = 499 ] &&
+	ok "brightness cancel restores the exact raw value" ||
+	bad "preview cancel raw: log=$(tr '\n' ' ' < "$BLW.log") \
+bl=$(cat "$BLW") $out"
 # Events run out inside tadjust (m5-key EOF): same restore.
 echo 500 > "$BLW"; : > "$BLW.log"
 printf 'T 8 50\nT 4 10\n' > "$tmp/tscr/events"

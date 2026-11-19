@@ -1042,13 +1042,16 @@ tconfirm() {
 # With PREVIEW (a function name, called with the new value) every
 # [-]/[+] tap applies the change at once; cancel, EOF/m5-key loss
 # and a signal inside the screen call it once more with the value
-# that was current on entry so nothing is left previewed.
+# that was current on entry so nothing is left previewed.  The
+# restore call passes a second arg "r" so the hook can write back an
+# exact raw value it captured on entry -- the entry CUR can be a
+# rounded unit that would come back one step off.
 tadjust() {
 	[ "$_TOUCH" = 1 ] || return 1
 	_cur=$2; _buf=""; _pvf=${6:-}; _pvin=$2
 	REPLY=""
 	[ -n "$_pvf" ] &&
-		trap '"$_pvf" "$_pvin"; exit 130' HUP INT TERM
+		trap '"$_pvf" "$_pvin" r; exit 130' HUP INT TERM
 	while :; do
 		scr_clear
 		say "== $1 =="
@@ -1092,7 +1095,7 @@ tadjust() {
 		# Back to the session trap, not "no trap": a signal later in
 		# the session must still reach _cleanup.
 		trap '_cleanup; exit 130' HUP INT TERM
-		[ -z "$REPLY" ] && "$_pvf" "$_pvin"
+		[ -z "$REPLY" ] && "$_pvf" "$_pvin" r
 	fi
 	return 0
 }
@@ -1437,11 +1440,18 @@ menu_datetime() {
 	pause
 }
 
-# _bl_preview PCT: the tadjust preview hook for brightness (#42) --
+# _bl_preview PCT [r]: the tadjust preview hook for brightness (#42) --
 # writes PCT to the backlight menu_display probed ($bl/$mx) so a tap
 # on [-]/[+] is visible at once.  Builtin echo only: no subprocess,
-# no $(...), so a NOMMU hush never forks mid-menu.
+# no $(...), so a NOMMU hush never forks mid-menu.  Called with a
+# second arg "r" it is the cancel/EOF/signal restore: write back the
+# exact raw value read on entry ($_bl_entry) -- PCT*mx/100 could
+# come back one step off (128/255 -> 50% -> 127).
 _bl_preview() {
+	if [ "${2:-}" = r ]; then
+		[ -n "$bl" ] && echo "$_bl_entry" > "$bl" 2>/dev/null || :
+		return
+	fi
 	if [ -n "$bl" ] && [ "$mx" -gt 0 ]; then
 		echo $(($1 * mx / 100)) > "$bl" 2>/dev/null || :
 	fi
@@ -1465,7 +1475,8 @@ menu_display() {
 	if [ "$_TOUCH" = 1 ]; then
 		# never below ~5% from a tap: a touch-only user cannot
 		# recover a black panel.  _bl_preview makes [-]/[+] live;
-		# cancel restores the value read above.
+		# cancel restores the raw value read above ($_bl_entry).
+		_bl_entry=$cur
 		tadjust "brightness" "$pct" 5 100 5 _bl_preview || return
 	else
 		ask "  new brightness 5-100 (empty cancels): " || return
