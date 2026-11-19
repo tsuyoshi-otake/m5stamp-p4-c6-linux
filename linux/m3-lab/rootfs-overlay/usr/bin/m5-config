@@ -63,6 +63,17 @@ key_secret() {
 key_unset_ok() {
 	case "$1" in password|root_password) return 1 ;; *) return 0 ;; esac
 }
+# key_maxlen KEY -> KMAX: typing cap for ttext ("" = no cap).  Only a
+# cap while typing; the key's validator in do_set is still the gate.
+key_maxlen() {
+	case "$1" in
+		hostname|wifi_ssid) KMAX=32 ;;
+		wifi_psk) KMAX=63 ;;
+		password|root_password) KMAX=64 ;;
+		ext5v_en|ext_ant_en) KMAX=1 ;;
+		*) KMAX="" ;;
+	esac
+}
 # A key that can only be set where its apply path exists.
 SYSBOARD=${M5CFG_SYS_BOARD:-/sys/kernel/board}
 key_present() {
@@ -1114,71 +1125,230 @@ tadjust() {
 	return 0
 }
 
-# ttext TITLE [secret] (touch only): a text field has no on-screen
-# keyboard yet (step 2), so this shows a [ back ] button and a note.
-# A real keyboard still works: the first byte goes through m5-key
-# (K enter cancels, K bs is ignored while the line is still empty),
-# the rest of the line is read at the message-area prompt so nothing
-# lands on the nav row.  In secret mode the typed bytes are never
-# echoed; each char shows as '*' and tty echo is restored after.
+# --- on-screen keyboard (#42 step 2) ---------------------------------
+# Three layers of tappable keys inside the 80x22 geometry, on a 3-row
+# pitch under the field line (rows 2-16; nav keeps rows 19-21, the
+# message strip row 18): lower, upper and digits+symbols.  Shift is
+# one-shot -- a tapped letter on the upper layer reverts to lower; the
+# [abc] key drops back without typing.  Char keys plus [spc]/[del]
+# cover every printable ASCII 0x20-0x7e.  Key rows: kw=80/n columns
+# each, centred by off=(80-n*kw)/2 -- the tap hit-test recomputes the
+# same arithmetic the draw used, so a key box can never drift from its
+# pixels (a >7-column key's right-hand 1-column gap folds into the key,
+# the menus do the same with gap rows).  A char tap repaints only the
+# field line and flashes the tapped key in _TAP; a layer tap repaints
+# the key grid and nothing else.  m5-key K bytes append like taps
+# (Enter = [OK]), so a real keyboard works at the same time.
+KB_TOP=2
+# Single-char words are keys; [abc]/[ABC]/[123] switch layers, [del] is
+# backspace, [spc] the space bar (a bare space cannot be a word).
+# _KB<layer>_<row 0..4>; the letter layers leave row 3 empty.
+_KB0_0="q w e r t y u i o p"
+_KB0_1="a s d f g h j k l"
+_KB0_2="[ABC] z x c v b n m"
+_KB0_4="[123] [spc] [del]"
+_KB1_0="Q W E R T Y U I O P"
+_KB1_1="A S D F G H J K L"
+_KB1_2="[abc] Z X C V B N M"
+_KB1_4="[123] [spc] [del]"
+_KB2_0="1 2 3 4 5 6 7 8 9 0"
+_KB2_1="! \" # $ % & ' ( ) * +"
+_KB2_2=", - . / : ; < = > ? @"
+_KB2_3="[ \\ ] ^ _ \` { | } ~"
+_KB2_4="[abc] [spc] [del]"
+
+# _kbroww: next word of row spec $_kbs into $_kwt (builtins only -- a
+# for-split would glob-expand the *, ? and [ ] keys).
+_kbroww() {
+	_kwt=${_kbs%% *}
+	case "$_kbs" in
+		*' '*) _kbs=${_kbs#* } ;;
+		*) _kbs="" ;;
+	esac
+}
+
+# _kblock TOP COL KW LABEL: one key -- KW wide, 3 rows tall (the right
+# column is left blank when KW > 7, as a visual gap).
+_kblock() {
+	_kdw=$3
+	[ "$_kdw" -gt 7 ] && _kdw=$((_kdw - 1))
+	_kdl=${#4}; [ "$_kdl" -gt "$((_kdw - 2))" ] && _kdl=$((_kdw - 2))
+	_kdp=$(( (_kdw - _kdl) / 2 )); _kdr=$((_kdw - _kdp - _kdl))
+	printf "\033[%s;%sH${_BTN}%-${_kdw}s\033[0m" \
+		"$(($1 + 1))" "$(($2 + 1))" ""
+	printf "\033[%s;%sH${_BTN}%${_kdp}s%-${_kdl}.${_kdl}s%${_kdr}s\033[0m" \
+		"$(($1 + 2))" "$(($2 + 1))" "" "$4" ""
+	printf "\033[%s;%sH${_BTN}%-${_kdw}s\033[0m" \
+		"$(($1 + 3))" "$(($2 + 1))" ""
+}
+
+# _kb_keys: (re)draw the key grid of layer $_kbl, the nav block and the
+# hint line.  Everything below the field line is redrawn: a layer
+# switch changes every key, and starting clean also drops keys that
+# only existed on the previous layer.
+_kb_keys() {
+	case "$_kbl" in
+		0) _krows="0 1 2 4"; _kbly=abc ;;
+		1) _krows="0 1 2 4"; _kbly=ABC ;;
+		*) _krows="0 1 2 3 4"; _kbly="123+sym" ;;
+	esac
+	printf '\033[%s;1H\033[J' "$((KB_TOP + 1))"
+	for _ri in $_krows; do
+		eval "_kbs=\$_KB${_kbl}_${_ri}"
+		_n=0; _s=$_kbs
+		while [ -n "$_s" ]; do
+			_n=$((_n + 1))
+			case "$_s" in
+				*' '*) _s=${_s#* } ;;
+				*) _s="" ;;
+			esac
+		done
+		_kkw=$((80 / _n)); _off=$(( (80 - _n * _kkw) / 2 ))
+		_top=$((KB_TOP + _ri * 3)); _col=$_off
+		while [ -n "$_kbs" ]; do
+			_kbroww
+			_kblock "$_top" "$_col" "$_kkw" "$_kwt"
+			_col=$((_col + _kkw))
+		done
+	done
+	_tblock "$NAVTOP" 0 "[ cancel ]"
+	_tblock "$NAVTOP" 40 "[ OK ]"
+	msg "  layer $_kbly -- tap keys or type, [OK] saves"
+}
+
+# _kb_field: repaint just the field line (row 1).  Secret mode draws
+# one '*' per char and the length -- never the plaintext.
+_kb_field() {
+	if [ "$_sec" = 1 ]; then
+		_s=""
+		while [ ${#_s} -lt ${#_buf} ]; do _s="$_s*"; done
+		printf '\033[2;1H\033[0m> %s (%s)\033[K' "$_s" "${#_buf}"
+	else
+		_d=$_buf
+		while [ ${#_d} -gt 76 ]; do _d=${_d#?}; done
+		printf '\033[2;1H\033[0m> %.76s_\033[K' "$_d"
+	fi
+}
+
+# _kb_char C: append C with the caller's cap, then repaint the field.
+_kb_char() {
+	if [ -n "$_max" ] && [ "${#_buf}" -ge "$_max" ]; then
+		msg "  limit: $_max chars"
+		return
+	fi
+	_buf="$_buf$1"
+	_kb_field
+}
+
+# _kb_hit ROW COL: which key (if any) holds cell ROW,COL -- recomputes
+# the draw arithmetic: row pitch, per-row kw/off, key j=(col-off)/kw.
+# -> _kri (row idx), _kj (word idx), _kcol, _kkw, _ktop; rc 1 = no key.
+_kb_hit() {
+	for _ri in $_krows; do
+		_t=$((KB_TOP + _ri * 3))
+		[ "$1" -ge "$_t" ] && [ "$1" -lt $((_t + 3)) ] || continue
+		eval "_kbs=\$_KB${_kbl}_${_ri}"
+		_n=0; _s=$_kbs
+		while [ -n "$_s" ]; do
+			_n=$((_n + 1))
+			case "$_s" in
+				*' '*) _s=${_s#* } ;;
+				*) _s="" ;;
+			esac
+		done
+		_kkw=$((80 / _n)); _off=$(( (80 - _n * _kkw) / 2 ))
+		[ "$2" -lt "$_off" ] && return 1
+		_kj=$((($2 - _off) / _kkw))
+		[ "$_kj" -ge "$_n" ] && return 1
+		_kri=$_ri; _kcol=$((_off + _kj * _kkw)); _ktop=$_t
+		return 0
+	done
+	return 1
+}
+
+# _kb_press RI J TOP COL KW: flash the tapped key in _TAP, then act --
+# a char key appends (and drops the one-shot upper layer), [del]
+# erases, [abc]/[ABC]/[123] repaint the grid on the new layer.
+_kb_press() {
+	eval "_kbs=\$_KB${_kbl}_$1"
+	_j=0
+	while [ -n "$_kbs" ]; do
+		_kbroww
+		[ "$_j" = "$2" ] && break
+		_j=$((_j + 1))
+	done
+	[ -n "$_kwt" ] || return 0
+	_s=$_BTN; _BTN=$_TAP
+	_kblock "$3" "$4" "$5" "$_kwt"
+	_BTN=$_s
+	usleep 200000 2>/dev/null || :
+	case "$_kwt" in
+		"[ABC]") _kbl=1; _kb_keys ;;
+		"[abc]") _kbl=0; _kb_keys ;;
+		"[123]") _kbl=2; _kb_keys ;;
+		"[del]")
+			_kblock "$3" "$4" "$5" "$_kwt"
+			[ -n "$_buf" ] && { _buf=${_buf%?}; _kb_field; } ;;
+		"[spc]") _kblock "$3" "$4" "$5" "$_kwt"; _kb_char " " ;;
+		*)
+			_kblock "$3" "$4" "$5" "$_kwt"
+			_kb_char "$_kwt"
+			[ "$_kbl" = 1 ] && { _kbl=0; _kb_keys; } ;;
+	esac
+}
+
+# ttext TITLE [SECRET [MAX [INIT]]] (touch only): the on-screen
+# keyboard above.  MAX caps typing at that many chars when passed
+# (the key's validator is still the final gate); INIT reopens the
+# field with a kept value after a rejected set -- secret included.
+# A tap lands in $EVF as "T <row> <col>" -- coordinates only; a K
+# event leaves the typed byte there until the next event, so the
+# file is truncated right after each read here.
 ttext() {
-	_sec=${2:-0}
-	REPLY=""
-	_r=0
+	_sec=${2:-0}; _max=${3:-}; _buf=${4:-}
+	REPLY=""; _r=0; _kbl=0
 	if [ "$_sec" = 1 ]; then
 		# Echo off BEFORE the first m5-key call: m5-key then saves
 		# and restores a termios that already has ECHO off, so a
-		# fast second character cannot echo in clear during the
-		# vfork+exec gap a later stty would leave.  The trap puts
-		# echo back if the field is killed mid-edit.
+		# fast byte cannot echo in clear during the vfork+exec gap
+		# between two m5-key runs.  The trap puts echo back if the
+		# field is killed mid-edit.
 		"$STTY" -echo 2>/dev/null || busybox stty -echo 2>/dev/null || :
 		trap '"$STTY" echo 2>/dev/null || busybox stty echo 2>/dev/null || :; exit 130' HUP INT TERM
 	fi
-	_need=1
+	scr_clear
+	say "== $1 =="
+	_kb_field
+	_kb_keys
 	while :; do
-		if [ "$_need" = 1 ]; then
-			scr_clear
-			say "== $1 =="
-			say "  this field needs a keyboard"
-			say "  (type the value, then Enter)"
-			_tblock "$NAVTOP" 0 "[ back ]"
-			_need=0
-		fi
 		_tget || { _r=1; break; }
+		: > "$EVF" 2>/dev/null || :
 		case "$_ev" in
-			T\ *) break ;;
-			K\ *) ;;
-			*) _need=1; continue ;;
+			T\ *) ;;
+			K\ *)
+				_c=${_ev#K }
+				case "$_c" in
+					enter) REPLY=$_buf; break ;;
+					bs) [ -n "$_buf" ] &&
+						{ _buf=${_buf%?}; _kb_field; } ;;
+					?) _kb_char "$_c" ;;
+				esac
+				continue ;;
+			*)	# drift safety: an unknown event repaints all
+				scr_clear; say "== $1 =="
+				_kb_field; _kb_keys
+				continue ;;
 		esac
-		_c=${_ev#K }
-		case "$_c" in
-			enter) break ;;
-			bs) _need=1; continue ;;
-		esac
-		printf '\033[%s;1Hvalue: \033[K' "$((MSGTOP + 1))"
-		if [ "$_sec" = 1 ]; then
-			printf '*'
-		else
-			printf '%s' "$_c"
-		fi
-		if ! IFS= read -r _rest; then
-			REPLY=$_c
+		_tr=${_ev#T }; _tc=${_tr#* }; _tr=${_tr%% *}
+		if [ "$_tr" -ge "$NAVTOP" ]; then
+			[ "$_tc" -ge 40 ] && REPLY=$_buf
 			break
 		fi
-		if [ "$_sec" = 1 ]; then
-			_s=""
-			while [ ${#_s} -lt ${#_rest} ]; do _s="$_s*"; done
-			printf '%s' "$_s"
-		fi
-		REPLY="$_c${_rest%"$CR"}"
-		break
+		_kb_hit "$_tr" "$_tc" &&
+			_kb_press "$_kri" "$_kj" "$_ktop" "$_kcol" "$_kkw"
 	done
 	if [ "$_sec" = 1 ]; then
 		"$STTY" echo 2>/dev/null || busybox stty echo 2>/dev/null || :
-		# The event file still holds the 'K x' line -- the first byte
-		# of the secret.  Truncate it now rather than leaving it for
-		# the next event or the session cleanup.
-		: > "$EVF" 2>/dev/null || :
 		# Back to the session trap, not "no trap": a signal later in
 		# the session must still reach _cleanup (palette, tty, EVF).
 		trap '_cleanup; exit 130' HUP INT TERM
@@ -1221,17 +1391,20 @@ nosave_note() {
 
 # One validated edit; do_set prints the result.  $1 key.  A rejected
 # value shows the reason and asks again; empty cancels.  In touch mode
-# the field goes through ttext (keyboard required, tap = back) and a
-# rejected value pauses so the reason is read before the redraw.
+# the field is the ttext on-screen keyboard and a rejected value comes
+# back with the typed text kept (the pause shows the reason first).
 menu_set() {
+	_prev=""
 	while :; do
 		if [ "$_TOUCH" = 1 ]; then
-			ttext "$1" || return
+			key_maxlen "$1"
+			ttext "$1" 0 "$KMAX" "$_prev" || return
 		else
 			ask "  new $1 (empty cancels): " || return
 		fi
 		[ -z "$REPLY" ] && { msg "  unchanged"; pause; return; }
 		set_apply "$1" "$REPLY" && break
+		_prev=$REPLY
 		[ "$_TOUCH" = 1 ] && pause
 	done
 	if [ "$_TOUCH" = 0 ]; then
@@ -1244,14 +1417,17 @@ menu_set() {
 # menu_secret KEY: like menu_set for passwords/passphrases -- no echo
 # anywhere, including the touch path (ttext secret mode).
 menu_secret() {
+	_prev=""
 	while :; do
 		if [ "$_TOUCH" = 1 ]; then
-			ttext "$1" 1 || return
+			key_maxlen "$1"
+			ttext "$1" 1 "$KMAX" "$_prev" || return
 		else
 			ask_secret "  new $1 (empty cancels): " || return
 		fi
 		[ -z "$REPLY" ] && { msg "  unchanged"; pause; return; }
 		set_apply "$1" "$REPLY" && break
+		_prev=$REPLY
 		[ "$_TOUCH" = 1 ] && pause
 	done
 	pause
@@ -1361,7 +1537,7 @@ menu_keys() { # $1 = authorized_keys|root_authorized_keys, $2 label
 		case "$REPLY" in
 			1)
 				if [ "$_TOUCH" = 1 ]; then
-					ttext "paste the key" || continue
+					ttext "paste the key" 0 "" "" || continue
 				else
 					say "  paste the public key line:"
 					ask "  > " || continue
@@ -1435,7 +1611,7 @@ menu_datetime() {
 		say " rtc: none"
 	fi
 	if [ "$_TOUCH" = 1 ]; then
-		ttext "set time (YYYY-MM-DD HH:MM)" || return
+		ttext "set time (YYYY-MM-DD HH:MM)" 0 16 "" || return
 	else
 		ask "  set time YYYY-MM-DD HH:MM (empty cancels): " || return
 	fi
@@ -1937,6 +2113,13 @@ case "${1:-menu}" in
 		;;
 	list) do_list ;;
 	get) [ $# -eq 2 ] || usage; do_get "$2" ;;
+	_kbdump) # host-test seam: the OSK layout table, one row per line
+		for _l in 0 1 2; do
+			for _r in 0 1 2 3 4; do
+				eval "_s=\$_KB${_l}_${_r}"
+				[ -n "$_s" ] && printf '%s\n' "$_s"
+			done
+		done ;;
 	set)
 		[ $# -ge 2 ] && [ $# -le 3 ] || usage
 		if [ $# -eq 3 ] && [ "$3" = - ]; then
