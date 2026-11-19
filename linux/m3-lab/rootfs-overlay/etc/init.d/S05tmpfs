@@ -461,6 +461,15 @@ EOF
 			cp -f /boot/config.txt /tmp/config.txt 2>/dev/null || true
 			chmod 600 /tmp/config.txt 2>/dev/null || true
 		fi
+		# BLE bonds (#41) live in the image but are used at runtime;
+		# stage them like config.txt so ble-kbd and S95blekbd work
+		# after /boot is unmounted.  No file -> drop any stale stage.
+		if [ -f /boot/ble-bonds.dat ]; then
+			cp -f /boot/ble-bonds.dat /tmp/ble-bonds.dat 2>/dev/null || true
+			chmod 600 /tmp/ble-bonds.dat 2>/dev/null || true
+		else
+			rm -f /tmp/ble-bonds.dat
+		fi
 		# main.py/main.sh/main for autorun; bootsync starts it once the
 		# init scripts are done.
 		if autorun_stage /boot; then

@@ -1,14 +1,16 @@
 #!/bin/sh
 # BLE keyboard daemon (#41).  Runs only while at least one bond exists
-# in the boot FAT, so a board with no paired keyboard keeps no resident
-# BLE process at all.
+# in the staged runtime store (S05tmpfs copies the image's bond file to
+# /tmp; /boot itself is unmounted again before we run), so a board with
+# no paired keyboard keeps no resident BLE process at all.
 
-BONDS=/boot/ble-bonds.dat
+BONDS="${BLE_BONDS:-/tmp/ble-bonds.dat}"
+BLEKBD="${BLEKBD:-/usr/bin/ble-kbd}"
 
 case "${1:-start}" in
 	start)
 		[ -s "$BONDS" ] || exit 0
-		/usr/bin/ble-kbd daemon >/dev/null 2>&1 &
+		"$BLEKBD" daemon >/dev/null 2>&1 &
 		;;
 	stop)
 		killall ble-kbd 2>/dev/null || true

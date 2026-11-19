@@ -1,0 +1,22 @@
+#!/bin/sh
+# Push the staged BLE bond store into the boot FAT image.
+#
+# /boot is not mounted at runtime: ble-bonds.dat lives staged at
+# /tmp/ble-bonds.dat (S05tmpfs copies it out of the image like
+# config.txt).  ble-kbd pair/forget updates the staged copy, then this
+# helper persists it through the same path m5-config uses for a save:
+# boot-edit --put does image copy -> loop mount -> write -> atomic
+# swap, and bootsyncd writes the new image to flash.
+#
+# /run/.boot-nosave is honored inside boot-edit: the write is refused
+# with a reason and this exits nonzero, so callers can honestly report
+# that the bond was not saved.  Bond bytes are never echoed.
+
+BONDS="${BLE_BONDS_TMP:-/tmp/ble-bonds.dat}"
+BOOT_EDIT="${BLE_BOND_STORE_EDIT:-/usr/sbin/boot-edit}"
+
+[ -f "$BONDS" ] || {
+	echo "ble-bond-store: $BONDS is missing" >&2
+	exit 1
+}
+"$BOOT_EDIT" --put ble-bonds.dat < "$BONDS"

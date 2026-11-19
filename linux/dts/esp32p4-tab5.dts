@@ -465,6 +465,42 @@
 		};
 
 		/*
+		 * MIPI-CSI camera: one-shot raw capture for the SC2356
+		 * (SC202CS-compatible).  See linux/tab5/camera-bringup.md
+		 * "Step-2 design" for the measured register sequence this
+		 * node feeds.  reg order: csi host, csi bridge, isp input,
+		 * dw-gdma, hp_sys_clkrst, pmu.
+		 *
+		 * The DW-GDMA block is shared with dsi-scanout above;
+		 * espressif,dma-chan must differ from whatever channel the
+		 * shim hands the display (probe fails closed on a
+		 * collision or on an already-enabled channel).  No
+		 * interrupts: the driver polls the channel's int_st0
+		 * status latch.  The frame buffer is a plain
+		 * dma_alloc_coherent allocation — deliberately NOT a
+		 * static reserved-memory carve-out, because the shim
+		 * places the display fb at a runtime address in PSRAM
+		 * (display_fb_res is patched per boot) and a fixed
+		 * reservation could overlap it.
+		 *
+		 * CAM_RST is expander 0x43 P6, active high (powered +
+		 * out of reset).  The sensor's 24 MHz XCLK comes from a
+		 * dedicated oscillator (X2/PXT24M), not GPIO36.
+		 */
+		cam0: cam@5009f000 {
+			compatible = "espressif,esp32p4-csi-cam";
+			reg = <0x5009f000 0x400>,	/* mipi csi host */
+				<0x5009f800 0x60>,	/* csi bridge */
+				<0x500a1000 0x80>,	/* isp input module */
+				<0x50081000 0x500>,	/* dw-gdma */
+				<0x500e6000 0xd0>,	/* hp_sys_clkrst */
+				<0x50115000 0x200>;	/* pmu (ext_ldo) */
+			reset-gpios = <&exp0 6 GPIO_ACTIVE_HIGH>;
+			espressif,dma-chan = <1>;
+			status = "okay";
+		};
+
+		/*
 		 * I2S0 audio block.  The P4 I2S unit carries no DMA of
 		 * its own: samples move through the AHB GDMA at
 		 * 0x50085000 (out-ch0 for playback, in-ch1 for

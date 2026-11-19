@@ -1,0 +1,51 @@
+#!/bin/sh
+# Camera gate (#25, Tab5 only -- this file ships in
+# rootfs-overlay-tab5, so the Stamp never sees it).
+# esp32p4-csi-cam allocates a ~1 MiB dma_alloc_coherent frame buffer
+# at probe -- kernel-side headroom the Wi-Fi/SDIO/BLE buffers share.
+# The camera is a one-shot tool, so by default this step unbinds the
+# platform device right after S05tmpfs has staged config.txt and
+# remove() gives the buffer back.  camera=on keeps it bound; anything
+# else (including a missing key) means off.  Enabling it takes a
+# reboot on purpose: a runtime rebind would have to find 1 MiB of
+# contiguous kernel pool after userspace fragmented it, so the key is
+# documented as apply-at-reboot only.
+
+CAMCFG="${M5CFG_CONFIG_TXT:-/tmp/config.txt}"
+CAMDRV="${M5CFG_CAM_DRV:-/sys/bus/platform/drivers/esp32p4-csi-cam}"
+
+case "${1:-start}" in
+	start)
+		[ -d "$CAMDRV" ] || exit 0
+		v=$(sed -e "s/$(printf '\r')\$//" "$CAMCFG" 2>/dev/null |
+			sed -n 's/^[ 	]*camera[ 	]*=[ 	]*//p' |
+			head -n1 | tr -d ' 	')
+		[ "$v" = on ] && exit 0
+		# no quotes around $CAMDRV: hush does not glob "$var"/*.
+		# Keep the platform-device names (addr.name -- module/bind/
+		# unbind/uevent have no dot).
+		for d in $CAMDRV/*; do
+			dev=${d##*/}
+			case "$dev" in
+				*.*) ;;
+				*) continue ;;
+			esac
+			if echo "$dev" > "$CAMDRV/unbind" 2>/dev/null; then
+				echo "ES_CAMERA: off; set camera=on and reboot to enable"
+			else
+				echo "ES_CAMERA FAIL: unbind $dev"
+			fi
+		done
+		;;
+	stop)
+		: ;;
+	restart)
+		"$0" start
+		;;
+	*)
+		echo "Usage: $0 {start|stop|restart}" >&2
+		exit 1
+		;;
+esac
+
+exit 0

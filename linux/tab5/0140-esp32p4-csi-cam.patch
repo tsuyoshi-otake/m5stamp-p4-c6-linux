@@ -1,0 +1,692 @@
+Subject: [PATCH tab5] misc: esp32p4_cam: one-shot MIPI-CSI raw
+ capture for the Tab5 camera
+
+Implements the pipeline the CAMERA_ORACLE shim measured and
+captured a 1280x720 RAW8 frame with (see linux/tab5/camera-bringup.md
+"Step-2 design"):
+
+    SC202CS -> MIPI D-PHY -> CSI host (0x5009F000)
+        -> ISP input module, bypass mode -> CSI bridge
+        -> DW-GDMA ch -> PSRAM frame buffer
+
+/dev/cam0 contract: ioctl(CAM_PREPARE) powers the sensor
+(CAM_RST = expander 0x43 P6), lights LDO3 + the CSI/ISP clocks,
+runs the host PHY/bridge/ISP-input init sequence and arms the
+GDMA channel with csi_en=1.  Userspace then writes the sensor
+table + 0x0100=0x01 over SCCB (/dev/i2c-0) and read() returns
+one 1280x720 RAW8 frame.
+
+No IRQ plumbing: int_sig_ena stays 0 and read() polls the
+channel's int_st0 status latch with a 3 s timeout, exactly like
+the oracle's busy-wait.  The DW-GDMA block is shared with the
+dsi-scanout driver; this driver never touches the block reset,
+and refuses to arm a channel that is enabled or equals the
+shim-patched espressif,scanout-chan.
+
+ 2 files changed, 637 insertions(+)
+
+--- /dev/null
++++ b/drivers/misc/esp32p4_cam.c
+@@ -0,0 +1,654 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * ESP32-P4 MIPI-CSI one-shot raw capture (Tab5 camera bring-up).
++ *
++ * Register layout and init order mirror the CAMERA_ORACLE capture
++ * sequence documented in linux/tab5/camera-bringup.md; field values
++ * come from the vendor hw_ver3 register structs / IDF HAL.
++ */
++
++#include <linux/delay.h>
++#include <linux/dma-map-ops.h>
++#include <linux/dma-mapping.h>
++#include <linux/fs.h>
++#include <linux/gpio/consumer.h>
++#include <linux/io.h>
++#include <linux/ioport.h>
++#include <linux/miscdevice.h>
++#include <linux/module.h>
++#include <linux/of.h>
++#include <linux/platform_device.h>
++#include <linux/uaccess.h>
++
++#define CAM_IOC_PREPARE		_IO('C', 1)
++
++#define CAM_H_RES		1280
++#define CAM_V_RES		720
++#define CAM_FRAME_BYTES		(CAM_H_RES * CAM_V_RES)
++#define CAM_XFER_WORDS		(CAM_FRAME_BYTES / 8)	/* 64-bit units */
++#define CAM_TIMEOUT_MS		3000
++#define CSI_MEM_FIFO		0x50104000
++
++/* ---- hp_sys_clkrst offsets (base 0x500e6000) ---- */
++#define CLKRST_SOC_CLK_CTRL0	0x14	/* gdma cpu clk bit13 */
++#define CLKRST_SOC_CLK_CTRL1	0x18	/* gdma sys 5, csi_brg 10, csi_host 11 */
++#define CLKRST_PERI_CLK_CTRL03	0x3c	/* csi dphy src[3:2], cfg clk en 4 */
++#define CLKRST_PERI_CLK_CTRL25	0xa8	/* isp src[24:23], isp clk en 25 */
++#define CLKRST_PERI_CLK_CTRL26	0xac	/* isp div[7:0] */
++#define CLKRST_HP_RST_EN0	0xc0	/* gdma 21, csi_host 27, csi_brg 28, isp 29 */
++
++/* ---- PMU ext_ldo (base 0x50115000) ----
++ * LDO chan 3 -> unit 2 -> index_array[2]=1 -> ext_ldo[1] @ 0x1c0.
++ * ctrl: force_tieh_sel 7, xpd 8, tieh 14.  ana: mul[25:23], dref[31:28]. */
++#define PMU_LDO3_CTRL		0x1c0
++#define PMU_LDO3_ANA		0x1c4
++#define PMU_LDO_XPD		BIT(8)
++#define PMU_LDO_FORCE_TIEH_SEL	BIT(7)
++#define PMU_LDO3_ANA_2V5	((9 << 28) | (6 << 23))
++
++/* ---- MIPI-CSI host (base 0x5009f000) ---- */
++#define HOST_VERSION		0x000
++#define HOST_N_LANES		0x004
++#define HOST_CSI2_RESETN	0x008
++#define HOST_INT_ST_MAIN	0x00c
++#define HOST_PHY_SHUTDOWNZ	0x040
++#define HOST_DPHY_RSTZ		0x044
++#define HOST_PHY_RX		0x048
++#define HOST_PHY_STOPSTATE	0x04c
++#define HOST_PHY_TEST0		0x050
++#define HOST_PHY_TEST1		0x054
++/* vc_extension 0xc8 / phy_cal 0xcc, then the int_st cluster at
++ * 0xe0/0xf0/0x110/0x280/0x290/0x2a0/0x2b0/0x2c0/0x2d0 -- the map the
++ * IDF driver writes and the oracle dump confirms.  Writing ~0u at
++ * the previous offsets (0xd4/0xec/0xfc/0x11c/0x288/0x294/0x2ac/
++ * 0x2b8/0x2c4) lands on reserved space or on the int_msk_ and
++ * int_force_ register fields and actively poisons the host's
++ * internal interrupt state. */
++#define HOST_VC_EXTENSION	0x0c8
++#define HOST_PHY_CAL		0x0cc
++#define HOST_INT_ST_PHY_FATAL	0x0e0
++#define HOST_INT_ST_PKT_FATAL	0x0f0
++#define HOST_INT_ST_PHY		0x110
++#define HOST_INT_ST_BNDRY_FATAL	0x280
++#define HOST_INT_ST_SEQ_FATAL	0x290
++#define HOST_INT_ST_CRC_FATAL	0x2a0
++#define HOST_INT_ST_PLD_CRC	0x2b0
++#define HOST_INT_ST_DATA_ID	0x2c0
++#define HOST_INT_ST_ECC		0x2d0
++#define HOST_SCRAMBLING		0x300
++
++/* ---- CSI bridge (base 0x5009f800) ---- */
++#define BRG_CLK_EN		0x00
++#define BRG_CSI_EN		0x04
++#define BRG_DMA_REQ_CFG		0x08
++#define BRG_BUF_FLOW_CTL	0x0c
++#define BRG_DATA_TYPE_CFG	0x10
++#define BRG_FRAME_CFG		0x14
++#define BRG_ENDIAN_MODE		0x18
++#define BRG_INT_RAW		0x1c
++#define BRG_INT_CLR		0x20
++#define BRG_INT_ST		0x24
++#define BRG_INT_ENA		0x28
++#define BRG_DMA_REQ_INTERVAL	0x2c
++#define BRG_DMABLK_SIZE		0x30
++#define BRG_HOST_CTRL		0x40
++
++/* ---- ISP input module (base 0x500a1000) ---- */
++#define ISP_CLK_EN		0x04
++#define ISP_CNTL		0x08
++#define ISP_HSYNC_CNT		0x0c
++#define ISP_FRAME_CFG		0x10
++#define ISP_INT_RAW		0x64
++#define ISP_INT_ST		0x68
++
++/* ---- DW-GDMA (base 0x50081000; ch i @0x100+i*0x100) ---- */
++#define GDMA_CFG0		0x10	/* dmac_en 0, int_en 1 */
++#define GDMA_CHEN0		0x18
++#define GDMA_CH_BASE		0x100
++#define GDMA_CH_STRIDE		0x100
++#define GDMA_CH_SAR0		0x00
++#define GDMA_CH_DAR0		0x08
++#define GDMA_CH_BLOCK_TS0	0x10
++#define GDMA_CH_CTL0		0x18
++#define GDMA_CH_CTL1		0x1c
++#define GDMA_CH_CFG0		0x20
++#define GDMA_CH_CFG1		0x24
++#define GDMA_CH_LLP0		0x28
++#define GDMA_CH_STATUS0		0x30
++#define GDMA_CH_SSTATAR0	0x70
++#define GDMA_CH_INT_ST_ENA0	0x80
++#define GDMA_CH_INT_ST0		0x88
++#define GDMA_CH_INT_SIG_ENA0	0x90
++#define GDMA_CH_INT_CLR0	0x98
++
++/* ch.ctl0: sms=0 (CSI master port), dms=1 (memory port),
++ * sinc=1=FIXED, dinc=0=INCREMENT (the encoding is
++ * 0=INCREMENT/1=FIXED -- inverted from intuition; the field is a
++ * single bit each at [4] and [6]), 64-bit src/dst (3),
++ * msize=512 items (8) both ways.  Matches the oracle's live
++ * 0x00221b14.  The previous 0x221b44 had them swapped: the source
++ * address then *incremented* -- the first live-data burst walked
++ * out of the 4 KiB FIFO aperture at 0x50104000, marched across
++ * the SoC register map into unmapped space, and stalled the
++ * interconnect (HP_SYS_HP_WDT_RESET ~50 ms after stream-on). */
++#define GDMA_CTL0_VAL		((1 << 2) | (1 << 4) | (3 << 8) | \
++				 (3 << 11) | (8 << 14) | (8 << 18))
++/* ch.ctl1: arlen_en + arlen=15 (16-beat bursts -- the field is the
++ * AXI length value itself, max legal is 15; the earlier value 16
++ * asked for 17-beat bursts the AXI layer cannot express), same for
++ * awlen, ioc_blktfr=0 (the driver polls int_st anyway).  Matches
++ * the oracle's 0x000f87c0. */
++#define GDMA_CTL1_VAL		((1 << 6) | (15 << 7) | (1 << 15) | \
++				 (15 << 16))
++/* ch.cfg1: tt_fc=4 (P2M, source flow ctrl), src_per=1 (CSI),
++ * ch_prior=1, src/dst_osr_lmt=4 -- oracle: 0x22020084 */
++#define GDMA_CFG1_VAL		(4 | (1 << 7) | (1 << 17) | (4 << 23) | \
++				 (4 << 27))
++
++#define GDMA_EV_BLOCK_DONE	BIT(0)
++#define GDMA_EV_DMA_DONE	BIT(1)
++/* bit30 is the channel's normal auto-disable state, not an error
++ * (the dsi-scanout driver classes it as re-arm); treat only the
++ * transfer-fault bits 5..13 and bit31 as real errors. */
++#define GDMA_EV_ERRORS		(0x3fe0 | BIT(31))
++#define GDMA_EV_MASK		(GDMA_EV_BLOCK_DONE | GDMA_EV_DMA_DONE | \
++				 GDMA_EV_ERRORS)
++
++#define GDMA_CHEN_EN(ch)	(0x101u << (ch))
++#define GDMA_CHEN_DIS(ch)	(0x100u << (ch))
++
++struct esp32p4_cam {
++	struct device *dev;
++	void __iomem *host;
++	void __iomem *brg;
++	void __iomem *isp;
++	void __iomem *gdma;
++	void __iomem *clkrst;
++	void __iomem *pmu;
++	struct gpio_desc *rst;
++	struct miscdevice misc;
++	void *fb_va;
++	dma_addr_t fb_pa;
++	u32 chan;
++	u32 choff;
++	bool prepared;
++};
++
++static void cam_set(struct esp32p4_cam *c, void __iomem *base, u32 reg,
++		    u32 mask, u32 val)
++{
++	writel((readl(base + reg) & ~mask) | val, base + reg);
++}
++
++static int cam_ldo3(struct esp32p4_cam *c)
++{
++	u32 ctrl = readl(c->pmu + PMU_LDO3_CTRL);
++
++	if (ctrl & PMU_LDO_XPD)
++		return 0;	/* DSI D-PHY already lit the shared rail */
++	/* Panel-less boot: fail closed rather than program an
++	 * uncalibrated ~2.5 V into the shared D-PHY rail -- no eFuse
++	 * readback here, and a wrong PHY voltage is worse than no
++	 * camera.  On the Tab5 the DSI path always lights LDO3, so
++	 * a panel-less boot simply has no camera. */
++	return dev_err_probe(c->dev, -ENODEV,
++			     "LDO3/D-PHY rail is off (no DSI panel); refusing uncalibrated power-up\n");
++}
++
++/* hp_sys_clkrst RMW safety: cam_set() below touches only these six
++ * words.  i2s0 (0120/0124) writes CTRL2 (0x1c), CTRL11-14 (0x44-0x50)
++ * and HP_RST_EN2 (0xc8) at runtime, plus CTRL1 (0x18) once inside
++ * esp32p4_i2s_probe; dsi-scanout writes no clkrst word at all.
++ * CTRL1 is the only word both sides touch and i2s0 never rewrites
++ * it after probe, so these RMWs cannot interleave with theirs and
++ * no shared lock is needed. */
++static void cam_clocks(struct esp32p4_cam *c)
++{
++	cam_set(c, c->clkrst, CLKRST_SOC_CLK_CTRL0, BIT(13), BIT(13));
++	cam_set(c, c->clkrst, CLKRST_SOC_CLK_CTRL1,
++		BIT(5) | BIT(10) | BIT(11), BIT(5) | BIT(10) | BIT(11));
++	/* CSI D-PHY cfg clock, src stays PLL_F20M (sel 0) */
++	cam_set(c, c->clkrst, CLKRST_PERI_CLK_CTRL03,
++		GENMASK(3, 2) | BIT(4), BIT(4));
++	/* ISP: PLL160M / 2 = 80 MHz.  reg_isp_clk_div_num is the
++	 * divisor MINUS ONE (isp_ll_set_clock_div writes integer-1;
++	 * oracle reads ctrl26=0x201 -> div_num=1). */
++	cam_set(c, c->clkrst, CLKRST_PERI_CLK_CTRL25,
++		GENMASK(24, 23) | BIT(25), (1 << 23) | BIT(25));
++	cam_set(c, c->clkrst, CLKRST_PERI_CLK_CTRL26, 0xff, 1);
++	/* Pulse resets on host/bridge/isp only -- never gdma (bit21):
++	 * the dsi-scanout channel shares that block. */
++	cam_set(c, c->clkrst, CLKRST_HP_RST_EN0,
++		BIT(27) | BIT(28) | BIT(29), BIT(27) | BIT(28) | BIT(29));
++	udelay(10);
++	cam_set(c, c->clkrst, CLKRST_HP_RST_EN0,
++		BIT(27) | BIT(28) | BIT(29), 0);
++}
++
++static void cam_host_init(struct esp32p4_cam *c)
++{
++	void __iomem *h = c->host;
++
++	writel(0, h + HOST_PHY_SHUTDOWNZ);
++	writel(0, h + HOST_DPHY_RSTZ);
++	writel(0, h + HOST_CSI2_RESETN);
++	/* PHY test-clock reset pulse, then reg 0x44 <- 0x0e
++	 * (hs_freq_sel=7 for 576 Mbps lane rate). */
++	writel(1, h + HOST_PHY_TEST0);
++	writel(0, h + HOST_PHY_TEST0);
++	writel((1 << 16) | 0x44, h + HOST_PHY_TEST1);
++	writel(2, h + HOST_PHY_TEST0);
++	writel(0, h + HOST_PHY_TEST0);
++	writel(0x0e, h + HOST_PHY_TEST1);
++	writel(2, h + HOST_PHY_TEST0);
++	writel(0, h + HOST_PHY_TEST0);
++
++	writel(1, h + HOST_PHY_SHUTDOWNZ);
++	writel(1, h + HOST_DPHY_RSTZ);
++	writel(1, h + HOST_CSI2_RESETN);
++
++	writel(0, h + HOST_N_LANES);		/* lanes_num - 1 */
++	writel(1, h + HOST_VC_EXTENSION);	/* vcx=1 disables ext */
++	writel(0, h + HOST_SCRAMBLING);
++
++	writel(~0u, h + HOST_INT_ST_PHY_FATAL);
++	writel(~0u, h + HOST_INT_ST_PKT_FATAL);
++	writel(~0u, h + HOST_INT_ST_PHY);
++	writel(~0u, h + HOST_INT_ST_BNDRY_FATAL);
++	writel(~0u, h + HOST_INT_ST_SEQ_FATAL);
++	writel(~0u, h + HOST_INT_ST_CRC_FATAL);
++	writel(~0u, h + HOST_INT_ST_PLD_CRC);
++	writel(~0u, h + HOST_INT_ST_DATA_ID);
++	writel(~0u, h + HOST_INT_ST_ECC);
++	writel(~0u, h + HOST_INT_ST_MAIN);
++}
++
++static void cam_isp_init(struct esp32p4_cam *c)
++{
++	writel(1, c->isp + ISP_CLK_EN);
++	writel(1, c->isp + ISP_CNTL);	/* mipi_data_en, isp_in_src=CSI */
++	writel(7, c->isp + ISP_HSYNC_CNT);
++	/* hadr = ceil(h_res*bpp/32)-1 = 319, vadr = v_res-1 = 719 */
++	writel((319 << 12) | 719, c->isp + ISP_FRAME_CFG);
++}
++
++static void cam_bridge_init(struct esp32p4_cam *c)
++{
++	void __iomem *b = c->brg;
++
++	writel(3, b + BRG_HOST_CTRL);
++	/* clk_en stays 0 (register-bank clock gating on): the oracle's
++	 * post-capture state; config writes work either way. */
++	writel(0, b + BRG_CLK_EN);
++	/* dma_burst_len=512 only: csi_dma_flow_controller (bit17)
++	 * stays 0 = "DMA as flow controller", matching the oracle's
++	 * 0x200 (the channel's tt_fc=P2M_SRC is the handshake role,
++	 * not this bit). */
++	writel(512, b + BRG_DMA_REQ_CFG);
++	writel(960, b + BRG_BUF_FLOW_CTL);
++	writel((0x2f << 8) | 0x12, b + BRG_DATA_TYPE_CFG);
++	/* has_hsync + hadr_num=h_res + vadr_num=v_res, raw counts (no
++	 * -1 here, unlike the ISP input module); oracle: 0x015002d0. */
++	writel(BIT(24) | (CAM_H_RES << 12) | CAM_V_RES, b + BRG_FRAME_CFG);
++	writel(0, b + BRG_ENDIAN_MODE);
++	writel(1, b + BRG_DMA_REQ_INTERVAL);
++	writel(~0u, b + BRG_INT_CLR);
++}
++
++static void cam_gdma_arm(struct esp32p4_cam *c)
++{
++	void __iomem *ch = c->gdma + c->choff;
++
++	/* Channel registers reject writes while the channel is enabled
++	 * (same constraint the dsi-scanout driver documents): force a
++	 * disable first -- harmless when the channel is already idle. */
++	writel(GDMA_CHEN_DIS(c->chan), c->gdma + GDMA_CHEN0);
++	udelay(50);
++
++	writel(CSI_MEM_FIFO, ch + GDMA_CH_SAR0);
++	writel((u32)c->fb_pa, ch + GDMA_CH_DAR0);
++	writel(CAM_XFER_WORDS - 1, ch + GDMA_CH_BLOCK_TS0);
++	/* Source-peripheral status fetch = the bridge FIFO base, as the IDF
++	 * channel alloc's `status_fetch_addr`.  With sstatar left 0 the
++	 * source-FC handshake fetched the periph status from address 0 and
++	 * ended the transfer at the first block boundary -- captures came
++	 * back with only ~one bridge-buffer (afull, 960 items) of the frame. */
++	writel(CSI_MEM_FIFO, ch + GDMA_CH_SSTATAR0);
++	writel(GDMA_CTL0_VAL, ch + GDMA_CH_CTL0);
++	writel(GDMA_CTL1_VAL, ch + GDMA_CH_CTL1);
++	writel(0, ch + GDMA_CH_CFG0);
++	writel(GDMA_CFG1_VAL, ch + GDMA_CH_CFG1);
++	writel(0, ch + GDMA_CH_LLP0);
++	writel(~0u, ch + GDMA_CH_INT_CLR0);
++	writel(~0u, ch + GDMA_CH_INT_ST_ENA0);	/* latch every event class, as the IDF channel alloc does */
++	writel(0, ch + GDMA_CH_INT_SIG_ENA0);	/* polled, no IRQ line */
++}
++
++static int cam_prepare(struct esp32p4_cam *c)
++{
++	int ret;
++
++	if (c->prepared)
++		return 0;
++
++	if (readl(c->gdma + GDMA_CHEN0) & BIT(c->chan))
++		return dev_err_probe(c->dev, -EBUSY,
++				     "gdma ch%u is enabled; refusing to arm\n",
++				     c->chan);
++	/* The frame buffer was allocated at probe: a 1 MiB order-8
++	 * block exists only while the boot-time buddy is still
++	 * contiguous -- at open time the pool is fragmented and
++	 * NOMMU has no compaction, so a runtime alloc cannot work. */
++
++	/* CAM_RST sits on the i2c expander (pi4ioe5v6408): its
++	 * gpio_chip can sleep, so _cansleep everywhere. */
++	gpiod_set_value_cansleep(c->rst, 1);
++	msleep(20);
++
++	ret = cam_ldo3(c);
++	if (ret)
++		goto err_power;
++	cam_clocks(c);
++	cam_host_init(c);
++	cam_isp_init(c);
++	cam_bridge_init(c);
++
++	/* dmac_en=1; int_en untouched -- it is the block's global IRQ
++	 * gate and the dsi-scanout channel may rely on it. */
++	cam_set(c, c->gdma, GDMA_CFG0, 1, 1);
++	/* Arm the receiver BEFORE the userspace stream-on write --
++	 * the oracle order (esp_cam_ctlr_start -> SCCB 0x0100=0x01):
++	 * live MIPI data then always lands on an enabled channel +
++	 * bridge, and the ~50 ms armed-idle window during the sensor
++	 * ramp is exactly what the IDF path does.  The earlier
++	 * defer-to-read() scheme made the sensor stream into a
++	 * disarmed pipe and then enabled the receiver mid-frame. */
++	memset(c->fb_va, 0xa5, CAM_FRAME_BYTES);
++	arch_sync_dma_for_device(c->fb_pa, CAM_FRAME_BYTES,
++			       DMA_FROM_DEVICE);
++	cam_gdma_arm(c);
++	writel(GDMA_CHEN_EN(c->chan), c->gdma + GDMA_CHEN0);
++	writel(1, c->brg + BRG_CSI_EN);
++
++	c->prepared = true;
++	dev_info(c->dev, "pipeline armed (gdma ch%u), ready for stream-on\n",
++		 c->chan);
++	return 0;
++
++err_power:
++	gpiod_set_value_cansleep(c->rst, 0);
++	return ret;
++}
++
++static void cam_dump_state(struct esp32p4_cam *c)
++{
++	void __iomem *h = c->host;
++	void __iomem *ch = c->gdma + c->choff;
++
++	dev_err(c->dev,
++		"host: main=%08x phy_fatal=%08x pkt=%08x phy=%08x bndry=%08x seq=%08x crc=%08x pld=%08x did=%08x rx=%08x stop=%08x\n",
++		readl(h + HOST_INT_ST_MAIN), readl(h + HOST_INT_ST_PHY_FATAL),
++		readl(h + HOST_INT_ST_PKT_FATAL), readl(h + HOST_INT_ST_PHY),
++		readl(h + HOST_INT_ST_BNDRY_FATAL),
++		readl(h + HOST_INT_ST_SEQ_FATAL),
++		readl(h + HOST_INT_ST_CRC_FATAL),
++		readl(h + HOST_INT_ST_PLD_CRC), readl(h + HOST_INT_ST_DATA_ID),
++		readl(h + HOST_PHY_RX), readl(h + HOST_PHY_STOPSTATE));
++	dev_err(c->dev,
++		"brg: raw=%08x st=%08x flow=%08x fcfg=%08x isp: cntl=%08x raw=%08x st=%08x gdma: st=%08x status=%08x chen=%08x\n",
++		readl(c->brg + BRG_INT_RAW), readl(c->brg + BRG_INT_ST),
++		readl(c->brg + BRG_BUF_FLOW_CTL), readl(c->brg + BRG_FRAME_CFG),
++		readl(c->isp + ISP_CNTL), readl(c->isp + ISP_INT_RAW),
++		readl(c->isp + ISP_INT_ST), readl(ch + GDMA_CH_INT_ST0),
++		readl(ch + GDMA_CH_STATUS0), readl(c->gdma + GDMA_CHEN0));
++}
++
++static int cam_capture(struct esp32p4_cam *c)
++{
++	void __iomem *ch = c->gdma + c->choff;
++	u32 st, done;
++	int i, tries;
++
++	/* PREPARE armed the receiver before stream-on; a completed
++	 * capture left the channel disarmed -- re-arm for the next
++	 * frame.  Re-arming during a live stream joins mid-frame:
++	 * the buffer is then not frame-aligned, but the transfer
++	 * still completes (same caveat as the oracle's notes). */
++	if (!(readl(c->gdma + GDMA_CHEN0) & BIT(c->chan))) {
++		memset(c->fb_va, 0xa5, CAM_FRAME_BYTES);
++		arch_sync_dma_for_device(c->fb_pa, CAM_FRAME_BYTES,
++				       DMA_FROM_DEVICE);
++		cam_gdma_arm(c);
++		writel(GDMA_CHEN_EN(c->chan), c->gdma + GDMA_CHEN0);
++		writel(1, c->brg + BRG_CSI_EN);
++	}
++
++	/* The bridge is the flow controller and ends a block at the
++	 * first frame boundary it decides; the first frame after
++	 * stream-on arrives incomplete (discard_int) -- the oracle
++	 * drains it through its backup buffer by queueing the real
++	 * buffer 50 ms late.  Loop instead: re-arm until DAR shows
++	 * a full frame was written. */
++	for (tries = 0; tries < 8; tries++) {
++		for (i = 0; i < CAM_TIMEOUT_MS * 10; i++) {
++			st = readl(ch + GDMA_CH_INT_ST0);
++			if (st & GDMA_EV_ERRORS) {
++				cam_dump_state(c);
++				goto out_eio;
++			}
++			if (st & GDMA_EV_DMA_DONE)
++				break;
++			usleep_range(80, 120);
++		}
++		if (i == CAM_TIMEOUT_MS * 10) {
++			cam_dump_state(c);
++			goto out_timeout;
++		}
++
++		writel(~0u, ch + GDMA_CH_INT_CLR0);
++		done = readl(ch + GDMA_CH_DAR0) - (u32)c->fb_pa;
++		if (done >= CAM_FRAME_BYTES)
++			break;
++		/* Short block (partial/discarded frame): re-arm and
++		 * catch the next one. */
++		cam_gdma_arm(c);
++		writel(GDMA_CHEN_EN(c->chan), c->gdma + GDMA_CHEN0);
++	}
++	if (tries == 8)
++		goto out_eio;
++
++	writel(0, c->brg + BRG_CSI_EN);
++	writel(GDMA_CHEN_DIS(c->chan), c->gdma + GDMA_CHEN0);
++	arch_sync_dma_for_cpu(c->fb_pa, CAM_FRAME_BYTES, DMA_FROM_DEVICE);
++	return 0;
++
++out_eio:
++	writel(0, c->brg + BRG_CSI_EN);
++	writel(GDMA_CHEN_DIS(c->chan), c->gdma + GDMA_CHEN0);
++	return -EIO;
++out_timeout:
++	writel(0, c->brg + BRG_CSI_EN);
++	writel(GDMA_CHEN_DIS(c->chan), c->gdma + GDMA_CHEN0);
++	return -ETIMEDOUT;
++}
++
++static ssize_t cam_read(struct file *f, char __user *buf, size_t cnt,
++			loff_t *pos)
++{
++	struct esp32p4_cam *c =
++		container_of(f->private_data, struct esp32p4_cam, misc);
++	int ret;
++
++	if (*pos == 0) {
++		ret = c->prepared ? 0 : cam_prepare(c);
++		if (!ret)
++			ret = cam_capture(c);
++		if (ret)
++			return ret;
++	}
++	return simple_read_from_buffer(buf, cnt, pos, c->fb_va,
++				       CAM_FRAME_BYTES);
++}
++
++static long cam_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
++{
++	struct esp32p4_cam *c =
++		container_of(f->private_data, struct esp32p4_cam, misc);
++
++	if (cmd != CAM_IOC_PREPARE)
++		return -ENOTTY;
++	return cam_prepare(c);
++}
++
++/* The camera rail is powered only while /dev/cam0 is open: the
++ * last close disarms the pipeline and drops CAM_RST.  The frame
++ * buffer stays -- it is held for the driver's lifetime so every
++ * open gets the same working order-8 block. */
++static int cam_release(struct inode *ino, struct file *f)
++{
++	struct esp32p4_cam *c =
++		container_of(f->private_data, struct esp32p4_cam, misc);
++
++	if (c->prepared) {
++		writel(0, c->brg + BRG_CSI_EN);
++		writel(GDMA_CHEN_DIS(c->chan), c->gdma + GDMA_CHEN0);
++		gpiod_set_value_cansleep(c->rst, 0);
++		c->prepared = false;
++	}
++	return 0;
++}
++
++static const struct file_operations cam_fops = {
++	.owner = THIS_MODULE,
++	.read = cam_read,
++	.unlocked_ioctl = cam_ioctl,
++	.release = cam_release,
++	.llseek = noop_llseek,
++};
++
++static int esp32p4_cam_probe(struct platform_device *pdev)
++{
++	struct esp32p4_cam *c;
++	struct device_node *scan;
++	u32 v;
++
++	struct resource *res;
++
++	c = devm_kzalloc(&pdev->dev, sizeof(*c), GFP_KERNEL);
++	if (!c)
++		return -ENOMEM;
++	c->dev = &pdev->dev;
++
++	c->host = devm_platform_ioremap_resource(pdev, 0);
++	if (IS_ERR(c->host))
++		return PTR_ERR(c->host);
++	c->brg = devm_platform_ioremap_resource(pdev, 1);
++	if (IS_ERR(c->brg))
++		return PTR_ERR(c->brg);
++	c->isp = devm_platform_ioremap_resource(pdev, 2);
++	if (IS_ERR(c->isp))
++		return PTR_ERR(c->isp);
++	/* dw-gdma is claimed by dsi-scanout, clkrst by i2s0, pmu by
++	 * tsens: map all three non-exclusively (no request_mem_region)
++	 * or the second claim gets -EBUSY -- and i2s0/audio loses.
++	 * RMW safety is by construction, not a lock: every word this
++	 * driver writes in those blocks is one no other driver touches
++	 * (clkrst 0x14/0x18/0x3c/0xa8/0xac/0xc0 vs i2s's
++	 * 0x1c/0xc8/peri11-14; pmu ext_ldo vs tsens's rf_pwc; gdma
++	 * cfg0/chen0 are atomic per-channel encodings). */
++	res = platform_get_resource(pdev, IORESOURCE_MEM, 3);
++	if (!res)
++		return -EINVAL;
++	c->gdma = devm_ioremap(&pdev->dev, res->start,
++			       resource_size(res));
++	if (!c->gdma)
++		return -ENOMEM;
++	res = platform_get_resource(pdev, IORESOURCE_MEM, 4);
++	if (!res)
++		return -EINVAL;
++	c->clkrst = devm_ioremap(&pdev->dev, res->start,
++				 resource_size(res));
++	if (!c->clkrst)
++		return -ENOMEM;
++	res = platform_get_resource(pdev, IORESOURCE_MEM, 5);
++	if (!res)
++		return -EINVAL;
++	c->pmu = devm_ioremap(&pdev->dev, res->start,
++			      resource_size(res));
++	if (!c->pmu)
++		return -ENOMEM;
++
++	c->rst = devm_gpiod_get_optional(&pdev->dev, "reset",
++				       GPIOD_OUT_LOW);
++	if (IS_ERR(c->rst))
++		return PTR_ERR(c->rst);
++
++	c->chan = 1;
++	of_property_read_u32(pdev->dev.of_node, "espressif,dma-chan",
++			     &c->chan);
++	if (c->chan > 3)
++		return dev_err_probe(c->dev, -EINVAL,
++				     "bad dma-chan %u\n", c->chan);
++	scan = of_find_compatible_node(NULL, NULL,
++				       "espressif,esp32p4-dsi-scanout");
++	if (scan) {
++		if (!of_property_read_u32(scan, "espressif,scanout-chan", &v) &&
++		    v == c->chan) {
++			of_node_put(scan);
++			return dev_err_probe(c->dev, -EBUSY,
++					     "gdma ch%u is the scanout channel\n",
++					     c->chan);
++		}
++		of_node_put(scan);
++	}
++	c->choff = GDMA_CH_BASE + c->chan * GDMA_CH_STRIDE;
++
++	/* ~1 MiB contiguous PSRAM for one frame.  Allocated at
++	 * probe, not at open: once userspace is up the NOMMU buddy
++	 * is fragmented and cannot coalesce an order-8 block
++	 * (measured on board: order-8 free count = 0, largest free
++	 * block 512 KiB).  Freed at remove. */
++	c->fb_va = dma_alloc_coherent(&pdev->dev, CAM_FRAME_BYTES,
++				      &c->fb_pa, GFP_KERNEL | __GFP_NOWARN);
++	if (!c->fb_va)
++		return dev_err_probe(&pdev->dev, -ENOMEM,
++				     "frame buffer alloc failed\n");
++
++	c->misc.minor = MISC_DYNAMIC_MINOR;
++	c->misc.name = "cam0";
++	c->misc.fops = &cam_fops;
++	platform_set_drvdata(pdev, c);
++	return misc_register(&c->misc);
++}
++
++static void esp32p4_cam_remove(struct platform_device *pdev)
++{
++	struct esp32p4_cam *c = platform_get_drvdata(pdev);
++
++	writel(0, c->brg + BRG_CSI_EN);
++	writel(GDMA_CHEN_DIS(c->chan), c->gdma + GDMA_CHEN0);
++	gpiod_set_value_cansleep(c->rst, 0);	/* never leave CAM_RST high */
++	misc_deregister(&c->misc);
++	if (c->fb_va)
++		dma_free_coherent(&pdev->dev, CAM_FRAME_BYTES, c->fb_va,
++				  c->fb_pa);
++}
++
++static const struct of_device_id esp32p4_cam_of_match[] = {
++	{ .compatible = "espressif,esp32p4-csi-cam" },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, esp32p4_cam_of_match);
++
++static struct platform_driver esp32p4_cam_driver = {
++	.probe = esp32p4_cam_probe,
++	.remove = esp32p4_cam_remove,
++	.driver = {
++		.name = "esp32p4-csi-cam",
++		.of_match_table = esp32p4_cam_of_match,
++	},
++};
++module_platform_driver(esp32p4_cam_driver);
++
++MODULE_DESCRIPTION("ESP32-P4 MIPI-CSI one-shot raw capture (Tab5)");
++MODULE_LICENSE("GPL");
+--- a/drivers/misc/Makefile
++++ b/drivers/misc/Makefile
+@@ -78,4 +78,5 @@
+ obj-$(CONFIG_ESP32P4_BOOTFLASH)	+= esp32p4-bootflash.o
+ obj-$(CONFIG_ESP32P4_SLEEP)	+= esp32p4-sleep.o
+ obj-y				+= esp32p4_dsi_scanout.o
+ obj-y				+= tab5-panel.o
++obj-y				+= esp32p4_cam.o

@@ -32,6 +32,7 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 /* ---- minimal socket ABI ---- */
@@ -90,18 +91,25 @@ struct mgmt_addr_info {
 #define MGMT_OP_SET_BONDABLE		0x0009
 #define MGMT_OP_SET_LE			0x000D
 #define MGMT_OP_LOAD_LONG_TERM_KEYS	0x0013
+#define MGMT_OP_GET_CONNECTIONS		0x0015
 #define MGMT_OP_SET_IO_CAPABILITY	0x0018
 #define MGMT_OP_PAIR_DEVICE		0x0019
+#define MGMT_OP_CANCEL_PAIR_DEVICE	0x001A
 #define MGMT_OP_UNPAIR_DEVICE		0x001B
 #define MGMT_OP_USER_CONFIRM_REPLY	0x001C
 #define MGMT_OP_USER_PASSKEY_REPLY	0x001E
+#define MGMT_OP_USER_PASSKEY_NEG_REPLY	0x001F
 #define MGMT_OP_START_DISCOVERY		0x0023
 #define MGMT_OP_STOP_DISCOVERY		0x0024
+#define MGMT_OP_SET_SECURE_CONN		0x002D
 #define MGMT_OP_LOAD_IRKS		0x0030
+#define MGMT_OP_ADD_DEVICE		0x0033
 
 #define MGMT_EV_CMD_COMPLETE		0x0001
 #define MGMT_EV_CMD_STATUS		0x0002
 #define MGMT_EV_CONTROLLER_ERROR	0x0003
+#define MGMT_EV_INDEX_ADDED		0x0004
+#define MGMT_EV_INDEX_REMOVED		0x0005
 #define MGMT_EV_NEW_SETTINGS		0x0006
 #define MGMT_EV_NEW_LONG_TERM_KEY	0x000A
 #define MGMT_EV_DEVICE_CONNECTED	0x000B
@@ -207,6 +215,16 @@ struct mgmt_cp_unpair_device {
 	uint8_t  disconnect;
 } __attribute__((packed));
 
+struct mgmt_cp_add_device {
+	struct mgmt_addr_info addr;
+	uint8_t  action;	/* 1 = background scan + auto-connect */
+} __attribute__((packed));
+
+struct mgmt_ev_auth_failed {
+	struct mgmt_addr_info addr;
+	uint8_t  status;
+} __attribute__((packed));
+
 struct mgmt_cp_load_ltks {
 	uint16_t key_count;
 	struct mgmt_ltk_info keys[];
@@ -227,6 +245,11 @@ struct mgmt_ev_device_connected {
 struct mgmt_ev_device_disconnected {
 	struct mgmt_addr_info addr;
 	uint8_t  reason;
+} __attribute__((packed));
+
+struct mgmt_rp_get_connections {
+	uint16_t conn_count;
+	struct mgmt_addr_info addr[];
 } __attribute__((packed));
 
 struct mgmt_ev_new_conn_param {
@@ -263,6 +286,8 @@ _Static_assert(sizeof(struct mgmt_ev_device_disconnected) == 8, "dev_disc");
 _Static_assert(sizeof(struct mgmt_ev_new_conn_param) == 16, "conn_param");
 _Static_assert(sizeof(struct mgmt_cp_pair_device) == 8, "pair_dev");
 _Static_assert(sizeof(struct mgmt_cp_unpair_device) == 8, "unpair_dev");
+_Static_assert(sizeof(struct mgmt_cp_add_device) == 8, "add_dev");
+_Static_assert(sizeof(struct mgmt_ev_auth_failed) == 8, "auth_fail");
 _Static_assert(sizeof(struct mgmt_cp_load_ltks) == 2, "load_ltks");
 _Static_assert(sizeof(struct mgmt_cp_load_irks) == 2, "load_irks");
 _Static_assert(sizeof(struct mgmt_cp_start_discovery) == 1, "start_disc");
@@ -389,6 +414,8 @@ static const char *ev_name(uint16_t ev)
 	case MGMT_EV_CMD_COMPLETE: return "CMD_COMPLETE";
 	case MGMT_EV_CMD_STATUS: return "CMD_STATUS";
 	case MGMT_EV_CONTROLLER_ERROR: return "CONTROLLER_ERROR";
+	case MGMT_EV_INDEX_ADDED: return "INDEX_ADDED";
+	case MGMT_EV_INDEX_REMOVED: return "INDEX_REMOVED";
 	case MGMT_EV_NEW_SETTINGS: return "NEW_SETTINGS";
 	case MGMT_EV_NEW_LONG_TERM_KEY: return "NEW_LTK";
 	case MGMT_EV_DEVICE_CONNECTED: return "DEVICE_CONNECTED";
@@ -455,6 +482,11 @@ static int adapter_up(int mgmt, int verbose)
 	struct mgmt_mode on = { .val = 1 };
 	uint8_t b[64];
 	mgmt_send(mgmt, MGMT_OP_SET_LE, HCI_DEV, &on, 1);
+	/* Ask for LE Secure Connections: the CACOE trace showed legacy
+	 * Just Works because our side never set the SC bit.  A stack
+	 * without SC support answers cmd_status != 0 and pairing just
+	 * falls back to legacy, so the reply is not checked. */
+	mgmt_send(mgmt, MGMT_OP_SET_SECURE_CONN, HCI_DEV, &on, 1);
 	mgmt_send(mgmt, MGMT_OP_SET_POWERED, HCI_DEV, &on, 1);
 	for (int k = 0; k < 30; k++) {
 		int ev = mgmt_recv(mgmt, b, sizeof(b), 250);
@@ -1136,10 +1168,15 @@ static int cmd_test_fake(const char *addr_str)
 }
 
 /* ================= bond store =================
- * /boot/ble-bonds.dat lives in the boot FAT; bootsyncd snapshots it to
- * flash like credentials.txt.  mode 0600, never logged or echoed.
+ * /boot is only mounted inside S05tmpfs and m5-config's drive_write;
+ * at runtime it is an empty directory on the read-only rootfs, so a
+ * store there can never be read or written.  The live store is the
+ * staged copy in /tmp (S05tmpfs copies it out of the boot FAT like
+ * config.txt); ble-bond-store pushes it back into the image so it
+ * survives a reboot.  mode 0600, never logged or echoed.
  */
-#define BOND_PATH	"/boot/ble-bonds.dat"
+#define BOND_PATH	"/tmp/ble-bonds.dat"
+#define BOND_STORE	"/usr/sbin/ble-bond-store"
 #define BOND_MAGIC	0x42424b01	/* "BBK\x01" */
 #define MAX_BONDS	8
 
@@ -1161,10 +1198,12 @@ struct bond_entry {
 static struct bond_entry bonds[MAX_BONDS];
 static int nbonds;
 
+static const char *bond_path(void);
+
 static int bonds_load(void)
 {
 	uint8_t hdr[8];
-	FILE *f = fopen(BOND_PATH, "rb");
+	FILE *f = fopen(bond_path(), "rb");
 	nbonds = 0;
 	if (!f) return 0;                       /* no store = no bonds */
 	if (fread(hdr, 1, 8, f) != 8 ||
@@ -1181,20 +1220,72 @@ static int bonds_load(void)
 	return 0;
 }
 
+static const char *bond_path(void)
+{
+	const char *p = getenv("BLE_KBD_BONDS");
+	return (p && *p) ? p : BOND_PATH;
+}
+
+/* last save/persist failure, for "could not be saved: <why>" lines */
+static char bond_err[96];
+
 static int bonds_save(void)
 {
 	uint8_t hdr[8] = { BOND_MAGIC & 0xff, (BOND_MAGIC >> 8) & 0xff,
 			   (BOND_MAGIC >> 16) & 0xff, (BOND_MAGIC >> 24) & 0xff,
 			   nbonds & 0xff, (nbonds >> 8) & 0xff, 0, 0 };
-	FILE *f = fopen(BOND_PATH, "wb");
-	if (!f) return -1;
-	fwrite(hdr, 1, 8, f);
-	if (nbonds) fwrite(bonds, sizeof(bonds[0]), nbonds, f);
-	fflush(f);
-	fsync(fileno(f));
-	fclose(f);
-	chmod(BOND_PATH, 0600);
+	FILE *f = fopen(bond_path(), "wb");
+	if (!f) {
+		snprintf(bond_err, sizeof(bond_err), "%s: %s",
+			 bond_path(), strerror(errno));
+		return -1;
+	}
+	int bad = fwrite(hdr, 1, 8, f) != 8 ||
+	    (nbonds && fwrite(bonds, sizeof(bonds[0]), nbonds, f) != (size_t)nbonds) ||
+	    fflush(f) != 0 || fsync(fileno(f)) != 0;
+	if (fclose(f) != 0) bad = 1;
+	if (bad) {
+		snprintf(bond_err, sizeof(bond_err), "write %s: %s",
+			 bond_path(), strerror(errno));
+		return -1;
+	}
+	chmod(bond_path(), 0600);
 	return 0;
+}
+
+/* push the staged store into the boot FAT image through the same
+ * copy -> loop-mount -> atomic-swap -> bootsyncd path m5-config uses
+ * (boot-edit --put).  Honors /run/.boot-nosave: the helper exits
+ * nonzero and the caller reports the bond as not saved. */
+static int bonds_persist(void)
+{
+	const char *h = getenv("BLE_KBD_BOND_STORE");
+	char cmd[256];
+	if (!h || !*h) h = BOND_STORE;
+	snprintf(cmd, sizeof(cmd), "exec %s", h);
+	int rc = system(cmd);
+	if (rc == -1 || !WIFEXITED(rc) || WEXITSTATUS(rc) != 0) {
+		snprintf(bond_err, sizeof(bond_err),
+			 "boot image update failed (rc %d)",
+			 rc == -1 ? -1 : WEXITSTATUS(rc));
+		return -1;
+	}
+	return 0;
+}
+
+/* staged write + image persist; bond_err holds the reason on -1.
+ * BLE_KBD_PERSIST=0 stages the store only and returns 1: the caller
+ * (m5-config) then persists it with its own drive_write machinery,
+ * which execs one applet at a time from the menu's shell instead of
+ * the ble-kbd -> ble-bond-store -> boot-edit chain that NOMMU denies
+ * while the menu holds most of the user pool (#44). */
+static int bonds_commit(void)
+{
+	const char *p;
+	if (bonds_save()) return -1;
+	p = getenv("BLE_KBD_PERSIST");
+	if (p && !strcmp(p, "0")) return 1;
+	return bonds_persist() == 0 ? 0 : -1;
 }
 
 static struct bond_entry *bond_find(const bdaddr_t *a)
@@ -1202,6 +1293,18 @@ static struct bond_entry *bond_find(const bdaddr_t *a)
 	for (int i = 0; i < nbonds; i++)
 		if (!memcmp(&bonds[i].addr, a, 6)) return &bonds[i];
 	return NULL;
+}
+
+/* a mgmt_addr_info belongs to a bond when its bdaddr is the stored
+ * address or the stored irk (resolved-RPA) address */
+static struct bond_entry *bonded_match(const struct mgmt_addr_info *a)
+{
+	struct bond_entry *b = bond_find(&a->bdaddr);
+	for (int i = 0; !b && i < nbonds; i++)
+		if (bonds[i].have_irk &&
+		    !memcmp(&bonds[i].irk_addr, &a->bdaddr, 6))
+			b = &bonds[i];
+	return b;
 }
 
 static struct bond_entry *bond_new(const bdaddr_t *a, uint8_t type)
@@ -1216,7 +1319,53 @@ static struct bond_entry *bond_new(const bdaddr_t *a, uint8_t type)
 	return b;
 }
 
-/* ================= pair ================= */
+/* ================= pair =================
+ * The passkey is rendered in 5-row block digits when stdout is a tty
+ * so it cannot be missed on a small panel; it is one-time display
+ * only -- never persisted, never logged anywhere else.
+ */
+static const char *const dig5[10][5] = {
+	{ " ### ", "#   #", "#   #", "#   #", " ### " }, /* 0 */
+	{ "  #  ", " ##  ", "  #  ", "  #  ", " ### " }, /* 1 */
+	{ " ### ", "#   #", "  ## ", " #   ", "#####" }, /* 2 */
+	{ "###  ", "   # ", " ##  ", "   # ", "###  " }, /* 3 */
+	{ "#  # ", "#  # ", "#####", "   # ", "   # " }, /* 4 */
+	{ "#####", "#    ", "#### ", "    #", "#### " }, /* 5 */
+	{ " ### ", "#    ", "#### ", "#   #", " ### " }, /* 6 */
+	{ "#####", "   # ", "  #  ", " #   ", "#    " }, /* 7 */
+	{ " ### ", "#   #", " ### ", "#   #", " ### " }, /* 8 */
+	{ " ### ", "#   #", " ####", "    #", " ### " }, /* 9 */
+};
+
+static void show_passkey(unsigned pk)
+{
+	char d[7];
+	snprintf(d, sizeof(d), "%06u", pk % 1000000u);
+	if (isatty(1)) {
+		printf("\033[1m  type this on the keyboard, then Enter:\n");
+		for (int r = 0; r < 5; r++) {
+			printf("   ");
+			for (int i = 0; i < 6; i++)
+				printf("%s", dig5[d[i] - '0'][r]);
+			printf("\n");
+		}
+		printf("  %s\033[0m\n", d);
+	} else {
+		printf("  type %s on the keyboard, then Enter\n", d);
+	}
+	fflush(stdout);
+}
+
+/* Final outcome lines: the menu keys on them (and on the rc). */
+static void pair_result(const char *s)
+{
+	if (isatty(1))
+		printf("\033[1m%s\033[0m\n", s);
+	else
+		printf("%s\n", s);
+	fflush(stdout);
+}
+
 static int cmd_pair(const char *addr_str)
 {
 	uint8_t *buf = rxbuf;
@@ -1240,7 +1389,9 @@ static int cmd_pair(const char *addr_str)
 	cp.addr.type = BDADDR_LE_PUBLIC;     /* updated on DEVICE_FOUND */
 	cp.io_cap = IO_KEYBOARD_DISPLAY;
 
-	/* short discovery first so the kernel knows the addr type */
+	/* short discovery first so the kernel knows the addr type
+	 * (60 x 250 ms = 15 s) */
+	int seen = 0;
 	struct mgmt_cp_start_discovery sd = { .type = MGMT_DISCOV_TYPE_LE };
 	mgmt_send(mgmt, MGMT_OP_START_DISCOVERY, HCI_DEV, &sd, 1);
 	for (int k = 0; k < 60; k++) {
@@ -1249,6 +1400,7 @@ static int cmd_pair(const char *addr_str)
 			struct mgmt_ev_device_found *d = (void *)(buf + 6);
 			if (!memcmp(&d->addr.bdaddr, &a, 6)) {
 				cp.addr.type = d->addr.type;
+				seen = 1;
 				break;
 			}
 		}
@@ -1261,14 +1413,23 @@ static int cmd_pair(const char *addr_str)
 	printf("pairing %s ...\n", addr_str);
 	fflush(stdout);
 
+	/* 360 x 250 ms = 90 s: connect + SMP exchange + a person finding
+	 * the keyboard and typing 6 digits. */
 	int done = -1;
+	int auth_status = -1;
+	int connected = 0;
 	struct bond_entry *b = NULL;
-	for (int k = 0; k < 240 && done < 0; k++) {
+	for (int k = 0; k < 360 && done < 0; k++) {
 		int ev = mgmt_recv(mgmt, buf, sizeof(rxbuf), 250);
 		if (ev <= 0) continue;
 		struct mgmt_hdr *h = (void *)buf;
 		void *d = buf + sizeof(*h);
 		switch (ev) {
+		case MGMT_EV_DEVICE_CONNECTED: {
+			struct mgmt_ev_device_connected *c2 = d;
+			if (!memcmp(&c2->addr.bdaddr, &a, 6)) connected = 1;
+			break;
+		}
 		case MGMT_EV_CMD_COMPLETE: {
 			struct mgmt_ev_cmd_complete *c = d;
 			if (c->opcode == MGMT_OP_PAIR_DEVICE)
@@ -1291,15 +1452,20 @@ static int cmd_pair(const char *addr_str)
 		}
 		case MGMT_EV_PASSKEY_NOTIFY: {
 			struct mgmt_ev_passkey_notify *p = d;
-			/* one-time display allowed; never persisted */
-			printf("  type %06u on the keyboard, then Enter\n",
-			       p->passkey);
-			fflush(stdout);
+			show_passkey(p->passkey);
 			break;
 		}
-		case MGMT_EV_USER_PASSKEY_REQUEST:
-			printf("  keyboard requested a passkey entry\n");
+		case MGMT_EV_USER_PASSKEY_REQUEST: {
+			/* The keyboard asks US to type a code: we can only
+			 * display one -- answer with a negative reply and
+			 * say so. */
+			struct mgmt_addr_info rep =
+				*(struct mgmt_addr_info *)d;
+			mgmt_send(mgmt, MGMT_OP_USER_PASSKEY_NEG_REPLY,
+				  HCI_DEV, &rep, sizeof(rep));
+			printf("  keyboard wants us to type a passkey; we can only display one -- declined\n");
 			break;
+		}
 		case MGMT_EV_NEW_LONG_TERM_KEY: {
 			struct mgmt_ev_new_long_term_key *k2 = d;
 			b = bond_new(&k2->key.addr.bdaddr, k2->key.addr.type);
@@ -1339,20 +1505,63 @@ static int cmd_pair(const char *addr_str)
 			}
 			break;
 		}
-		case MGMT_EV_AUTH_FAILED:
-			printf("  auth failed\n");
+		case MGMT_EV_AUTH_FAILED: {
+			struct mgmt_ev_auth_failed *f = d;
+			auth_status = f->status;
 			done = -2;
 			break;
+		}
 		}
 		(void)h;
 	}
 
 	if (done == 0 && b && b->have_ltk) {
-		bonds_save();
-		printf("paired + bonded (keys stored, not shown)\n");
-		return 0;
+		int cr = bonds_commit();
+		if (cr == 0) {
+			pair_result("paired + bonded (keys stored, not shown)");
+			return 0;
+		}
+		if (cr > 0) {
+			pair_result("paired + bonded (staged; "
+				    "the caller persists it)");
+			return 8;	/* menu: drive_write it into the image */
+		}
+		char msg[160];
+		snprintf(msg, sizeof(msg),
+			 "paired, but the bond could not be saved: %s",
+			 bond_err);
+		pair_result(msg);
+		return 7;	/* bonded this boot; daemon restart still helps */
 	}
-	printf("pair failed%s\n", done == 0 ? " (no LTK received)" : "");
+	if (auth_status >= 0) {
+		char msg[64];
+		snprintf(msg, sizeof(msg), "auth failed (status 0x%02x)",
+			 auth_status);
+		pair_result(msg);
+		return 5;
+	}
+	if (done < 0) {
+		/* stop the kernel's pending pair attempt so the next try
+		 * starts clean */
+		mgmt_send(mgmt, MGMT_OP_CANCEL_PAIR_DEVICE, HCI_DEV,
+			  &cp.addr, sizeof(cp.addr));
+		if (connected) {
+			pair_result("connected but pairing did not finish");
+			return 6;
+		}
+		if (seen) {
+			pair_result("keyboard stopped advertising -- "
+				    "is it connected to another device?");
+			return 4;
+		}
+		char msg[64];
+		snprintf(msg, sizeof(msg),
+			 "not found: %s never advertised", addr_str);
+		pair_result(msg);
+		return 3;
+	}
+	pair_result(done == 0 ? "pair failed (no LTK received)"
+			    : "pair failed");
 	return 1;
 }
 
@@ -1390,9 +1599,15 @@ static int cmd_forget(const char *arg)
 			usleep(100000);
 		}
 		nbonds = 0;
-		bonds_save();
-		printf("all bonds forgotten\n");
-		return 0;
+		int cr = bonds_commit();
+		if (cr < 0) {
+			printf("bonds forgotten, but the store could not be "
+			       "saved: %s\n", bond_err);
+			return 1;
+		}
+		printf(cr ? "all bonds forgotten (staged)\n"
+			  : "all bonds forgotten\n");
+		return cr ? 8 : 0;
 	}
 
 	bdaddr_t a;
@@ -1408,7 +1623,16 @@ static int cmd_forget(const char *arg)
 		memmove(b, b + 1,
 			(nbonds - 1 - (b - bonds)) * sizeof(*b));
 		nbonds--;
-		bonds_save();
+		int cr = bonds_commit();
+		if (cr < 0) {
+			printf("forgot %s, but the store could not be "
+			       "saved: %s\n", arg, bond_err);
+			return 1;
+		}
+		if (cr > 0) {
+			printf("forgot %s (staged)\n", arg);
+			return 8;
+		}
 	}
 	printf("forgot %s\n", arg);
 	return 0;
@@ -1417,17 +1641,24 @@ static int cmd_forget(const char *arg)
 /* ================= daemon =================
  * Scan for bonded keyboards; on a matching DEVICE_FOUND, connect and
  * run the HOGP->UHID session; on disconnect go back to scanning.
+ *
+ * The C6's HCI side can take minutes to answer after boot (esp32_sdio
+ * -110 timeouts): adapter_up is retried every 2 s instead of exiting,
+ * one log line per wait, no execs (each vfork+exec costs ~487 KB of
+ * the user pool).  INDEX_REMOVED/INDEX_ADDED re-run the whole
+ * bring-up: the kernel forgets loaded keys and accept-list devices
+ * when the index goes away.
  */
-static int cmd_daemon(void)
+
+/* adapter_up + key load + background-scan arm; returns the bgscan
+ * flag for the wait loop */
+static int daemon_setup(int mgmt, uint8_t *buf)
 {
-	uint8_t *buf = rxbuf;
-	if (bonds_load() < 0 || !nbonds) {
-		printf("no bonds — daemon exits\n");
-		return 0;
+	if (adapter_up(mgmt, 1)) {
+		printf("daemon: adapter not ready; retrying every 2 s\n");
+		while (adapter_up(mgmt, 0)) usleep(2000000);
+		printf("daemon: adapter up\n");
 	}
-	int mgmt = mgmt_open();
-	if (mgmt < 0) { perror("mgmt"); return 1; }
-	if (adapter_up(mgmt, 1)) { printf("adapter up failed\n"); return 1; }
 
 	/* feed stored keys to the kernel so SMP can encrypt on connect */
 	{
@@ -1486,44 +1717,152 @@ static int cmd_daemon(void)
 		if (ev <= 0) break;
 	}
 	usleep(200000);
-	printf("daemon: %d bond(s), keys loaded, scanning\n", nbonds);
+
+	/* Prefer the kernel's background scan + auto-connect: one
+	 * ADD_DEVICE action=1 per bond leaves the radio on a low-duty
+	 * background scan in the kernel instead of this daemon's
+	 * continuous mgmt discovery (the C6 shares one antenna between
+	 * Wi-Fi and BLE).  Fall back to the discovery loop when the
+	 * kernel refuses it. */
+	for (int i = 0; i < nbonds; i++) {
+		struct mgmt_cp_add_device ad;
+		memset(&ad, 0, sizeof(ad));
+		ad.addr.bdaddr = bonds[i].addr;
+		ad.addr.type = bonds[i].type;
+		ad.action = 1;
+		mgmt_send(mgmt, MGMT_OP_ADD_DEVICE, HCI_DEV, &ad, sizeof(ad));
+	}
+	usleep(200000);
+	int bgscan = 1;
+	for (int k = 0; k < 40; k++) {
+		int ev = mgmt_recv(mgmt, buf, sizeof(rxbuf), 250);
+		if (ev <= 0) break;
+		if (ev == MGMT_EV_CMD_COMPLETE) {
+			struct mgmt_ev_cmd_complete *c = (void *)(buf + 6);
+			if (c->opcode == MGMT_OP_ADD_DEVICE && c->status)
+				bgscan = 0;
+		} else if (ev == MGMT_EV_CMD_STATUS) {
+			struct mgmt_ev_cmd_status *s = (void *)(buf + 6);
+			if (s->opcode == MGMT_OP_ADD_DEVICE && s->status)
+				bgscan = 0;
+		}
+	}
+	/* The drains above consume every event: a DEVICE_CONNECTED that
+	 * arrived in one of those windows is already gone.  And a
+	 * keyboard bonded seconds ago can still hold its pairing link
+	 * when the daemon (re)starts.  Ask the kernel who is connected
+	 * and serve the bonded ones before entering the wait loop. */
+	mgmt_send(mgmt, MGMT_OP_GET_CONNECTIONS, HCI_DEV, NULL, 0);
+	for (int k = 0; k < 40; k++) {
+		int ev = mgmt_recv(mgmt, buf, sizeof(rxbuf), 250);
+		if (ev <= 0) break;
+		if (ev != MGMT_EV_CMD_COMPLETE) continue;
+		struct mgmt_ev_cmd_complete *c = (void *)(buf + 6);
+		if (c->opcode != MGMT_OP_GET_CONNECTIONS || c->status)
+			continue;
+		struct mgmt_rp_get_connections *r = (void *)c->data;
+		struct mgmt_hdr *h = (void *)buf;
+		int n = r->conn_count;
+		int max = ((int)h->len - (int)sizeof(*c) - 2) /
+			  (int)sizeof(struct mgmt_addr_info);
+		if (n > max) n = max;
+		for (int i = 0; i < n; i++) {
+			struct bond_entry *b = bonded_match(&r->addr[i]);
+			if (!b) continue;
+			char a[18];
+			bdaddr_str(&r->addr[i].bdaddr, a);
+			printf("daemon: bonded device %s already connected\n", a);
+			hogp_session(&b->addr, b->type, mgmt, 1);
+		}
+		break;
+	}
+	if (bgscan)
+		printf("daemon: %d bond(s), kernel background scan + auto-connect\n",
+		       nbonds);
+	else
+		printf("daemon: %d bond(s), keys loaded, scanning\n", nbonds);
+	return bgscan;
+}
+
+static int cmd_daemon(void)
+{
+	uint8_t *buf = rxbuf;
+	if (bonds_load() < 0 || !nbonds) {
+		printf("no bonds — daemon exits\n");
+		return 0;
+	}
+	int mgmt = mgmt_open();
+	if (mgmt < 0) { perror("mgmt"); return 1; }
 
 	struct mgmt_cp_start_discovery sd = { .type = MGMT_DISCOV_TYPE_LE };
 	struct mgmt_cp_stop_discovery sp = { .type = MGMT_DISCOV_TYPE_LE };
-	int backoff = 1;
 	for (;;) {
-		mgmt_send(mgmt, MGMT_OP_START_DISCOVERY, HCI_DEV, &sd, 1);
-		for (;;) {
-			int ev = mgmt_recv(mgmt, buf, sizeof(rxbuf), 1000);
-			if (ev < 0) break;
-			if (ev == 0) continue;
-			if (ev != MGMT_EV_DEVICE_FOUND) continue;
-			struct mgmt_ev_device_found *d = (void *)(buf + 6);
-			struct bond_entry *b = bond_find(&d->addr.bdaddr);
-			/* also match resolved RPAs via stored irk addr */
-			int i;
-			for (i = 0; !b && i < nbonds; i++)
-				if (bonds[i].have_irk &&
-				    !memcmp(&bonds[i].irk_addr,
-					    &d->addr.bdaddr, 6))
-					b = &bonds[i];
-			if (!b) continue;
-			char a[18];
-			bdaddr_str(&d->addr.bdaddr, a);
-			printf("daemon: bonded device %s adv -> connect\n", a);
-			mgmt_send(mgmt, MGMT_OP_STOP_DISCOVERY,
-				  HCI_DEV, &sp, 1);
-			usleep(200000);
-			hogp_session(&b->addr, b->type, mgmt, 1);
-			backoff = 1;
+		int bgscan = daemon_setup(mgmt, buf);
+		int backoff = 1, reinit = 0;
+		while (!reinit) {
+			if (!bgscan)
+				mgmt_send(mgmt, MGMT_OP_START_DISCOVERY,
+					  HCI_DEV, &sd, 1);
+			for (;;) {
+				int ev = mgmt_recv(mgmt, buf,
+						   sizeof(rxbuf), 1000);
+				if (ev < 0) break;
+				if (ev == 0) continue;
+				if (ev == MGMT_EV_INDEX_REMOVED ||
+				    ev == MGMT_EV_INDEX_ADDED) {
+					printf("daemon: adapter index %s;"
+					       " re-arming\n",
+					       ev == MGMT_EV_INDEX_ADDED ?
+					       "added" : "removed");
+					reinit = 1;
+					break;
+				}
+				struct bond_entry *b = NULL;
+				struct mgmt_addr_info *da = NULL;
+				if (bgscan) {
+					if (ev != MGMT_EV_DEVICE_CONNECTED)
+						continue;
+					struct mgmt_ev_device_connected *d =
+						(void *)(buf + 6);
+					da = &d->addr;
+				} else {
+					if (ev != MGMT_EV_DEVICE_FOUND)
+						continue;
+					struct mgmt_ev_device_found *d =
+						(void *)(buf + 6);
+					da = &d->addr;
+				}
+				b = bonded_match(da);
+				if (!b) continue;
+				char a[18];
+				bdaddr_str(&da->bdaddr, a);
+				if (bgscan) {
+					printf("daemon: bonded device %s "
+					       "connected\n", a);
+					hogp_session(&b->addr, b->type,
+						     mgmt, 1);
+					backoff = 1;
+					continue;
+				}
+				printf("daemon: bonded device %s adv -> "
+				       "connect\n", a);
+				mgmt_send(mgmt, MGMT_OP_STOP_DISCOVERY,
+					  HCI_DEV, &sp, 1);
+				usleep(200000);
+				hogp_session(&b->addr, b->type, mgmt, 1);
+				backoff = 1;
+				usleep(backoff * 1000000);
+				break;   /* back to discovery */
+			}
+			if (reinit) break;
+			/* ev<0: mgmt error — back off and retry */
 			usleep(backoff * 1000000);
-			break;   /* back to discovery */
+			if (backoff < 10) backoff += 2;
 		}
-		/* ev<0: mgmt error — back off and retry */
-		usleep(backoff * 1000000);
-		if (backoff < 10) backoff += 2;
+		/* reinit: the adapter went away or (re)appeared; loop back
+		 * to daemon_setup, which waits inside adapter_up's retry
+		 * until the index is usable again */
 	}
-	return 0;
 }
 
 /* ---- usage ---- */

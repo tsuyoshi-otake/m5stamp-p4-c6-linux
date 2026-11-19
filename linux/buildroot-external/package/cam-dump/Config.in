@@ -1,0 +1,8 @@
+config BR2_PACKAGE_CAM_DUMP
+	bool "cam-dump one-shot camera frame tool"
+	help
+	  Captures one 1280x720 RAW8 frame from /dev/cam0
+	  (esp32p4-csi-cam): arms the pipeline, writes the SC202CS
+	  init table + stream-on over SCCB on /dev/i2c-0, dumps the
+	  frame and prints stats.  Tab5 only: needs the SC2356 camera
+	  and the cam0 misc device.

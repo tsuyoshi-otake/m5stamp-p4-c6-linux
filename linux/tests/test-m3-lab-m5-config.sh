@@ -77,6 +77,8 @@ export M5CFG_HOME_M5="$tmp/home-m5" M5CFG_HOME_ROOT="$tmp/home-root"
 export RUN_SYSTEM_CLASS_UDC_ROOT="$tmp/udc" M5CFG_SAVE_WAIT=3 M5CFG_ASSUME_ROOT=1
 # The denied-exec retry delay is real on board but only slows the host.
 export M5CFG_SPIN=50
+# Runtime bond store is the staged /tmp copy (#43), never $BOOT_MNT.
+export M5CFG_BLE_BONDS="$tmp/ble-bonds.dat"
 
 fails=0
 ok() { echo "ok: $1"; }
@@ -528,11 +530,395 @@ echo "$out" | grep -q 'EE:01' && echo "$out" | grep -q 'EE:02' &&
 grep -q 'pair AA:BB:CC:DD:EE:02' "$tmp/blelog" &&
 	ok "tap resolved by slot index (2nd addr)" ||
 	bad "slot resolve: $(cat "$tmp/blelog")"
+# the tool's own output is verbatim (it does its own bolding on a
+# real tty) -- the menu only draws the header.
 echo "$out" | grep -q 'pairing Kbd_One (AA:BB:CC:DD:EE:02)' &&
-	echo "$out" | grep -q "$(printf '\033\[1m')  type 654321" &&
-	ok "pairing screen + bold passkey line" || bad "pairing screen: $out"
+	echo "$out" | grep -q 'type 654321 on the keyboard' &&
+	ok "pairing screen + passkey line" || bad "pairing screen: $out"
 
-# 26. Status is a full text page: >19 lines page with [ more > ], the
+# 26. BLE pairing writes straight to the tty: the passkey must reach
+# the capture while the tool is still running -- proof the line is not
+# parked behind a file/pipe.  The fake pair prints the passkey, then
+# waits on a release flag before the result line.
+cat > "$tmp/bin/ble-kbd" <<'EOF'
+#!/bin/sh
+echo "ble-kbd $*" >> "$M5CFG_BLELOG"
+case "$1" in
+scan|list) cat "$M5CFG_BLE_IN" ;;
+pair)
+	printf 'pairing %s ...\n  type 654321 on the keyboard, then Enter\n' "$2"
+	_i=0
+	while [ ! -f "$M5CFG_BLE_RELEASE" ] && [ "$_i" -lt 300 ]; do
+		_i=$((_i + 1)); sleep 0.1 2>/dev/null || sleep 1
+	done
+	if [ -f "$M5CFG_RUN_DIR/.boot-nosave" ]; then
+		printf 'paired, but the bond could not be saved: kernel could not read the boot image\n'
+		exit 7
+	fi
+	printf 'paired + bonded (keys stored, not shown)\n' ;;
+forget)
+	printf 'M5b\0\0\0\0\0' > "$M5CFG_BLE_BONDS"
+	printf 'forgotten\n' ;;
+esac
+EOF
+chmod +x "$tmp/bin/ble-kbd"
+cat > "$tmp/bin/S95blekbd" <<'EOF'
+#!/bin/sh
+# At 'restart', record whether the bond is already in the image: the
+# restart must come AFTER the menu's own persist, not before it --
+# the daemon takes pool the save needs (#41 review).
+if [ "$1" = restart ]; then
+	if tar -tf "$M5CFG_BOOT_IMG" 2>/dev/null | grep -q ble-bonds.dat; then
+		echo "initd restart img=bond" >> "$M5CFG_INITLOG"
+	else
+		echo "initd restart img=nobond" >> "$M5CFG_INITLOG"
+	fi
+else
+	echo "initd $*" >> "$M5CFG_INITLOG"
+fi
+exit 0
+EOF
+chmod +x "$tmp/bin/S95blekbd"
+mkdir -p "$tmp/boot" "$tmp/run"
+printf '  AA:BB:CC:DD:EE:01 type=1 rssi=-50 [HID] name=Kbd One\n' > "$tmp/ble-in"
+printf '  AA:BB:CC:DD:EE:02 type=1 rssi=-60 [HID] name=Kbd One\n' >> "$tmp/ble-in"
+: > "$tmp/blelog"; : > "$tmp/initlog"
+rm -f "$tmp/ble-release" "$tmp/run/.boot-nosave"
+printf 'T 8 50\nT 4 10\nT 4 50\nT 20 10\nT 20 10\nT 20 10\n' > "$tmp/tscr/events"
+M5CFG_BLE_KBD="$tmp/bin/ble-kbd" M5CFG_BLELOG="$tmp/blelog" \
+	M5CFG_BLE_IN="$tmp/ble-in" M5CFG_TSCRIPT="$tmp/tscr/events" \
+	M5CFG_BLE_INITD="$tmp/bin/S95blekbd" M5CFG_INITLOG="$tmp/initlog" \
+	M5CFG_BLE_RELEASE="$tmp/ble-release" M5CFG_BOOT_MNT="$tmp/boot" \
+	M5CFG_RUN_DIR="$tmp/run" \
+	sh "$tool" menu > "$tmp/ble-cap" 2>&1 </dev/null &
+_blepid=$!
+_live=0; _i=0
+while [ "$_i" -lt 200 ]; do
+	grep -q 'type 654321' "$tmp/ble-cap" 2>/dev/null && { _live=1; break; }
+	kill -0 "$_blepid" 2>/dev/null || break
+	_i=$((_i + 1)); sleep 0.2
+done
+[ "$_live" = 1 ] && ! grep -q 'paired + bonded' "$tmp/ble-cap" &&
+	ok "passkey reaches the tty while pair is still running" ||
+	bad "live passkey: $(tail -6 "$tmp/ble-cap")"
+touch "$tmp/ble-release"
+wait "$_blepid" 2>/dev/null
+grep -q 'initd restart' "$tmp/initlog" &&
+	ok "bonded -> daemon restart" || bad "initd: $(cat "$tmp/initlog")"
+grep -q 'press a key on the keyboard to connect' "$tmp/ble-cap" &&
+	ok "connect hint shown after bond" || bad "hint: $(tail -6 "$tmp/ble-cap")"
+
+# 27. #43 nosave gate: pair exits 7 (staged copy written, image update
+# refused), so the menu shows the tool's honest line, still restarts
+# the daemon on the staged bond, and adds the "this boot only" note.
+printf 'kernel could not read the boot image\n' > "$tmp/run/.boot-nosave"
+: > "$tmp/blelog"; : > "$tmp/initlog"
+rm -f "$tmp/ble-release"
+printf 'T 8 50\nT 4 10\nT 4 50\nT 20 10\nT 20 10\nT 20 10\n' > "$tmp/tscr/events"
+M5CFG_BLE_KBD="$tmp/bin/ble-kbd" M5CFG_BLELOG="$tmp/blelog" \
+	M5CFG_BLE_IN="$tmp/ble-in" M5CFG_TSCRIPT="$tmp/tscr/events" \
+	M5CFG_BLE_INITD="$tmp/bin/S95blekbd" M5CFG_INITLOG="$tmp/initlog" \
+	M5CFG_BLE_RELEASE="$tmp/ble-release" M5CFG_BOOT_MNT="$tmp/boot" \
+	M5CFG_RUN_DIR="$tmp/run" \
+	sh "$tool" menu > "$tmp/ble-cap2" 2>&1 </dev/null &
+_blepid=$!
+_i=0
+while [ "$_i" -lt 200 ] && kill -0 "$_blepid" 2>/dev/null; do
+	grep -q 'type 654321' "$tmp/ble-cap2" 2>/dev/null && break
+	_i=$((_i + 1)); sleep 0.2
+done
+touch "$tmp/ble-release"
+wait "$_blepid" 2>/dev/null
+grep -q 'the bond could not be saved' "$tmp/ble-cap2" &&
+	grep -q 'this boot only' "$tmp/ble-cap2" &&
+	ok "nosave -> 'not saved' wording follows the real outcome" ||
+	bad "nosave: $(tail -8 "$tmp/ble-cap2")"
+grep -q 'initd restart' "$tmp/initlog" &&
+	ok "rc7 still restarts the daemon on the staged bond" ||
+	bad "rc7 initd: $(cat "$tmp/initlog")"
+rm -f "$tmp/run/.boot-nosave"
+
+# 28. forget of the last bond stops the daemon (the fake forget writes
+# an 8-byte header-only store to the staged path, like the real tool
+# does).
+: > "$tmp/blelog"; : > "$tmp/initlog"
+printf 'M5b\0\0\0\0\0\x0f\x00' > "$tmp/ble-bonds.dat"
+printf 'T 8 50\nT 10 10\nT 4 50\nT 4 10\nT 20 10\nT 20 10\nT 20 10\n' \
+	> "$tmp/tscr/events"
+out=$(M5CFG_BLE_KBD="$tmp/bin/ble-kbd" M5CFG_BLELOG="$tmp/blelog" \
+	M5CFG_BLE_IN="$tmp/ble-in" M5CFG_TSCRIPT="$tmp/tscr/events" \
+	M5CFG_BLE_INITD="$tmp/bin/S95blekbd" M5CFG_INITLOG="$tmp/initlog" \
+	M5CFG_BOOT_MNT="$tmp/boot" M5CFG_RUN_DIR="$tmp/run" \
+	sh "$tool" menu </dev/null 2>&1)
+grep -q 'initd stop' "$tmp/initlog" &&
+	ok "forget of last bond stops the daemon" ||
+	bad "forget stop: $(cat "$tmp/initlog"); $out"
+
+# 28b. Same path with a denied wc exec (NOMMU reserve): the size check
+# gets no answer, and the daemon must NOT be stopped while a bond
+# remains -- the fake forget leaves a 80-byte store (header + 1 entry).
+cat > "$tmp/bin/ble-kbd" <<'EOF'
+#!/bin/sh
+echo "ble-kbd $*" >> "$M5CFG_BLELOG"
+case "$1" in
+scan|list) cat "$M5CFG_BLE_IN" ;;
+pair) printf 'pairing %s ...\n' "$2" ;;
+forget)
+	{ printf 'M5b\0\0\0\0\0\x01\x00'; head -c 72 /dev/zero; } \
+		> "$M5CFG_BLE_BONDS"
+	printf 'forgotten\n' ;;
+esac
+EOF
+chmod +x "$tmp/bin/ble-kbd"
+cat > "$tmp/bin/wc" <<'EOF'
+#!/bin/sh
+# refused exec, like a NOMMU reserve denial
+exit 127
+EOF
+chmod +x "$tmp/bin/wc"
+: > "$tmp/blelog"; : > "$tmp/initlog"
+printf 'T 8 50\nT 10 10\nT 4 50\nT 4 10\nT 20 10\nT 20 10\nT 20 10\n' \
+	> "$tmp/tscr/events"
+out=$(M5CFG_BLE_KBD="$tmp/bin/ble-kbd" M5CFG_BLELOG="$tmp/blelog" \
+	M5CFG_BLE_IN="$tmp/ble-in" M5CFG_TSCRIPT="$tmp/tscr/events" \
+	M5CFG_BLE_INITD="$tmp/bin/S95blekbd" M5CFG_INITLOG="$tmp/initlog" \
+	M5CFG_WC="$tmp/bin/wc" \
+	M5CFG_BOOT_MNT="$tmp/boot" M5CFG_RUN_DIR="$tmp/run" \
+	sh "$tool" menu </dev/null 2>&1)
+grep -q 'ble-kbd forget' "$tmp/blelog" ||
+	bad "forget path not reached: $out"
+if grep -q 'initd stop' "$tmp/initlog"; then
+	bad "denied wc still stopped the daemon"
+else
+	ok "denied wc -> daemon keeps running"
+fi
+rm -f "$tmp/bin/wc" "$tmp/ble-in" "$tmp/ble-cap" "$tmp/ble-cap2" \
+	"$tmp/ble-release"
+
+# 28c. S95blekbd gates on the STAGED store, not /boot (#43 item 1):
+# the real init script, a fake ble-kbd that only records being run.
+s95="$repo_root/linux/m3-lab/rootfs-overlay/etc/init.d/S95blekbd"
+cat > "$tmp/bin/ble-kbd-s95" <<'EOF'
+#!/bin/sh
+echo "daemon $*" >> "$M5CFG_BLELOG"
+EOF
+chmod +x "$tmp/bin/ble-kbd-s95"
+: > "$tmp/blelog"
+printf 'M5b\0\0\0\0\0\x01\x00' > "$tmp/ble-bonds.dat"
+head -c 72 /dev/zero >> "$tmp/ble-bonds.dat"
+BLEKBD="$tmp/bin/ble-kbd-s95" BLE_BONDS="$tmp/ble-bonds.dat" \
+	M5CFG_BLELOG="$tmp/blelog" sh "$s95" start
+sleep 0.3
+grep -q 'daemon' "$tmp/blelog" &&
+	ok "S95 starts the daemon on a staged bond" ||
+	bad "S95 staged start: $(cat "$tmp/blelog")"
+: > "$tmp/blelog"
+rm -f "$tmp/ble-bonds.dat"
+BLEKBD="$tmp/bin/ble-kbd-s95" BLE_BONDS="$tmp/ble-bonds.dat" \
+	M5CFG_BLELOG="$tmp/blelog" sh "$s95" start
+sleep 0.3
+[ ! -s "$tmp/blelog" ] &&
+	ok "S95 stays down with no staged bond file" ||
+	bad "S95 empty start: $(cat "$tmp/blelog")"
+rm -f "$tmp/bin/ble-kbd-s95"
+
+# 28d. ble-bond-store pushes the staged file into the image through the
+# REAL boot-edit (tar-stub mount, fake saver) -- the same copy -> mount
+# -> write -> atomic swap -> bootsyncd wait path m5-config uses, and
+# the same .boot-nosave refusal (#43 items 2+3).
+store="$repo_root/linux/m3-lab/rootfs-overlay/usr/sbin/ble-bond-store"
+bootedit="$repo_root/linux/m3-lab/rootfs-overlay/usr/sbin/boot-edit"
+mkdir -p "$tmp/udc-empty"
+{ printf 'M5b\0\0\0\0\0\x01\x00'; head -c 72 /dev/zero; } \
+	> "$tmp/ble-bonds.dat"
+md5sum "$tmp/ble-bonds.dat" | cut -d' ' -f1 > "$tmp/bonds.md5"
+start_saver
+out=$(BLE_BONDS_TMP="$tmp/ble-bonds.dat" \
+	BLE_BOND_STORE_EDIT="$bootedit" \
+	BOOT_IMG="$img" BOOT_EDIT_RUN_DIR="$tmp/run" \
+	RUN_SYSTEM_CLASS_UDC_ROOT="$tmp/udc-empty" \
+	BOOT_EDIT_SAVE_WAIT=3 sh "$store" 2>&1); rc=$?
+[ "$rc" -eq 0 ] && imgfile ble-bonds.dat | md5sum | cut -d' ' -f1 \
+	| grep -qf "$tmp/bonds.md5" &&
+	ok "ble-bond-store persists the staged file into the image" ||
+	bad "bond-store rc=$rc: $out"
+# nosave refuses the image update and says so (rc nonzero).
+echo 'kernel could not read the boot image' > "$tmp/run/.boot-nosave"
+out=$(BLE_BONDS_TMP="$tmp/ble-bonds.dat" \
+	BLE_BOND_STORE_EDIT="$bootedit" \
+	BOOT_IMG="$img" BOOT_EDIT_RUN_DIR="$tmp/run" \
+	RUN_SYSTEM_CLASS_UDC_ROOT="$tmp/udc-empty" \
+	BOOT_EDIT_SAVE_WAIT=3 sh "$store" 2>&1); rc=$?
+[ "$rc" -ne 0 ] && echo "$out" | grep -q 'cannot be saved' &&
+	ok "nosave -> bond-store refuses with the reason" ||
+	bad "nosave store rc=$rc: $out"
+rm -f "$tmp/run/.boot-nosave"
+stop_saver
+# A missing staged file is an error, not a silent success.
+rm -f "$tmp/ble-bonds.dat"
+out=$(BLE_BONDS_TMP="$tmp/ble-bonds.dat" \
+	BLE_BOND_STORE_EDIT="$bootedit" sh "$store" 2>&1); rc=$?
+[ "$rc" -ne 0 ] &&
+	ok "missing staged store -> bond-store fails" ||
+	bad "missing store rc=$rc: $out"
+
+# 28e. Native-cc check (skipped where no compiler exists): the real
+# ble-kbd list reads the staged store via BLE_KBD_BONDS -- the C side
+# of the runtime path (#43 item 1).
+if command -v cc >/dev/null 2>&1; then
+	# Magic \001KBB + count 1 + a 72-byte entry (u16/u64 alignment):
+	# addr + type=1 + have_ltk=1.  Octal escapes: dash printf has no \x.
+	{ printf '\001KBB\001\000\000\000'
+	  printf '\314\252\125\021\042\063\001\001'
+	  head -c 64 /dev/zero
+	} > "$tmp/ble-bonds.dat"
+	if cc -o "$tmp/ble-kbd-real" \
+	    "$repo_root/linux/buildroot-external/package/ble-kbd/src/ble-kbd.c" \
+	    2>"$tmp/cc.err"; then
+		out=$(BLE_KBD_BONDS="$tmp/ble-bonds.dat" \
+			"$tmp/ble-kbd-real" list 2>&1)
+		echo "$out" | grep -q '33:22:11:55:AA:CC' &&
+			ok "ble-kbd list reads the staged store (native build)" ||
+			bad "native list: $out"
+	else
+		bad "native build: $(head -3 "$tmp/cc.err")"
+	fi
+	# #44 item 2, the testable half: with no bond file the daemon
+	# must still exit at once -- the adapter retry sits AFTER the
+	# no-bonds check.  (The retry itself is a mgmt-socket path;
+	# board-validated.)
+	rm -f "$tmp/ble-bonds.dat"
+	out=$(BLE_KBD_BONDS="$tmp/ble-bonds.dat" \
+		"$tmp/ble-kbd-real" daemon 2>&1); rc=$?
+	[ "$rc" -eq 0 ] && echo "$out" | grep -q 'no bonds' &&
+		ok "daemon exits at once with no bond store" ||
+		bad "no-bonds daemon rc=$rc: $out"
+	# ...and the retry/re-arm paths are in the source.
+	grep -q 'retrying every 2 s' \
+		"$repo_root/linux/buildroot-external/package/ble-kbd/src/ble-kbd.c" &&
+	grep -q 'MGMT_EV_INDEX_REMOVED' \
+		"$repo_root/linux/buildroot-external/package/ble-kbd/src/ble-kbd.c" &&
+		ok "daemon retries adapter_up + re-arms on index events" ||
+		bad "daemon retry/re-arm missing from ble-kbd.c"
+	rm -f "$tmp/ble-kbd-real"
+else
+	echo "skip: no host cc; ble-kbd list/daemon checks need a compiler"
+fi
+
+# 28f. #44 item 1: the menu runs ble-kbd in stage-only mode (rc 8) and
+# persists the staged store itself through drive_put -- one applet
+# exec per step, the load a config save already costs.  The fake pair
+# writes a valid staged store like the real tool does under
+# BLE_KBD_PERSIST=0, prints the staged result line, exits 8.
+cat > "$tmp/bin/ble-kbd" <<'EOF'
+#!/bin/sh
+echo "ble-kbd $*" >> "$M5CFG_BLELOG"
+case "$1" in
+scan|list) cat "$M5CFG_BLE_IN" ;;
+pair)
+	printf 'pairing %s ...\n' "$2"
+	{ printf '\001KBB\001\000\000\000'
+	  printf '\314\252\125\021\042\063\001\001'
+	  head -c 64 /dev/zero; } > "$M5CFG_BLE_BONDS"
+	printf 'paired + bonded (staged; the caller persists it)\n'
+	exit 8 ;;
+forget)
+	printf '\001KBB\000\000\000\000' > "$M5CFG_BLE_BONDS"
+	printf 'forgot %s (staged)\n' "$2"
+	exit 8 ;;
+esac
+EOF
+chmod +x "$tmp/bin/ble-kbd"
+printf '  33:22:11:55:AA:CC type=1 ltk name=Syn Kbd\n' > "$tmp/ble-in"
+: > "$tmp/blelog"; : > "$tmp/initlog"
+rm -f "$tmp/run/.boot-nosave"
+printf 'T 8 50\nT 4 10\nT 4 10\nT 20 10\nT 20 10\nT 20 10\n' \
+	> "$tmp/tscr/events"
+start_saver
+out=$(M5CFG_BLE_KBD="$tmp/bin/ble-kbd" M5CFG_BLELOG="$tmp/blelog" \
+	M5CFG_BLE_IN="$tmp/ble-in" M5CFG_TSCRIPT="$tmp/tscr/events" \
+	M5CFG_BLE_INITD="$tmp/bin/S95blekbd" M5CFG_INITLOG="$tmp/initlog" \
+	M5CFG_BOOT_MNT="$tmp/boot" M5CFG_RUN_DIR="$tmp/run" \
+	sh "$tool" menu </dev/null 2>&1)
+stop_saver
+echo "$out" | grep -q 'bond saved to the boot image' &&
+	imgfile ble-bonds.dat | md5sum | cut -d' ' -f1 |
+	grep -q "$(md5sum "$tmp/ble-bonds.dat" | cut -d' ' -f1)" &&
+	ok "rc8 pair -> menu persists the staged store to the image" ||
+	bad "rc8 persist: $(echo "$out" | tail -8)"
+grep -q 'initd restart img=bond' "$tmp/initlog" &&
+	ok "rc8 restarts the daemon AFTER the persist" ||
+	bad "rc8 initd order: $(cat "$tmp/initlog")"
+
+# 28g. Same path under nosave: drive_put refuses at once (rc 2), the
+# menu says the bond is this-boot-only, the image gets nothing.
+# Rebuild the image clean first: 28f's save left a ble-bonds.dat in it.
+pack "$seed" "$img"
+echo 'kernel could not read the boot image' > "$tmp/run/.boot-nosave"
+: > "$tmp/blelog"; : > "$tmp/initlog"
+printf 'T 8 50\nT 4 10\nT 4 10\nT 20 10\nT 20 10\nT 20 10\n' \
+	> "$tmp/tscr/events"
+out=$(M5CFG_BLE_KBD="$tmp/bin/ble-kbd" M5CFG_BLELOG="$tmp/blelog" \
+	M5CFG_BLE_IN="$tmp/ble-in" M5CFG_TSCRIPT="$tmp/tscr/events" \
+	M5CFG_BLE_INITD="$tmp/bin/S95blekbd" M5CFG_INITLOG="$tmp/initlog" \
+	M5CFG_BOOT_MNT="$tmp/boot" M5CFG_RUN_DIR="$tmp/run" \
+	sh "$tool" menu </dev/null 2>&1)
+echo "$out" | grep -q 'this boot only' &&
+	! imgfile ble-bonds.dat >/dev/null 2>&1 &&
+	ok "nosave -> 'this boot only', image untouched" ||
+	bad "nosave rc8: $(echo "$out" | tail -8)"
+rm -f "$tmp/run/.boot-nosave"
+
+# 28h. Denied execs inside the persist path (a 139-rc cp, the NOMMU
+# wall): bounded retries, then an honest "this boot only" -- never a
+# false "saved".
+cat > "$tmp/bin/cp" <<'EOF'
+#!/bin/sh
+exit 139
+EOF
+chmod +x "$tmp/bin/cp"
+pack "$seed" "$img"
+: > "$tmp/blelog"; : > "$tmp/initlog"
+printf 'T 8 50\nT 4 10\nT 4 10\nT 20 10\nT 20 10\nT 20 10\n' \
+	> "$tmp/tscr/events"
+out=$(M5CFG_BLE_KBD="$tmp/bin/ble-kbd" M5CFG_BLELOG="$tmp/blelog" \
+	M5CFG_BLE_IN="$tmp/ble-in" M5CFG_TSCRIPT="$tmp/tscr/events" \
+	M5CFG_BLE_INITD="$tmp/bin/S95blekbd" M5CFG_INITLOG="$tmp/initlog" \
+	M5CFG_BOOT_MNT="$tmp/boot" M5CFG_RUN_DIR="$tmp/run" \
+	sh "$tool" menu </dev/null 2>&1)
+rm -f "$tmp/bin/cp"
+echo "$out" | grep -q 'this boot only' &&
+	! echo "$out" | grep -q 'bond saved to the boot image' &&
+	! imgfile ble-bonds.dat >/dev/null 2>&1 &&
+	ok "denied execs -> honest 'this boot only', no false save" ||
+	bad "denied-exec rc8: $(echo "$out" | tail -8)"
+
+# 28i. Menu forget in stage-only mode: the staged header-only store is
+# persisted into the image and the daemon is stopped on the empty
+# store.
+{ printf '\001KBB\001\000\000\000'; printf '\314\252\125\021\042\063\001\001'
+  head -c 64 /dev/zero; } > "$tmp/ble-bonds.dat"
+# Rebuild the image WITH a bond file present, other files intact.
+mkdir -p "$tmp/pub-put"
+cp -r "$seed"/. "$tmp/pub-put/"
+cp "$tmp/ble-bonds.dat" "$tmp/pub-put/ble-bonds.dat"
+pack "$tmp/pub-put" "$img"
+: > "$tmp/blelog"; : > "$tmp/initlog"
+printf 'T 8 50\nT 10 10\nT 4 10\nT 4 10\nT 20 10\nT 20 10\nT 20 10\n' \
+	> "$tmp/tscr/events"
+start_saver
+out=$(M5CFG_BLE_KBD="$tmp/bin/ble-kbd" M5CFG_BLELOG="$tmp/blelog" \
+	M5CFG_BLE_IN="$tmp/ble-in" M5CFG_TSCRIPT="$tmp/tscr/events" \
+	M5CFG_BLE_INITD="$tmp/bin/S95blekbd" M5CFG_INITLOG="$tmp/initlog" \
+	M5CFG_BOOT_MNT="$tmp/boot" M5CFG_RUN_DIR="$tmp/run" \
+	sh "$tool" menu </dev/null 2>&1)
+stop_saver
+[ $(imgfile ble-bonds.dat | wc -c) -eq 8 ] &&
+	grep -q 'initd stop' "$tmp/initlog" &&
+	ok "rc8 forget -> removal persisted, daemon stopped" ||
+	bad "rc8 forget: $(cat "$tmp/initlog"); $(echo "$out" | tail -6)"
+
+# 29. Status is a full text page: >19 lines page with [ more > ], the
 # nav block sits below, and a marker past row 19 shows on page 2.
 {
 	i=1; while [ "$i" -le 25 ]; do echo "status line $i"; i=$((i + 1)); done
@@ -1050,6 +1436,80 @@ M5CFG_BLDIR="$tmp/s07bl" M5CFG_CONFIG_TXT="$tmp/s07/config.txt" \
 	sh "$S07" start 2>/dev/null; rc=$?
 [ "$rc" -eq 0 ] && ok "S07backlight no-panel no-op" ||
 	bad "s07 nopanel rc=$rc"
+
+# 34b. B46 / #25: the camera key -- managed like brightness, gated by
+# the esp32p4-csi-cam driver dir being present in sysfs; S08camera
+# unbinds the platform device unless config.txt says camera=on.
+mkdir -p "$tmp/camdrv/5009f000.cam" "$tmp/camdrv/module"
+: > "$tmp/camdrv/unbind"
+start_saver
+out=$(M5CFG_CAM_DRV="$tmp/camdrv" sh "$tool" set camera on 2>&1); rc=$?
+stop_saver
+[ "$rc" -eq 0 ] && echo "$out" | grep -qF 'saved to flash' &&
+	[ "$(imgfile config.txt | grep -c '^camera=on')" = 1 ] &&
+	ok "set camera saves through drive_write" ||
+	bad "set camera: rc=$rc $out"
+# bootsyncd republishes /tmp/config.txt after a save; mirror it.
+imgfile config.txt > "$tmp/pub/config.txt"
+out=$(M5CFG_CAM_DRV="$tmp/camdrv" sh "$tool" get camera 2>&1)
+[ "$out" = "on" ] && ok "get camera returns the saved value" ||
+	bad "get camera: $out"
+echo "$out" >/dev/null
+out=$(M5CFG_CAM_DRV="$tmp/camdrv" sh "$tool" list 2>&1)
+echo "$out" | grep -q 'camera' &&
+	ok "list shows camera" || bad "list camera: $out"
+for v in 2 yes enable ON onx; do
+	out=$(M5CFG_CAM_DRV="$tmp/camdrv" sh "$tool" set camera "$v" 2>&1); rc=$?
+	[ "$rc" -ne 0 ] ||
+		bad "set camera '$v' not rejected: rc=$rc $out"
+done
+ok "camera non-on/off values rejected (2,yes,enable,ON,onx)"
+# no driver (Stamp): the key is hidden and rejected like brightness.
+out=$(env -u M5CFG_CAM_DRV sh "$tool" set camera on 2>&1); rc=$?
+[ "$rc" -ne 0 ] &&
+	ok "no driver: set camera rejected" ||
+	bad "nodrv set camera: rc=$rc $out"
+out=$(env -u M5CFG_CAM_DRV sh "$tool" list 2>&1)
+echo "$out" | grep -q 'camera' &&
+	bad "no driver: list still shows camera" ||
+	ok "no driver: list hides camera"
+# Ports menu entry exists and is gated on the driver being present.
+grep -n 'key_present camera && item 3 "camera on/off' "$tool" >/dev/null &&
+	ok "Ports menu item gated on key_present camera" ||
+	bad "Ports menu camera item missing/ungated"
+# S08camera gate: fake sysfs driver dir.  camera=on keeps the binding
+# (unbind file untouched); off/missing/garbage values unbind the
+# 5009f000.cam device dir; the module/ entry must never be unbound.
+S08="$repo_root/linux/m3-lab/rootfs-overlay-tab5/etc/init.d/S08camera"
+mkdir -p "$tmp/s08"
+printf 'camera=on\n' > "$tmp/s08/config.txt"
+M5CFG_CAM_DRV="$tmp/camdrv" M5CFG_CONFIG_TXT="$tmp/s08/config.txt" \
+	sh "$S08" start
+[ ! -s "$tmp/camdrv/unbind" ] &&
+	ok "S08camera camera=on keeps the driver bound" ||
+	bad "s08 on: unbind=$(cat "$tmp/camdrv/unbind")"
+for v in off junk ""; do
+	: > "$tmp/camdrv/unbind"
+	printf 'camera=%s\n' "$v" > "$tmp/s08/config.txt"
+	M5CFG_CAM_DRV="$tmp/camdrv" M5CFG_CONFIG_TXT="$tmp/s08/config.txt" \
+		sh "$S08" start
+	[ "$(cat "$tmp/camdrv/unbind")" = "5009f000.cam" ] ||
+		bad "s08 '$v': unbind=$(cat "$tmp/camdrv/unbind")"
+done
+ok "S08camera off/junk/empty unbinds the cam device"
+printf 'hostname=desk-01\n' > "$tmp/s08/config.txt"
+: > "$tmp/camdrv/unbind"
+M5CFG_CAM_DRV="$tmp/camdrv" M5CFG_CONFIG_TXT="$tmp/s08/config.txt" \
+	sh "$S08" start
+[ "$(cat "$tmp/camdrv/unbind")" = "5009f000.cam" ] &&
+	ok "S08camera missing key defaults to off" ||
+	bad "s08 missing: unbind=$(cat "$tmp/camdrv/unbind")"
+# no driver dir at all: silent no-op.
+rm -rf "$tmp/camdrv"
+M5CFG_CAM_DRV="$tmp/camdrv" M5CFG_CONFIG_TXT="$tmp/s08/config.txt" \
+	sh "$S08" start 2>/dev/null; rc=$?
+[ "$rc" -eq 0 ] && ok "S08camera no-driver no-op" ||
+	bad "s08 nodrv rc=$rc"
 
 # 35. B38 / #42 step 2: the on-screen keyboard end to end -- "Ab1 !~"
 # typed with a one-shot shift, a layer switch and [del]; [cancel]
