@@ -14,12 +14,55 @@
 CAMCFG="${M5CFG_CONFIG_TXT:-/tmp/config.txt}"
 CAMDRV="${M5CFG_CAM_DRV:-/sys/bus/platform/drivers/esp32p4-csi-cam}"
 
+# camera= is read with shell builtins only.  On this nommu board every
+# process of a pipeline is an exec that can fail under memory pressure;
+# the old sed|sed|head|tr read then came back empty, which counts as
+# "off" and unbinds a camera the user turned on (B49: one boot came up
+# unbound with camera=on in config.txt).  The first camera= line wins;
+# blanks around the key and the value and a trailing CR are ignored.
+SP=' '
+TAB='	'
+# Drop leading blanks from $l.
+lstrip() {
+	while :; do
+		case "$l" in
+			"$SP"*|"$TAB"*) l=${l#?} ;;
+			*) return 0 ;;
+		esac
+	done
+}
+cam_value() {
+	v=""
+	[ -r "$CAMCFG" ] || return 0
+	while IFS= read -r l || [ -n "$l" ]; do
+		lstrip
+		case "$l" in
+			camera*) l=${l#camera} ;;
+			*) continue ;;
+		esac
+		lstrip
+		case "$l" in
+			=*) l=${l#=} ;;
+			*) continue ;;
+		esac
+		lstrip
+		# trailing blanks and the CR of a CRLF file
+		while :; do
+			case "$l" in
+				*[!A-Za-z0-9]) l=${l%?} ;;
+				*) break ;;
+			esac
+		done
+		v=$l
+		return 0
+	done < "$CAMCFG"
+	return 0
+}
+
 case "${1:-start}" in
 	start)
 		[ -d "$CAMDRV" ] || exit 0
-		v=$(sed -e "s/$(printf '\r')\$//" "$CAMCFG" 2>/dev/null |
-			sed -n 's/^[ 	]*camera[ 	]*=[ 	]*//p' |
-			head -n1 | tr -d ' 	')
+		cam_value
 		[ "$v" = on ] && exit 0
 		# no quotes around $CAMDRV: hush does not glob "$var"/*.
 		# Keep the platform-device names (addr.name -- module/bind/
@@ -31,7 +74,7 @@ case "${1:-start}" in
 				*) continue ;;
 			esac
 			if echo "$dev" > "$CAMDRV/unbind" 2>/dev/null; then
-				echo "ES_CAMERA: off; set camera=on and reboot to enable"
+				echo "ES_CAMERA: off (camera=${v:-unset}); set camera=on and reboot to enable"
 			else
 				echo "ES_CAMERA FAIL: unbind $dev"
 			fi
