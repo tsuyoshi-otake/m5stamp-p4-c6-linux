@@ -368,3 +368,37 @@ SoftAP, so pull the PPM straight through ssh:
 
 or capture to `/tmp` (`cam-dump -f ppm` defaults to
 `/tmp/cam0.ppm`) and `scp` it back.
+
+## `cam-dump -e` / `-g` / `-a` — exposure and gain (#44 part 2)
+
+The init table fixes the SC202CS shutter at `0x3dc` and analog gain
+at `0x00`, which leaves a dim room near-black.  The same SCCB path
+the init writes use can set them per capture:
+
+- **`-e VAL` — shutter** (vendor `exposure_val` units): the 16-bit
+  field `{0x3e00[3:0], 0x3e01, 0x3e02[7:4]}` — the vendor driver
+  splits it with `FETCH_EXP_{H,M,L}` (sc202cs.c), its low nibble is a
+  fraction of a line, the table's `0x00/0x3d/0xc0` is `0x3dc` = 988.
+  Vendor clamps `[0x08, vts-6]` = `[8, 1244]` for this 720p30 mode
+  (vts 1250); cam-dump clamps to the same range.  Bigger = longer.
+- **`-g IDX` — gain index 0..191** of the vendor DIG-priority map:
+  written to `0x3e07` (digital fine), `0x3e06` (digital coarse),
+  `0x3e09` (analog).  The map is generated, not embedded: index i
+  gives `0x3e07 = 0x80 + 4*(i%32)`, `0x3e06 = i<32 ? 0 : 1`,
+  `0x3e09 = i<64 ? 0 : (1<<(i/32 - 1)) - 1` — index 0 is ~x1.0 and
+  191 is ~x63 (abs_gain_val_map last entry 63008).
+- **`-a` — auto exposure:** up to 4 cold captures.  Each frame's raw
+  mean is compared with a target of ~110 inside `cdp_ae_step` (a pure
+  function in `cam-ae.c`, host-tested by
+  `linux/tests/test-cam-dump-ae.sh`): the shutter scales first (at
+  most x4 or /4 per step) and whatever it could not take moves the
+  gain index instead (~32 index steps per x2).  The last captured
+  frame is the output; steps print on stderr as
+  `ae k/4: mean=.. -> exp=.. gain=..`.  `-e`/`-g` seed the start
+  point when combined with `-a`.
+
+Exposure writes happen between the init table and stream-on, in the
+vendor driver's order (shutter then gain — it uses no group hold
+either).  Nothing is added to memory: `-a` reuses the one frame
+buffer every iteration, and means come from the same pass `stats()`
+already does.

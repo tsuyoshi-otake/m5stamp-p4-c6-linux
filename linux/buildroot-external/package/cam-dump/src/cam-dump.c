@@ -10,13 +10,19 @@
  * bus; the sensor answers at 0x36 after CAM_RST is raised by
  * CAM_PREPARE.
  *
- * Usage: cam-dump [-o out] [-f raw|ppm] [-n frames] [-p] [-W] [-h]
+ * Usage: cam-dump [-o out] [-f raw|ppm] [-n frames] [-p] [-W] [-a] [-e val] [-g idx] [-h]
  *   -o  output file (default /tmp/cam0.raw or /tmp/cam0.ppm); '-' = stdout
  *   -f  output format: raw = the RAW8 Bayer frame; ppm = a binary P6
  *       PPM, each BGGR 2x2 block binned to one 640x360 RGB pixel (#44)
  *   -n  frames to capture (default 1; each is a full cold capture)
  *   -p  enable the sensor's test pattern (0x4501 bit3) before streaming
  *   -W  white balance off (ppm only; gray-world gains are on by default)
+ *   -e  exposure value for 0x3e00-0x3e02 (vendor shutter units,
+ *       8..1244; the init table uses 0x3dc = 988)
+ *   -g  gain index 0..191 into the vendor DIG-priority map
+ *       (writes 0x3e07/0x3e06/0x3e09)
+ *   -a  auto exposure: up to 4 captures, moving the shutter (then the
+ *       gain when the shutter is clamped) toward a frame mean of ~110
  */
 
 #include <errno.h>
@@ -29,9 +35,11 @@
 #include <unistd.h>
 
 #include "bggr-ppm.h"
+#include "cam-ae.h"
 
 #define CAM_IOC_PREPARE		_IO('C', 1)
 #define CAM_FRAME_BYTES		(1280 * 720)
+#define AE_TARGET		110	/* -a target frame mean */
 #define SENSOR_ADDR		0x36
 #define SENSOR_PID		0xeb52
 
@@ -146,13 +154,22 @@ static int sccb_read(int fd, uint16_t reg, uint8_t *val)
 	return 0;
 }
 
+static unsigned long frame_mean(const uint8_t *f)
+{
+	unsigned long sum = 0;
+	int i;
+
+	for (i = 0; i < CAM_FRAME_BYTES; i++)
+		sum += f[i];
+	return sum / CAM_FRAME_BYTES;
+}
+
 static void stats(const uint8_t *f)
 {
-	unsigned long sum = 0, sum16 = 0;
+	unsigned long sum16 = 0;
 	int mn = 255, mx = 0, i, n16 = 0;
 
 	for (i = 0; i < CAM_FRAME_BYTES; i++) {
-		sum += f[i];
 		if (f[i] < mn) mn = f[i];
 		if (f[i] > mx) mx = f[i];
 	}
@@ -164,13 +181,39 @@ static void stats(const uint8_t *f)
 			sum16 += f[i * 1280 + x], n16++;
 	}
 	fprintf(stderr, "frame: mean=%lu min=%d max=%d stripe16mean=%lu\n",
-		sum / CAM_FRAME_BYTES, mn, mx, sum16 / n16);
+		frame_mean(f), mn, mx, sum16 / n16);
+}
+
+/* SC202CS shutter + gain writes (vendor driver order: exposure
+ * first, then the DIG-priority gain triple; no group hold is used
+ * there either).  exp/gain < 0 leaves the init-table values. */
+static int sensor_aec(int i2c, int exp, int gain)
+{
+	unsigned df, dc, ag;
+
+	if (exp >= 0 &&
+	    (sccb_write(i2c, 0x3e00, CDP_EXP_H(exp)) ||
+	     sccb_write(i2c, 0x3e01, CDP_EXP_M(exp)) ||
+	     sccb_write(i2c, 0x3e02, CDP_EXP_L(exp)))) {
+		fprintf(stderr, "exposure write failed\n");
+		return -1;
+	}
+	if (gain >= 0) {
+		cdp_gain_regs((unsigned)gain, &df, &dc, &ag);
+		if (sccb_write(i2c, 0x3e07, df) ||
+		    sccb_write(i2c, 0x3e06, dc) ||
+		    sccb_write(i2c, 0x3e09, ag)) {
+			fprintf(stderr, "gain write failed\n");
+			return -1;
+		}
+	}
+	return 0;
 }
 
 /* Power up + program the sensor for one capture.  Call after
  * CAM_PREPARE armed the receiver; the close() at frame end drops
  * CAM_RST, so this runs again for the next frame. */
-static int sensor_setup(int i2c, int pattern)
+static int sensor_setup(int i2c, int pattern, int exp, int gain)
 {
 	uint8_t idh, idl;
 	int i;
@@ -201,6 +244,8 @@ static int sensor_setup(int i2c, int pattern)
 			return -1;
 		}
 	}
+	if (sensor_aec(i2c, exp, gain))
+		return -1;
 	if (pattern && sccb_write(i2c, 0x4501, 0x08)) {
 		fprintf(stderr, "test-pattern write failed\n");
 		return -1;
@@ -282,7 +327,10 @@ int main(int argc, char **argv)
 {
 	const char *out = NULL;
 	int frames = 1, pattern = 0, i2c = -1, ofd = -1, rc = 1;
-	int pause_ms = 0, ppm = 0, wb = 1;
+	int pause_ms = 0, ppm = 0, wb = 1, ae = 0;
+	int exp_val = -1, gain_val = -1;
+	int caps, exp_cur, gain_cur;
+	unsigned exp_a = 0, gain_a = 0;
 	uint8_t *fb;
 	int i;
 
@@ -303,13 +351,24 @@ int main(int argc, char **argv)
 			frames = atoi(argv[++i]);
 		else if (!strcmp(argv[i], "-P") && i + 1 < argc)
 			pause_ms = atoi(argv[++i]);
+		else if (!strcmp(argv[i], "-e") && i + 1 < argc) {
+			unsigned long v = strtoul(argv[++i], NULL, 0);
+
+			exp_val = v > 0x7fffffffUL ? 0x7fffffff : (int)v;
+		} else if (!strcmp(argv[i], "-g") && i + 1 < argc) {
+			unsigned long v = strtoul(argv[++i], NULL, 0);
+
+			gain_val = v > 0x7fffffffUL ? 0x7fffffff : (int)v;
+		}
+		else if (!strcmp(argv[i], "-a"))
+			ae = 1;
 		else if (!strcmp(argv[i], "-p"))
 			pattern = 1;
 		else if (!strcmp(argv[i], "-W"))
 			wb = 0;
 		else {
 			fprintf(stderr,
-				"usage: cam-dump [-o out|-] [-f raw|ppm] [-n frames] [-p] [-P pause_ms] [-W]\n");
+				"usage: cam-dump [-o out|-] [-f raw|ppm] [-n frames] [-p] [-P pause_ms] [-W] [-a] [-e val] [-g idx]\n");
 			return 2;
 		}
 	}
@@ -317,6 +376,18 @@ int main(int argc, char **argv)
 		out = ppm ? "/tmp/cam0.ppm" : "/tmp/cam0.raw";
 	if (frames < 1)
 		frames = 1;
+	if (exp_val >= 0 &&
+	    (exp_val < CDP_EXP_MIN || exp_val > CDP_EXP_MAX)) {
+		int c = exp_val < CDP_EXP_MIN ? CDP_EXP_MIN : CDP_EXP_MAX;
+
+		fprintf(stderr, "exposure %d clamped to %d\n", exp_val, c);
+		exp_val = c;
+	}
+	if (gain_val >= 0 && gain_val > CDP_GAIN_MAX) {
+		fprintf(stderr, "gain %d clamped to %d\n",
+			gain_val, CDP_GAIN_MAX);
+		gain_val = CDP_GAIN_MAX;
+	}
 
 	/* The gate in S08camera unbinds the driver unless camera=on,
 	 * so a missing node means "off", not "broken". */
@@ -348,10 +419,19 @@ int main(int argc, char **argv)
 		fprintf(stderr, "malloc failed\n");
 		goto out;
 	}
-	for (i = 0; i < frames; i++) {
+	/* -a: up to 4 cold captures; -e/-g seed the starting point.
+	 * Without -a, -e/-g apply to every -n frame (or stay at the
+	 * init-table defaults when not given). */
+	caps = ae ? 4 : frames;
+	exp_a = exp_val >= 0 ? (unsigned)exp_val : CDP_EXP_DEF;
+	gain_a = gain_val >= 0 ? (unsigned)gain_val : 0;
+	exp_cur = ae ? (int)exp_a : exp_val;
+	gain_cur = ae ? (int)gain_a : gain_val;
+	for (i = 0; i < caps; i++) {
 		int cam;
 		ssize_t got = 0, r;
 		size_t off = 0;
+		int done = 0;
 
 		/* open -> PREPARE powers the rail and arms the pipe;
 		 * close disarms and drops CAM_RST, so every frame is a
@@ -371,7 +451,7 @@ int main(int argc, char **argv)
 		 * the armed register state right before stream-on. */
 		if (pause_ms)
 			usleep(pause_ms * 1000);
-		if (sensor_setup(i2c, pattern)) {
+		if (sensor_setup(i2c, pattern, exp_cur, gain_cur)) {
 			close(cam);
 			goto out;
 		}
@@ -389,12 +469,29 @@ int main(int argc, char **argv)
 			goto out;
 		}
 		stats(fb);
-		if (i == frames - 1) {
+		if (ae) {
+			unsigned long mean = frame_mean(fb);
+
+			if (i == caps - 1)
+				done = 1;
+			else if (cdp_ae_step((unsigned)mean,
+					     AE_TARGET,
+					     &exp_a, &gain_a))
+				fprintf(stderr,
+					"ae %d/%d: mean=%lu -> exp=%u gain=%u\n",
+					i + 1, caps, mean, exp_a, gain_a);
+			else
+				done = 1;
+			exp_cur = (int)exp_a;
+			gain_cur = (int)gain_a;
+		}
+		if (i == caps - 1 || done) {
 			if (ppm) {
 				if (write_ppm(ofd, fb, wb))
 					goto out;
 			} else if (write_all(ofd, fb, (size_t)got))
 				goto out;
+			break;
 		}
 	}
 	rc = 0;

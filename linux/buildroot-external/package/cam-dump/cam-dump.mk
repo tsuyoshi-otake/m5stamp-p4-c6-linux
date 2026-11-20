@@ -13,7 +13,8 @@ CAM_DUMP_LICENSE = GPL-2.0-only
 define CAM_DUMP_BUILD_CMDS
 	$(TARGET_CC) $(TARGET_CFLAGS) $(TARGET_LDFLAGS) \
 		-Wl,-elf2flt=-s16384 \
-		-o $(@D)/cam-dump $(@D)/cam-dump.c $(@D)/bggr-ppm.c
+		-o $(@D)/cam-dump $(@D)/cam-dump.c $(@D)/bggr-ppm.c \
+		$(@D)/cam-ae.c
 endef
 
 define CAM_DUMP_INSTALL_TARGET_CMDS
