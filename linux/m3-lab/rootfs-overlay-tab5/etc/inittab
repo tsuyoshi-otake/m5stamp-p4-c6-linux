@@ -9,3 +9,6 @@ tty1::respawn:-/bin/sh
 ::respawn:/usr/sbin/mdnsd -i wlan0
 ::restart:/sbin/init
 ::ctrlaltdel:/sbin/reboot
+
+# Drain a pending boot-drive save before the reset (#42).
+::shutdown:/etc/init.d/rcK
