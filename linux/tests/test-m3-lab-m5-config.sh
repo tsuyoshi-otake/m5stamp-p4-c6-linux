@@ -474,8 +474,14 @@ printf 'T 4 10\nT 8 50\nK 1\nK 2\nK bs\nK 3\nK enter\nT 20 10\nT 20 10\nT 20 10\
 start_saver
 out=$(M5CFG_TSCRIPT="$tmp/tscr/events" sh "$tool" menu </dev/null 2>&1)
 stop_saver
-imgfile config.txt | grep -q '^channel=13$' &&
+# m5-config keeps the file's CRLF lines (step 1 wrote them).
+imgfile config.txt | tr -d '\r' | grep -q '^channel=13$' &&
 	ok "tadjust: digits + K bs + K enter" || bad "tadjust kbd: $out"
+# B52: a key event must not fall into the tap hit-test as row "K"
+# (dash: "Illegal number" aborts the menu; hush: "invalid number").
+echo "$out" | grep -qiE 'illegal number|invalid number' &&
+	bad "tadjust: a key reached the tap hit-test: $out" ||
+	ok "tadjust: keys never reach the tap hit-test"
 
 # 23. K enter in tpick cancels without picking: wifi_mode stays ap.
 printf 'T 4 10\nT 4 10\nK enter\nT 20 10\nT 20 10\nT 20 10\n' > "$tmp/tscr/events"

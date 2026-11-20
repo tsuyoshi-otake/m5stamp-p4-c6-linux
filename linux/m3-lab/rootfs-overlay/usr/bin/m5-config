@@ -1245,7 +1245,11 @@ tadjust() {
 					bs) _buf=${_buf%?} ;;
 					enter) REPLY=${_buf:-$_cur}; break ;;
 					c) break ;;
-				esac ;;
+				esac
+				# A key is not a tap: without this it fell into the
+				# hit-test below as row "K" ("invalid number" on the
+				# panel under hush; dash aborts the menu).
+				continue ;;
 			T\ *) ;;
 			*) continue ;;
 		esac
