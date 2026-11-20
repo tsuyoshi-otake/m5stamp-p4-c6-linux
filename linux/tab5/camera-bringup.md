@@ -332,3 +332,39 @@ on the power drop).
   the LDO3 rail is never programmed (off ⇒ `-ENODEV`, fail
   closed); `CAM_RST` drops at `release()`/`remove()` (never left
   high across driver teardown).
+
+## `cam-dump -f ppm` — a viewable picture (#44 part 1)
+
+`-f ppm` converts the frame the tool already holds into a binary
+PPM (P6) instead of writing the RAW8 dump, so the capture can be
+looked at without a converter.  The conversion lives in
+`bggr-ppm.c`/`bggr-ppm.h` next to `cam-dump.c` — pure functions
+the host test `linux/tests/test-cam-dump-ppm.sh` links and feeds
+synthetic frames.
+
+- **2x2 binning, 640x360.**  Each BGGR block `[B G; G R]` becomes
+  one RGB pixel (`G = (G1+G2)/2`).  This is a deliberate
+  trade-off, not a full demosaic: the board has ~2 MB of free
+  user RAM and cam-dump already holds the 921,600 B frame, so a
+  second full-size buffer is not an option.  Output is generated
+  one 1920 B row at a time straight to the output fd — the only
+  extra memory is that row.  A real-resolution debayer is the
+  V4L2 half of #44, not this one.
+- **Gray-world white balance, on by default.**  Per-channel
+  means over the frame give `gR = meanG/meanR` and
+  `gB = meanG/meanB` in Q8, clamped to 0.25..4.0; the G gain is
+  1.0 by construction.  `-W` keeps the channel values.  The
+  means and gains print on stderr with the existing frame
+  stats (`wb: meanR=… gainR=… gainB=…`).
+- The output is exactly `len("P6\n640 360\n255\n") +
+  640*360*3` = 691,215 bytes, and works with `-o FILE`, `-o -`
+  (stdout), `-p` and `-n` (the last captured frame is the one
+  converted, same rule as raw).
+
+Getting a picture onto a PC — the board runs dropbear on the
+SoftAP, so pull the PPM straight through ssh:
+
+    ssh root@<tab5> cam-dump -f ppm -o - > frame.ppm
+
+or capture to `/tmp` (`cam-dump -f ppm` defaults to
+`/tmp/cam0.ppm`) and `scp` it back.

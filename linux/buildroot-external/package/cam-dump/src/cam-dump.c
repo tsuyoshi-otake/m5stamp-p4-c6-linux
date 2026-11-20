@@ -10,10 +10,13 @@
  * bus; the sensor answers at 0x36 after CAM_RST is raised by
  * CAM_PREPARE.
  *
- * Usage: cam-dump [-o out.raw] [-n frames] [-p] [-h]
- *   -o  output file (default /tmp/cam0.raw); '-' = stdout
+ * Usage: cam-dump [-o out] [-f raw|ppm] [-n frames] [-p] [-W] [-h]
+ *   -o  output file (default /tmp/cam0.raw or /tmp/cam0.ppm); '-' = stdout
+ *   -f  output format: raw = the RAW8 Bayer frame; ppm = a binary P6
+ *       PPM, each BGGR 2x2 block binned to one 640x360 RGB pixel (#44)
  *   -n  frames to capture (default 1; each is a full cold capture)
  *   -p  enable the sensor's test pattern (0x4501 bit3) before streaming
+ *   -W  white balance off (ppm only; gray-world gains are on by default)
  */
 
 #include <errno.h>
@@ -24,6 +27,8 @@
 #include <string.h>
 #include <sys/ioctl.h>
 #include <unistd.h>
+
+#include "bggr-ppm.h"
 
 #define CAM_IOC_PREPARE		_IO('C', 1)
 #define CAM_FRAME_BYTES		(1280 * 720)
@@ -208,29 +213,108 @@ static int sensor_setup(int i2c, int pattern)
 	return 0;
 }
 
+/* write(2) may return short without setting errno (tmpfs under
+ * memory pressure did on board): loop until the buffer is out,
+ * and only fail on a real error or a zero write. */
+static int write_all(int fd, const void *buf, size_t len)
+{
+	const uint8_t *p = buf;
+
+	while (len) {
+		ssize_t w = write(fd, p, len);
+
+		if (w < 0) {
+			if (errno == EINTR)
+				continue;
+			perror("write output");
+			return -1;
+		}
+		if (!w) {
+			fprintf(stderr, "write output: wrote 0 of %zu left\n",
+				len);
+			return -1;
+		}
+		p += (size_t)w;
+		len -= (size_t)w;
+	}
+	return 0;
+}
+
+/* -f ppm: a viewable picture instead of the RAW8 dump (#44).
+ * Each BGGR 2x2 block bins to one RGB pixel, so the P6 output
+ * is 640x360 -- the ~2 MB-free board cannot spare a second
+ * frame-sized buffer, so one 1920 B row is converted and
+ * written at a time.  Gray-world white balance is on by
+ * default; -W keeps the channel values. */
+static int write_ppm(int fd, const uint8_t *f, int wb)
+{
+	uint8_t row[CDP_OUT_W * 3];
+	char hdr[24];
+	unsigned mr, mg, mb;
+	uint32_t gr, gb;
+	size_t r;
+	int hl;
+
+	cdp_bggr_means(f, CDP_SRC_W, CDP_SRC_H, &mr, &mg, &mb);
+	cdp_wb_gains(mr, mg, mb, wb, &gr, &gb);
+	if (wb)
+		fprintf(stderr,
+			"wb: meanR=%u meanG=%u meanB=%u gainR=%u.%02u gainB=%u.%02u\n",
+			mr, mg, mb,
+			gr >> 8, ((gr & 0xff) * 100) >> 8,
+			gb >> 8, ((gb & 0xff) * 100) >> 8);
+	else
+		fprintf(stderr, "wb: off (meanR=%u meanG=%u meanB=%u)\n",
+			mr, mg, mb);
+	hl = snprintf(hdr, sizeof hdr, "P6\n%d %d\n255\n",
+		      CDP_OUT_W, CDP_OUT_H);
+	if (hl < 0 || write_all(fd, hdr, (size_t)hl))
+		return -1;
+	for (r = 0; r < CDP_OUT_H; r++) {
+		cdp_bggr_row(f, CDP_SRC_W, r, gr, gb, row);
+		if (write_all(fd, row, sizeof row))
+			return -1;
+	}
+	return 0;
+}
+
 int main(int argc, char **argv)
 {
-	const char *out = "/tmp/cam0.raw";
+	const char *out = NULL;
 	int frames = 1, pattern = 0, i2c = -1, ofd = -1, rc = 1;
-	int pause_ms = 0;
+	int pause_ms = 0, ppm = 0, wb = 1;
 	uint8_t *fb;
 	int i;
 
 	for (i = 1; i < argc; i++) {
 		if (!strcmp(argv[i], "-o") && i + 1 < argc)
 			out = argv[++i];
-		else if (!strcmp(argv[i], "-n") && i + 1 < argc)
+		else if (!strcmp(argv[i], "-f") && i + 1 < argc) {
+			const char *fmt = argv[++i];
+
+			if (!strcmp(fmt, "ppm"))
+				ppm = 1;
+			else if (strcmp(fmt, "raw")) {
+				fprintf(stderr,
+					"cam-dump: unknown format '%s'\n", fmt);
+				return 2;
+			}
+		} else if (!strcmp(argv[i], "-n") && i + 1 < argc)
 			frames = atoi(argv[++i]);
 		else if (!strcmp(argv[i], "-P") && i + 1 < argc)
 			pause_ms = atoi(argv[++i]);
 		else if (!strcmp(argv[i], "-p"))
 			pattern = 1;
+		else if (!strcmp(argv[i], "-W"))
+			wb = 0;
 		else {
 			fprintf(stderr,
-				"usage: cam-dump [-o out.raw|-] [-n frames] [-p] [-P pause_ms]\n");
+				"usage: cam-dump [-o out|-] [-f raw|ppm] [-n frames] [-p] [-P pause_ms] [-W]\n");
 			return 2;
 		}
 	}
+	if (!out)
+		out = ppm ? "/tmp/cam0.ppm" : "/tmp/cam0.raw";
 	if (frames < 1)
 		frames = 1;
 
@@ -306,29 +390,11 @@ int main(int argc, char **argv)
 		}
 		stats(fb);
 		if (i == frames - 1) {
-			/* write(2) may return short without setting
-			 * errno (tmpfs under memory pressure did on
-			 * board): loop until the frame is out, and
-			 * only fail on a real error or a zero write. */
-			size_t woff = 0;
-
-			while (woff < (size_t)got) {
-				ssize_t w = write(ofd, fb + woff,
-						  (size_t)got - woff);
-				if (w < 0) {
-					if (errno == EINTR)
-						continue;
-					perror("write output");
+			if (ppm) {
+				if (write_ppm(ofd, fb, wb))
 					goto out;
-				}
-				if (!w) {
-					fprintf(stderr,
-						"write output: wrote 0 of %zd left\n",
-						got - (ssize_t)woff);
-					goto out;
-				}
-				woff += (size_t)w;
-			}
+			} else if (write_all(ofd, fb, (size_t)got))
+				goto out;
 		}
 	}
 	rc = 0;
