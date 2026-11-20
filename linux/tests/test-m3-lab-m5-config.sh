@@ -474,8 +474,14 @@ printf 'T 4 10\nT 8 50\nK 1\nK 2\nK bs\nK 3\nK enter\nT 20 10\nT 20 10\nT 20 10\
 start_saver
 out=$(M5CFG_TSCRIPT="$tmp/tscr/events" sh "$tool" menu </dev/null 2>&1)
 stop_saver
-imgfile config.txt | grep -q '^channel=13$' &&
+# m5-config keeps the file's CRLF lines (step 1 wrote them).
+imgfile config.txt | tr -d '\r' | grep -q '^channel=13$' &&
 	ok "tadjust: digits + K bs + K enter" || bad "tadjust kbd: $out"
+# B52: a key event must not fall into the tap hit-test as row "K"
+# (dash: "Illegal number" aborts the menu; hush: "invalid number").
+echo "$out" | grep -qiE 'illegal number|invalid number' &&
+	bad "tadjust: a key reached the tap hit-test: $out" ||
+	ok "tadjust: keys never reach the tap hit-test"
 
 # 23. K enter in tpick cancels without picking: wifi_mode stays ap.
 printf 'T 4 10\nT 4 10\nK enter\nT 20 10\nT 20 10\nT 20 10\n' > "$tmp/tscr/events"
@@ -1504,6 +1510,51 @@ M5CFG_CAM_DRV="$tmp/camdrv" M5CFG_CONFIG_TXT="$tmp/s08/config.txt" \
 [ "$(cat "$tmp/camdrv/unbind")" = "5009f000.cam" ] &&
 	ok "S08camera missing key defaults to off" ||
 	bad "s08 missing: unbind=$(cat "$tmp/camdrv/unbind")"
+# The read is builtins only (B52): with no sed/head/tr reachable --
+# what a refused exec looks like under nommu memory pressure --
+# camera=on must still keep the binding.  S08_SH picks the shell
+# (e.g. a host busybox hush, the board's /bin/sh).
+s08_sh=${S08_SH:-$(command -v sh)}
+s08_bad=0
+s08_run() {
+	: > "$tmp/camdrv/unbind"
+	printf "$1" > "$tmp/s08/config.txt"
+	env PATH=/nonexistent M5CFG_CAM_DRV="$tmp/camdrv" \
+		M5CFG_CONFIG_TXT="$tmp/s08/config.txt" \
+		$s08_sh "$S08" start > "$tmp/s08/out" 2>&1
+	cat "$tmp/camdrv/unbind"
+}
+for c in 'camera=on\n' 'camera=on\r\n' '  camera = on  \n' \
+	'\tcamera\t=\ton\t\r\n' 'hostname=x\ncamera=on\n' 'camera=on' \
+	'#camera=off\ncamera=on\n'; do
+	[ -z "$(s08_run "$c")" ] && continue
+	s08_bad=1
+	bad "s08 no-exec keep '$c': unbind=$(cat "$tmp/camdrv/unbind") $(cat "$tmp/s08/out")"
+done
+[ "$s08_bad" = 0 ] &&
+	ok "S08camera keeps camera=on with no sed/head/tr (CRLF, blanks, comments, no final newline)"
+s08_bad=0
+for c in 'camera=off\n' 'camera=off\ncamera=on\n' 'camerax=on\n' \
+	'#camera=on\n' 'camera=onx\n' 'camera\n' 'camera=\n' ''; do
+	[ "$(s08_run "$c")" = "5009f000.cam" ] && continue
+	s08_bad=1
+	bad "s08 no-exec off '$c': unbind=$(cat "$tmp/camdrv/unbind") $(cat "$tmp/s08/out")"
+done
+[ "$s08_bad" = 0 ] &&
+	ok "S08camera unbinds off/first-match/other-key/comment/junk/empty with no sed/head/tr"
+s08_run 'camera=off\n' >/dev/null
+grep -q '^ES_CAMERA: off (camera=off);' "$tmp/s08/out" &&
+	ok "S08camera says which camera= value it read" ||
+	bad "s08 message: $(cat "$tmp/s08/out")"
+rm -f "$tmp/s08/config.txt"
+: > "$tmp/camdrv/unbind"
+env PATH=/nonexistent M5CFG_CAM_DRV="$tmp/camdrv" \
+	M5CFG_CONFIG_TXT="$tmp/s08/config.txt" \
+	$s08_sh "$S08" start > "$tmp/s08/out" 2>&1
+[ "$(cat "$tmp/camdrv/unbind")" = "5009f000.cam" ] &&
+	grep -q 'camera=unset' "$tmp/s08/out" &&
+	ok "S08camera with no config.txt defaults to off (camera=unset)" ||
+	bad "s08 no config: unbind=$(cat "$tmp/camdrv/unbind") $(cat "$tmp/s08/out")"
 # no driver dir at all: silent no-op.
 rm -rf "$tmp/camdrv"
 M5CFG_CAM_DRV="$tmp/camdrv" M5CFG_CONFIG_TXT="$tmp/s08/config.txt" \
