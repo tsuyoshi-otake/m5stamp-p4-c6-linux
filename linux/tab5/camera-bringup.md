@@ -332,3 +332,73 @@ on the power drop).
   the LDO3 rail is never programmed (off ⇒ `-ENODEV`, fail
   closed); `CAM_RST` drops at `release()`/`remove()` (never left
   high across driver teardown).
+
+## `cam-dump -f ppm` — a viewable picture (#44)
+
+`-f ppm` converts the frame the tool already holds into a binary
+PPM (P6) instead of writing the RAW8 dump, so the capture can be
+looked at without a converter.  The conversion lives in
+`bggr-ppm.c`/`bggr-ppm.h` next to `cam-dump.c` — pure functions
+the host test `linux/tests/test-cam-dump-ppm.sh` links and feeds
+synthetic frames.
+
+- **2x2 binning, 640x360.**  Each BGGR block `[B G; G R]` becomes
+  one RGB pixel (`G = (G1+G2)/2`).  This is a deliberate
+  trade-off, not a full demosaic: the board has ~2 MB of free
+  user RAM and cam-dump already holds the 921,600 B frame, so a
+  second full-size buffer is not an option.  Output is generated
+  one 1920 B row at a time straight to the output fd — the only
+  extra memory is that row.  A real-resolution debayer is the
+  V4L2 half of #44, not this one.
+- **Gray-world white balance, on by default.**  Per-channel
+  means over the frame give `gR = meanG/meanR` and
+  `gB = meanG/meanB` in Q8, clamped to 0.25..4.0; the G gain is
+  1.0 by construction.  `-W` keeps the channel values.  The
+  means and gains print on stderr with the existing frame
+  stats (`wb: meanR=… gainR=… gainB=…`).
+- The output is exactly `len("P6\n640 360\n255\n") +
+  640*360*3` = 691,215 bytes, and works with `-o FILE`, `-o -`
+  (stdout), `-p` and `-n` (the last captured frame is the one
+  converted, same rule as raw).
+
+Getting a picture onto a PC — the board runs dropbear on the
+SoftAP, so pull the PPM straight through ssh:
+
+    ssh root@<tab5> cam-dump -f ppm -o - > frame.ppm
+
+or capture to `/tmp` (`cam-dump -f ppm` defaults to
+`/tmp/cam0.ppm`) and `scp` it back.
+
+## `cam-dump -e` / `-g` / `-a` — exposure and gain (#44)
+
+The init table fixes the SC202CS shutter at `0x3dc` and analog gain
+at `0x00`, which leaves a dim room near-black.  The same SCCB path
+the init writes use can set them per capture:
+
+- **`-e VAL` — shutter** (vendor `exposure_val` units): the 16-bit
+  field `{0x3e00[3:0], 0x3e01, 0x3e02[7:4]}` — the vendor driver
+  splits it with `FETCH_EXP_{H,M,L}` (sc202cs.c), its low nibble is a
+  fraction of a line, the table's `0x00/0x3d/0xc0` is `0x3dc` = 988.
+  Vendor clamps `[0x08, vts-6]` = `[8, 1244]` for this 720p30 mode
+  (vts 1250); cam-dump clamps to the same range.  Bigger = longer.
+- **`-g IDX` — gain index 0..191** of the vendor DIG-priority map:
+  written to `0x3e07` (digital fine), `0x3e06` (digital coarse),
+  `0x3e09` (analog).  The map is generated, not embedded: index i
+  gives `0x3e07 = 0x80 + 4*(i%32)`, `0x3e06 = i<32 ? 0 : 1`,
+  `0x3e09 = i<64 ? 0 : (1<<(i/32 - 1)) - 1` — index 0 is ~x1.0 and
+  191 is ~x63 (abs_gain_val_map last entry 63008).
+- **`-a` — auto exposure:** up to 4 cold captures.  Each frame's raw
+  mean is compared with a target of ~110 inside `cdp_ae_step` (a pure
+  function in `cam-ae.c`, host-tested by
+  `linux/tests/test-cam-dump-ae.sh`): the shutter scales first (at
+  most x4 or /4 per step) and whatever it could not take moves the
+  gain index instead (~32 index steps per x2).  The last captured
+  frame is the output; steps print on stderr as
+  `ae k/4: mean=.. -> exp=.. gain=..`.  `-e`/`-g` seed the start
+  point when combined with `-a`.
+
+Exposure writes happen between the init table and stream-on, in the
+vendor driver's order (shutter then gain — it uses no group hold
+either).  Nothing is added to memory: `-a` reuses the one frame
+buffer every iteration, and means come from the same pass `stats()`
+already does.
