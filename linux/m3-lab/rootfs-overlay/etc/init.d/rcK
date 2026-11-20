@@ -1,0 +1,41 @@
+#!/bin/sh
+# Shutdown drain (#42): wait for a pending boot-drive save before the
+# board resets.  inittab runs this for halt/poweroff/reboot while the
+# respawned bootsyncd is still alive, so a save it has already seen --
+# or one whose image swap the next poll has not noticed yet -- gets its
+# flash commit instead of silently booting the previous generation.
+#
+# /run/.bootsync-pending is up from the first poll that notices a new
+# image until the import ends (settle wait, flash commit and publish;
+# ble-bonds.dat saves ride the same image, #41).  The -nt check covers
+# the gap between a writer's swap and that first poll: bootsyncd's
+# SEEN_REF always carries the mtime it last consumed.  The wait is
+# bounded -- init waits for shutdown actions, so a stuck save would
+# hold the reset forever; on expiry the console says the change may
+# not reach flash, the same honesty m5-config's "not confirmed" uses.
+
+BOOT_IMG="${BOOT_IMG:-/tmp/boot.img}"
+SEEN_REF="${BOOT_DRAIN_SEEN:-/run/.bootsync-seen}"
+PENDING="${BOOT_DRAIN_PENDING:-/run/.bootsync-pending}"
+# A settle+commit is ~5 s; 30 s covers a retry without stalling reset.
+WAIT_S="${BOOT_DRAIN_WAIT:-30}"
+
+save_pending() {
+	[ -f "$PENDING" ] && return 0
+	[ -f "$BOOT_IMG" ] && [ -f "$SEEN_REF" ] &&
+		[ "$BOOT_IMG" -nt "$SEEN_REF" ]
+}
+
+save_pending || exit 0
+echo "[shutdown] a boot drive save is pending; waiting up to ${WAIT_S} s"
+i=0
+while save_pending && [ "$i" -lt "$WAIT_S" ]; do
+	sleep 1
+	i=$((i + 1))
+done
+if save_pending; then
+	echo "[shutdown] boot drive save still pending after ${WAIT_S} s; the last change may not reach flash"
+	exit 1
+fi
+echo "[shutdown] boot drive save finished; continuing shutdown"
+exit 0
