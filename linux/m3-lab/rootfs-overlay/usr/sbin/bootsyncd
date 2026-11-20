@@ -179,6 +179,13 @@ SETTLE_SECONDS=3
 # A host write is waiting for SETTLE_SECONDS of quiet.
 PENDING_MARK="/run/.bootsync-pending"
 
+# The mark is up from the first poll that notices a new image until the
+# import ends (#42): deepsleep waits while it exists and rcK drains it
+# before a reset.  import_snapshot sets it again at its top so a USB
+# eject import, which never passes the settle branch, is covered too.
+pending_save_on()  { : > "$PENDING_MARK"; }
+pending_save_off() { rm -f "$PENDING_MARK"; }
+
 # auto_reboot=no in config.txt: when the kernel cannot write flash, keep the
 # staged image in PSRAM until a manual reboot instead of rebooting to save it.
 auto_reboot_enabled() {
@@ -240,6 +247,7 @@ netreq_check() {
 # Validate a snapshot of the drive, save it to flash and apply what changed.
 # Returns 1 when the snapshot was not imported.
 import_snapshot() {
+	pending_save_on
 	# #43: while the kernel could not read/mount the flashed boot image,
 	# /boot is the template; nothing in it may reach flash.
 	if [ -f "$NOSAVE_MARK" ]; then
@@ -399,6 +407,11 @@ import_snapshot() {
 		# The reset runs in S05 at boot: restart into it.
 		log "factory-reset on the drive; rebooting to reset"
 		tick 2
+		# A bootsyncd reboot is not a pending save: the import above
+		# already committed (or the image is staged in PSRAM for the
+		# shim), so rcK must not hold this reset for the mark.
+		pending_save_off
+		touch -r "$BOOT_IMG" "$SEEN_REF"
 		reboot
 		while true; do tick 60; done
 	fi
@@ -406,6 +419,10 @@ import_snapshot() {
 		# A staged image survives only a software reboot.
 		log "Rebooting to commit the image to flash (auto_reboot=no in config.txt turns this off)"
 		tick 2
+		# rc=2: the image is in PSRAM and the shim writes it during
+		# this reboot -- safe, so drop the mark for rcK the same way.
+		pending_save_off
+		touch -r "$BOOT_IMG" "$SEEN_REF"
 		reboot
 		while true; do tick 60; done
 	fi
@@ -478,8 +495,9 @@ while true; do
 			# without a drive is saved and applied by the same path.
 			if [ "$BOOT_IMG" -nt "$SEEN_REF" ]; then
 				touch -r "$BOOT_IMG" "$SEEN_REF"
-				# deepsleep waits while this exists (#56).
-				[ "$PENDING" -eq 1 ] || : > "$PENDING_MARK"
+				# deepsleep waits while this exists (#56), rcK
+				# drains it before a reset (#42).
+				[ "$PENDING" -eq 1 ] || pending_save_on
 				PENDING=1
 				QUIET=0
 				continue
@@ -495,6 +513,6 @@ while true; do
 	esac
 	PENDING=0
 	import_snapshot && [ "$IMPORT_MODE" = eject ] && LAST_STATE="host-owned"
-	[ -f "$PENDING_MARK" ] && rm -f "$PENDING_MARK"
+	pending_save_off
 	[ "$IMPORT_MODE" = settle ] || touch -r "$BOOT_IMG" "$SEEN_REF"
 done

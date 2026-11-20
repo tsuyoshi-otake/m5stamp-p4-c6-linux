@@ -3,3 +3,6 @@ ttyS0::askfirst:-/bin/sh
 ttyGS1::askfirst:-/bin/sh
 ::restart:/sbin/init
 ::ctrlaltdel:/sbin/reboot
+
+# Drain a pending boot-drive save before the reset (#42).
+::shutdown:/etc/init.d/rcK

@@ -65,6 +65,9 @@ chmod 0755 "${TARGET_DIR}/etc/init.d/S95blekbd"
 # overlays (e.g. Tab5-only S07backlight) the fixed list above does not name.
 # The must-exist loop has already run, so the glob always matches.
 chmod 0755 "${TARGET_DIR}"/etc/init.d/S[0-9][0-9]*
+# inittab execs the ::shutdown: entry directly, so rcK needs the bit
+# the S* glob cannot give it.
+chmod 0755 "${TARGET_DIR}/etc/init.d/rcK"
 chmod 0755 "${TARGET_DIR}/usr/sbin/bootsyncd"
 chmod 0755 "${TARGET_DIR}/usr/sbin/boot-classify"
 chmod 0755 "${TARGET_DIR}/usr/sbin/usb-lun"
