@@ -333,7 +333,7 @@ on the power drop).
   closed); `CAM_RST` drops at `release()`/`remove()` (never left
   high across driver teardown).
 
-## `cam-dump -f ppm` — a viewable picture (#44 part 1)
+## `cam-dump -f ppm` — a viewable picture (#44)
 
 `-f ppm` converts the frame the tool already holds into a binary
 PPM (P6) instead of writing the RAW8 dump, so the capture can be
@@ -369,7 +369,7 @@ SoftAP, so pull the PPM straight through ssh:
 or capture to `/tmp` (`cam-dump -f ppm` defaults to
 `/tmp/cam0.ppm`) and `scp` it back.
 
-## `cam-dump -e` / `-g` / `-a` — exposure and gain (#44 part 2)
+## `cam-dump -e` / `-g` / `-a` — exposure and gain (#44)
 
 The init table fixes the SC202CS shutter at `0x3dc` and analog gain
 at `0x00`, which leaves a dim room near-black.  The same SCCB path
