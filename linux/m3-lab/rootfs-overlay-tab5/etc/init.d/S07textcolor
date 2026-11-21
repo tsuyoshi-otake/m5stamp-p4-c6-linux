@@ -3,17 +3,19 @@
 # palette early in boot, so a preset saved by m5-config survives a
 # reboot; S40network calls 'apply' on every config save, which is
 # what makes a change live.  A preset makes the Linux VT a
-# two-intensity monochrome display (slot 0 black, 1-7 the colour,
-# 8 a dim shade, 9-F the bold colour); 'white' or a missing key is
-# the stock 16 colours, so 'start' only writes a real preset (boot
-# already has stock).  Written to the panel tty only -- serial/SSH
-# terminals never see it.  Builtins only except one printf for the
-# CR byte: no $( ) storm on NOMMU.
+# two-intensity monochrome display (slot 0 the background -- black,
+# or the lit background of 'lcd' --, 1-7 the colour, 8 a dim shade,
+# 9-F the bold colour); 'white' or a missing key is the stock 16
+# colours, so 'start' only writes a real preset (boot already has
+# stock).  Written to the panel tty only -- serial/SSH terminals
+# never see it.  Builtins only except one printf for the CR byte:
+# no $( ) storm on NOMMU.
 #
 # Text that is already on the screen keeps its old colours on this
-# truecolor framebuffer, so every palette write is followed by the
-# DECSCNM on/off pair: the VT redraws all cells with the new palette
-# (0.1 s, one flash).
+# truecolor framebuffer, and so does the margin below the last text
+# row, so every palette write is followed by textcolor_redraw (in
+# the lib): fbcon repaints every cell and the margin with the new
+# palette.
 
 CFG=${M5CFG_CONFIG_TXT:-/tmp/config.txt}
 TTYN=${M5CFG_TEXTCOLOR_TTY:-/dev/tty1}
@@ -64,6 +66,9 @@ case "$1" in
 		done
 	fi
 	TC_SEQ=""; TC_HEX=""
+	# The lib brings the real repaint; without it a reset still
+	# gets the plain DECSCNM pair.
+	textcolor_redraw() { printf '\033[?5h\033[?5l'; }
 	[ -r "$LIB" ] && . "$LIB"
 	if [ "$1" = start ]; then
 		# Boot: the stock palette is already up, so nothing is
@@ -76,8 +81,7 @@ case "$1" in
 		textcolor_seq "$name" 2>/dev/null || TC_SEQ='\033]R'
 	fi
 	[ -w "$TTYN" ] || exit 0
-	{ printf "$TC_SEQ"; printf '\033[?5h\033[?5l'; } \
-		> "$TTYN" 2>/dev/null || :
+	{ printf "$TC_SEQ"; textcolor_redraw; } > "$TTYN" 2>/dev/null || :
 	;;
   stop) ;;
   *)
