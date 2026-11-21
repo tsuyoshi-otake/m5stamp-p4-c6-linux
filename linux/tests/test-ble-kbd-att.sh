@@ -139,5 +139,89 @@ grep -q 'ad\.action = 2;' "$src" &&
 	ok "bonded keyboards auto-connect on undirected advertising" ||
 	bad "ADD_DEVICE action is not 2"
 
+# 8. B57: the per-bond hold policy (#41) -- a keyboard that answers
+#    Start Encryption with "key missing" gets ECONNABORTED on every
+#    auto-connect, several times a second, forever.  hold_note counts
+#    three consecutive failures into a hold of 60 s, doubling to a
+#    600 s cap; a served session resets everything.  All state is in
+#    RAM -- the harness drives the same functions the daemon calls.
+is "three key refusals trip a 60 s hold, kind refused" \
+	"$(run holds rrr)" "r ret=0 fails=1 refused=1 nholds=0 secs=0 until=0 kind=-
+r ret=0 fails=2 refused=2 nholds=0 secs=0 until=0 kind=-
+r ret=60 fails=0 refused=0 nholds=1 secs=60 until=100060 kind=refused"
+is "mixed streak (refuse, fail, refuse) reports as failing" \
+	"$(run holds rfr)" "r ret=0 fails=1 refused=1 nholds=0 secs=0 until=0 kind=-
+f ret=0 fails=2 refused=1 nholds=0 secs=0 until=0 kind=-
+r ret=60 fails=0 refused=0 nholds=1 secs=60 until=100060 kind=failing"
+out=$(run holds rrr,w,rrr,w,rrr,w,rrr,w,rrr)
+seq=$(printf '%s\n' "$out" | sed -n 's/^r ret=\([0-9]*\).*/\1/p' | tr '\n' ' ')
+is "holds double 60 120 240 480, then cap at 600" \
+	"$seq" "0 0 60 0 0 120 0 0 240 0 0 480 0 0 600 "
+is "a served session resets the streak and the doubling" \
+	"$(run holds rrr,w,rr,s,rrr | tail -1)" \
+	"r ret=60 fails=0 refused=0 nholds=1 secs=60 until=101060 kind=refused"
+is "outcomes during a hold are not counted" \
+	"$(run holds rrrf | tail -1)" \
+	"f ret=0 fails=0 refused=0 nholds=1 secs=60 until=100060 kind=refused"
+
+# 9. B57: the status file the menu reads (#41) -- one "ADDR state
+#    SECS" line per bond on hold; removed when nothing is held.
+#    The file lives in the container when the harness runs there.
+runst() {
+	if [ "${bin#docker:}" != "$bin" ]; then
+		MSYS_NO_PATHCONV=1 docker exec -i \
+			-e BLE_KBD_STATUS="$rdir/ble.status" \
+			"${bin#docker:}" "$rdir/harness" "$@" | tr -d '\r'
+	else
+		BLE_KBD_STATUS="$tmp/ble.status" "$bin" "$@"
+	fi
+}
+stcat() {
+	if [ "${bin#docker:}" != "$bin" ]; then
+		MSYS_NO_PATHCONV=1 docker exec "${bin#docker:}" \
+			sh -c "cat '$rdir/ble.status' 2>/dev/null || echo -" |
+			tr -d '\r'
+	else
+		cat "$tmp/ble.status" 2>/dev/null || echo "-"
+	fi
+}
+runst status none > /dev/null
+is "no bond on hold: status file is absent" "$(stcat)" "-"
+runst status r60 > /dev/null
+is "one refused bond: one status line" "$(stcat)" \
+	"EC:43:45:FE:EE:00 refused 60"
+runst status r60 f120 > /dev/null
+is "two held bonds: refused and failing lines" "$(stcat)" \
+	"EC:43:45:FE:EE:00 refused 60
+EC:43:45:FE:EE:01 failing 120"
+runst status none > /dev/null
+is "last hold gone: status file is removed again" "$(stcat)" "-"
+
+# 10. B57: the ninth bond must not fail the pair (#41) -- this keyboard
+#     re-pairs on a new address every time, so the oldest entry is
+#     evicted and pair says so once.
+is "ninth bond evicts the oldest, order kept, eviction logged" \
+	"$(run storefull)" "store full: forgot the oldest bond ..:00:00
+nbonds=8
+0 01:00:00:00:00:00
+1 02:00:00:00:00:00
+2 03:00:00:00:00:00
+3 04:00:00:00:00:00
+4 05:00:00:00:00:00
+5 06:00:00:00:00:00
+6 07:00:00:00:00:00
+7 08:00:00:00:00:00"
+
+# 11. B57 kernel/menu contracts pinned in the source: the kernel's
+#     auto-connect list is trimmed with REMOVE_DEVICE (0x0034) while a
+#     bond is on hold, and the menu's view of it is an env-seamed
+#     status path -- /run/ble-kbd.status by default.
+grep -q 'MGMT_OP_REMOVE_DEVICE.*0x0034' "$src" &&
+	ok "held bonds are dropped with REMOVE_DEVICE (0x0034)" ||
+	bad "MGMT_OP_REMOVE_DEVICE is not 0x0034"
+grep -q 'BLE_KBD_STATUS' "$src" &&
+	ok "status file path is env-seamed (BLE_KBD_STATUS)" ||
+	bad "no BLE_KBD_STATUS seam"
+
 [ "$fails" -eq 0 ] && echo "PASS: $checks checks" ||
 	{ echo "FAILED: $fails of $checks checks"; exit 1; }

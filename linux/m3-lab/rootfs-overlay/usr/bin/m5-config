@@ -841,6 +841,9 @@ BLEKBD_INITD="${M5CFG_BLE_INITD:-/etc/init.d/S95blekbd}"
 PROCDIR="${M5CFG_PROC:-/proc}"
 # Runtime store is the staged copy; /boot is unmounted after S05tmpfs.
 BLE_BONDS="${M5CFG_BLE_BONDS:-/tmp/ble-bonds.dat}"
+# The daemon's hold list: one "ADDR refused|failing SECS" line per
+# bond it has stopped retrying (#41).  Written by ble-kbd, read here.
+BLE_STATUS="${M5CFG_BLE_STATUS:-/run/ble-kbd.status}"
 # The menu persists bonds itself through drive_put (one applet exec
 # per step -- the nested ble-bond-store -> boot-edit shell chain is
 # denied under NOMMU while the menu is up, #44).  Stage-only mode for
@@ -2133,10 +2136,61 @@ ble_maybe_stop_daemon() {
 	return 0
 }
 
+# _ble_statuses LISTFILE: the daemon's hold file ($BLE_STATUS) has one
+# "ADDR refused|failing SECS" line per bond it stopped retrying (#41).
+# Under the `ble-kbd list` output goes one hint per entry whose address
+# is really bonded; anything else in the file is ignored.  Builtins
+# only, like _blescan: a grep per line is an exec the touch path
+# cannot spare.
+_ble_statuses() {
+	[ -r "$BLE_STATUS" ] || return 0
+	_addrs=" "
+	while read -r _a _rest; do
+		case "$_a" in
+			??:??:??:??:??:??) _addrs="$_addrs$_a " ;;
+		esac
+	done < "$1"
+	while read -r _a _st _s; do
+		case "$_a" in ??:??:??:??:??:??) ;; *) continue ;; esac
+		case "$_addrs" in *" $_a "*) ;; *) continue ;; esac
+		case "$_st" in
+			refused)
+				echo "$_a: this keyboard no longer accepts the Tab5 -- put it in pairing mode, then \"scan & pair\"" ;;
+			failing)
+				echo "$_a: not usable as a keyboard right now (the Tab5 keeps retrying)" ;;
+		esac
+	done < "$BLE_STATUS"
+}
+
+# _ble_refused: does the daemon's status file hold a refused bond?
+# Drives the one-line warning on the Bluetooth keyboard screen so the
+# user sees it without opening the list first.
+_ble_refused() {
+	[ -r "$BLE_STATUS" ] || return 1
+	while read -r _a _st _s; do
+		[ "$_st" = refused ] && return 0
+	done < "$BLE_STATUS"
+	return 1
+}
+
+# _ble_list_show LISTFILE: print a captured `ble-kbd list` through
+# builtins (trun calls this so touch mode gets scr_clear for free),
+# then the hold-status hints for the bonded addresses.
+_ble_list_show() {
+	while IFS= read -r _l; do
+		printf '%s\n' "$_l"
+	done < "$1"
+	_ble_statuses "$1"
+}
+
 menu_blekbd() {
 	while :; do
 		scr_clear
 		say "== Bluetooth keyboard =="
+		# the daemon stopped retrying a bond whose key the keyboard
+		# refuses -- one header line, free row under the title (#41)
+		_ble_refused &&
+			say "  ! a bonded keyboard no longer accepts the Tab5 -- pair it again"
 		item 1 "scan & pair"
 		item 2 "paired keyboards"
 		item 3 "forget a keyboard"
@@ -2178,7 +2232,9 @@ menu_blekbd() {
 					fi
 				fi
 				pause ;;
-			2) trun "$BLEKBD" list; pause ;;
+			2) "$BLEKBD" list > /tmp/ble-list.txt 2>&1
+				trun _ble_list_show /tmp/ble-list.txt
+				pause ;;
 			3)
 				if [ "$_TOUCH" = 1 ]; then
 					"$BLEKBD" list > /tmp/ble-list.txt 2>&1

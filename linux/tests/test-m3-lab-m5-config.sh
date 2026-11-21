@@ -1191,7 +1191,8 @@ menu_wifi menu_system menu_datetime menu_display menu_brightness \
 menu_textcolor menu_sound \
 menu_ports menu_blekbd menu_power menu_lpcore menu_status menu_main \
 status_lines menu_set menu_secret menu_choose menu_adjust menu_keys \
-_blescan ble_daemon_up ble_restart_daemon touch_ok _touch_init _pal_set _pal_restore set_apply trun \
+_blescan _ble_statuses _ble_refused _ble_list_show \
+ble_daemon_up ble_restart_daemon touch_ok _touch_init _pal_set _pal_restore set_apply trun \
 cfg_get eff_file key_file keys_file eff_ssid key_explained lun_file \
 do_get is_key_line pwroff_support _cleanup _drive_clean key_maxlen \
 _kbroww _kblock _kb_keys _kb_field _kb_char _kb_hit _kb_press"
@@ -2041,6 +2042,73 @@ stop_saver
 start_saver
 M5CFG_TEXTCOLOR_LIB="$TCLIB" sh "$tool" set text_color "" >/dev/null 2>&1
 stop_saver
+
+# 37. B57: the daemon's hold-status file surfaces in the Bluetooth
+# menu (#41) -- one hint line under `ble-kbd list` per held bond whose
+# address is bonded, and a one-line warning on the Bluetooth keyboard
+# screen while any entry is "refused".  M5CFG_BLE_STATUS points at a
+# fake /run/ble-kbd.status.
+cat > "$tmp/bin/ble-kbd" <<'EOF'
+#!/bin/sh
+echo "ble-kbd $*" >> "$M5CFG_BLELOG"
+case "$1" in
+scan|list) cat "$M5CFG_BLE_IN" ;;
+esac
+EOF
+chmod +x "$tmp/bin/ble-kbd"
+printf 'AA:BB:CC:DD:EE:01  type=2 ltk\nAA:BB:CC:DD:EE:02  type=2 ltk\n' \
+	> "$tmp/ble-in"
+printf 'AA:BB:CC:DD:EE:01 refused 60\nAA:BB:CC:DD:EE:02 failing 120\nAA:BB:CC:DD:EE:77 refused 60\n' \
+	> "$tmp/ble-status"
+: > "$tmp/blelog"
+# Touch: main slot 3 -> Bluetooth keyboard (the warning sits in the
+# header), item 2 "paired keyboards" is slot 1 (rows 3-5, right half);
+# three nav-left taps then continue/back/exit.
+printf 'T 8 50\nT 4 50\nT 20 10\nT 20 10\nT 20 10\n' > "$tmp/tscr/events"
+out=$(M5CFG_BLE_KBD="$tmp/bin/ble-kbd" M5CFG_BLELOG="$tmp/blelog" \
+	M5CFG_BLE_IN="$tmp/ble-in" M5CFG_BLE_STATUS="$tmp/ble-status" \
+	M5CFG_TSCRIPT="$tmp/tscr/events" sh "$tool" menu </dev/null 2>&1)
+echo "$out" | grep -qF 'AA:BB:CC:DD:EE:01: this keyboard no longer accepts the Tab5 -- put it in pairing mode, then "scan & pair"' &&
+	ok "refused hint under the bond list (touch)" ||
+	bad "refused hint: $(echo "$out" | tail -6)"
+echo "$out" | grep -qF 'AA:BB:CC:DD:EE:02: not usable as a keyboard right now (the Tab5 keeps retrying)' &&
+	ok "failing hint under the bond list (touch)" ||
+	bad "failing hint: $(echo "$out" | tail -6)"
+! echo "$out" | grep -q 'AA:BB:CC:DD:EE:77' &&
+	ok "status entry for an unbonded address is ignored (touch)" ||
+	bad "unbonded hint shown: $out"
+echo "$out" | grep -qF 'a bonded keyboard no longer accepts the Tab5 -- pair it again' &&
+	ok "one-line refused warning on the Bluetooth screen (touch)" ||
+	bad "warning: $(echo "$out" | tail -8)"
+# without the file nothing is added anywhere
+rm -f "$tmp/ble-status"
+printf 'T 8 50\nT 4 50\nT 20 10\nT 20 10\nT 20 10\n' > "$tmp/tscr/events"
+out=$(M5CFG_BLE_KBD="$tmp/bin/ble-kbd" M5CFG_BLELOG="$tmp/blelog" \
+	M5CFG_BLE_IN="$tmp/ble-in" M5CFG_BLE_STATUS="$tmp/ble-status" \
+	M5CFG_TSCRIPT="$tmp/tscr/events" sh "$tool" menu </dev/null 2>&1)
+! echo "$out" | grep -q 'accepts the Tab5' &&
+	! echo "$out" | grep -q 'not usable' &&
+	ok "no status file: no hints and no warning (touch)" ||
+	bad "nostatus touch: $(echo "$out" | tail -8)"
+# plain mode: the same lines, typed keys -- 7 opens Bluetooth, 2 the
+# list, Enter the pause, 0 back, 0 exit.
+printf 'AA:BB:CC:DD:EE:01 refused 60\nAA:BB:CC:DD:EE:02 failing 120\nAA:BB:CC:DD:EE:77 refused 60\n' \
+	> "$tmp/ble-status"
+printf '7\n2\n\n0\n0\n' > "$tmp/tscr/kbd"
+out=$(env -u M5CFG_FORCE_TOUCH -u M5CFG_TSCRIPT \
+	M5CFG_BLE_KBD="$tmp/bin/ble-kbd" M5CFG_BLELOG="$tmp/blelog" \
+	M5CFG_BLE_IN="$tmp/ble-in" M5CFG_BLE_STATUS="$tmp/ble-status" \
+	sh "$tool" menu < "$tmp/tscr/kbd" 2>&1)
+echo "$out" | grep -qF 'AA:BB:CC:DD:EE:01: this keyboard no longer accepts the Tab5 -- put it in pairing mode, then "scan & pair"' &&
+	echo "$out" | grep -qF 'AA:BB:CC:DD:EE:02: not usable as a keyboard right now (the Tab5 keeps retrying)' &&
+	ok "both hint lines under the bond list (plain)" ||
+	bad "plain hints: $(echo "$out" | tail -8)"
+! echo "$out" | grep -q 'AA:BB:CC:DD:EE:77' &&
+	ok "status entry for an unbonded address is ignored (plain)" ||
+	bad "unbonded hint shown (plain): $out"
+echo "$out" | grep -qF 'a bonded keyboard no longer accepts the Tab5 -- pair it again' &&
+	ok "one-line refused warning on the Bluetooth screen (plain)" ||
+	bad "plain warning: $(echo "$out" | tail -8)"
 
 if [ "$fails" -gt 0 ]; then
 	echo "FAILED: $fails checks"

@@ -34,6 +34,7 @@
 #include <sys/time.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 /* ---- minimal socket ABI ---- */
@@ -109,6 +110,7 @@ struct mgmt_addr_info {
 #define MGMT_OP_SET_SECURE_CONN		0x002D
 #define MGMT_OP_LOAD_IRKS		0x0030
 #define MGMT_OP_ADD_DEVICE		0x0033
+#define MGMT_OP_REMOVE_DEVICE		0x0034
 
 #define MGMT_EV_CMD_COMPLETE		0x0001
 #define MGMT_EV_CMD_STATUS		0x0002
@@ -1103,22 +1105,34 @@ static void uhid_forward_output(struct hogp *h, const uint8_t *data,
 	}
 }
 
-/* ---- daemon session: connect -> hogp -> uhid -> pump ---- */
+/* ---- daemon session: connect -> hogp -> uhid -> pump ----
+ *
+ * Session outcomes for the daemon's per-bond hold policy (#41):
+ * served = the UHID device existed (a working keyboard, however short
+ * the link); failed = anything earlier; key refused = the connect
+ * itself died with ECONNABORTED while encryption was requested -- the
+ * peer answered the Start Encryption with "PIN or key missing" (0x06),
+ * i.e. it no longer holds our bond. */
+#define SESS_SERVED	0
+#define SESS_FAILED	1
+#define SESS_KEY_REFUSED 2
 
 static int hogp_session(const bdaddr_t *addr, uint8_t atype,
 			int mgmt, int encrypted)
 {
 	static struct hogp h;
 	memset(&h, 0, sizeof(h));
-	int ufd = -1, rc = 1;
+	int ufd = -1, rc = SESS_FAILED;
 
 	att_fd = att_connect(addr, atype,
 			     encrypted ? BT_SECURITY_MEDIUM : 0);
 	if (att_fd < 0) {
-		printf("  l2cap connect failed: %s%s\n", strerror(errno),
+		int e = errno;
+		printf("  l2cap connect failed: %s%s\n", strerror(e),
 		       encrypted ? " (no encryption -- is the bond still on"
 				   " the keyboard?)" : "");
-		return 1;
+		return encrypted && e == ECONNABORTED ?
+			SESS_KEY_REFUSED : SESS_FAILED;
 	}
 	{
 		/* key_size 0 = the link is not encrypted */
@@ -1223,7 +1237,7 @@ static int hogp_session(const bdaddr_t *addr, uint8_t atype,
 			}
 		}
 	}
-	rc = 0;
+	rc = SESS_SERVED;
 out:
 	if (ufd >= 0) { uhid_destroy(ufd); close(ufd); }
 	close(att_fd); att_fd = -1;
@@ -1386,12 +1400,217 @@ static struct bond_entry *bond_new(const bdaddr_t *a, uint8_t type)
 {
 	struct bond_entry *b = bond_find(a);
 	if (b) return b;
-	if (nbonds >= MAX_BONDS) return NULL;
+	if (nbonds >= MAX_BONDS) {
+		/* This keyboard takes a fresh address on every re-pair, so
+		 * the eighth slot is sooner or later a dead entry anyway:
+		 * drop the oldest and say so once (#41).  On-disk format
+		 * is unchanged -- still a header plus MAX_BONDS slots. */
+		char a0[18];
+		bdaddr_str(&bonds[0].addr, a0);
+		memmove(&bonds[0], &bonds[1],
+			(MAX_BONDS - 1) * sizeof(bonds[0]));
+		nbonds--;
+		printf("store full: forgot the oldest bond ..:%s\n",
+		       a0 + strlen(a0) - 5);
+		fflush(stdout);
+	}
 	b = &bonds[nbonds++];
 	memset(b, 0, sizeof(*b));
 	b->addr = *a;
 	b->type = type;
 	return b;
+}
+
+/* ================= per-bond hold (daemon, #41) =================
+ * A keyboard that no longer holds our bond answers the kernel's Start
+ * Encryption with status 0x06; the connect dies with ECONNABORTED and
+ * the kernel's auto-connect retries on the next advert -- several
+ * rounds a second on the radio the C6 shares with Wi-Fi, forever.
+ * Bound that: three consecutive failed sessions put the bond on a
+ * hold; the bond is dropped from the kernel's connect list for the
+ * duration (REMOVE_DEVICE) and re-armed when it is over.  Each further
+ * hold doubles: 60, 120, 240, 480, capped at 600 s; after a hold the
+ * bond gets three fresh tries; one served session resets everything.
+ * All of it lives in RAM -- the bond file never learns about holds.
+ */
+#define HOLD_TRIES	3
+#define HOLD_FIRST_S	60
+#define HOLD_MAX_S	600
+
+struct kbd_hold {
+	bdaddr_t addr;
+	uint8_t  used;
+	int fails;		/* consecutive failures in this window */
+	int refused;		/* key refusals among them */
+	int nholds;		/* holds already served */
+	int is_refused;		/* every failure in the tripping streak
+				   was a key refusal */
+	int secs;		/* length of the current hold */
+	time_t until;		/* CLOCK_MONOTONIC deadline, 0 = none */
+};
+
+static struct kbd_hold holds[MAX_BONDS];
+
+/* hold length for the n-th hold (0-based): 60 s, doubling, cap 600 */
+static int hold_secs(int n)
+{
+	int s = HOLD_FIRST_S;
+	while (n-- > 0 && s < HOLD_MAX_S) {
+		s *= 2;
+		if (s > HOLD_MAX_S) s = HOLD_MAX_S;
+	}
+	return s;
+}
+
+/* fold one session outcome into a bond's retry state.  Returns the
+ * hold length when this outcome trips a new hold -- the caller then
+ * drops the bond from the kernel and says why; 0 otherwise.  Pure:
+ * no I/O, so the test harness drives it directly. */
+static int hold_note(struct kbd_hold *h, int outcome, time_t now)
+{
+	if (outcome == SESS_SERVED) {
+		/* a working session resets everything for the bond */
+		h->fails = h->refused = h->nholds = h->is_refused = 0;
+		h->secs = 0;
+		h->until = 0;
+		return 0;
+	}
+	if (h->until) {
+		if (now < h->until) return 0;	/* still on hold */
+		h->until = 0;			/* hold spent */
+	}
+	if (outcome == SESS_KEY_REFUSED) h->refused++;
+	if (++h->fails < HOLD_TRIES) return 0;
+	int s = hold_secs(h->nholds);
+	h->is_refused = h->refused == HOLD_TRIES;
+	h->secs = s;
+	h->until = now + s;
+	h->nholds++;
+	h->fails = h->refused = 0;
+	return s;
+}
+
+static int hold_active(const struct kbd_hold *h, time_t now)
+{
+	return h->until && now < h->until;
+}
+
+/* the slot for a bond's address; with create != 0 a missing one is
+ * made (a stale slot that holds nothing is fair game first) */
+static struct kbd_hold *hold_find(const bdaddr_t *a, int create)
+{
+	struct kbd_hold *free = NULL, *idle = NULL;
+	for (int i = 0; i < MAX_BONDS; i++) {
+		struct kbd_hold *h = &holds[i];
+		if (!h->used) { if (!free) free = h; continue; }
+		if (!memcmp(&h->addr, a, 6)) return h;
+		if (!h->until && !idle) idle = h;
+	}
+	if (!create) return NULL;
+	struct kbd_hold *h = free ? free : idle;
+	if (!h) return NULL;	/* every slot busy holding -- let it be */
+	memset(h, 0, sizeof(*h));
+	h->addr = *a;
+	h->used = 1;
+	return h;
+}
+
+static time_t mono_now(void)
+{
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return ts.tv_sec;
+}
+
+/* The menu reads this instead of a daemon log that goes to /dev/null:
+ * one "ADDR refused|failing SECS" line per bond on hold -- addresses
+ * only, never key bytes.  Plain open/write, mode 0644, no exec; the
+ * file is removed when nothing is on hold and when the daemon starts.
+ */
+static const char *status_path(void)
+{
+	const char *p = getenv("BLE_KBD_STATUS");
+	return (p && *p) ? p : "/run/ble-kbd.status";
+}
+
+static void status_write(void)
+{
+	int fd, n = 0;
+	for (int i = 0; i < MAX_BONDS; i++)
+		if (holds[i].used && holds[i].until) n++;
+	if (!n) { unlink(status_path()); return; }
+	fd = open(status_path(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+	if (fd < 0) return;
+	for (int i = 0; i < MAX_BONDS; i++) {
+		struct kbd_hold *h = &holds[i];
+		char a[18], line[40];
+		int l;
+		if (!h->used || !h->until) continue;
+		bdaddr_str(&h->addr, a);
+		l = snprintf(line, sizeof(line), "%s %s %d\n", a,
+			     h->is_refused ? "refused" : "failing", h->secs);
+		if (l > 0 && write(fd, line, l) < 0) break;
+	}
+	close(fd);
+}
+
+/* the wait loop wakes every second: re-arm whatever hold just ran
+ * out, one log line each, and refresh the status file */
+static void hold_sweep(int mgmt, int bgscan)
+{
+	time_t now = mono_now();
+	int dirty = 0;
+	for (int i = 0; i < MAX_BONDS; i++) {
+		struct kbd_hold *h = &holds[i];
+		char a[18];
+		struct bond_entry *b;
+		if (!h->used || !h->until || now < h->until) continue;
+		h->until = 0; h->fails = 0; h->refused = 0;
+		dirty = 1;
+		bdaddr_str(&h->addr, a);
+		b = bond_find(&h->addr);
+		if (bgscan && b) {
+			struct mgmt_cp_add_device ad;
+			memset(&ad, 0, sizeof(ad));
+			ad.addr.bdaddr = b->addr;
+			ad.addr.type = b->type;
+			ad.action = 2;
+			mgmt_send(mgmt, MGMT_OP_ADD_DEVICE, HCI_DEV,
+				  &ad, sizeof(ad));
+		}
+		printf("daemon: ..:%s hold over -- listening for it again\n",
+		       a + strlen(a) - 5);
+	}
+	if (dirty) status_write();
+}
+
+/* fold a finished session into the bond's state; a fresh hold drops
+ * the bond off the kernel's auto-connect list so the kernel stops
+ * retrying on every advert, and gets one log line */
+static void session_done(int mgmt, struct bond_entry *b,
+			 int outcome, const char *disp)
+{
+	struct kbd_hold *kh = hold_find(&b->addr, outcome != SESS_SERVED);
+	int was_held, secs;
+	struct mgmt_addr_info ai;
+	if (!kh) return;
+	was_held = kh->until != 0;
+	secs = hold_note(kh, outcome, mono_now());
+	if (secs <= 0) {
+		if (was_held && !kh->until) status_write();
+		return;
+	}
+	memset(&ai, 0, sizeof(ai));
+	ai.bdaddr = b->addr;
+	ai.type = b->type;
+	mgmt_send(mgmt, MGMT_OP_REMOVE_DEVICE, HCI_DEV, &ai, sizeof(ai));
+	printf("daemon: ..:%s %s (next try in %d s)\n",
+	       disp + strlen(disp) - 5,
+	       kh->is_refused ?
+		   "refused the stored key 3 times -- pair it again" :
+		   "failed 3 times",
+	       secs);
+	status_write();
 }
 
 /* ================= pair =================
@@ -1814,6 +2033,10 @@ static int daemon_setup(int mgmt, uint8_t *buf)
 	 * plain ADV_IND (most cheap ones) was never connected (#41). */
 	for (int i = 0; i < nbonds; i++) {
 		struct mgmt_cp_add_device ad;
+		struct kbd_hold *kh = hold_find(&bonds[i].addr, 0);
+		/* an INDEX_REMOVED/ADDED re-arm must not wake a bond
+		 * that is on hold (#41) */
+		if (kh && hold_active(kh, mono_now())) continue;
 		memset(&ad, 0, sizeof(ad));
 		ad.addr.bdaddr = bonds[i].addr;
 		ad.addr.type = bonds[i].type;
@@ -1856,11 +2079,15 @@ static int daemon_setup(int mgmt, uint8_t *buf)
 		if (n > max) n = max;
 		for (int i = 0; i < n; i++) {
 			struct bond_entry *b = bonded_match(&r->addr[i]);
+			struct kbd_hold *kh;
 			if (!b) continue;
+			kh = hold_find(&b->addr, 0);
+			if (kh && hold_active(kh, mono_now())) continue;
 			char a[18];
 			bdaddr_str(&r->addr[i].bdaddr, a);
 			printf("daemon: bonded device %s already connected\n", a);
-			hogp_session(&b->addr, b->type, mgmt, 1);
+			session_done(mgmt, b,
+				     hogp_session(&b->addr, b->type, mgmt, 1), a);
 		}
 		break;
 	}
@@ -1878,6 +2105,7 @@ static int cmd_daemon(void)
 	/* line-buffered, so `ble-kbd daemon >/tmp/log` shows each state
 	 * change as it happens instead of a 4 KB block much later */
 	setvbuf(stdout, NULL, _IOLBF, 0);
+	status_write();	/* clear a stale status file: no holds yet */
 	if (bonds_load() < 0 || !nbonds) {
 		printf("no bonds — daemon exits\n");
 		return 0;
@@ -1898,7 +2126,7 @@ static int cmd_daemon(void)
 				int ev = mgmt_recv(mgmt, buf,
 						   sizeof(rxbuf), 1000);
 				if (ev < 0) break;
-				if (ev == 0) continue;
+				if (ev == 0) { hold_sweep(mgmt, bgscan); continue; }
 				if (ev == MGMT_EV_INDEX_REMOVED ||
 				    ev == MGMT_EV_INDEX_ADDED) {
 					printf("daemon: adapter index %s;"
@@ -1925,13 +2153,21 @@ static int cmd_daemon(void)
 				}
 				b = bonded_match(da);
 				if (!b) continue;
+				{
+					struct kbd_hold *kh =
+						hold_find(&b->addr, 0);
+					if (kh && hold_active(kh, mono_now()))
+						continue;   /* held: skip (#41) */
+				}
 				char a[18];
 				bdaddr_str(&da->bdaddr, a);
 				if (bgscan) {
 					printf("daemon: bonded device %s "
 					       "connected\n", a);
-					hogp_session(&b->addr, b->type,
-						     mgmt, 1);
+					session_done(mgmt, b,
+						     hogp_session(&b->addr,
+								  b->type,
+								  mgmt, 1), a);
 					backoff = 1;
 					continue;
 				}
@@ -1940,7 +2176,9 @@ static int cmd_daemon(void)
 				mgmt_send(mgmt, MGMT_OP_STOP_DISCOVERY,
 					  HCI_DEV, &sp, 1);
 				usleep(200000);
-				hogp_session(&b->addr, b->type, mgmt, 1);
+				session_done(mgmt, b,
+					     hogp_session(&b->addr, b->type,
+							  mgmt, 1), a);
 				backoff = 1;
 				usleep(backoff * 1000000);
 				break;   /* back to discovery */

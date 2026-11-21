@@ -160,7 +160,83 @@ int main(int argc, char **argv)
 		return 0;
 	}
 
-	fprintf(stderr, "usage: %s read LEN MTU [mtureq] | peer HEX..\n",
+	if (argc >= 3 && !strcmp(argv[1], "holds")) {
+		/* holds SEQ: drive the daemon's per-bond hold policy (#41).
+		 * r = key refused, f = plain failure, s = served, w = let
+		 * the clock run past the current hold.  One line per
+		 * session: the note return plus the resulting state. */
+		static struct kbd_hold h;
+		time_t now = 100000;
+
+		memset(&h, 0, sizeof(h));
+		h.used = 1;
+		for (const char *p = argv[2]; *p; p++) {
+			int oc, ret;
+
+			if (*p == 'w') { now += 1000; continue; }
+			if (*p == ',') continue;
+			oc = *p == 'r' ? SESS_KEY_REFUSED :
+				*p == 's' ? SESS_SERVED : SESS_FAILED;
+			ret = hold_note(&h, oc, now);
+			printf("%c ret=%d fails=%d refused=%d nholds=%d "
+			       "secs=%d until=%ld kind=%s\n", *p, ret,
+			       h.fails, h.refused, h.nholds, h.secs,
+			       (long)h.until,
+			       h.until ? (h.is_refused ? "refused" :
+					  "failing") : "-");
+		}
+		return 0;
+	}
+
+	if (argc >= 2 && !strcmp(argv[1], "status")) {
+		/* status rSECS fSECS .. | none: mark holds and rewrite the
+		 * menu's status file (BLE_KBD_STATUS picks the path) */
+		int i = 0;
+
+		memset(holds, 0, sizeof(holds));
+		for (int a = 2; a < argc && i < MAX_BONDS; a++) {
+			struct kbd_hold *h;
+
+			if (!strcmp(argv[a], "none")) break;
+			h = &holds[i];
+			memset(h, 0, sizeof(*h));
+			h->used = 1;
+			h->addr.b[0] = (uint8_t)i;
+			h->addr.b[1] = 0xee;
+			h->addr.b[2] = 0xfe;
+			h->addr.b[3] = 0x45;
+			h->addr.b[4] = 0x43;
+			h->addr.b[5] = 0xec;
+			h->is_refused = argv[a][0] == 'r';
+			h->secs = atoi(argv[a] + 1);
+			h->until = 1000 + h->secs;
+			i++;
+		}
+		status_write();
+		printf("entries=%d\n", i);
+		return 0;
+	}
+
+	if (argc >= 2 && !strcmp(argv[1], "storefull")) {
+		/* a ninth bond must evict the oldest entry (#41) */
+		nbonds = 0;
+		for (int i = 0; i <= MAX_BONDS; i++) {
+			bdaddr_t a = { { 0, 0, 0, 0, 0, (uint8_t)i } };
+
+			bond_new(&a, BDADDR_LE_PUBLIC);
+		}
+		printf("nbonds=%d\n", nbonds);
+		for (int i = 0; i < nbonds; i++) {
+			char a[18];
+
+			bdaddr_str(&bonds[i].addr, a);
+			printf("%d %s\n", i, a);
+		}
+		return 0;
+	}
+
+	fprintf(stderr, "usage: %s read LEN MTU [mtureq] | peer HEX.. | "
+		"holds SEQ | status rSECS.. | storefull\n",
 		argv[0]);
 	return 2;
 }
