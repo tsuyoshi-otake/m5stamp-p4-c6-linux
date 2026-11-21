@@ -46,7 +46,7 @@ check "autorun-only change" ""
 printf 'hostname=stamp-p4\nwifi_ssid=Net\nwifi_psk=secret123\nssh_password_auth=yes\nautorun=main.py\n' > "$work/new.txt"
 check "boot-only key" " ssh_password_auth"
 
-printf '\xef\xbb\xbf# comment\r\nhostname = stamp-p4\r\nwifi_ssid = Other\nwifi_psk=secret123\n\nssh_password_auth=no\nautorun=main.py\n' > "$work/new.txt"
+printf '\357\273\277# comment\r\nhostname = stamp-p4\r\nwifi_ssid = Other\nwifi_psk=secret123\n\nssh_password_auth=no\nautorun=main.py\n' > "$work/new.txt"
 check "BOM+CRLF+comment+spaces ssid change" " wifi_ssid"
 
 # conf_get keeps trailing blanks in the value, so "stamp-p4 " counts as a
