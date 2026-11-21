@@ -200,7 +200,7 @@ For everything the userland shares with the Stamp-P4 build (the shell, `vi`, Mic
 
 ### 6. Change the configuration
 
-The easiest path is `m5-config` (#42), a settings menu in the style of `raspi-config`. It runs on the serial console, over SSH and on the panel console, shows only the entries the running board actually has (Wi-Fi, hostname and passwords, SSH keys, date and time, display brightness, sound tests, the EXT rails, the Bluetooth keyboard, power, and a status page), and is also scriptable:
+The easiest path is `m5-config` (#42), a settings menu in the style of `raspi-config`. It runs on the serial console, over SSH and on the panel console, shows only the entries the running board actually has (Wi-Fi, hostname and passwords, SSH keys, date and time, display brightness and text colour, sound tests, the EXT rails, the Bluetooth keyboard, power, and a status page), and is also scriptable:
 
 ```sh
 m5-config              # the menu; digits + Enter is all you need
@@ -209,7 +209,7 @@ m5-config get hostname
 m5-config set hostname desk-01
 ```
 
-`set` validates the value, writes it to the same boot image, waits for the flash save and applies it — the same save path `boot-edit` uses, so the `[bootsync] Saved to flash` console line and the exit status tell you the same thing. Passwords are typed with echo off and never shown; `list`/`get` mask them. When the boot FAT could not be read this boot (see §3), `m5-config` says so and refuses to claim a save. One of the managed keys is `brightness` (5–100, percent): the Display screen saves it the same way, and on the Tab5 `S07backlight` applies it at boot. To change a file by hand — the autorun program, or any file the menu does not cover — use `boot-edit` on the board, as root:
+`set` validates the value, writes it to the same boot image, waits for the flash save and applies it — the same save path `boot-edit` uses, so the `[bootsync] Saved to flash` console line and the exit status tell you the same thing. Passwords are typed with echo off and never shown; `list`/`get` mask them. When the boot FAT could not be read this boot (see §3), `m5-config` says so and refuses to claim a save. One of the managed keys is `brightness` (5–100, percent): the Display screen saves it the same way, and on the Tab5 `S07backlight` applies it at boot. Another Tab5-only key is `text_color`, the colour of the panel console's text — one of `white green amber orange cyan blue pink red`. A preset turns the console into a two-intensity monochrome display (normal and bold, plus a dim shade; every ANSI colour maps to the one hue), the way the amber and green terminals were — `amber` aims at a DEC VT320-C2 and was tuned on the Tab5 panel, where the usual `#ffb000` shows as yellow; `white` or deleting the key returns to the stock 16 colours. `S07textcolor` applies it at boot, and a change is live — serial and SSH sessions are not affected. To change a file by hand — the autorun program, or any file the menu does not cover — use `boot-edit` on the board, as root:
 
 ```sh
 boot-edit --ls                      # what is on the drive

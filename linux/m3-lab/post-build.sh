@@ -49,10 +49,14 @@ done
 # by rootfs-overlay-tab5 (same marker the config.txt template below uses),
 # so this fails the Tab5 build without requiring a Tab5 file on Stamp.
 if [ -r "${TARGET_DIR}/etc/board/default-hostname" ]; then
-	if [ ! -f "${TARGET_DIR}/etc/init.d/S07backlight" ]; then
-		echo "M3-lab file missing from rootfs: ${TARGET_DIR}/etc/init.d/S07backlight" >&2
-		exit 1
-	fi
+	for path in "${TARGET_DIR}/etc/init.d/S07backlight" \
+		"${TARGET_DIR}/etc/init.d/S07textcolor" \
+		"${TARGET_DIR}/usr/lib/board/textcolor.sh"; do
+		if [ ! -f "${path}" ]; then
+			echo "M3-lab file missing from rootfs: ${path}" >&2
+			exit 1
+		fi
+	done
 fi
 
 chmod 0755 "${TARGET_DIR}/etc/init.d/S05tmpfs"

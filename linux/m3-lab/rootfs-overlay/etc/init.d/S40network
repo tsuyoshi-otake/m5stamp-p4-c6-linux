@@ -796,6 +796,15 @@ net_dispatch() {
 				else
 					net_note "ES_CONFIG: $k applies to Tab5 only; ignored"
 				fi ;;
+			text_color)
+				# Tab5 panel text colour: applies live, no
+				# restart.  The script only ships in the Tab5
+				# image; on other boards the key is inert.
+				if [ -x /etc/init.d/S07textcolor ]; then
+					/etc/init.d/S07textcolor apply || net_note "ES_CONFIG: $k apply failed"
+				else
+					net_note "ES_CONFIG: $k applies to Tab5 only; ignored"
+				fi ;;
 			debug)
 				if [ "$(conf_get debug /tmp/config.txt "$NOSPACE")" = "1" ]; then
 					dmesg -n 8 2>/dev/null || true
