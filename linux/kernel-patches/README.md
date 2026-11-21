@@ -219,6 +219,17 @@ last byte the FIFO took, so a host that stops reading costs one wait, not one
 per character.  Characters dropped after that are counted in
 `/sys/class/tty/ttyGS1/console_dropped`.
 
+`0105-esp32-acm-recommit-lost-commit.patch` (#45) ends a silence of
+the same port that only a reboot ended.  When the host enumerates the device
+again (a PC back from sleep or from a reboot, a hub reset) while output is
+waiting, the bus reset takes the commit of the waiting packet away and leaves
+its bytes: the FIFO has no room, the endpoint is idle, so no IN-empty
+interrupt comes and nothing is sent again, while input still works.
+`start_tx()` and the console write now commit again when they find the FIFO
+full and the endpoint idle; the serial core calls `start_tx()` every 0.5 s
+while output is waiting, so no key press is needed.
+`/sys/class/tty/ttyGS1/tx_recommits` counts these.
+
 `0081-esp32p4-expt-clear.patch` is applied to every build as well
 (`C68_EXPT_CLEAR=0` leaves it out).  The core sets
 MEXSTATUS.EXPT_VLD (CSR 0x7e1, bit 5) when it takes an exception, and only

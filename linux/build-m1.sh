@@ -781,6 +781,7 @@ patches=(
 		0062-esp32p4-usb-acm-tx-bounded-poll.patch
 		0080-esp32-acm-tx-irq-lock.patch
 		0082-esp32-acm-tx-irq-console.patch
+		0105-esp32-acm-recommit-lost-commit.patch
 		0063-dwc2-force-pio.patch
 	0031-riscv-esp32p4-m-mode-userspace.patch
 )
@@ -1060,6 +1061,7 @@ for patch_name in "${patches[@]}"; do
 	      "$patch_name" == 0062-esp32p4-usb-acm-tx-bounded-poll.patch ||
 	      "$patch_name" == 0080-esp32-acm-tx-irq-lock.patch ||
 	      "$patch_name" == 0082-esp32-acm-tx-irq-console.patch ||
+	      "$patch_name" == 0105-esp32-acm-recommit-lost-commit.patch ||
 	      "$patch_name" == 0063-dwc2-force-pio.patch ||
 	      "$patch_name" == 0008-dw-mmc-force-pio.patch ||
 	      "$patch_name" == 0009-dw-mmc-divider0.patch ||
