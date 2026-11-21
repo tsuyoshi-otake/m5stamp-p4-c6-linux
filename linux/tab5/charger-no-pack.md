@@ -94,23 +94,39 @@ Two timings from the same session:
 
 ## Checked on the image with the fix
 
-Same unit, same USB port, build B60, 2026-11-21:
+Same unit, same USB port, builds B60 and B61, 2026-11-21:
 
 - The boot shim logs `no battery pack (pack node 1806 mV with the charger
-  off): CHG_EN stays low`; Linux then finds output register 5 at 0x09 and
-  the node at 1.88 V.
+  off): CHG_EN stays low` (1831 mV on B61); Linux then finds output
+  register 5 at 0x09 and the node at 1.88 V.
 - SoftAP up and the BLE keyboard daemon running from boot: no C6 reset in
-  the first 590 s (one boot-up event, the one of the boot itself). The
-  bonded keyboard reconnected by itself 177 s after boot.
+  the first 590 s of one boot and in 1730 s of the next (one boot-up event
+  each, the one of the boot itself). The bonded keyboard reconnected by
+  itself 177 s after boot.
 - `charger=on` saved through `m5-config` took the register to 0x89 (set
   back by hand at once); removing the key took the live `auto` path and
-  left it at 0x09. The live test took 1.1 s, and 1.3 s with `sleep` made
+  left it at 0x09. The live test takes 1.1 s, and 1.3 s with `sleep` made
   unavailable.
-- The first version of the helper read `config.txt` with `sed` and command
-  substitutions. Four live saves with it left 20 "refused by user reserve"
-  lines in the kernel log -- programs that ran next to the apply were
-  denied their memory. With the helper reduced to shell builtins the same
-  four saves left 2.
+
+A live save is the tightest moment for memory on this board: the menu,
+bootsyncd and S40network's apply are all up, and the kernel's user reserve
+turns away the next 480 KB program ("refused by user reserve" in the
+kernel log). What was turned away, in three rounds of saves (`off`,
+`auto`, `on`, key removed):
+
+| Build, helper, uptime | Refusals | Who lost |
+| --- | --- | --- |
+| B60, helper with `sed` and three `$( )`, 630-830 s | 20 in 4 saves | first 10: `m5-config`'s own cleanup (`rm`, `umount`) and the commands typed right after it |
+| B60, helper with builtins only, 400-460 s | 2 in 4 saves | not read out before the next reboot |
+| B61, helper with builtins only, 100-140 s | 7 in 3 saves | the same two groups as in the first round |
+
+Of the 27 refusals of the first and the third round, 17 were read out by
+name (the first 10 and all 7); the apply itself -- S40network and the
+helper -- is not among them. It starts first. So the builtin-only helper
+does not end the refusals; the uptimes differ and so does the pool. What
+it does is take its own three extra programs out of that moment, and keep
+the one-second wait of the `auto` test when `sleep` is the program that
+is refused.
 
 The one case `auto` cannot see: a pack whose protection circuit has opened
 after a deep discharge reads 0 V until a charger wakes it. With such a pack
