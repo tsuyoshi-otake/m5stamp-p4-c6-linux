@@ -31,8 +31,10 @@
 #include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/time.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 /* ---- minimal socket ABI ---- */
@@ -48,6 +50,10 @@
 #define HCI_CHANNEL_CONTROL	3
 #define BT_SECURITY		4
 #define BT_SECURITY_MEDIUM	2
+struct bt_security {
+	uint8_t level;
+	uint8_t key_size;
+};
 
 struct sockaddr_hci {
 	sa_family_t	hci_family;
@@ -104,6 +110,7 @@ struct mgmt_addr_info {
 #define MGMT_OP_SET_SECURE_CONN		0x002D
 #define MGMT_OP_LOAD_IRKS		0x0030
 #define MGMT_OP_ADD_DEVICE		0x0033
+#define MGMT_OP_REMOVE_DEVICE		0x0034
 
 #define MGMT_EV_CMD_COMPLETE		0x0001
 #define MGMT_EV_CMD_STATUS		0x0002
@@ -612,8 +619,20 @@ static int att_fd = -1;
 static uint16_t att_mtu = 23;
 static uint8_t att_buf[520];
 
-/* connect L2CAP to ATT fixed channel */
-static int att_connect(const bdaddr_t *addr, uint8_t addr_type)
+/* connect L2CAP to ATT fixed channel.
+ *
+ * sec_level != 0 asks for that security level BEFORE connect(): the
+ * blocking connect() then returns once the link is encrypted with the
+ * stored LTK, or fails when the keyboard no longer has the bond.  Asked
+ * after connect() the kernel answers EINVAL on a link that is already
+ * secure enough and otherwise parks the socket unwritable until the
+ * encryption is done.  The option value is a struct bt_security: the
+ * bare 1-byte level this code used to pass has been rejected with
+ * EINVAL since Linux 6.9, so no reconnect was ever encrypted (#41).
+ * timeout_s != 0 bounds the wait inside connect(), the encryption
+ * included. */
+static int att_connect_at(const bdaddr_t *addr, uint8_t addr_type,
+			  int sec_level, int timeout_s)
 {
 	struct sockaddr_l2 sa = {0};
 	int fd = socket(AF_BLUETOOTH, SOCK_SEQPACKET, BTPROTO_L2CAP);
@@ -625,7 +644,20 @@ static int att_connect(const bdaddr_t *addr, uint8_t addr_type)
 	la.l2_bdaddr_type = BDADDR_LE_PUBLIC;
 	la.l2_cid = ATT_CID;
 	if (bind(fd, (struct sockaddr *)&la, sizeof(la)) < 0) {
-		close(fd); return -1;
+		int e = errno;
+		close(fd); errno = e; return -1;
+	}
+
+	if (sec_level) {
+		struct bt_security sec = { .level = sec_level };
+		if (setsockopt(fd, SOL_BLUETOOTH, BT_SECURITY,
+			       &sec, sizeof(sec)) < 0)
+			printf("  BT_SECURITY %d refused: %s\n",
+			       sec_level, strerror(errno));
+	}
+	if (timeout_s) {
+		struct timeval tv = { .tv_sec = timeout_s };
+		setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
 	}
 
 	sa.l2_family = AF_BLUETOOTH;
@@ -633,9 +665,94 @@ static int att_connect(const bdaddr_t *addr, uint8_t addr_type)
 	sa.l2_bdaddr = *addr;
 	sa.l2_bdaddr_type = addr_type;
 	if (connect(fd, (struct sockaddr *)&sa, sizeof(sa)) < 0) {
-		close(fd); return -1;
+		int e = errno;
+		close(fd); errno = e; return -1;
 	}
 	return fd;
+}
+
+/* 1 = a link in this BT_SECURITY state is already encrypted at least
+ * as well as `want` asks for.  key_size 0 = not encrypted at all. */
+static int sec_enough(const struct bt_security *sec, int want)
+{
+	return sec->key_size > 0 && sec->level >= want;
+}
+
+#define ATT_PROBE_TIMEOUT	5	/* s; an existing link answers at once */
+#define ATT_ENC_TIMEOUT		20	/* s; connect + encryption */
+
+/* ATT channel at sec_level, without encrypting a link a second time.
+ *
+ * Right after a pairing the link is still up, encrypted with the
+ * pairing's short term key.  Asking for a security level on such a
+ * link makes the kernel start the encryption again with the fresh
+ * LTK (smp_sufficient_security() prefers an LTK to an STK), and the
+ * CACOE keyboard does not survive that key refresh: it types for the
+ * rest of that link, but answers every later Start Encryption with
+ * "PIN or key missing" -- paired, lost after the first disconnect.
+ * Left alone on the pairing link, the same keyboard reconnects with
+ * the stored LTK (#41).
+ *
+ * So look first, with a plain channel that asks for nothing: a link
+ * that is already encrypted well enough is used as it is.  Only an
+ * unencrypted link (every reconnect) or no link at all gets the
+ * encrypting connect, and the "key refused" verdict (ECONNABORTED)
+ * keeps coming from that one. */
+static int att_connect(const bdaddr_t *addr, uint8_t addr_type,
+		       int sec_level)
+{
+	if (sec_level) {
+		int fd = att_connect_at(addr, addr_type, 0,
+					ATT_PROBE_TIMEOUT);
+		if (fd >= 0) {
+			struct bt_security sec = { 0, 0 };
+			socklen_t sl = sizeof(sec);
+
+			if (getsockopt(fd, SOL_BLUETOOTH, BT_SECURITY,
+				       &sec, &sl) == 0 &&
+			    sec_enough(&sec, sec_level)) {
+				struct timeval tv = {
+					.tv_sec = ATT_ENC_TIMEOUT };
+
+				setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO,
+					   &tv, sizeof(tv));
+				printf("  link is already encrypted: "
+				       "used as it is, no key refresh\n");
+				return fd;
+			}
+			close(fd);
+		}
+	}
+	return att_connect_at(addr, addr_type, sec_level,
+			      sec_level ? ATT_ENC_TIMEOUT : 0);
+}
+
+/* The keyboard may act as a GATT client as well (its own MTU exchange,
+ * a look for our GAP/GATT services).  We serve no attributes, but a
+ * request left unanswered times out on the peer after 30 s and it
+ * drops the link.  Returns 1 when the PDU was a peer request or
+ * command (handled here), 0 when it is a response/notification for
+ * the caller. */
+#define ATT_MY_MTU	185
+static int att_peer_pdu(const uint8_t *p, int n)
+{
+	uint8_t op = p[0];
+	if (op & 0x40) return 1;		/* command: no answer */
+	if (op == ATT_OP_CONFIRM) return 1;
+	if (op & 1) return 0;			/* response/notify/indicate */
+	if (op == ATT_OP_MTU_REQ) {
+		uint8_t r[3] = { ATT_OP_MTU_RSP,
+				 ATT_MY_MTU & 0xff, ATT_MY_MTU >> 8 };
+		write(att_fd, r, sizeof(r));
+		return 1;
+	}
+	/* discovery requests: nothing there; anything else: unsupported */
+	uint8_t e[5] = { ATT_OP_ERROR, op, n > 1 ? p[1] : 0, n > 2 ? p[2] : 0,
+			 (op == ATT_OP_FIND_INFO_REQ || op == 0x06 ||
+			  op == ATT_OP_READ_TYPE_REQ ||
+			  op == ATT_OP_READ_GROUP_REQ) ? ATT_ERR_NOT_FOUND : 0x06 };
+	write(att_fd, e, sizeof(e));
+	return 1;
 }
 
 /* one ATT request -> response. Returns rsp len or <0; opcode in *rop */
@@ -656,6 +773,7 @@ static int att_req(const uint8_t *req, int reqlen,
 			continue;
 		}
 		if (att_buf[0] == ATT_OP_NOTIFY) continue;  /* stray */
+		if (att_peer_pdu(att_buf, n)) continue;
 		*rop = att_buf[0];
 		if (att_buf[0] == ATT_OP_ERROR &&
 		    n >= 5 && att_buf[1] == req[0]) {
@@ -736,30 +854,35 @@ static int att_find_info(uint16_t start, uint16_t end,
 	return n;
 }
 
-/* Read (optionally blob loop). Returns value length, or <0 */
+/* Read (blob loop for long values). Returns value length, or <0:
+ * -(0x1000 | att error), -2 timeout, -1 link error.
+ *
+ * Read Request = opcode + 16-bit handle (3 bytes), Read Blob adds a
+ * 16-bit offset (5 bytes).  Both went out one byte short until #41,
+ * so every real keyboard answered Invalid PDU and no report map or
+ * report reference was ever read. */
 static int att_read(uint16_t handle, uint8_t *out, int cap)
 {
-	uint8_t req[2] = { ATT_OP_READ_REQ, handle & 0xff };
+	uint8_t req[3] = { ATT_OP_READ_REQ, handle & 0xff, handle >> 8 };
 	uint8_t op;
-	uint8_t rsp[64];
-	req[1] = handle >> 8;
-	int n = att_req(req, 2, &op, rsp, sizeof(rsp), 3000);
-	if (n < 0) return n;
+	/* a response fills the MTU: as large as att_buf, off the stack */
+	static uint8_t rsp[sizeof(att_buf)];
+	int got = att_req(req, sizeof(req), &op, rsp, sizeof(rsp), 3000);
+	if (got < 0) return got;
 	if (op == ATT_OP_ERROR) return -(0x1000 | att_errcode(rsp));
 	if (op != ATT_OP_READ_RSP) return -1;
-	int tot = 0;
-	if (n > cap) n = cap;
-	memcpy(out, rsp, n); tot = n;
-	/* blob loop while response fills the mtu */
-	while (n == att_mtu - 1 && tot < cap) {
+	int n = got > cap ? cap : got;
+	int tot = n;
+	memcpy(out, rsp, n);
+	/* blob loop while the response fills the mtu */
+	while (got == att_mtu - 1 && tot < cap) {
 		uint8_t breq[5] = { ATT_OP_READ_BLOB_REQ,
 			handle & 0xff, handle >> 8,
 			(uint8_t)(tot & 0xff), (uint8_t)(tot >> 8) };
-		n = att_req(breq, 4, &op, rsp, sizeof(rsp), 3000);
-		if (n <= 0 || op != ATT_OP_READ_BLOB_RSP) break;
-		if (tot + n > cap) n = cap - tot;
+		got = att_req(breq, sizeof(breq), &op, rsp, sizeof(rsp), 3000);
+		if (got <= 0 || op != ATT_OP_READ_BLOB_RSP) break;
+		n = tot + got > cap ? cap - tot : got;
 		memcpy(out + tot, rsp, n); tot += n;
-		if (n < att_mtu - 1) break;
 	}
 	return tot;
 }
@@ -861,16 +984,17 @@ static int hogp_find_chars(struct hogp *h)
 		uint16_t last = 0;
 		for (int off = 1; off + ilen <= n; off += ilen) {
 			uint16_t dh = rsp[off] | (rsp[off+1] << 8);
+			uint16_t vh = rsp[off+3] | (rsp[off+4] << 8);
 			uint16_t uuid = rsp[off+5] | (rsp[off+6] << 8);
-			if (uuid == UUID_REPORT_MAP) h->map_handle = dh + 1;
-			else if (uuid == UUID_HID_INFO) h->info_handle = dh + 1;
+			if (uuid == UUID_REPORT_MAP) h->map_handle = vh;
+			else if (uuid == UUID_HID_INFO) h->info_handle = vh;
 			else if (uuid == UUID_REPORT) {
 				struct report_desc *r;
 				if (h->nreports < 16) {
 					r = &h->reports[h->nreports++];
 					memset(r, 0, sizeof(*r));
 					r->decl_handle = dh;
-					r->val_handle = dh + 1;
+					r->val_handle = vh;
 				}
 			}
 			last = dh;
@@ -1040,28 +1164,45 @@ static void uhid_forward_output(struct hogp *h, const uint8_t *data,
 	}
 }
 
-/* ---- daemon session: connect -> hogp -> uhid -> pump ---- */
+/* ---- daemon session: connect -> hogp -> uhid -> pump ----
+ *
+ * Session outcomes for the daemon's per-bond hold policy (#41):
+ * served = the UHID device existed (a working keyboard, however short
+ * the link); failed = anything earlier; key refused = the connect
+ * itself died with ECONNABORTED while encryption was requested -- the
+ * peer answered the Start Encryption with "PIN or key missing" (0x06),
+ * i.e. it no longer holds our bond. */
+#define SESS_SERVED	0
+#define SESS_FAILED	1
+#define SESS_KEY_REFUSED 2
 
 static int hogp_session(const bdaddr_t *addr, uint8_t atype,
 			int mgmt, int encrypted)
 {
 	static struct hogp h;
 	memset(&h, 0, sizeof(h));
-	int ufd = -1, rc = 1;
+	int ufd = -1, rc = SESS_FAILED;
 
-	att_fd = att_connect(addr, atype);
-	if (att_fd < 0) { printf("  l2cap connect failed\n"); return 1; }
-	printf("  l2cap att connected\n");
-
-	if (encrypted) {
-		uint8_t lvl = BT_SECURITY_MEDIUM;
-		if (setsockopt(att_fd, SOL_BLUETOOTH, BT_SECURITY,
-			       &lvl, 1) < 0)
-			printf("  BT_SECURITY_MEDIUM failed: %s\n",
-			       strerror(errno));
+	att_fd = att_connect(addr, atype,
+			     encrypted ? BT_SECURITY_MEDIUM : 0);
+	if (att_fd < 0) {
+		int e = errno;
+		printf("  l2cap connect failed: %s%s\n", strerror(e),
+		       encrypted ? " (no encryption -- is the bond still on"
+				   " the keyboard?)" : "");
+		return encrypted && e == ECONNABORTED ?
+			SESS_KEY_REFUSED : SESS_FAILED;
+	}
+	{
+		/* key_size 0 = the link is not encrypted */
+		struct bt_security sec = { 0, 0 };
+		socklen_t sl = sizeof(sec);
+		getsockopt(att_fd, SOL_BLUETOOTH, BT_SECURITY, &sec, &sl);
+		printf("  l2cap att connected (enc key size %u)\n",
+		       sec.key_size);
 	}
 
-	if (att_mtu_req(185) < 0)
+	if (att_mtu_req(ATT_MY_MTU) < 0)
 		printf("  mtu exchange failed (using %u)\n", att_mtu);
 	else
 		printf("  att mtu %u\n", att_mtu);
@@ -1079,7 +1220,12 @@ static int hogp_session(const bdaddr_t *addr, uint8_t atype,
 
 	h.map_len = att_read(h.map_handle, h.report_map, sizeof(h.report_map));
 	if (h.map_len <= 0) {
-		printf("  report map read failed\n");
+		if (h.map_len <= -0x1000)
+			printf("  report map read failed: att error 0x%02x\n",
+			       (-h.map_len) & 0xff);
+		else
+			printf("  report map read failed: %s\n",
+			       h.map_len == -2 ? "timeout" : "link error");
 		/* brief: boot protocol fallback could go here */
 		goto out;
 	}
@@ -1127,6 +1273,8 @@ static int hogp_session(const bdaddr_t *addr, uint8_t atype,
 			} else if (att_buf[0] == ATT_OP_INDICATE) {
 				uint8_t c = ATT_OP_CONFIRM;
 				write(att_fd, &c, 1);
+			} else {
+				att_peer_pdu(att_buf, n);
 			}
 		}
 		if (pf[0].revents & (POLLERR | POLLHUP)) break;
@@ -1148,7 +1296,7 @@ static int hogp_session(const bdaddr_t *addr, uint8_t atype,
 			}
 		}
 	}
-	rc = 0;
+	rc = SESS_SERVED;
 out:
 	if (ufd >= 0) { uhid_destroy(ufd); close(ufd); }
 	close(att_fd); att_fd = -1;
@@ -1311,12 +1459,217 @@ static struct bond_entry *bond_new(const bdaddr_t *a, uint8_t type)
 {
 	struct bond_entry *b = bond_find(a);
 	if (b) return b;
-	if (nbonds >= MAX_BONDS) return NULL;
+	if (nbonds >= MAX_BONDS) {
+		/* This keyboard takes a fresh address on every re-pair, so
+		 * the eighth slot is sooner or later a dead entry anyway:
+		 * drop the oldest and say so once (#41).  On-disk format
+		 * is unchanged -- still a header plus MAX_BONDS slots. */
+		char a0[18];
+		bdaddr_str(&bonds[0].addr, a0);
+		memmove(&bonds[0], &bonds[1],
+			(MAX_BONDS - 1) * sizeof(bonds[0]));
+		nbonds--;
+		printf("store full: forgot the oldest bond ..:%s\n",
+		       a0 + strlen(a0) - 5);
+		fflush(stdout);
+	}
 	b = &bonds[nbonds++];
 	memset(b, 0, sizeof(*b));
 	b->addr = *a;
 	b->type = type;
 	return b;
+}
+
+/* ================= per-bond hold (daemon, #41) =================
+ * A keyboard that no longer holds our bond answers the kernel's Start
+ * Encryption with status 0x06; the connect dies with ECONNABORTED and
+ * the kernel's auto-connect retries on the next advert -- several
+ * rounds a second on the radio the C6 shares with Wi-Fi, forever.
+ * Bound that: three consecutive failed sessions put the bond on a
+ * hold; the bond is dropped from the kernel's connect list for the
+ * duration (REMOVE_DEVICE) and re-armed when it is over.  Each further
+ * hold doubles: 60, 120, 240, 480, capped at 600 s; after a hold the
+ * bond gets three fresh tries; one served session resets everything.
+ * All of it lives in RAM -- the bond file never learns about holds.
+ */
+#define HOLD_TRIES	3
+#define HOLD_FIRST_S	60
+#define HOLD_MAX_S	600
+
+struct kbd_hold {
+	bdaddr_t addr;
+	uint8_t  used;
+	int fails;		/* consecutive failures in this window */
+	int refused;		/* key refusals among them */
+	int nholds;		/* holds already served */
+	int is_refused;		/* every failure in the tripping streak
+				   was a key refusal */
+	int secs;		/* length of the current hold */
+	time_t until;		/* CLOCK_MONOTONIC deadline, 0 = none */
+};
+
+static struct kbd_hold holds[MAX_BONDS];
+
+/* hold length for the n-th hold (0-based): 60 s, doubling, cap 600 */
+static int hold_secs(int n)
+{
+	int s = HOLD_FIRST_S;
+	while (n-- > 0 && s < HOLD_MAX_S) {
+		s *= 2;
+		if (s > HOLD_MAX_S) s = HOLD_MAX_S;
+	}
+	return s;
+}
+
+/* fold one session outcome into a bond's retry state.  Returns the
+ * hold length when this outcome trips a new hold -- the caller then
+ * drops the bond from the kernel and says why; 0 otherwise.  Pure:
+ * no I/O, so the test harness drives it directly. */
+static int hold_note(struct kbd_hold *h, int outcome, time_t now)
+{
+	if (outcome == SESS_SERVED) {
+		/* a working session resets everything for the bond */
+		h->fails = h->refused = h->nholds = h->is_refused = 0;
+		h->secs = 0;
+		h->until = 0;
+		return 0;
+	}
+	if (h->until) {
+		if (now < h->until) return 0;	/* still on hold */
+		h->until = 0;			/* hold spent */
+	}
+	if (outcome == SESS_KEY_REFUSED) h->refused++;
+	if (++h->fails < HOLD_TRIES) return 0;
+	int s = hold_secs(h->nholds);
+	h->is_refused = h->refused == HOLD_TRIES;
+	h->secs = s;
+	h->until = now + s;
+	h->nholds++;
+	h->fails = h->refused = 0;
+	return s;
+}
+
+static int hold_active(const struct kbd_hold *h, time_t now)
+{
+	return h->until && now < h->until;
+}
+
+/* the slot for a bond's address; with create != 0 a missing one is
+ * made (a stale slot that holds nothing is fair game first) */
+static struct kbd_hold *hold_find(const bdaddr_t *a, int create)
+{
+	struct kbd_hold *free = NULL, *idle = NULL;
+	for (int i = 0; i < MAX_BONDS; i++) {
+		struct kbd_hold *h = &holds[i];
+		if (!h->used) { if (!free) free = h; continue; }
+		if (!memcmp(&h->addr, a, 6)) return h;
+		if (!h->until && !idle) idle = h;
+	}
+	if (!create) return NULL;
+	struct kbd_hold *h = free ? free : idle;
+	if (!h) return NULL;	/* every slot busy holding -- let it be */
+	memset(h, 0, sizeof(*h));
+	h->addr = *a;
+	h->used = 1;
+	return h;
+}
+
+static time_t mono_now(void)
+{
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return ts.tv_sec;
+}
+
+/* The menu reads this instead of a daemon log that goes to /dev/null:
+ * one "ADDR refused|failing SECS" line per bond on hold -- addresses
+ * only, never key bytes.  Plain open/write, mode 0644, no exec; the
+ * file is removed when nothing is on hold and when the daemon starts.
+ */
+static const char *status_path(void)
+{
+	const char *p = getenv("BLE_KBD_STATUS");
+	return (p && *p) ? p : "/run/ble-kbd.status";
+}
+
+static void status_write(void)
+{
+	int fd, n = 0;
+	for (int i = 0; i < MAX_BONDS; i++)
+		if (holds[i].used && holds[i].until) n++;
+	if (!n) { unlink(status_path()); return; }
+	fd = open(status_path(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+	if (fd < 0) return;
+	for (int i = 0; i < MAX_BONDS; i++) {
+		struct kbd_hold *h = &holds[i];
+		char a[18], line[40];
+		int l;
+		if (!h->used || !h->until) continue;
+		bdaddr_str(&h->addr, a);
+		l = snprintf(line, sizeof(line), "%s %s %d\n", a,
+			     h->is_refused ? "refused" : "failing", h->secs);
+		if (l > 0 && write(fd, line, l) < 0) break;
+	}
+	close(fd);
+}
+
+/* the wait loop wakes every second: re-arm whatever hold just ran
+ * out, one log line each, and refresh the status file */
+static void hold_sweep(int mgmt, int bgscan)
+{
+	time_t now = mono_now();
+	int dirty = 0;
+	for (int i = 0; i < MAX_BONDS; i++) {
+		struct kbd_hold *h = &holds[i];
+		char a[18];
+		struct bond_entry *b;
+		if (!h->used || !h->until || now < h->until) continue;
+		h->until = 0; h->fails = 0; h->refused = 0;
+		dirty = 1;
+		bdaddr_str(&h->addr, a);
+		b = bond_find(&h->addr);
+		if (bgscan && b) {
+			struct mgmt_cp_add_device ad;
+			memset(&ad, 0, sizeof(ad));
+			ad.addr.bdaddr = b->addr;
+			ad.addr.type = b->type;
+			ad.action = 2;
+			mgmt_send(mgmt, MGMT_OP_ADD_DEVICE, HCI_DEV,
+				  &ad, sizeof(ad));
+		}
+		printf("daemon: ..:%s hold over -- listening for it again\n",
+		       a + strlen(a) - 5);
+	}
+	if (dirty) status_write();
+}
+
+/* fold a finished session into the bond's state; a fresh hold drops
+ * the bond off the kernel's auto-connect list so the kernel stops
+ * retrying on every advert, and gets one log line */
+static void session_done(int mgmt, struct bond_entry *b,
+			 int outcome, const char *disp)
+{
+	struct kbd_hold *kh = hold_find(&b->addr, outcome != SESS_SERVED);
+	int was_held, secs;
+	struct mgmt_addr_info ai;
+	if (!kh) return;
+	was_held = kh->until != 0;
+	secs = hold_note(kh, outcome, mono_now());
+	if (secs <= 0) {
+		if (was_held && !kh->until) status_write();
+		return;
+	}
+	memset(&ai, 0, sizeof(ai));
+	ai.bdaddr = b->addr;
+	ai.type = b->type;
+	mgmt_send(mgmt, MGMT_OP_REMOVE_DEVICE, HCI_DEV, &ai, sizeof(ai));
+	printf("daemon: ..:%s %s (next try in %d s)\n",
+	       disp + strlen(disp) - 5,
+	       kh->is_refused ?
+		   "refused the stored key 3 times -- pair it again" :
+		   "failed 3 times",
+	       secs);
+	status_write();
 }
 
 /* ================= pair =================
@@ -1418,6 +1771,7 @@ static int cmd_pair(const char *addr_str)
 	int done = -1;
 	int auth_status = -1;
 	int connected = 0;
+	int got_central = 0;
 	struct bond_entry *b = NULL;
 	for (int k = 0; k < 360 && done < 0; k++) {
 		int ev = mgmt_recv(mgmt, buf, sizeof(rxbuf), 250);
@@ -1468,8 +1822,16 @@ static int cmd_pair(const char *addr_str)
 		}
 		case MGMT_EV_NEW_LONG_TERM_KEY: {
 			struct mgmt_ev_new_long_term_key *k2 = d;
+			/* Legacy pairing can report two LTKs: the keyboard's
+			 * (initiator=1, the one a central encrypts with) and
+			 * the one we handed out for a role swap (initiator=0).
+			 * The store holds one: keep the usable one whatever
+			 * the order.  A Secure Connections key (type >= 2)
+			 * serves both roles. */
+			int central = k2->key.initiator || k2->key.type >= 2;
 			b = bond_new(&k2->key.addr.bdaddr, k2->key.addr.type);
-			if (b) {
+			if (b && (central || !got_central)) {
+				if (central) got_central = 1;
 				b->have_ltk = 1;
 				b->ltk_type = k2->key.type;
 				b->initiator = k2->key.initiator;
@@ -1719,17 +2081,25 @@ static int daemon_setup(int mgmt, uint8_t *buf)
 	usleep(200000);
 
 	/* Prefer the kernel's background scan + auto-connect: one
-	 * ADD_DEVICE action=1 per bond leaves the radio on a low-duty
-	 * background scan in the kernel instead of this daemon's
-	 * continuous mgmt discovery (the C6 shares one antenna between
-	 * Wi-Fi and BLE).  Fall back to the discovery loop when the
-	 * kernel refuses it. */
+	 * ADD_DEVICE per bond leaves the radio on a low-duty background
+	 * scan in the kernel instead of this daemon's continuous mgmt
+	 * discovery (the C6 shares one antenna between Wi-Fi and BLE).
+	 * Fall back to the discovery loop when the kernel refuses it.
+	 *
+	 * action=2 (HCI_AUTO_CONN_ALWAYS), as BlueZ uses for HID: for an
+	 * LE address action=1 is HCI_AUTO_CONN_DIRECT, which connects
+	 * only on directed advertising -- a keyboard that reconnects with
+	 * plain ADV_IND (most cheap ones) was never connected (#41). */
 	for (int i = 0; i < nbonds; i++) {
 		struct mgmt_cp_add_device ad;
+		struct kbd_hold *kh = hold_find(&bonds[i].addr, 0);
+		/* an INDEX_REMOVED/ADDED re-arm must not wake a bond
+		 * that is on hold (#41) */
+		if (kh && hold_active(kh, mono_now())) continue;
 		memset(&ad, 0, sizeof(ad));
 		ad.addr.bdaddr = bonds[i].addr;
 		ad.addr.type = bonds[i].type;
-		ad.action = 1;
+		ad.action = 2;
 		mgmt_send(mgmt, MGMT_OP_ADD_DEVICE, HCI_DEV, &ad, sizeof(ad));
 	}
 	usleep(200000);
@@ -1768,11 +2138,15 @@ static int daemon_setup(int mgmt, uint8_t *buf)
 		if (n > max) n = max;
 		for (int i = 0; i < n; i++) {
 			struct bond_entry *b = bonded_match(&r->addr[i]);
+			struct kbd_hold *kh;
 			if (!b) continue;
+			kh = hold_find(&b->addr, 0);
+			if (kh && hold_active(kh, mono_now())) continue;
 			char a[18];
 			bdaddr_str(&r->addr[i].bdaddr, a);
 			printf("daemon: bonded device %s already connected\n", a);
-			hogp_session(&b->addr, b->type, mgmt, 1);
+			session_done(mgmt, b,
+				     hogp_session(&b->addr, b->type, mgmt, 1), a);
 		}
 		break;
 	}
@@ -1787,6 +2161,10 @@ static int daemon_setup(int mgmt, uint8_t *buf)
 static int cmd_daemon(void)
 {
 	uint8_t *buf = rxbuf;
+	/* line-buffered, so `ble-kbd daemon >/tmp/log` shows each state
+	 * change as it happens instead of a 4 KB block much later */
+	setvbuf(stdout, NULL, _IOLBF, 0);
+	status_write();	/* clear a stale status file: no holds yet */
 	if (bonds_load() < 0 || !nbonds) {
 		printf("no bonds — daemon exits\n");
 		return 0;
@@ -1807,7 +2185,7 @@ static int cmd_daemon(void)
 				int ev = mgmt_recv(mgmt, buf,
 						   sizeof(rxbuf), 1000);
 				if (ev < 0) break;
-				if (ev == 0) continue;
+				if (ev == 0) { hold_sweep(mgmt, bgscan); continue; }
 				if (ev == MGMT_EV_INDEX_REMOVED ||
 				    ev == MGMT_EV_INDEX_ADDED) {
 					printf("daemon: adapter index %s;"
@@ -1834,13 +2212,21 @@ static int cmd_daemon(void)
 				}
 				b = bonded_match(da);
 				if (!b) continue;
+				{
+					struct kbd_hold *kh =
+						hold_find(&b->addr, 0);
+					if (kh && hold_active(kh, mono_now()))
+						continue;   /* held: skip (#41) */
+				}
 				char a[18];
 				bdaddr_str(&da->bdaddr, a);
 				if (bgscan) {
 					printf("daemon: bonded device %s "
 					       "connected\n", a);
-					hogp_session(&b->addr, b->type,
-						     mgmt, 1);
+					session_done(mgmt, b,
+						     hogp_session(&b->addr,
+								  b->type,
+								  mgmt, 1), a);
 					backoff = 1;
 					continue;
 				}
@@ -1849,7 +2235,9 @@ static int cmd_daemon(void)
 				mgmt_send(mgmt, MGMT_OP_STOP_DISCOVERY,
 					  HCI_DEV, &sp, 1);
 				usleep(200000);
-				hogp_session(&b->addr, b->type, mgmt, 1);
+				session_done(mgmt, b,
+					     hogp_session(&b->addr, b->type,
+							  mgmt, 1), a);
 				backoff = 1;
 				usleep(backoff * 1000000);
 				break;   /* back to discovery */

@@ -1,9 +1,10 @@
 #!/bin/sh
 # Tab5 only (#35): apply ext5v_en=/ext_ant_en= from config.txt to the
-# 0x43 expander early in boot -- runs after S05tmpfs staged
-# /tmp/config.txt and before S40network (a missing chip or config is a
-# soft fail inside tab5-rails, never a boot stopper).  Live config.txt
-# saves reach the same helper through S40network's apply dispatch.
+# 0x43 expander, and charger= to the charge-enable line on 0x44, early
+# in boot -- runs after S05tmpfs staged /tmp/config.txt and before
+# S40network (a missing chip or config is a soft fail inside tab5-rails,
+# never a boot stopper).  Live config.txt saves reach the same helper
+# through S40network's apply dispatch.
 
 case "$1" in
   start|restart|reload|apply)

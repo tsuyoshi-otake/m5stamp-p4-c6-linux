@@ -402,3 +402,32 @@ vendor driver's order (shutter then gain — it uses no group hold
 either).  Nothing is added to memory: `-a` reuses the one frame
 buffer every iteration, and means come from the same pass `stats()`
 already does.
+
+## V4L2 (`/dev/video0`) — measured, not built in (#44)
+
+Showing the camera as V4L2 was measured before deciding (B53, two
+canonical Tab5 builds of the same tree, `size vmlinux`):
+
+| | main `d5384c4` | + smallest V4L2 core | delta |
+|---|---:|---:|---:|
+| text | 6,224,529 | 6,372,846 | +148,317 |
+| data | 1,330,680 | 1,391,436 | +60,756 |
+| bss | 202,012 | 203,356 | +1,344 |
+| total | 7,757,221 | 7,967,638 | **+210,417 (≈205.5 KiB)** |
+
+The core is `MEDIA_SUPPORT` + `MEDIA_SUPPORT_FILTER` +
+`MEDIA_CAMERA_SUPPORT` + `VIDEO_DEV` with sub-device/sensor/lens
+autoselect off; `MEDIA_CONTROLLER` cannot be configured off in this
+kernel.  The biggest objects are `v4l2-ioctl.o` (42.9 KB),
+`v4l2-ctrls-defs.o` (27.9 KB), `v4l2-dv-timings.o` (24.0 KB) and
+`v4l2-ctrls-core.o` (15.6 KB).  The driver side of a read()-only
+`/dev/video0` (one fixed SBGGR8 1280x720 format, the existing 1 MiB
+buffer, no videobuf2) is only ~1.6 KB.
+
+That ~205 KiB is built-in kernel memory, paid on every boot even with
+`camera=off`, out of the ~2.3-3 MB the board has free — the same
+headroom Wi-Fi, SDIO and BLE need.  So V4L2 is **not** built in;
+`/dev/cam0` + `cam-dump` (`-f ppm`, `-a`) stay the camera interface.
+The measured config and the prototype (`0141-esp32p4-cam-v4l2.patch`,
+`v4l2-probe`, `cam-dump -S`) are kept on branch `v4l2-44`, never
+flashed.

@@ -1,9 +1,16 @@
 #!/bin/sh
-# Tab5 only (#35): apply ext5v_en=/ext_ant_en= from config.txt to the
-# expander at 0x43 (schematic U6): P0 = EXT_ANT_EN (0 = internal antenna,
-# 1 = external MMCX), P2 = EXT5V_EN (EXT header 5 V output).  Both default
-# to 0, matching the state the boot shim leaves; the keys are applied at
-# boot (S06rails) and live on a config.txt save (S40network apply).
+# Tab5 only: apply the expander keys of config.txt.
+#
+#   ext5v_en=, ext_ant_en= (#35)   expander 0x43 (schematic U6):
+#       P0 = EXT_ANT_EN (0 = internal antenna, 1 = external MMCX),
+#       P2 = EXT5V_EN (EXT header 5 V output).  Both default to 0,
+#       matching the state the boot shim leaves.
+#   charger=auto|on|off            expander 0x44 P7 = CHG_EN, the IP2326
+#       battery charger.  See "charger" below.
+#
+# The keys are applied at boot (S06rails) and live on a config.txt save
+# (S40network apply).  "tab5-rails" does all of them the boot way;
+# "tab5-rails charger" is the live path for the charger key alone.
 #
 # config.txt on Tab5 lives on the flash-resident boot FAT -- there is no
 # USB drive.  S05tmpfs stages a copy at /tmp/config.txt early in boot;
@@ -12,51 +19,98 @@
 #
 # The lines are driven through the sysfs GPIO ABI (the image carries no
 # libgpiod tools; CONFIG_GPIO_SYSFS is on for exactly this).
+#
+# Everything here is a shell builtin except the one sleep of the live
+# charger test.  A live apply runs when memory is shortest -- the menu,
+# bootsyncd and S40network are all still up -- and on this board every
+# sed, every $( ) and every other applet is one more 480 KB allocation
+# that the kernel refuses then (seen on the first live saves of
+# charger=: "refused by user reserve" for whatever ran next).
 
+GPIO=${TAB5_RAILS_GPIO:-/sys/class/gpio}
+PSY=${TAB5_RAILS_PSY:-/sys/class/power_supply/battery}
+SETTLE=${TAB5_RAILS_SETTLE:-1}
+SPIN=${TAB5_RAILS_SPIN:-12000}
+
+# conf_get KEY FILE -> CV: the value of the first "KEY = value" line of
+# FILE; rc 1 and an empty CV without one.
+#
+# [!!-~] is "not a visible ASCII character": blanks, the CR of a CRLF
+# file and the bytes of a UTF-8 byte-order mark.  Taking those off both
+# ends of the key and of the value is all the cleaning there is, so a
+# "#key=..." comment never matches and a value keeps what is inside it.
 conf_get() {
-	bom=$(printf '\357\273\277')
-	cr=$(printf '\r')
-	sed -n -e "1s/^$bom//" -e "s/$cr\$//" \
-		-e "/^[[:blank:]]*$1[[:blank:]]*=/{s/^[[:blank:]]*$1[[:blank:]]*=[[:blank:]]*//;${3:-}p;q;}" "$2" 2>/dev/null
+	CV=""
+	[ -f "$2" ] || return 1
+	while IFS= read -r _l || [ -n "$_l" ]; do
+		case "$_l" in *=*) ;; *) continue ;; esac
+		_k=${_l%%=*}
+		while :; do
+			case "$_k" in
+				[!!-~]*) _k=${_k#?} ;;
+				*[!!-~]) _k=${_k%?} ;;
+				*) break ;;
+			esac
+		done
+		[ "$_k" = "$1" ] || continue
+		CV=${_l#*=}
+		while :; do
+			case "$CV" in
+				[!!-~]*) CV=${CV#?} ;;
+				*[!!-~]) CV=${CV%?} ;;
+				*) break ;;
+			esac
+		done
+		return 0
+	done < "$2"
+	return 1
 }
-NOSPACE='s/ //g;'
 
-CFG=/etc/board/config.txt
-[ -f /tmp/config.txt ] && CFG=/tmp/config.txt
-[ -f /boot/config.txt ] && CFG=/boot/config.txt
-
-chip=""
-for c in /sys/class/gpio/gpiochip*; do
-	l=""
-	read -r l < "$c/label" 2>/dev/null || continue
-	case "$l" in
-		*0043*) chip=$c; break ;;
-	esac
-done
-if [ -z "$chip" ]; then
-	echo "tab5-rails: expander 0x43 gpiochip not found" >&2
-	exit 1
+if [ -n "${TAB5_RAILS_CFG:-}" ]; then
+	CFG=$TAB5_RAILS_CFG
+else
+	CFG=/etc/board/config.txt
+	[ -f /tmp/config.txt ] && CFG=/tmp/config.txt
+	[ -f /boot/config.txt ] && CFG=/boot/config.txt
 fi
-base=""
-read -r base < "$chip/base" 2>/dev/null || {
-	echo "tab5-rails: cannot read $chip/base" >&2
-	exit 1
+
+# chip_base PATTERN -> BASE: first sysfs gpio number of the expander
+# whose chip label matches (0-0043, 0-0044).
+chip_base() {
+	for c in "$GPIO"/gpiochip*; do
+		l=""
+		read -r l < "$c/label" 2>/dev/null || continue
+		case "$l" in
+			*"$1"*)
+				BASE=""
+				read -r BASE < "$c/base" 2>/dev/null || {
+					echo "tab5-rails: cannot read $c/base" >&2
+					return 1
+				}
+				return 0 ;;
+		esac
+	done
+	echo "tab5-rails: expander 0x${1#00} gpiochip not found" >&2
+	return 1
 }
 
-# $1 = port offset on the expander, $2 = resolved 0/1
+line_export() { # $1 = sysfs gpio number
+	[ -d "$GPIO/gpio$1" ] && return 0
+	echo "$1" > "$GPIO/export" 2>/dev/null || {
+		echo "tab5-rails: export gpio$1 failed" >&2
+		return 1
+	}
+}
+
+# $1 = port offset on the expander at $BASE, $2 = resolved 0/1
 set_line() {
-	n=$((base + $1))
-	if [ ! -d "/sys/class/gpio/gpio$n" ]; then
-		echo "$n" > /sys/class/gpio/export 2>/dev/null || {
-			echo "tab5-rails: export gpio$n failed" >&2
-			return 1
-		}
-	fi
-	echo out > "/sys/class/gpio/gpio$n/direction" 2>/dev/null || {
+	n=$((BASE + $1))
+	line_export "$n" || return 1
+	echo out > "$GPIO/gpio$n/direction" 2>/dev/null || {
 		echo "tab5-rails: direction gpio$n failed" >&2
 		return 1
 	}
-	echo "$2" > "/sys/class/gpio/gpio$n/value" 2>/dev/null || {
+	echo "$2" > "$GPIO/gpio$n/value" 2>/dev/null || {
 		echo "tab5-rails: write gpio$n failed" >&2
 		return 1
 	}
@@ -65,8 +119,20 @@ set_line() {
 	return 0
 }
 
+# $1 = port offset, $2 = high|low: direction and level in one write, so
+# a line that already has the level never sees the other one.
+set_level() {
+	n=$((BASE + $1))
+	line_export "$n" || return 1
+	echo "$2" > "$GPIO/gpio$n/direction" 2>/dev/null || {
+		echo "tab5-rails: $2 on gpio$n failed" >&2
+		return 1
+	}
+}
+
 apply_key() { # $1 = config key, $2 = port offset, $3 = description
-	v=$(conf_get "$1" "$CFG" "$NOSPACE")
+	conf_get "$1" "$CFG"
+	v=$CV
 	case "$v" in
 		1) want=1 ;;
 		""|0) want=0 ;;
@@ -76,7 +142,97 @@ apply_key() { # $1 = config key, $2 = port offset, $3 = description
 		echo "M3-lab: $1=$want applied (expander 0x43 P$2, $3)"
 }
 
-apply_key ext_ant_en 0 "external antenna"
-apply_key ext5v_en   2 "EXT header 5V"
+# charger=
+#
+# Without a battery pack the IP2326 still starts charge cycles: it lifts
+# the empty pack node to 8.4 V, the node collapses at every Wi-Fi
+# beacon, and the radio chip (C6) is power-on reset every few seconds --
+# Wi-Fi and Bluetooth drop out for as long as the charger keeps trying
+# (linux/tab5/charger-no-pack.md).  So:
+#
+#   auto  (default) charge only when a pack is there.  At boot the boot
+#         shim has already decided that with the charger off and nothing
+#         is touched here; on a live save the same test runs again: the
+#         charger goes off, the node gets $SETTLE s, and 4 V or more on
+#         it means a pack.
+#   on    charge regardless.  The one case auto cannot see is a pack
+#         whose protection circuit opened after a deep discharge: it
+#         reads 0 V until a charger wakes it.
+#   off   never charge.
+#
+# The pack voltage is the battery supply's voltage_now (the INA226).
+pack_mv() { # -> MV
+	v=""
+	[ -r "$PSY/voltage_now" ] || return 1
+	read -r v < "$PSY/voltage_now" 2>/dev/null || return 1
+	case "$v" in ''|*[!0-9]*) return 1 ;; esac
+	MV=$((v / 1000))
+}
+
+# settle: the time the pack node gets to fall once CHG_EN is low (below
+# 2 V within 0.3 s, measured).  A denied sleep must not cut it short:
+# read at once, the node still shows the charger's own 8.4 V and a board
+# without a pack would get its charger back.  $SPIN turns of the loop
+# take about a second on the P4.
+settle() {
+	sleep "$SETTLE" 2>/dev/null && return 0
+	_n=0
+	while [ "$_n" -lt "$SPIN" ]; do _n=$((_n + 1)); done
+}
+
+apply_charger() { # $1 = boot|live
+	conf_get charger "$CFG"
+	v=$CV
+	case "$v" in
+		""|auto) v=auto ;;
+		on|off) ;;
+		*) echo "tab5-rails: ignoring invalid charger=$v (use auto, on or off)" >&2
+		   v=auto ;;
+	esac
+	if [ "$v" = auto ] && [ "$1" = boot ]; then
+		echo "M3-lab: charger=auto (the boot shim decided: on with a battery pack, off without)"
+		return 0
+	fi
+	chip_base 0044 || return 1
+	case "$v" in
+		on)
+			set_level 7 high &&
+				echo "M3-lab: charger=on applied (expander 0x44 P7)" ;;
+		off)
+			set_level 7 low &&
+				echo "M3-lab: charger=off applied (expander 0x44 P7)" ;;
+		auto)
+			set_level 7 low || return 1
+			settle
+			if ! pack_mv; then
+				set_level 7 high &&
+					echo "M3-lab: charger=auto: pack voltage not readable; charger on"
+			elif [ "$MV" -ge 4000 ]; then
+				set_level 7 high &&
+					echo "M3-lab: charger=auto: battery pack at $MV mV; charger on"
+			else
+				echo "M3-lab: charger=auto: no battery pack ($MV mV); charger off"
+			fi ;;
+	esac
+}
+
+case "${1:-all}" in
+	charger)
+		apply_charger live
+		exit $? ;;
+	all)
+		if chip_base 0043; then
+			apply_key ext_ant_en 0 "external antenna"
+			apply_key ext5v_en   2 "EXT header 5V"
+			rc=0
+		else
+			rc=1
+		fi
+		apply_charger boot || rc=1
+		exit "$rc" ;;
+	*)
+		echo "Usage: tab5-rails [charger]" >&2
+		exit 2 ;;
+esac
 
 exit 0

@@ -11,11 +11,13 @@
  *
  * Safety contract (board-contract.json): the speaker amp (0x43 P1),
  * camera (P6) and EXT5V (0x43 P2) stay OFF at boot, while USB-A 5 V
- * (0x44 P3), QC and CHG_EN follow the stock image.  The stock image
- * repeatedly tripped the brownout detector on plain USB power with
- * speaker + backlight + C6 all up (live-log.txt BOD resets), so Linux
- * keeps the conservative subset.  The LCD reset line (0x43 P4) goes
- * through the stock assert-then-release sequence (output low 10 ms,
+ * (0x44 P3) and QC follow the stock image.  CHG_EN follows it only
+ * when a battery pack is there (charger_decide() below): the IP2326
+ * charging into an empty pack node gets the C6 power-on reset.  The
+ * stock image repeatedly tripped the brownout detector on plain USB
+ * power with speaker + backlight + C6 all up (live-log.txt BOD resets),
+ * so Linux keeps the conservative subset.  The LCD reset line (0x43 P4)
+ * goes through the stock assert-then-release sequence (output low 10 ms,
  * then input with internal pull-up) and TP_RST (0x43 P5) is driven 1
  * as in stock.  The ST7121/ST7123 are combined display+touch chips, so
  * right before the display init the stock BSP pulses both resets low for
@@ -116,6 +118,16 @@ static const char *TAG = "tab5-board";
 #define EXPANDER0_ADDR 0x43u
 #define EXPANDER1_ADDR 0x44u
 
+/* INA226 on the pack node (SYS_BAT_PRE): bus voltage register, 1.25 mV
+ * per LSB.  The chip converts continuously from power-on, and Linux
+ * leaves it in a continuous mode across a warm reboot. */
+#define INA226_ADDR 0x41u
+#define INA226_REG_BUS 0x02u
+/* A 2S pack never sits below 5 V; the empty node is under 2.5 V 130 ms
+ * after the charger went off and near 1.9 V from 0.3 s on (measured,
+ * linux/tab5/charger-no-pack.md). */
+#define TAB5_PACK_PRESENT_MV 4000
+
 /* 0x43 pins: P0 EXT_ANT_EN, P1 SPK_EN, P2 EXT5V_EN, P4 LCD_RST,
  * P5 TP_RST, P6 CAM_RST, P7 hp-detect(input).  Stock latches 0x66 and
  * drives P5 high; the Linux profile keeps speaker/EXT5V/camera off, so
@@ -131,10 +143,11 @@ static const char *TAG = "tab5-board";
 /* 0x44 pins: P0 WLAN_PWR_EN, P3 USB5V_EN, P4 PWROFF(keep 0),
  * P5 nCHG_QC_EN (0 = QC on), P7 CHG_EN; P1/P2/P6 stay inputs. */
 #define EXP1_OUT_INIT 0x09u /* stock init: P0|P3 high, charge off */
-#define EXP1_OUT_BOOT 0x89u /* +P7: stock reaches this via
-			     * bsp_set_charge_en(true) shortly after
-			     * expander init ("set charge enable: true"
-			     * in boot-log.txt). */
+#define EXP1_OUT_CHARGE 0x89u /* +P7: stock reaches this via
+			       * bsp_set_charge_en(true) shortly after
+			       * expander init ("set charge enable: true"
+			       * in boot-log.txt).  Here only with a pack
+			       * on the rail: charger_decide(). */
 #define EXP1_DIR 0xb9u   /* stock: P0,P3,P4,P5,P7 out; P1,P2,P6 in */
 #define EXP1_OUT_H_IM 0x06u /* stock: P1/P2 high-Z */
 #define EXP1_PULL_SEL 0xb9u /* stock */
@@ -283,8 +296,9 @@ static esp_err_t expander_read(i2c_master_dev_handle_t dev, uint8_t reg,
  *   push-pull driven to 3.3 V.
  * 0x44: chip reset; IO_DIR=0xb9 (P0,P3,P4,P5,P7 outputs; P1,P2,P6
  *   inputs); OUT_H_IM / PULL_SEL / PULL_EN / IN_DEF_STA / INT_MASK at
- *   the stock values; OUT_SET=0x09 (C6 rail + USB-A 5 V on, charge off)
- *   then 0x89 to match the stock image after its charge-enable call.
+ *   the stock values; OUT_SET=0x09 (C6 rail + USB-A 5 V on, charge off).
+ *   The stock image's charge-enable call (0x89) is charger_decide()'s,
+ *   after the C6 reset wait.
  */
 static esp_err_t expander_reset(i2c_master_dev_handle_t dev)
 {
@@ -343,7 +357,7 @@ static esp_err_t expanders_init(void)
 			    TAG, "exp0 io_dir release");
 	esp_rom_delay_us(50000);
 
-	/* --- 0x44: exact stock sequence, then charge-enable --- */
+	/* --- 0x44: exact stock sequence; the charger stays off here --- */
 	ESP_RETURN_ON_ERROR(expander_reset(s_exp1), TAG, "exp1 reset");
 	ESP_RETURN_ON_ERROR(expander_write(s_exp1, PI4IO_REG_IO_DIR, EXP1_DIR),
 			    TAG, "exp1 io_dir");
@@ -360,14 +374,74 @@ static esp_err_t expanders_init(void)
 					   EXP1_INT_MASK), TAG, "exp1 int_mask");
 	ESP_RETURN_ON_ERROR(expander_write(s_exp1, PI4IO_REG_OUT_SET,
 					   EXP1_OUT_INIT), TAG, "exp1 out_set");
-	ESP_RETURN_ON_ERROR(expander_write(s_exp1, PI4IO_REG_OUT_SET,
-					   EXP1_OUT_BOOT),
-			    TAG, "exp1 charge en");
 
 	esp_rom_delay_us(C6_POWER_UP_DELAY_US);
 	ESP_LOGI(TAG, "expanders: C6 rail on, LCD_RST pulsed+released, "
 		 "amp/EXT5V/camera off");
 	return ESP_OK;
+}
+
+/*
+ * Charge enable (0x44 P7), decided by what is on the pack node.
+ *
+ * Without a pack the IP2326 still starts a charge cycle two to five
+ * seconds after CHG_EN goes high: it lifts the empty node to 8.4 V, the
+ * node then collapses at every load step (to 5.2 V at each Wi-Fi
+ * beacon), and the C6 is power-on reset within seconds -- again and
+ * again, for as long as the charger keeps trying.  With CHG_EN low the
+ * same board ran without a single reset
+ * (linux/tab5/charger-no-pack.md).
+ *
+ * The charger has been off since the expander's chip reset, and this
+ * runs after the C6 reset wait, more than 1.5 s later: an empty node
+ * has long fallen to about 1.9 V, a pack holds 6 V or more.  A read
+ * that fails keeps the stock behaviour (charger on).
+ *
+ * Not told apart: a pack whose protection circuit has opened after a
+ * deep discharge also reads 0 V and needs the charger to wake it.
+ * charger=on in config.txt raises CHG_EN from Linux for that.
+ */
+static void charger_decide(void)
+{
+	i2c_device_config_t dev_cfg = {
+		.dev_addr_length = I2C_ADDR_BIT_LEN_7,
+		.device_address = INA226_ADDR,
+		.scl_speed_hz = TAB5_I2C_HZ,
+	};
+	i2c_master_dev_handle_t ina = NULL;
+	uint8_t reg = INA226_REG_BUS, raw[2] = { 0, 0 };
+	esp_err_t err;
+	int mv = -1;
+
+	err = i2c_master_bus_add_device(s_i2c_bus, &dev_cfg, &ina);
+	if (err == ESP_OK) {
+		err = i2c_master_transmit_receive(ina, &reg, 1, raw, 2, 20);
+		if (err != ESP_OK)
+			err = i2c_master_transmit_receive(ina, &reg, 1, raw, 2,
+							  20);
+		if (err == ESP_OK) {
+			uint32_t lsb = ((uint32_t)raw[0] << 8) | raw[1];
+
+			mv = (int)(lsb * 5u / 4u); /* 1.25 mV per LSB */
+		}
+		i2c_master_bus_rm_device(ina);
+	}
+
+	if (mv >= 0 && mv < TAB5_PACK_PRESENT_MV) {
+		ESP_LOGW(TAG, "no battery pack (pack node %d mV with the "
+			 "charger off): CHG_EN stays low", mv);
+		return;
+	}
+	if (expander_write(s_exp1, PI4IO_REG_OUT_SET, EXP1_OUT_CHARGE) !=
+	    ESP_OK) {
+		ESP_LOGW(TAG, "charge enable write failed; charger stays off");
+		return;
+	}
+	if (mv < 0)
+		ESP_LOGW(TAG, "pack node not readable (%s); charger on as "
+			 "in the stock image", esp_err_to_name(err));
+	else
+		ESP_LOGI(TAG, "battery pack at %d mV; charger on", mv);
 }
 
 /*
@@ -786,6 +860,7 @@ void tab5_board_init(struct tab5_fb *fb)
 
 		pulse_c6_reset();
 		ESP_LOGI(TAG, "Slot 1 SDIO ready on GPIO8-13; C6 reset done");
+		charger_decide();
 
 		/*
 		 * USB-A port: the USB2.0 HS DWC core (USB_DWC_HS) needs the

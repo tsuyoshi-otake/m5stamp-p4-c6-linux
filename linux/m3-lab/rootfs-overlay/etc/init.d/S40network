@@ -419,38 +419,96 @@ c6_reset_pulse() {
 
 # #22: a wiped-out C6 boot leaves the SDIO link half-up.  The module
 # cannot be unloaded (see the sdio_mhz note above), so rmmod/insmod is
-# not an option; the real re-init is: unbind the sdio function from its
-# driver, pulse the C6 reset, wait for it to boot, then re-probe so
-# esp_probe/ esp_init runs the handshake again.  esp_remove() exists, so
-# the unbind is a clean teardown.  One retry only.
-c6_reinit() {
-	bus=${C6_SDIO_BUS:-/sys/bus/sdio}
-	fdev=${C6_SDIO_DEV:-}
-	if [ -z "$fdev" ]; then
-		for d in "$bus"/devices/mmc*:0001:1; do
-			[ -e "$d" ] && { fdev=$d; break; }
-		done
-	fi
-	if [ -z "$fdev" ]; then
-		echo "M3-lab: C6 re-init skipped: no sdio function device"
-		return 1
-	fi
-	fname=${fdev##*/}
-	echo "M3-lab: retrying SoftAP once after C6 re-init (reset pulse + sdio re-probe of $fname)"
-	stop_wpa
-	ifconfig wlan0 down 2>/dev/null || true
-	[ -w "$fdev/driver/unbind" ] &&
-		echo "$fname" > "$fdev/driver/unbind" 2>/dev/null || true
-	c6_reset_pulse ||
-		echo "M3-lab: C6 reset GPIO unknown on this board; re-probing anyway"
-	sleep 2
-	echo "$fname" > "$bus/drivers_probe" 2>/dev/null || true
+# not an option; the real re-init is: take the mmc host the C6 sits on
+# away from its driver, pulse the C6 reset, wait for it to boot, then
+# bind the host again.  One retry only.
+#
+# It has to be the host, not the sdio function (#41): a C6 that was
+# reset has forgotten its card address and bus settings, and only the
+# host's probe runs the card initialisation again.  Re-probing the
+# function alone left every command timing out ("probe with driver
+# esp32_sdio failed with error -110").  On both boards this host
+# carries nothing but the C6; the Tab5's microSD is an SPI host.
+#
+# A C6 that no longer answers at all has lost its card state, which only
+# a reset does to it -- and if nobody pulsed its reset line, it reset
+# itself.  For that case the host is first rebound WITHOUT the pulse: the
+# C6 then reports why it went down ("last reset cause" in its boot-up
+# event; POWERON_RESET = power or the reset line, SW_CPU_RESET = the
+# firmware restarted or panicked, *WDT* = a watchdog, BROWN_OUT = its
+# supply).  A pulse would overwrite that with POWERON_RESET.  The pulse
+# follows only when the C6 does not come back by itself.  A link that
+# still answers (the half-up case of #22) gets the pulse at once, as
+# before: unbinding makes the driver ask the C6 to restart, so its
+# report would say nothing.
+#
+# C6_MMC_DRV / C6_MMC_HOST override the driver directory and the device
+# name, C6_OBS the observation node, for tests.
+C6_OBS=${C6_OBS:-/proc/esp32_sdio_h2c_obs}
+
+# The first line of the driver's observation node is the result of a live
+# CMD52 read of the C6.  0 = the C6 answers, 1 = it does not (or the sdio
+# function is gone), 2 = no node: the driver is not loaded.
+c6_link_ok() {
+	[ -e "$C6_OBS" ] || return 2
+	l=""
+	read -r l 2>/dev/null < "$C6_OBS" || return 1
+	[ "$l" = "status=ok" ]
+}
+
+# Bind $host again and wait up to $1 seconds for wlan0.  The card is
+# non-removable: the host looks for it once, at bind time, so the C6 must
+# have booted by then.
+c6_bind_wait() {
+	echo "$host" > "$drv/bind" 2>/dev/null || true
 	r=0
-	while [ "$r" -lt 15 ]; do
+	while [ "$r" -lt "$1" ]; do
 		ifconfig wlan0 >/dev/null 2>&1 && return 0
 		net_tick 1
 		r=$((r + 1))
 	done
+	return 1
+}
+
+c6_reinit() {
+	drv=${C6_MMC_DRV:-/sys/bus/platform/drivers/dw_mmc}
+	host=${C6_MMC_HOST:-}
+	if [ -z "$host" ]; then
+		# bound: listed under the driver; left unbound by an
+		# interrupted earlier attempt: only under the bus
+		for d in "$drv"/*.mmc /sys/bus/platform/devices/*.mmc; do
+			[ -e "$d" ] && { host=${d##*/}; break; }
+		done
+	fi
+	if [ -z "$host" ] || [ ! -e "$drv/bind" ]; then
+		echo "M3-lab: C6 re-init skipped: no mmc host to rebind"
+		return 1
+	fi
+	c6_was=alive
+	c6_link_ok
+	[ "$?" -eq 1 ] && c6_was=dead
+	echo "M3-lab: C6 re-init: rebinding mmc host $host (the C6 link was $c6_was)"
+	stop_wpa
+	ifconfig wlan0 down 2>/dev/null || true
+	# A command already on its way to a silent C6 sleeps five seconds
+	# before it times out; let it finish before the driver is torn down
+	# (esp-hosted 0047 makes the teardown safe by itself).
+	net_tick 6
+	[ -e "$drv/$host" ] && echo "$host" > "$drv/unbind" 2>/dev/null || true
+	if [ "$c6_was" = dead ]; then
+		net_tick 2
+		if c6_bind_wait 10; then
+			c=$(dmesg | sed -n '/print_reset_reason: /{s/.*print_reset_reason: //;h;};${g;p;}')
+			echo "M3-lab: C6 answers again without a reset pulse; its last reset cause: ${c:-unknown}"
+			return 0
+		fi
+		echo "M3-lab: C6 did not come back by itself; pulsing its reset"
+		[ -e "$drv/$host" ] && echo "$host" > "$drv/unbind" 2>/dev/null || true
+	fi
+	c6_reset_pulse ||
+		echo "M3-lab: C6 reset GPIO unknown on this board; rebinding anyway"
+	net_tick 3
+	c6_bind_wait 15 && return 0
 	echo "M3-lab: wlan0 did not return after C6 re-init"
 	return 1
 }
@@ -597,7 +655,10 @@ start() {
 					fi
 					try=$((try + 1))
 					echo "M3-lab: SoftAP check failed ($AP_WHY)"
-					[ "$try" -lt 2 ] && c6_reinit || true
+					if [ "$try" -lt 2 ]; then
+						echo "M3-lab: retrying SoftAP once after C6 re-init"
+						c6_reinit || true
+					fi
 				done
 				if [ "$ap_up" -eq 1 ]; then
 					if command -v udhcpd >/dev/null 2>&1; then
@@ -743,6 +804,20 @@ apply_wpa_hup() {
 NET_LOCK=/run/.netapply.lock
 NET_PENDING=/run/.netapply.pending
 
+# Finished applies are counted in NET_DONE, with builtins only.  "m5-config
+# set" waits for the count to move before it returns: while an apply runs,
+# the next program to start is the one the kernel refuses its memory, so
+# the caller must not get the prompt back before the change is live.
+# (bootsyncd moves the same count for a save that has nothing to apply.)
+NET_DONE=/run/.netapply.done
+
+net_done() {
+	_nd=0
+	[ -f "$NET_DONE" ] && read -r _nd < "$NET_DONE" 2>/dev/null
+	case "$_nd" in ''|*[!0-9]*) _nd=0 ;; esac
+	echo $((_nd + 1)) > "$NET_DONE" 2>/dev/null || true
+}
+
 net_acquire() {
 	if mkdir "$NET_LOCK" 2>/dev/null; then
 		echo $$ > "$NET_LOCK/pid"
@@ -783,6 +858,16 @@ net_dispatch() {
 				else
 					net_note "ES_CONFIG: $k applies to Tab5 only; ignored"
 				fi ;;
+			charger)
+				# Tab5 battery charger enable (expander 0x44
+				# P7): applied live, no restart.  auto tests
+				# for a pack with the charger off, so this
+				# takes a second.
+				if [ -x /usr/sbin/tab5-rails ]; then
+					/usr/sbin/tab5-rails charger || net_note "ES_CONFIG: $k apply failed"
+				else
+					net_note "ES_CONFIG: $k applies to Tab5 only; ignored"
+				fi ;;
 			autorun*|auto_reboot)
 				# autorun_* is applied by bootsync's autorun_apply;
 				# auto_reboot is re-read on every save.
@@ -793,6 +878,15 @@ net_dispatch() {
 				# image; on other boards the key is inert.
 				if [ -x /etc/init.d/S07backlight ]; then
 					/etc/init.d/S07backlight apply || net_note "ES_CONFIG: $k apply failed"
+				else
+					net_note "ES_CONFIG: $k applies to Tab5 only; ignored"
+				fi ;;
+			text_color)
+				# Tab5 panel text colour: applies live, no
+				# restart.  The script only ships in the Tab5
+				# image; on other boards the key is inert.
+				if [ -x /etc/init.d/S07textcolor ]; then
+					/etc/init.d/S07textcolor apply || net_note "ES_CONFIG: $k apply failed"
 				else
 					net_note "ES_CONFIG: $k applies to Tab5 only; ignored"
 				fi ;;
@@ -826,6 +920,28 @@ net_dispatch() {
 				fi ;;
 			wifi_ssid|wifi_psk|wifi_pmf|ssid|wpa_supplicant.conf)
 				hup=1 ;;
+			c6link)
+				# bootsyncd's link watch (#41): the C6 stopped answering.
+				# Re-initialise it and bring the network up again; the
+				# BLE keyboard daemon re-arms by itself when hci0 returns.
+				# The steps go to the console: apply runs with stdout on
+				# /dev/null.
+				c6_link_ok
+				case "$?" in
+				0)
+					net_note "M3-lab: C6 link answers again; no re-init" ;;
+				2)
+					net_note "M3-lab: no C6 driver loaded; no re-init" ;;
+				*)
+					net_note "M3-lab: C6 link is dead; re-initialising the C6"
+					stop_udhcpd
+					sig_if_running udhcpc TERM
+					if c6_reinit > "${C6_LOG:-/dev/console}" 2>&1; then
+						full=1
+					else
+						net_note "M3-lab: C6 re-init failed; the link watch asks again later"
+					fi ;;
+				esac ;;
 			*)
 				net_note "ES_CONFIG: $k has no targeted apply; restarting the network"
 				full=1 ;;
@@ -866,6 +982,7 @@ net_apply() {
 			net_dispatch $reqs
 		done
 		rm -rf "$NET_LOCK"
+		net_done
 		# A request written between the last drain and the unlock had no
 		# holder to drain it; pick it up ourselves.  If another requester
 		# already holds the lock it drains the file instead.

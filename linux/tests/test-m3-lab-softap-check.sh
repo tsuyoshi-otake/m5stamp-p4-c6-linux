@@ -10,7 +10,7 @@ trap 'rm -rf -- "$tmp"' EXIT HUP INT TERM
 mkdir -p "$tmp/bin"
 
 # Source just the check functions; globals they use are set below.
-sed -n '/^ap_supported()/,/^}/p;/^ap_live()/,/^}/p;/^ap_wait_ready()/,/^}/p;/^c6_reset_regs()/,/^}/p;/^c6_reset_pulse()/,/^}/p;/^c6_reinit()/,/^}/p' \
+sed -n '/^ap_supported()/,/^}/p;/^ap_live()/,/^}/p;/^ap_wait_ready()/,/^}/p;/^c6_reset_regs()/,/^}/p;/^c6_reset_pulse()/,/^}/p;/^c6_link_ok()/,/^}/p;/^c6_bind_wait()/,/^}/p;/^c6_reinit()/,/^}/p;/^net_dispatch()/,/^}/p' \
 	"$script" > "$tmp/funcs.sh"
 
 # Stub iw and dmesg; the check pipes them into real tail/grep.  iw dev
@@ -254,33 +254,196 @@ C6_MODEL_FILE="$tmp/model" c6_reset_pulse &&
 	echo "ok: pulse drives GPIO15 low then high" ||
 	{ echo "FAIL: pulse sequence: $(cat "$tmp/devmem.log")"; fails=$((fails + 1)); }
 
-# 12. c6_reinit: unbind the sdio function, reset, drivers_probe.
-# C6_SDIO_DEV injects the function path (Windows filesystems cannot
-# create a directory with ':' in its name like real sysfs has).
-mkdir -p "$tmp/sys/devices/mmc0-0001-1/driver"
-: > "$tmp/sys/devices/mmc0-0001-1/driver/unbind"
-: > "$tmp/sys/drivers_probe"
+# 12. c6_reinit with a link that still answers (the half-up case of #22):
+# unbind the mmc host, reset the C6, bind the host again (#41: only the
+# host's probe enumerates the card after a reset; a re-probe of the sdio
+# function alone times out on every command).  The host is found under
+# the driver directory.
+C6_OBS="$tmp/obs"
+echo "status=ok" > "$C6_OBS"
+mkdir -p "$tmp/drv/50083000.mmc"
+: > "$tmp/drv/unbind"
+: > "$tmp/drv/bind"
 rm -f "$tmp/devmem.log"
-if C6_SDIO_BUS="$tmp/sys" C6_SDIO_DEV="$tmp/sys/devices/mmc0-0001-1" \
-		C6_MODEL_FILE="$tmp/model" c6_reinit; then
-	[ "$(cat "$tmp/sys/devices/mmc0-0001-1/driver/unbind")" = "mmc0-0001-1" ] &&
-	[ "$(cat "$tmp/sys/drivers_probe")" = "mmc0-0001-1" ] &&
+if C6_MMC_DRV="$tmp/drv" C6_MODEL_FILE="$tmp/model" c6_reinit > "$tmp/reinit.out"; then
+	[ "$(cat "$tmp/drv/unbind")" = "50083000.mmc" ] &&
+	[ "$(cat "$tmp/drv/bind")" = "50083000.mmc" ] &&
 		grep -q '^0x500e000c 32 0x8000' "$tmp/devmem.log" &&
-		echo "ok: c6_reinit unbinds, resets and re-probes" ||
+		echo "ok: c6_reinit unbinds the mmc host, resets and binds it again" ||
 		{ echo "FAIL: c6_reinit side effects"; fails=$((fails + 1)); }
+	grep -q 'rebinding mmc host 50083000.mmc (the C6 link was alive)' "$tmp/reinit.out" &&
+		echo "ok: c6_reinit names the host it rebinds and the link state" ||
+		{ echo "FAIL: c6_reinit message: $(cat "$tmp/reinit.out")"; fails=$((fails + 1)); }
+	if grep -q 'last reset cause' "$tmp/reinit.out"; then
+		echo "FAIL: a reset cause was reported for a link the driver itself restarted"
+		fails=$((fails + 1))
+	else
+		echo "ok: no reset cause is reported after a pulse"
+	fi
 else
 	echo "FAIL: c6_reinit returned nonzero"
 	fails=$((fails + 1))
 fi
 
-# 13. No sdio function device -> clean skip.
-mkdir -p "$tmp/sys-empty/devices"
-if C6_SDIO_BUS="$tmp/sys-empty" c6_reinit 2>/dev/null; then
-	echo "FAIL: c6_reinit passed with no sdio function"
+# 12a. c6_link_ok reads the first line of the observation node.
+echo "status=ok" > "$C6_OBS"
+c6_link_ok
+expect "c6_link_ok: status=ok answers" "$?"
+echo "status=read_fail ret=-110" > "$C6_OBS"
+c6_link_ok; rc=$?
+[ "$rc" -eq 1 ]
+expect "c6_link_ok: read_fail is a dead link" "$?"
+echo "status=no_func" > "$C6_OBS"
+c6_link_ok; rc=$?
+[ "$rc" -eq 1 ]
+expect "c6_link_ok: no_func is a dead link" "$?"
+rm -f "$C6_OBS"
+c6_link_ok; rc=$?
+[ "$rc" -eq 2 ]
+expect "c6_link_ok: no node means no driver" "$?"
+
+# 12d. A dead link is first rebound WITHOUT the pulse, so that the C6 can
+# say why it went down; the last cause in dmesg is the fresh one.
+echo "status=read_fail ret=-110" > "$C6_OBS"
+: > "$tmp/drv/unbind"
+: > "$tmp/drv/bind"
+rm -f "$tmp/devmem.log"
+cat > "$tmp/dmesg" <<EOF
+esp32_sdio: process_fw_data: ESP chipset's last reset cause:
+esp32_sdio: print_reset_reason: POWERON_RESET
+esp32_sdio: tx_process: Failed to send data: -110 28 28
+mmc1: new SDIO card at address 0001
+esp32_sdio: process_fw_data: ESP chipset's last reset cause:
+esp32_sdio: print_reset_reason: TG0WDT_SYS_RESET
+esp32_sdio: check_esp_version: ESP-Hosted Version: NG-1.0.6.0.1
+EOF
+if C6_MMC_DRV="$tmp/drv" C6_MODEL_FILE="$tmp/model" c6_reinit > "$tmp/reinit.out"; then
+	[ "$(cat "$tmp/drv/unbind")" = "50083000.mmc" ] &&
+	[ "$(cat "$tmp/drv/bind")" = "50083000.mmc" ] &&
+	[ ! -e "$tmp/devmem.log" ] &&
+		echo "ok: a dead link is rebound without a reset pulse" ||
+		{ echo "FAIL: dead-link rebind side effects"; fails=$((fails + 1)); }
+	grep -q 'the C6 link was dead' "$tmp/reinit.out" &&
+	grep -q 'its last reset cause: TG0WDT_SYS_RESET$' "$tmp/reinit.out" &&
+		echo "ok: the C6's own reset cause is reported" ||
+		{ echo "FAIL: reset cause: $(cat "$tmp/reinit.out")"; fails=$((fails + 1)); }
+else
+	echo "FAIL: c6_reinit on a dead link returned nonzero"
+	fails=$((fails + 1))
+fi
+
+# 12e. A dead C6 that does not come back by itself gets the pulse after
+# all: wlan0 stays away for the ten checks of the plain rebind.
+: > "$tmp/drv/unbind"
+: > "$tmp/drv/bind"
+rm -f "$tmp/devmem.log" "$tmp/ifc"
+ifconfig() {
+	[ "${2:-}" = down ] && return 0
+	n=$(cat "$tmp/ifc" 2>/dev/null || echo 0)
+	n=$((n + 1))
+	echo "$n" > "$tmp/ifc"
+	[ "$n" -gt 10 ]
+}
+if C6_MMC_DRV="$tmp/drv" C6_MODEL_FILE="$tmp/model" c6_reinit > "$tmp/reinit.out"; then
+	grep -q '^0x500e000c 32 0x8000' "$tmp/devmem.log" 2>/dev/null &&
+	grep -q 'did not come back by itself; pulsing its reset' "$tmp/reinit.out" &&
+	[ "$(cat "$tmp/ifc")" = 11 ] &&
+		echo "ok: the pulse follows when the plain rebind brings nothing" ||
+		{ echo "FAIL: pulse fallback: $(cat "$tmp/reinit.out")"; fails=$((fails + 1)); }
+	if grep -q 'last reset cause' "$tmp/reinit.out"; then
+		echo "FAIL: a reset cause was reported after the pulse fallback"
+		fails=$((fails + 1))
+	else
+		echo "ok: the pulse fallback reports no reset cause"
+	fi
+else
+	echo "FAIL: c6_reinit with the pulse fallback returned nonzero"
+	fails=$((fails + 1))
+fi
+ifconfig() { return 1; }
+if C6_MMC_DRV="$tmp/drv" C6_MODEL_FILE="$tmp/model" c6_reinit > "$tmp/reinit.out"; then
+	echo "FAIL: c6_reinit passed although wlan0 never returned"
 	fails=$((fails + 1))
 else
-	echo "ok: c6_reinit skips when no sdio function is bound"
+	grep -q 'wlan0 did not return after C6 re-init' "$tmp/reinit.out" &&
+		echo "ok: c6_reinit fails when wlan0 never returns" ||
+		{ echo "FAIL: no-wlan0 message"; fails=$((fails + 1)); }
 fi
+ifconfig() { return 0; }
+echo "status=ok" > "$C6_OBS"
+
+# 12b. The source must not go back to the function-level re-probe.
+if sed -n '/^c6_reinit()/,/^}/p' "$script" | grep -q 'drivers_probe'; then
+	echo "FAIL: c6_reinit re-probes the sdio function again"
+	fails=$((fails + 1))
+else
+	echo "ok: c6_reinit does not re-probe the sdio function"
+fi
+
+# 12c. A host an interrupted attempt left unbound is not under the
+# driver any more: nothing to unbind, but it is still bound again.
+mkdir -p "$tmp/drv2"
+: > "$tmp/drv2/unbind"
+: > "$tmp/drv2/bind"
+if C6_MMC_DRV="$tmp/drv2" C6_MMC_HOST=50083000.mmc C6_MODEL_FILE="$tmp/model" \
+		c6_reinit >/dev/null; then
+	[ ! -s "$tmp/drv2/unbind" ] && [ "$(cat "$tmp/drv2/bind")" = "50083000.mmc" ] &&
+		echo "ok: an unbound host is only bound" ||
+		{ echo "FAIL: unbound host handling"; fails=$((fails + 1)); }
+else
+	echo "FAIL: c6_reinit with an unbound host returned nonzero"
+	fails=$((fails + 1))
+fi
+
+# 13. No mmc host driver -> clean skip.
+mkdir -p "$tmp/drv-empty"
+if C6_MMC_DRV="$tmp/drv-empty" C6_MMC_HOST=50083000.mmc c6_reinit >/dev/null 2>&1; then
+	echo "FAIL: c6_reinit passed with no mmc host driver"
+	fails=$((fails + 1))
+else
+	echo "ok: c6_reinit skips when there is no mmc host to rebind"
+fi
+
+# 14. The SoftAP retry says what it is about to do before the re-init.
+grep -q 'echo "M3-lab: retrying SoftAP once after C6 re-init"' "$script" &&
+	echo "ok: start announces the SoftAP retry" ||
+	{ echo "FAIL: SoftAP retry message"; fails=$((fails + 1)); }
+
+# 15. apply c6link (asked by bootsyncd's link watch, #41): a dead link is
+# re-initialised and the network restarted; a link that answers again, a
+# missing driver or a failed re-init restart nothing.
+net_note() { echo "$1" >> "$tmp/notes"; }
+stop_udhcpd() { :; }
+sig_if_running() { :; }
+net_reload_seq() { echo reload >> "$tmp/reloads"; }
+apply_wpa_hup() { echo hup >> "$tmp/reloads"; }
+c6_reinit() { echo "re-init steps"; return "$REINIT_RC"; }
+C6_LOG="$tmp/c6.log"
+c6link_case() { # name obs-line("" = no node) reinit-rc want-reload want-note
+	rm -f "$tmp/notes" "$tmp/reloads" "$C6_LOG" "$C6_OBS"
+	[ -n "$2" ] && echo "$2" > "$C6_OBS"
+	REINIT_RC=$3
+	net_dispatch c6link
+	got=0
+	[ -f "$tmp/reloads" ] && got=1
+	if [ "$got" = "$4" ] && grep -q "$5" "$tmp/notes" 2>/dev/null; then
+		echo "ok: apply c6link: $1"
+	else
+		echo "FAIL: apply c6link: $1 (reload=$got notes: $(cat "$tmp/notes" 2>/dev/null))"
+		fails=$((fails + 1))
+	fi
+}
+c6link_case "a dead link is re-initialised and the network restarted" \
+	"status=read_fail ret=-110" 0 1 "C6 link is dead; re-initialising"
+grep -q 're-init steps' "$C6_LOG" 2>/dev/null &&
+	echo "ok: apply c6link: the re-init steps reach the console" ||
+	{ echo "FAIL: apply c6link: re-init output lost"; fails=$((fails + 1)); }
+c6link_case "a failed re-init restarts nothing" \
+	"status=read_fail ret=-110" 1 0 "C6 re-init failed"
+c6link_case "a link that answers again is left alone" \
+	"status=ok" 0 0 "answers again; no re-init"
+c6link_case "no driver, nothing to do" \
+	"" 0 0 "no C6 driver loaded"
 
 if [ "$fails" -eq 0 ]; then
 	echo "PASS: S40network SoftAP liveness checks"

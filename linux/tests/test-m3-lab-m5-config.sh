@@ -77,6 +77,9 @@ export M5CFG_HOME_M5="$tmp/home-m5" M5CFG_HOME_ROOT="$tmp/home-root"
 export RUN_SYSTEM_CLASS_UDC_ROOT="$tmp/udc" M5CFG_SAVE_WAIT=3 M5CFG_ASSUME_ROOT=1
 # The denied-exec retry delay is real on board but only slows the host.
 export M5CFG_SPIN=50
+# The wait for the live apply has its own tests at the end; everywhere
+# else there is no S40network whose count could move.
+export M5CFG_APPLY_WAIT=0
 # Runtime bond store is the staged /tmp copy (#43), never $BOOT_MNT.
 export M5CFG_BLE_BONDS="$tmp/ble-bonds.dat"
 
@@ -522,6 +525,10 @@ EOF
 chmod +x "$tmp/bin/ble-kbd"
 printf '  AA:BB:CC:DD:EE:01 type=1 rssi=-50 [HID] name=Kbd One\n' \
 	 > "$tmp/ble-in"
+# a scan prints every advertising report: the repeat of EE:01 must not
+# take a slot, or the 2nd-slot tap below would pick EE:01 again (#41)
+printf '  AA:BB:CC:DD:EE:01 type=1 rssi=-52 [HID] name=Kbd One\n' \
+	>> "$tmp/ble-in"
 printf '  AA:BB:CC:DD:EE:02 type=1 rssi=-60 [HID] name=Kbd One\n' \
 	>> "$tmp/ble-in"
 : > "$tmp/blelog"
@@ -534,7 +541,7 @@ out=$(M5CFG_BLE_KBD="$tmp/bin/ble-kbd" M5CFG_BLELOG="$tmp/blelog" \
 echo "$out" | grep -q 'EE:01' && echo "$out" | grep -q 'EE:02' &&
 	ok "same-named keyboards get distinct labels" || bad "ble labels: $out"
 grep -q 'pair AA:BB:CC:DD:EE:02' "$tmp/blelog" &&
-	ok "tap resolved by slot index (2nd addr)" ||
+	ok "tap resolved by slot index (2nd addr, repeated report skipped)" ||
 	bad "slot resolve: $(cat "$tmp/blelog")"
 # the tool's own output is verbatim (it does its own bolding on a
 # real tty) -- the menu only draws the header.
@@ -562,6 +569,11 @@ pair)
 		exit 7
 	fi
 	printf 'paired + bonded (keys stored, not shown)\n' ;;
+daemon)
+	# the menu's direct start after a refused init script
+	if [ -z "$BLE_FAKE_NODIRECT" ]; then
+		mkdir -p "$M5CFG_PROC/4343" && echo ble-kbd > "$M5CFG_PROC/4343/comm"
+	fi ;;
 forget)
 	printf 'M5b\0\0\0\0\0' > "$M5CFG_BLE_BONDS"
 	printf 'forgotten\n' ;;
@@ -574,6 +586,11 @@ cat > "$tmp/bin/S95blekbd" <<'EOF'
 # restart must come AFTER the menu's own persist, not before it --
 # the daemon takes pool the save needs (#41 review).
 if [ "$1" = restart ]; then
+	# a started daemon shows up as a ble-kbd process (m5-config checks
+	# /proc with builtins); BLE_FAKE_NODAEMON simulates a refused exec
+	if [ -z "$BLE_FAKE_NODAEMON" ]; then
+		mkdir -p "$M5CFG_PROC/4242" && echo ble-kbd > "$M5CFG_PROC/4242/comm"
+	fi
 	if tar -tf "$M5CFG_BOOT_IMG" 2>/dev/null | grep -q ble-bonds.dat; then
 		echo "initd restart img=bond" >> "$M5CFG_INITLOG"
 	else
@@ -585,7 +602,8 @@ fi
 exit 0
 EOF
 chmod +x "$tmp/bin/S95blekbd"
-mkdir -p "$tmp/boot" "$tmp/run"
+mkdir -p "$tmp/boot" "$tmp/run" "$tmp/proc"
+export M5CFG_PROC="$tmp/proc"
 printf '  AA:BB:CC:DD:EE:01 type=1 rssi=-50 [HID] name=Kbd One\n' > "$tmp/ble-in"
 printf '  AA:BB:CC:DD:EE:02 type=1 rssi=-60 [HID] name=Kbd One\n' >> "$tmp/ble-in"
 : > "$tmp/blelog"; : > "$tmp/initlog"
@@ -643,6 +661,43 @@ grep -q 'initd restart' "$tmp/initlog" &&
 	ok "rc7 still restarts the daemon on the staged bond" ||
 	bad "rc7 initd: $(cat "$tmp/initlog")"
 rm -f "$tmp/run/.boot-nosave"
+
+# 27b. #41 on the board: with the menu up NOMMU refused the init
+# script's execs, no daemon ran, and the panel still said "press a
+# key".  The menu must retry, fall back to starting ble-kbd itself, and
+# only promise a connect when a ble-kbd process really exists.
+# (i) init script refused, direct start works.
+rm -rf "$tmp/proc"; mkdir -p "$tmp/proc"
+: > "$tmp/blelog"; : > "$tmp/initlog"; touch "$tmp/ble-release"
+printf 'T 8 50\nT 4 10\nT 4 50\nT 20 10\nT 20 10\nT 20 10\n' > "$tmp/tscr/events"
+out=$(BLE_FAKE_NODAEMON=1 M5CFG_SPIN=200000 \
+	M5CFG_BLE_KBD="$tmp/bin/ble-kbd" M5CFG_BLELOG="$tmp/blelog" \
+	M5CFG_BLE_IN="$tmp/ble-in" M5CFG_TSCRIPT="$tmp/tscr/events" \
+	M5CFG_BLE_INITD="$tmp/bin/S95blekbd" M5CFG_INITLOG="$tmp/initlog" \
+	M5CFG_BLE_RELEASE="$tmp/ble-release" M5CFG_BOOT_MNT="$tmp/boot" \
+	M5CFG_RUN_DIR="$tmp/run" sh "$tool" menu </dev/null 2>&1)
+_nr=$(grep -c 'initd restart' "$tmp/initlog")
+[ "$_nr" -eq 3 ] && grep -q 'ble-kbd daemon' "$tmp/blelog" &&
+	echo "$out" | grep -q 'press a key on the keyboard to connect' &&
+	! echo "$out" | grep -q 'did not start' &&
+	ok "refused init script -> 3 retries, then direct daemon start" ||
+	bad "direct start: restarts=$_nr $(cat "$tmp/blelog"); $(echo "$out" | tail -5)"
+# (ii) nothing starts at all: no false "press a key" promise.
+rm -rf "$tmp/proc"; mkdir -p "$tmp/proc"
+: > "$tmp/blelog"; : > "$tmp/initlog"
+printf 'T 8 50\nT 4 10\nT 4 50\nT 20 10\nT 20 10\nT 20 10\n' > "$tmp/tscr/events"
+out=$(BLE_FAKE_NODAEMON=1 BLE_FAKE_NODIRECT=1 M5CFG_SPIN=2000 \
+	M5CFG_BLE_KBD="$tmp/bin/ble-kbd" M5CFG_BLELOG="$tmp/blelog" \
+	M5CFG_BLE_IN="$tmp/ble-in" M5CFG_TSCRIPT="$tmp/tscr/events" \
+	M5CFG_BLE_INITD="$tmp/bin/S95blekbd" M5CFG_INITLOG="$tmp/initlog" \
+	M5CFG_BLE_RELEASE="$tmp/ble-release" M5CFG_BOOT_MNT="$tmp/boot" \
+	M5CFG_RUN_DIR="$tmp/run" sh "$tool" menu </dev/null 2>&1)
+echo "$out" | grep -q 'keyboard service did not start' &&
+	echo "$out" | grep -q 'reboot to connect the keyboard' &&
+	! echo "$out" | grep -q 'press a key on the keyboard to connect' &&
+	ok "no daemon -> honest 'did not start' instead of 'press a key'" ||
+	bad "no daemon wording: $(echo "$out" | tail -6)"
+rm -rf "$tmp/proc"; mkdir -p "$tmp/proc"; rm -f "$tmp/ble-release"
 
 # 28. forget of the last bond stops the daemon (the fake forget writes
 # an 8-byte header-only store to the staged path, like the real tool
@@ -1135,10 +1190,12 @@ n=$(printf '%s' "$out" | grep -o "$escR" | wc -l)
 # the pattern below only flags a $( that does not open another (.
 _lint_fns="menu_pick tpick tconfirm tadjust ttext tpage pause item \
 _tblock _navdraw _tflash _tget say msg _tmsg nosave_note scr_clear \
-menu_wifi menu_system menu_datetime menu_display menu_sound \
+menu_wifi menu_system menu_datetime menu_display menu_brightness \
+menu_textcolor menu_sound \
 menu_ports menu_blekbd menu_power menu_lpcore menu_status menu_main \
 status_lines menu_set menu_secret menu_choose menu_adjust menu_keys \
-_blescan touch_ok _touch_init _pal_set _pal_restore set_apply trun \
+_blescan _ble_statuses _ble_refused _ble_list_show \
+ble_daemon_up ble_restart_daemon touch_ok _touch_init _pal_set _pal_restore set_apply trun \
 cfg_get eff_file key_file keys_file eff_ssid key_explained lun_file \
 do_get is_key_line pwroff_support _cleanup _drive_clean key_maxlen \
 _kbroww _kblock _kb_keys _kb_field _kb_char _kb_hit _kb_press"
@@ -1724,6 +1781,568 @@ stop_saver
 [ "$(grep -c 'stty echo' "$tmp/sttylog" 2>/dev/null)" -ge 3 ] &&
 	ok "stty echo retried through denied execs" ||
 	bad "stty retry: $(cat "$tmp/sttylog" 2>/dev/null)"
+
+# 36. B55: text_color -- the preset lib, the managed key, S07textcolor
+# and the Display menu path.  The hue values are tuned on the panel
+# by eye and camera and may move again, so the checks pin the preset
+# SHAPE, never an rrggbb.
+TCLIB="$repo_root/linux/m3-lab/rootfs-overlay-tab5/usr/lib/board/textcolor.sh"
+. "$TCLIB"
+# (a) the lib: every listed name resolves, an unknown one is rc 1.
+_tcb=0
+for n in $TEXTCOLOR_NAMES; do
+	textcolor_seq "$n" || { _tcb=1; bad "textcolor_seq $n rc=$?"; }
+done
+[ "$_tcb" -eq 0 ] &&
+	ok "textcolor_seq accepts every name in TEXTCOLOR_NAMES"
+# non-white shape: exactly 16 ]P entries (\033]PdRRGGBB = 13 chars,
+# digit = upper-case hex slot), slot 0 000000, 1-7 equal, 9-F equal,
+# slot 8 differs from both groups.
+_tcb=0
+for n in $TEXTCOLOR_NAMES; do
+	[ "$n" = white ] && continue
+	textcolor_seq "$n"
+	printf '%s' "$TC_SEQ" | awk '
+		{
+			if (length($0) != 208) exit 1
+			for (i = 0; i < 16; i++) {
+				e = substr($0, i * 13 + 1, 13)
+				if (substr(e, 1, 6) != "\\033]P") exit 1
+				d = substr(e, 7, 1); c = substr(e, 8, 6)
+				if (d != substr("0123456789ABCDEF", i + 1, 1)) exit 1
+				if (i == 0) { if (c != "000000") exit 1 }
+				else if (i < 8) {
+					if (nrm == "") nrm = c
+					else if (c != nrm) exit 1
+				} else if (i == 8) dim = c
+				else {
+					if (brt == "") brt = c
+					else if (c != brt) exit 1
+				}
+			}
+			if (nrm == "000000" || dim == nrm || dim == brt) exit 1
+		}' || { _tcb=1; bad "preset $n shape"; }
+done
+[ "$_tcb" -eq 0 ] &&
+	ok "presets: 16 slots, slot0 black, mono normal/dim/bright"
+textcolor_seq white && [ "$TC_SEQ" = '\033]R' ] && [ -n "$TC_HEX" ] &&
+	ok "white resets to the stock palette" || bad "white: $TC_SEQ"
+TC_SEQ=x TC_HEX=x
+textcolor_seq nosuch 2>/dev/null; rc=$?
+[ "$rc" -eq 1 ] && [ -z "$TC_SEQ" ] && [ -z "$TC_HEX" ] &&
+	ok "unknown name: rc 1, TC_SEQ/TC_HEX empty" ||
+	bad "unknown name rc=$rc seq=$TC_SEQ"
+
+# (b) the managed key: set/get/list round trip through drive_write,
+# an unknown colour rejected with the name list, "" deletes, and the
+# missing-lib gate hides the key (the Stamp path).
+start_saver
+out=$(M5CFG_TEXTCOLOR_LIB="$TCLIB" sh "$tool" set text_color amber 2>&1); rc=$?
+stop_saver
+[ "$rc" -eq 0 ] && echo "$out" | grep -qF 'saved to flash' &&
+	[ "$(imgfile config.txt | grep -c '^text_color=amber')" = 1 ] &&
+	ok "set text_color saves through drive_write" ||
+	bad "set text_color: rc=$rc $out"
+imgfile config.txt > "$tmp/pub/config.txt"
+out=$(M5CFG_TEXTCOLOR_LIB="$TCLIB" sh "$tool" get text_color 2>&1)
+[ "$out" = "amber" ] && ok "get text_color returns the saved value" ||
+	bad "get text_color: $out"
+out=$(M5CFG_TEXTCOLOR_LIB="$TCLIB" sh "$tool" list 2>&1)
+echo "$out" | grep -qF 'text_color = amber' &&
+	ok "list shows text_color" || bad "list text_color: $out"
+out=$(M5CFG_TEXTCOLOR_LIB="$TCLIB" sh "$tool" set text_color purple 2>&1); rc=$?
+[ "$rc" -eq 1 ] &&
+	echo "$out" | grep -qF "text_color is one of: $TEXTCOLOR_NAMES" &&
+	ok "unknown colour rejected with the name list" ||
+	bad "reject text_color: rc=$rc $out"
+out=$(M5CFG_TEXTCOLOR_LIB="$TCLIB" sh "$tool" get text_color 2>&1)
+[ "$out" = "amber" ] && ok "reject left the saved value alone" ||
+	bad "post-reject get: $out"
+start_saver
+out=$(M5CFG_TEXTCOLOR_LIB="$TCLIB" sh "$tool" set text_color "" 2>&1); rc=$?
+stop_saver
+[ "$rc" -eq 0 ] && ! imgfile config.txt | grep -q '^text_color=' &&
+	ok "set text_color \"\" removes the key" ||
+	bad "unset text_color rc=$rc: $out"
+out=$(M5CFG_TEXTCOLOR_LIB=/nonexistent sh "$tool" set text_color amber 2>&1); rc=$?
+[ "$rc" -eq 1 ] && echo "$out" | grep -qF 'not present on this board' &&
+	ok "no lib: set text_color rejected" || bad "nolib set: rc=$rc $out"
+out=$(M5CFG_TEXTCOLOR_LIB=/nonexistent sh "$tool" list 2>&1)
+echo "$out" | grep -q 'text_color' &&
+	bad "no lib: list still shows text_color" ||
+	ok "no lib: list hides text_color"
+
+# (c) S07textcolor against a temp file as the tty.  Expected output is
+# generated by the same printf "$TC_SEQ" the script runs, so the
+# compare proves real ESC bytes and the right palette.
+S07TC="$repo_root/linux/m3-lab/rootfs-overlay-tab5/etc/init.d/S07textcolor"
+mkdir -p "$tmp/s07tc" "$tmp/tcrun" "$tmp/tcproc"
+: > "$tmp/tctty"
+textcolor_seq amber
+# every palette write carries the DECSCNM redraw pair: text already on
+# the panel keeps its old colours otherwise.
+{ printf "$TC_SEQ"; printf '\033[?5h\033[?5l'; } > "$tmp/tc-want-apply"
+printf '\033]R\033[?5h\033[?5l' > "$tmp/tc-want-reset"
+printf 'text_color=amber\n' > "$tmp/s07tc/config.txt"
+M5CFG_CONFIG_TXT="$tmp/s07tc/config.txt" M5CFG_TEXTCOLOR_TTY="$tmp/tctty" \
+	M5CFG_TEXTCOLOR_LIB="$TCLIB" M5CFG_RUN_DIR="$tmp/tcrun" \
+	M5CFG_PROC="$tmp/tcproc" sh "$S07TC" start
+cmp -s "$tmp/tctty" "$tmp/tc-want-apply" &&
+	ok "S07textcolor start writes the amber palette + the redraw toggle" ||
+	bad "s07tc start: $(od -c "$tmp/tctty" | head -2)"
+printf 'hostname=x\n' > "$tmp/s07tc/config.txt"
+: > "$tmp/tctty"
+M5CFG_CONFIG_TXT="$tmp/s07tc/config.txt" M5CFG_TEXTCOLOR_TTY="$tmp/tctty" \
+	M5CFG_TEXTCOLOR_LIB="$TCLIB" M5CFG_RUN_DIR="$tmp/tcrun" \
+	M5CFG_PROC="$tmp/tcproc" sh "$S07TC" start
+[ ! -s "$tmp/tctty" ] &&
+	ok "start without the key writes nothing" ||
+	bad "s07tc start no-key wrote: $(od -c "$tmp/tctty" | head -2)"
+printf 'text_color=amber\n' > "$tmp/s07tc/config.txt"
+: > "$tmp/tctty"
+M5CFG_CONFIG_TXT="$tmp/s07tc/config.txt" M5CFG_TEXTCOLOR_TTY="$tmp/tctty" \
+	M5CFG_TEXTCOLOR_LIB="$TCLIB" M5CFG_RUN_DIR="$tmp/tcrun" \
+	M5CFG_PROC="$tmp/tcproc" sh "$S07TC" apply
+cmp -s "$tmp/tctty" "$tmp/tc-want-apply" &&
+	ok "apply writes the palette + the redraw toggle" ||
+	bad "s07tc apply: $(od -c "$tmp/tctty" | head -3)"
+printf 'hostname=x\n' > "$tmp/s07tc/config.txt"
+: > "$tmp/tctty"
+M5CFG_CONFIG_TXT="$tmp/s07tc/config.txt" M5CFG_TEXTCOLOR_TTY="$tmp/tctty" \
+	M5CFG_TEXTCOLOR_LIB="$TCLIB" M5CFG_RUN_DIR="$tmp/tcrun" \
+	M5CFG_PROC="$tmp/tcproc" sh "$S07TC" apply
+cmp -s "$tmp/tctty" "$tmp/tc-want-reset" &&
+	ok "apply without the key resets to white + toggles" ||
+	bad "s07tc apply no-key: $(od -c "$tmp/tctty" | head -3)"
+printf '  text_color=  amber  \r\n' > "$tmp/s07tc/config.txt"
+: > "$tmp/tctty"
+M5CFG_CONFIG_TXT="$tmp/s07tc/config.txt" M5CFG_TEXTCOLOR_TTY="$tmp/tctty" \
+	M5CFG_TEXTCOLOR_LIB="$TCLIB" M5CFG_RUN_DIR="$tmp/tcrun" \
+	M5CFG_PROC="$tmp/tcproc" sh "$S07TC" start
+cmp -s "$tmp/tctty" "$tmp/tc-want-apply" &&
+	ok "a CRLF line and blanks around the value work" ||
+	bad "s07tc crlf: $(od -c "$tmp/tctty" | head -2)"
+printf 'text_color=purple\n' > "$tmp/s07tc/config.txt"
+: > "$tmp/tctty"
+M5CFG_CONFIG_TXT="$tmp/s07tc/config.txt" M5CFG_TEXTCOLOR_TTY="$tmp/tctty" \
+	M5CFG_TEXTCOLOR_LIB="$TCLIB" M5CFG_RUN_DIR="$tmp/tcrun" \
+	M5CFG_PROC="$tmp/tcproc" sh "$S07TC" start
+[ ! -s "$tmp/tctty" ] &&
+	ok "start with an invalid name writes nothing" ||
+	bad "s07tc start invalid wrote"
+M5CFG_CONFIG_TXT="$tmp/s07tc/config.txt" M5CFG_TEXTCOLOR_TTY="$tmp/tctty" \
+	M5CFG_TEXTCOLOR_LIB="$TCLIB" M5CFG_RUN_DIR="$tmp/tcrun" \
+	M5CFG_PROC="$tmp/tcproc" sh "$S07TC" apply
+cmp -s "$tmp/tctty" "$tmp/tc-want-reset" &&
+	ok "apply with an invalid name behaves like no key" ||
+	bad "s07tc apply invalid: $(od -c "$tmp/tctty" | head -3)"
+# apply is skipped while a live menu session owns the palette: the
+# event file plus a live pid dir.  A stale file of a dead pid must
+# not block.
+: > "$tmp/tcrun/.m5cfg-ev.$$"; mkdir -p "$tmp/tcproc/$$"
+: > "$tmp/tctty"
+M5CFG_CONFIG_TXT="$tmp/s07tc/config.txt" M5CFG_TEXTCOLOR_TTY="$tmp/tctty" \
+	M5CFG_TEXTCOLOR_LIB="$TCLIB" M5CFG_RUN_DIR="$tmp/tcrun" \
+	M5CFG_PROC="$tmp/tcproc" sh "$S07TC" apply
+[ ! -s "$tmp/tctty" ] &&
+	ok "apply is skipped while a live menu session is up" ||
+	bad "s07tc apply not skipped: $(od -c "$tmp/tctty" | head -2)"
+rm -f "$tmp/tcrun/.m5cfg-ev.$$"; rmdir "$tmp/tcproc/$$"
+: > "$tmp/tcrun/.m5cfg-ev.999999"
+: > "$tmp/tctty"
+M5CFG_CONFIG_TXT="$tmp/s07tc/config.txt" M5CFG_TEXTCOLOR_TTY="$tmp/tctty" \
+	M5CFG_TEXTCOLOR_LIB="$TCLIB" M5CFG_RUN_DIR="$tmp/tcrun" \
+	M5CFG_PROC="$tmp/tcproc" sh "$S07TC" apply
+cmp -s "$tmp/tctty" "$tmp/tc-want-reset" &&
+	ok "a stale event file of a dead pid does not block apply" ||
+	bad "s07tc dead pid: $(od -c "$tmp/tctty" | head -3)"
+rm -f "$tmp/tcrun/.m5cfg-ev.999999"
+# missing tty: a soft no-op, exit 0.
+M5CFG_CONFIG_TXT="$tmp/s07tc/config.txt" \
+	M5CFG_TEXTCOLOR_TTY="$tmp/no-such-tty" \
+	M5CFG_TEXTCOLOR_LIB="$TCLIB" M5CFG_RUN_DIR="$tmp/tcrun" \
+	M5CFG_PROC="$tmp/tcproc" sh "$S07TC" start; rc=$?
+[ "$rc" -eq 0 ] && ok "missing tty is a soft no-op" ||
+	bad "s07tc notty rc=$rc"
+
+# (d) the menu, touch mode.  With backlight + presets the Display
+# screen is the two-item submenu; amber = tpick slot 2.
+textcolor_seq amber; _aseq=$(printf "$TC_SEQ"); _ahex=$TC_HEX
+printf 'T 8 50\nT 4 50\nT 8 10\nT 20 10\nT 20 10\nT 20 10\n' \
+	> "$tmp/tscr/events"
+start_saver
+out=$(M5CFG_BLDIR="$tmp/bl" M5CFG_TEXTCOLOR_LIB="$TCLIB" \
+	M5CFG_TSCRIPT="$tmp/tscr/events" sh "$tool" menu </dev/null 2>&1)
+stop_saver
+imgfile config.txt > "$tmp/pub/config.txt"
+[ "$(imgfile config.txt | grep -c '^text_color=')" = 1 ] &&
+	imgfile config.txt | grep -q '^text_color=amber' &&
+	ok "touch pick saves text_color=amber once" ||
+	bad "touch amber: $(imgfile config.txt | grep text_color) $out"
+echo "$out" | grep -qF 'sample -- the console changes when you leave the menu' &&
+	printf '%s' "$out" | grep -qF "$(printf '\033]P9%s' "$_ahex")" &&
+	ok "sample line drawn in the new colour" ||
+	bad "sample line: $out"
+# The sample sits on header row 2; the save result in the message
+# strip (row MSGTOP+1 = 19) must not be overwritten by it.
+printf '%s' "$out" | grep -qF "$(printf '\033[2;1H\033[1;31m  sample')" &&
+	! printf '%s' "$out" | grep -qF "$(printf '\033[19;1H\033[1;31m')" &&
+	echo "$out" | grep -qF 'saved to flash' &&
+	ok "sample on the header row, save result left readable" ||
+	bad "sample row: $(printf '%s' "$out" | grep -o 'H.\[1;31m  sample' | head -2)"
+# On exit the stock reset comes first, then the configured preset.
+printf '%s' "$out" | grep -qF "$escR$_aseq" &&
+	ok "exit emits ESC ] R then re-applies the preset" ||
+	bad "restore order: $(printf '%s' "$out" | tail -c 300 | od -c | head -6)"
+# brightness is still reachable through the two-item Display screen.
+printf 'T 8 50\nT 4 10\nT 8 10\nT 20 10\nT 20 10\nT 20 10\n' \
+	> "$tmp/tscr/events"
+echo 500 > "$tmp/bl/bl0/brightness"
+start_saver
+out=$(M5CFG_BLDIR="$tmp/bl" M5CFG_TEXTCOLOR_LIB="$TCLIB" \
+	M5CFG_TSCRIPT="$tmp/tscr/events" sh "$tool" menu </dev/null 2>&1)
+stop_saver
+echo "$out" | grep -qF '2 text colour' &&
+	[ "$(imgfile config.txt | grep -c '^brightness=50')" = 1 ] &&
+	ok "brightness reachable through the two-item Display screen" ||
+	bad "display submenu: $(echo "$out" | tail -6)"
+# back out of the colour picker: nothing is saved.
+start_saver
+M5CFG_TEXTCOLOR_LIB="$TCLIB" sh "$tool" set text_color "" >/dev/null 2>&1
+stop_saver
+printf 'T 8 50\nT 4 50\nT 20 10\nT 20 10\nT 20 10\nT 20 10\n' \
+	> "$tmp/tscr/events"
+out=$(M5CFG_BLDIR="$tmp/bl" M5CFG_TEXTCOLOR_LIB="$TCLIB" \
+	M5CFG_TSCRIPT="$tmp/tscr/events" sh "$tool" menu </dev/null 2>&1)
+! imgfile config.txt | grep -q '^text_color=' &&
+	echo "$out" | grep -qF 'unchanged' &&
+	ok "cancel in the colour picker saves nothing" ||
+	bad "cancel: $(imgfile config.txt | grep text_color) $out"
+# no lib: Display opens brightness directly (the old behaviour).
+printf 'T 8 50\nT 8 10\nT 20 10\nT 20 10\n' > "$tmp/tscr/events"
+echo 500 > "$tmp/bl/bl0/brightness"
+start_saver
+out=$(env -u M5CFG_TEXTCOLOR_LIB M5CFG_BLDIR="$tmp/bl" \
+	M5CFG_TSCRIPT="$tmp/tscr/events" sh "$tool" menu </dev/null 2>&1)
+stop_saver
+echo "$out" | grep -qF '== brightness ==' &&
+	! echo "$out" | grep -qF 'text colour' &&
+	[ "$(imgfile config.txt | grep -c '^brightness=50')" = 1 ] &&
+	ok "no lib: Display opens brightness directly" ||
+	bad "nolib display: $out"
+
+# (e) plain mode: the typed pick saves, and no palette sequence ever
+# goes to the caller's own terminal.
+printf '4\namber\n\n0\n' > "$tmp/tscr/kbd"
+start_saver
+out=$(env -u M5CFG_FORCE_TOUCH M5CFG_TEXTCOLOR_LIB="$TCLIB" \
+	sh "$tool" menu < "$tmp/tscr/kbd" 2>&1)
+stop_saver
+[ "$(imgfile config.txt | grep -c '^text_color=amber')" = 1 ] &&
+	! printf '%s' "$out" | grep -q "$(printf '\033\]P')" &&
+	ok "plain mode types a colour, saves, writes no palette" ||
+	bad "plain text_color: $(imgfile config.txt | grep text_color) $out"
+start_saver
+M5CFG_TEXTCOLOR_LIB="$TCLIB" sh "$tool" set text_color "" >/dev/null 2>&1
+stop_saver
+
+# 37. B57: the daemon's hold-status file surfaces in the Bluetooth
+# menu (#41) -- one hint line under `ble-kbd list` per held bond whose
+# address is bonded, and a one-line warning on the Bluetooth keyboard
+# screen while any entry is "refused".  M5CFG_BLE_STATUS points at a
+# fake /run/ble-kbd.status.
+cat > "$tmp/bin/ble-kbd" <<'EOF'
+#!/bin/sh
+echo "ble-kbd $*" >> "$M5CFG_BLELOG"
+case "$1" in
+scan|list) cat "$M5CFG_BLE_IN" ;;
+esac
+EOF
+chmod +x "$tmp/bin/ble-kbd"
+printf 'AA:BB:CC:DD:EE:01  type=2 ltk\nAA:BB:CC:DD:EE:02  type=2 ltk\n' \
+	> "$tmp/ble-in"
+printf 'AA:BB:CC:DD:EE:01 refused 60\nAA:BB:CC:DD:EE:02 failing 120\nAA:BB:CC:DD:EE:77 refused 60\n' \
+	> "$tmp/ble-status"
+: > "$tmp/blelog"
+# Touch: main slot 3 -> Bluetooth keyboard (the warning sits in the
+# header), item 2 "paired keyboards" is slot 1 (rows 3-5, right half);
+# three nav-left taps then continue/back/exit.
+printf 'T 8 50\nT 4 50\nT 20 10\nT 20 10\nT 20 10\n' > "$tmp/tscr/events"
+out=$(M5CFG_BLE_KBD="$tmp/bin/ble-kbd" M5CFG_BLELOG="$tmp/blelog" \
+	M5CFG_BLE_IN="$tmp/ble-in" M5CFG_BLE_STATUS="$tmp/ble-status" \
+	M5CFG_TSCRIPT="$tmp/tscr/events" sh "$tool" menu </dev/null 2>&1)
+echo "$out" | grep -qF 'AA:BB:CC:DD:EE:01: this keyboard no longer accepts the Tab5 -- put it in pairing mode, then "scan & pair"' &&
+	ok "refused hint under the bond list (touch)" ||
+	bad "refused hint: $(echo "$out" | tail -6)"
+echo "$out" | grep -qF 'AA:BB:CC:DD:EE:02: not usable as a keyboard right now (the Tab5 keeps retrying)' &&
+	ok "failing hint under the bond list (touch)" ||
+	bad "failing hint: $(echo "$out" | tail -6)"
+! echo "$out" | grep -q 'AA:BB:CC:DD:EE:77' &&
+	ok "status entry for an unbonded address is ignored (touch)" ||
+	bad "unbonded hint shown: $out"
+echo "$out" | grep -qF 'a bonded keyboard no longer accepts the Tab5 -- pair it again' &&
+	ok "one-line refused warning on the Bluetooth screen (touch)" ||
+	bad "warning: $(echo "$out" | tail -8)"
+# without the file nothing is added anywhere
+rm -f "$tmp/ble-status"
+printf 'T 8 50\nT 4 50\nT 20 10\nT 20 10\nT 20 10\n' > "$tmp/tscr/events"
+out=$(M5CFG_BLE_KBD="$tmp/bin/ble-kbd" M5CFG_BLELOG="$tmp/blelog" \
+	M5CFG_BLE_IN="$tmp/ble-in" M5CFG_BLE_STATUS="$tmp/ble-status" \
+	M5CFG_TSCRIPT="$tmp/tscr/events" sh "$tool" menu </dev/null 2>&1)
+! echo "$out" | grep -q 'accepts the Tab5' &&
+	! echo "$out" | grep -q 'not usable' &&
+	ok "no status file: no hints and no warning (touch)" ||
+	bad "nostatus touch: $(echo "$out" | tail -8)"
+# plain mode: the same lines, typed keys -- 7 opens Bluetooth, 2 the
+# list, Enter the pause, 0 back, 0 exit.
+printf 'AA:BB:CC:DD:EE:01 refused 60\nAA:BB:CC:DD:EE:02 failing 120\nAA:BB:CC:DD:EE:77 refused 60\n' \
+	> "$tmp/ble-status"
+printf '7\n2\n\n0\n0\n' > "$tmp/tscr/kbd"
+out=$(env -u M5CFG_FORCE_TOUCH -u M5CFG_TSCRIPT \
+	M5CFG_BLE_KBD="$tmp/bin/ble-kbd" M5CFG_BLELOG="$tmp/blelog" \
+	M5CFG_BLE_IN="$tmp/ble-in" M5CFG_BLE_STATUS="$tmp/ble-status" \
+	sh "$tool" menu < "$tmp/tscr/kbd" 2>&1)
+echo "$out" | grep -qF 'AA:BB:CC:DD:EE:01: this keyboard no longer accepts the Tab5 -- put it in pairing mode, then "scan & pair"' &&
+	echo "$out" | grep -qF 'AA:BB:CC:DD:EE:02: not usable as a keyboard right now (the Tab5 keeps retrying)' &&
+	ok "both hint lines under the bond list (plain)" ||
+	bad "plain hints: $(echo "$out" | tail -8)"
+! echo "$out" | grep -q 'AA:BB:CC:DD:EE:77' &&
+	ok "status entry for an unbonded address is ignored (plain)" ||
+	bad "unbonded hint shown (plain): $out"
+echo "$out" | grep -qF 'a bonded keyboard no longer accepts the Tab5 -- pair it again' &&
+	ok "one-line refused warning on the Bluetooth screen (plain)" ||
+	bad "plain warning: $(echo "$out" | tail -8)"
+
+# The charger key (Tab5): auto|on|off, there only where tab5-rails
+# ships -- a charger working into an empty pack node gets the radio chip
+# reset, so the boot shim leaves it off without a pack and this key is
+# the way to force it either way.
+printf '#!/bin/sh\nexit 0\n' > "$tmp/bin/tab5-rails"
+chmod +x "$tmp/bin/tab5-rails"
+start_saver
+out=$(M5CFG_RAILS="$tmp/bin/tab5-rails" sh "$tool" set charger on 2>&1); rc=$?
+stop_saver
+[ "$rc" -eq 0 ] && echo "$out" | grep -qF 'saved to flash' &&
+	[ "$(imgfile config.txt | grep -c '^charger=on')" = 1 ] &&
+	ok "set charger saves through drive_write" ||
+	bad "set charger: rc=$rc $out"
+imgfile config.txt > "$tmp/pub/config.txt"
+out=$(M5CFG_RAILS="$tmp/bin/tab5-rails" sh "$tool" get charger 2>&1)
+[ "$out" = "on" ] && ok "get charger returns the saved value" ||
+	bad "get charger: $out"
+out=$(M5CFG_RAILS="$tmp/bin/tab5-rails" sh "$tool" list 2>&1)
+echo "$out" | grep -q 'charger' &&
+	ok "list shows charger" || bad "list charger: $out"
+for v in 1 0 yes ON autox ""; do
+	out=$(M5CFG_RAILS="$tmp/bin/tab5-rails" sh "$tool" set charger "$v" 2>&1); rc=$?
+	[ "$rc" -ne 0 ] ||
+		bad "set charger '$v' not rejected: rc=$rc $out"
+done
+ok "charger values other than auto/on/off rejected (1,0,yes,ON,autox,empty)"
+out=$(M5CFG_RAILS="$tmp/no-such-rails" sh "$tool" set charger off 2>&1); rc=$?
+[ "$rc" -ne 0 ] &&
+	ok "no rails helper: set charger rejected" ||
+	bad "norails set charger: rc=$rc $out"
+out=$(M5CFG_RAILS="$tmp/no-such-rails" sh "$tool" list 2>&1)
+echo "$out" | grep -q 'charger' &&
+	bad "no rails helper: list still shows charger" ||
+	ok "no rails helper: list hides charger"
+# Power menu: the entry shows the saved value, and is not there without
+# the helper.  8 opens Power, 0 back, 0 exit.
+printf '8\n0\n0\n' > "$tmp/tscr/kbd"
+out=$(env -u M5CFG_FORCE_TOUCH -u M5CFG_TSCRIPT M5CFG_RAILS="$tmp/bin/tab5-rails" \
+	sh "$tool" menu < "$tmp/tscr/kbd" 2>&1)
+echo "$out" | grep -qF 'battery charger: on' &&
+	ok "Power menu shows the charger entry with the saved value" ||
+	bad "Power menu charger entry: $(echo "$out" | tail -8)"
+out=$(env -u M5CFG_FORCE_TOUCH -u M5CFG_TSCRIPT M5CFG_RAILS="$tmp/no-such-rails" \
+	sh "$tool" menu < "$tmp/tscr/kbd" 2>&1)
+echo "$out" | grep -q 'battery charger' &&
+	bad "no rails helper: Power menu still shows the charger entry" ||
+	ok "no rails helper: Power menu hides the charger entry"
+# choosing a value from the menu saves it: 8 Power, 5 charger, "auto",
+# Enter for the pause, 0 back, 0 exit.
+printf '8\n5\nauto\n\n0\n0\n' > "$tmp/tscr/kbd"
+start_saver
+out=$(env -u M5CFG_FORCE_TOUCH -u M5CFG_TSCRIPT M5CFG_RAILS="$tmp/bin/tab5-rails" \
+	sh "$tool" menu < "$tmp/tscr/kbd" 2>&1)
+stop_saver
+[ "$(imgfile config.txt | grep -c '^charger=auto')" = 1 ] &&
+	ok "Power menu: choosing auto saves charger=auto" ||
+	bad "Power menu choose: $(echo "$out" | tail -8)"
+imgfile config.txt > "$tmp/pub/config.txt"
+# Status: no pack on the rail is "none", not a percentage.
+mkdir -p "$tmp/psy/battery" "$tmp/psy/usb"
+echo 0 > "$tmp/psy/battery/capacity"
+echo Unknown > "$tmp/psy/battery/status"
+echo 0 > "$tmp/psy/battery/present"
+echo 0 > "$tmp/psy/usb/online"
+printf '9\n0\n0\n' > "$tmp/tscr/kbd"
+out=$(env -u M5CFG_FORCE_TOUCH -u M5CFG_TSCRIPT M5CFG_PSUPPLY="$tmp/psy" \
+	M5CFG_STATUS_TXT="$tmp/status.txt" M5CFG_SYSINFO="$tmp/bin/sysinfo" \
+	M5CFG_USB_LUN="$tmp/bin/usb-lun" M5CFG_SYS_BOARD="$tmp/sysboard" \
+	sh "$tool" menu < "$tmp/tscr/kbd" 2>&1)
+echo "$out" | grep -qx ' battery: none' &&
+	! echo "$out" | grep -q 'battery: 0%' &&
+	ok "Status: no pack reads 'battery: none'" ||
+	bad "Status no pack: $(echo "$out" | grep -i batt)"
+echo 83 > "$tmp/psy/battery/capacity"
+echo Charging > "$tmp/psy/battery/status"
+echo 1 > "$tmp/psy/battery/present"
+out=$(env -u M5CFG_FORCE_TOUCH -u M5CFG_TSCRIPT M5CFG_PSUPPLY="$tmp/psy" \
+	M5CFG_STATUS_TXT="$tmp/status.txt" M5CFG_SYSINFO="$tmp/bin/sysinfo" \
+	M5CFG_USB_LUN="$tmp/bin/usb-lun" M5CFG_SYS_BOARD="$tmp/sysboard" \
+	sh "$tool" menu < "$tmp/tscr/kbd" 2>&1)
+echo "$out" | grep -qx ' battery: 83% Charging' &&
+	ok "Status: a pack keeps the percentage line" ||
+	bad "Status pack: $(echo "$out" | grep -i batt)"
+# a supply without a present attribute keeps the old line
+rm -f "$tmp/psy/battery/present"
+out=$(env -u M5CFG_FORCE_TOUCH -u M5CFG_TSCRIPT M5CFG_PSUPPLY="$tmp/psy" \
+	M5CFG_STATUS_TXT="$tmp/status.txt" M5CFG_SYSINFO="$tmp/bin/sysinfo" \
+	M5CFG_USB_LUN="$tmp/bin/usb-lun" M5CFG_SYS_BOARD="$tmp/sysboard" \
+	sh "$tool" menu < "$tmp/tscr/kbd" 2>&1)
+echo "$out" | grep -qx ' battery: 83% Charging' &&
+	ok "Status: no present attribute, percentage line as before" ||
+	bad "Status nopresent: $(echo "$out" | grep -i batt)"
+
+# 39. "set" on the command line returns when the change is live (#42).
+# While bootsyncd and S40network deal with a save, the next program to
+# start is the one the kernel refuses its memory on the Tab5 --
+# m5-config's own cleanup, then the caller's next command.  The two count
+# the saves they have dealt with in .netapply.done (S40network at the end
+# of an apply, bootsyncd when there was nothing to apply) and the CLI
+# waits for the count to move.
+# The stand-in apply bumps the count three seconds after the image
+# changed -- well after the save itself is confirmed.
+s40="$repo_root/linux/m3-lab/rootfs-overlay/etc/init.d/S40network"
+done_f="$tmp/run/.netapply.done"
+fake_apply() { # $1 = count to write once the image has changed
+	_was=$(md5sum "$img" | cut -d' ' -f1)
+	( i=0
+	  while [ "$i" -lt 200 ]; do
+		[ "$(md5sum "$img" 2>/dev/null | cut -d' ' -f1)" != "$_was" ] && break
+		sleep 0.1; i=$((i + 1))
+	  done
+	  sleep 3
+	  echo "$1" > "$done_f" ) &
+	applier=$!
+}
+echo 4 > "$done_f"
+start_saver
+fake_apply 5
+out=$(M5CFG_APPLY_WAIT=20 sh "$tool" set debug 1 2>&1); rc=$?
+seen=$(cat "$done_f")
+stop_saver
+wait "$applier" 2>/dev/null
+[ "$rc" -eq 0 ] && echo "$out" | grep -qF 'saved to flash' && [ "$seen" = 5 ] &&
+	! echo "$out" | grep -q 'still being applied' &&
+	ok "set returns after the live apply has finished" ||
+	bad "apply wait: rc=$rc count=$seen $out"
+imgfile config.txt > "$tmp/pub/config.txt"
+# the very first apply of a boot: there is no count file yet
+rm -f "$done_f"
+start_saver
+fake_apply 1
+out=$(M5CFG_APPLY_WAIT=20 sh "$tool" set debug 0 2>&1); rc=$?
+seen=$(cat "$done_f" 2>/dev/null)
+stop_saver
+wait "$applier" 2>/dev/null
+[ "$rc" -eq 0 ] && [ "$seen" = 1 ] && ! echo "$out" | grep -q 'still being applied' &&
+	ok "set waits for the first apply of a boot too (no count file yet)" ||
+	bad "apply wait, no file: rc=$rc count=$seen $out"
+imgfile config.txt > "$tmp/pub/config.txt"
+# an apply that never reports: the wait is bounded, the save still counts
+echo 7 > "$done_f"
+start_saver
+out=$(M5CFG_APPLY_WAIT=1 sh "$tool" set debug 1 2>&1); rc=$?
+stop_saver
+[ "$rc" -eq 0 ] && echo "$out" | grep -qF 'saved to flash' &&
+	echo "$out" | grep -qF 'saved; the change is still being applied' &&
+	ok "an apply that does not finish in time: said so, rc 0" ||
+	bad "apply wait cap: rc=$rc $out"
+imgfile config.txt > "$tmp/pub/config.txt"
+# every save is waited for, whatever file the key lives in: bootsyncd
+# counts the ones that have nothing for S40network
+echo 7 > "$done_f"
+start_saver
+fake_apply 8
+out=$(M5CFG_APPLY_WAIT=20 sh "$tool" set password waitfor99 2>&1); rc=$?
+seen=$(cat "$done_f")
+stop_saver
+wait "$applier" 2>/dev/null
+[ "$rc" -eq 0 ] && [ "$seen" = 8 ] && ! echo "$out" | grep -q 'still being applied' &&
+	ok "a credentials.txt key waits for the count as well" ||
+	bad "apply wait, password: rc=$rc count=$seen $out"
+imgfile config.txt > "$tmp/pub/config.txt"
+# the menu stays up and starts nothing next: it does not wait
+printf '8\n5\noff\n\n0\n0\n' > "$tmp/tscr/kbd"
+start_saver
+out=$(env -u M5CFG_FORCE_TOUCH -u M5CFG_TSCRIPT M5CFG_APPLY_WAIT=1 \
+	M5CFG_RAILS="$tmp/bin/tab5-rails" sh "$tool" menu < "$tmp/tscr/kbd" 2>&1)
+stop_saver
+[ "$(imgfile config.txt | grep -c '^charger=off')" = 1 ] &&
+	! echo "$out" | grep -q 'still being applied' &&
+	ok "a save from the menu does not wait for the apply" ||
+	bad "menu waited: $(echo "$out" | tail -6)"
+imgfile config.txt > "$tmp/pub/config.txt"
+
+# S40network's half: every release of the apply lock moves the count,
+# with builtins only, and a queued second request is counted once.
+sed -n '/^net_done()/,/^}/p;/^net_acquire()/,/^}/p;/^net_apply()/,/^}/p' "$s40" \
+	> "$tmp/netfuncs.sh"
+(
+	NET_LOCK="$tmp/run/.netapply.lock"
+	NET_PENDING="$tmp/run/.netapply.pending"
+	NET_DONE="$done_f"
+	net_tick() { :; }
+	net_dispatch() { echo "$*" >> "$tmp/dispatched"; }
+	. "$tmp/netfuncs.sh"
+	rm -f "$done_f" "$tmp/dispatched"
+	net_apply charger
+	a=$(cat "$done_f")
+	net_apply brightness
+	b=$(cat "$done_f")
+	echo garbage > "$done_f"
+	net_apply charger
+	c=$(cat "$done_f")
+	echo "$a $b $c $(grep -c . "$tmp/dispatched")"
+	[ -d "$NET_LOCK" ] && echo locked
+) > "$tmp/netdone.out" 2>&1
+[ "$(cat "$tmp/netdone.out")" = "1 2 1 3" ] &&
+	ok "S40network counts each finished apply; a broken count restarts at 1" ||
+	bad "net_done: $(cat "$tmp/netdone.out")"
+grep -q '^		net_done$' "$s40" &&
+	[ "$(sed -n '/^net_done()/,/^}/p' "$s40" | grep -c -E '\$\([^(]|`')" = 0 ] &&
+	ok "S40network: the count is kept without a single exec" ||
+	bad "net_done is not builtin-only or not called at the unlock"
+
+# bootsyncd's half: a save with nothing to apply moves the count itself,
+# at the very end of the import; with keys to apply it leaves that to
+# S40network.
+bsd="$repo_root/linux/m3-lab/rootfs-overlay/usr/sbin/bootsyncd"
+sed -n '/^apply_done()/,/^}/p' "$bsd" > "$tmp/bsdfuncs.sh"
+(
+	APPLY_DONE="$done_f"
+	. "$tmp/bsdfuncs.sh"
+	rm -f "$done_f"
+	apply_done; a=$(cat "$done_f")
+	apply_done; b=$(cat "$done_f")
+	echo x > "$done_f"
+	apply_done; c=$(cat "$done_f")
+	echo "$a $b $c"
+) > "$tmp/bsddone.out" 2>&1
+[ "$(cat "$tmp/bsddone.out")" = "1 2 1" ] &&
+	[ "$(sed -n '/^apply_done()/,/^}/p' "$bsd" | grep -c -E '\$\([^(]|`')" = 0 ] &&
+	ok "bootsyncd counts a save that has nothing to apply, without an exec" ||
+	bad "apply_done: $(cat "$tmp/bsddone.out")"
+awk '/^	autorun_apply$/ { a = NR }
+     /^	\[ -n "\$NET_KEYS" \] \|\| apply_done$/ { d = NR }
+     END { exit !(a && d && d > a && d - a <= 3) }' "$bsd" &&
+	grep -q '^APPLY_DONE="/run/.netapply.done"$' "$bsd" &&
+	grep -q '^NET_DONE=/run/.netapply.done$' "$s40" &&
+	ok "bootsyncd and S40network keep the same count, bootsyncd last in the import" ||
+	bad "apply_done is not the last step of the import, or the count files differ"
 
 if [ "$fails" -gt 0 ]; then
 	echo "FAILED: $fails checks"

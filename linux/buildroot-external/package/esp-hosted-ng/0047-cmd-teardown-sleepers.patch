@@ -1,0 +1,151 @@
+From: Stamp-P4 maintainers <noreply@example.invalid>
+Subject: [PATCH] cmd: no sleeper may outlive esp_commands_teardown (#41)
+
+Unbinding the SDIO function while the slave no longer answers crashed
+the kernel a few seconds later:
+
+  Oops - load access fault, badaddr 000000c0
+  __queue_work <- queue_work_on <- queue_work <- wait_and_decode_cmd_resp
+  <- cmd_set_reg_domain <- esp_reg_notifier <- reg_call_notifier
+  <- ... <- regulatory_hint_disconnect <- disconnect_work (cfg80211)
+
+esp_remove_card() stops the interfaces first.  cfg80211 then restores
+the regulatory domain from its own work item, esp_reg_notifier() sends
+CMD_SET_REG_DOMAIN, and with a dead link that command sleeps its full
+five seconds in wait_and_decode_cmd_resp().  Meanwhile
+esp_commands_teardown() destroys the command work queue, sets
+adapter->cmd_wq to NULL and frees the node pool.  The sleeper wakes up,
+finds ESP_DRIVER_ACTIVE still set (only the cfg80211 del-interface path
+clears it), reads the freed node and calls queue_work() on the NULL
+queue: 0xc0 is the offset of wq->flags.
+
+The existing ESP_CLEANUP_IN_PROGRESS checks do not help: they are made
+before a command is queued, and this one was queued before the cleanup
+began.
+
+Three changes, all in esp_cmd.c:
+
+  - Sleepers are counted.  The teardown clears ESP_CMD_INIT_DONE, wakes
+    every sleeper and waits up to six seconds (one command timeout and
+    a bit) until they have left, before the work queue and the pool go
+    away.  It also clears cur_cmd/cmd_resp, which pointed into the pool.
+
+  - The wait condition includes the cleared flag, and a sleeper that
+    wakes up after the flag was cleared returns -ENODEV at once: it
+    touches neither its node nor the queue.
+
+  - queue_work() on the command queue is NULL-safe in this file, for
+    the many callers that queue between two flag checks.
+
+This matters beyond a manual unbind: every recovery of a dead C6 link
+has to remove the function (or the whole host) while the slave is
+silent, which is exactly the state that makes commands time out.
+
+---
+ esp_cmd.c | 51 ++++++++++++++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 50 insertions(+), 1 deletion(-)
+
+--- a/esp_cmd.c
++++ b/esp_cmd.c
+@@ -5,6 +5,7 @@
+  * SPDX-FileCopyrightText: 2015-2023 Espressif Systems (Shanghai) CO LTD
+  *
+  */
++#include <linux/delay.h>
+ #include "utils.h"
+ #include "esp_cmd.h"
+ #include "esp_api.h"
+@@ -18,6 +19,18 @@
+ void esp_sdio_rx_trace_dump(void);
+ 
+ #define COMMAND_RESPONSE_TIMEOUT (5 * HZ)
++
++/*
++ * esp_commands_teardown() destroys the command work queue and frees the
++ * node pool.  A caller still asleep in wait_and_decode_cmd_resp() at
++ * that moment -- five seconds per command once the slave has stopped
++ * answering -- used to wake up on a freed node and queue work on a NULL
++ * queue (load access fault in __queue_work).  Sleepers are counted so
++ * that the teardown can wake them and wait until they have left, and a
++ * NULL queue is never handed to queue_work().
++ */
++static atomic_t cmd_waiters = ATOMIC_INIT(0);
++#define queue_work(wq, work) ((wq) ? queue_work(wq, work) : false)
+ u8 ap_bssid[MAC_ADDR_LEN];
+ extern u32 raw_tp_mode;
+ 
+@@ -252,7 +265,7 @@
+ }
+ 
+ 
+-static int wait_and_decode_cmd_resp(struct esp_wifi_device *priv,
++static int do_wait_and_decode_cmd_resp(struct esp_wifi_device *priv,
+ 		struct command_node *cmd_node)
+ {
+ 	struct esp_adapter *adapter = NULL;
+@@ -272,8 +285,14 @@
+ 
+ 	/* wait for command response */
+ 	ret = wait_event_interruptible_timeout(adapter->wait_for_cmd_resp,
++			!test_bit(ESP_CMD_INIT_DONE, &adapter->state_flags) ||
+ 			adapter->cmd_resp == cmd_node->cmd_code, COMMAND_RESPONSE_TIMEOUT);
+ 
++	/* The teardown ran while we slept: the node and the work queue are
++	 * on their way out.  Touch neither. */
++	if (!test_bit(ESP_CMD_INIT_DONE, &adapter->state_flags))
++		return -ENODEV;
++
+ 	if (!test_bit(ESP_DRIVER_ACTIVE, &adapter->state_flags))
+ 		return 0;
+ 
+@@ -365,6 +384,18 @@
+ 	return ret;
+ }
+ 
++static int wait_and_decode_cmd_resp(struct esp_wifi_device *priv,
++		struct command_node *cmd_node)
++{
++	int ret;
++
++	atomic_inc(&cmd_waiters);
++	ret = do_wait_and_decode_cmd_resp(priv, cmd_node);
++	atomic_dec(&cmd_waiters);
++
++	return ret;
++}
++
+ static void free_esp_cmd_pool(struct esp_adapter *adapter)
+ {
+ 	int i;
+@@ -2093,6 +2124,8 @@
+ 
+ int esp_commands_teardown(struct esp_adapter *adapter)
+ {
++	int i;
++
+ 	if (!adapter) {
+ 		return -EINVAL;
+ 	}
+@@ -2102,6 +2135,22 @@
+ 
+ 	set_bit(ESP_CLEANUP_IN_PROGRESS, &adapter->state_flags);
+ 	clear_bit(ESP_CMD_INIT_DONE, &adapter->state_flags);
++
++	/* Nobody may sleep on a command across the teardown: wake the
++	 * sleepers (they see ESP_CMD_INIT_DONE cleared and return) and give
++	 * them up to six seconds, one command timeout and a bit, to leave. */
++	wake_up_interruptible_all(&adapter->wait_for_cmd_resp);
++	for (i = 0; i < 300 && atomic_read(&cmd_waiters); i++)
++		msleep(20);
++	if (atomic_read(&cmd_waiters))
++		esp_err("%d command waiter(s) still asleep at teardown\n",
++			atomic_read(&cmd_waiters));
++
++	spin_lock_bh(&adapter->cmd_lock);
++	adapter->cur_cmd = NULL;
++	adapter->cmd_resp = 0;
++	spin_unlock_bh(&adapter->cmd_lock);
++
+ 	destroy_cmd_wq(adapter);
+ 	free_esp_cmd_pool(adapter);
+ 
