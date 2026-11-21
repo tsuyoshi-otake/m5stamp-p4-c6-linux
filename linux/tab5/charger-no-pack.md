@@ -94,15 +94,16 @@ Two timings from the same session:
 
 ## Checked on the image with the fix
 
-Same unit, same USB port, builds B60 and B61, 2026-11-21:
+Same unit, same USB port, builds B60, B61 and B62, 2026-11-21:
 
 - The boot shim logs `no battery pack (pack node 1806 mV with the charger
   off): CHG_EN stays low` (1831 mV on B61); Linux then finds output
   register 5 at 0x09 and the node at 1.88 V.
 - SoftAP up and the BLE keyboard daemon running from boot: no C6 reset in
-  the first 590 s of one boot and in 1730 s of the next (one boot-up event
-  each, the one of the boot itself). The bonded keyboard reconnected by
-  itself 177 s after boot.
+  the first 590 s of one boot, in 1730 s of the next and in the 4140 s
+  B61 ran (one boot-up event each, the one of the boot itself). In the
+  three boots where it was looked for, the bonded keyboard reconnected
+  by itself 23 s, 132 s and 177 s after boot.
 - `charger=on` saved through `m5-config` took the register to 0x89 (set
   back by hand at once); removing the key took the live `auto` path and
   left it at 0x09. The live test takes 1.1 s, and 1.3 s with `sleep` made
@@ -127,6 +128,14 @@ does not end the refusals; the uptimes differ and so does the pool. What
 it does is take its own three extra programs out of that moment, and keep
 the one-second wait of the `auto` test when `sleep` is the program that
 is refused.
+
+What ended them is `m5-config set` waiting for the apply before it
+returns (bootsyncd and S40network count the saves they have dealt with in
+`/run/.netapply.done`). On B62, 110-147 s after boot -- the condition of
+the third round above -- four saves (`off`, `auto`, `auto` again, key
+removed), each followed at once by other commands, left no refusal and
+no stale lock directory; a `set` took 6.6-8.5 s. A save from the menu
+never had the problem: the menu stays up and starts nothing next.
 
 The one case `auto` cannot see: a pack whose protection circuit has opened
 after a deep discharge reads 0 V until a charger wakes it. With such a pack
