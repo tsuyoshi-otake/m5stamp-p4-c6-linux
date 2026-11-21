@@ -77,9 +77,10 @@ key_maxlen() {
 # A key that can only be set where its apply path exists.
 SYSBOARD=${M5CFG_SYS_BOARD:-/sys/kernel/board}
 CAMDRV=${M5CFG_CAM_DRV:-/sys/bus/platform/drivers/esp32p4-csi-cam}
+RAILS=${M5CFG_RAILS:-/usr/sbin/tab5-rails}
 key_present() {
 	case "$1" in
-		ext5v_en|ext_ant_en) [ -x /usr/sbin/tab5-rails ] ;;
+		ext5v_en|ext_ant_en|charger) [ -x "$RAILS" ] ;;
 		camera) [ -d "$CAMDRV" ] ;;
 		lp_core|lp_program|lp_period) [ -d "$SYSBOARD/lp_core" ] ;;
 		brightness)
@@ -104,7 +105,7 @@ key_known() {
 		hostname|wifi_mode|wifi_ssid|wifi_psk|wifi_pmf|channel|country|\
 		ntp_server|debug|sdio_mhz|ssh_password_auth|watchdog|deepsleep|\
 		auto_reboot|autorun|autorun_restart|lp_core|lp_program|lp_period|\
-		ext5v_en|ext_ant_en|brightness|text_color|camera|password|\
+		ext5v_en|ext_ant_en|charger|brightness|text_color|camera|password|\
 		root_password|authorized_keys|root_authorized_keys) return 0 ;;
 		*) return 1 ;;
 	esac
@@ -316,6 +317,9 @@ validate() { # $1 key, $2 value
 		camera)
 			case "$v" in on|off) return 0 ;; esac
 			bad "camera is on or off" ;;
+		charger)
+			case "$v" in auto|on|off) return 0 ;; esac
+			bad "charger is auto, on or off" ;;
 		lp_period)
 			# Mirror S05tmpfs exactly: "0, 500ms, 1s, 1m ... up to 1h"
 			# (1-9 digits + ms|s|m|h, or bare seconds; <= 3600000 ms).
@@ -664,8 +668,8 @@ do_list() {
 	for k in hostname wifi_mode wifi_ssid wifi_psk wifi_pmf channel \
 		country ntp_server debug sdio_mhz ssh_password_auth watchdog \
 		deepsleep auto_reboot autorun autorun_restart \
-		lp_core lp_program lp_period ext5v_en ext_ant_en brightness \
-		text_color camera \
+		lp_core lp_program lp_period ext5v_en ext_ant_en charger \
+		brightness text_color camera \
 		password root_password authorized_keys root_authorized_keys; do
 		key_present "$k" || continue
 		case "$k" in
@@ -2284,6 +2288,10 @@ menu_power() {
 		[ -d "$SYSBOARD/lp_core" ] &&
 			item 3 "LP core settings"
 		pwroff_support && item 4 "power off"
+		if key_present charger; then
+			cfg_get charger 2>/dev/null || CFG_VAL=""
+			item 5 "battery charger: ${CFG_VAL:-auto}"
+		fi
 		item 0 back
 		menu_pick || return
 		case "$REPLY" in
@@ -2321,6 +2329,14 @@ menu_power() {
 					[ "$REPLY" = yes ] || continue
 				fi
 				say " powering off"; sync; poweroff ;;
+			5)
+				# auto charges only when a pack is found; on is
+				# for a pack drained to its protection cut-off
+				# (it reads as "no pack" until a charger wakes
+				# it) -- with no pack at all, on makes Wi-Fi and
+				# Bluetooth drop out.
+				key_present charger || continue
+				menu_choose charger "auto on off" "battery charger" ;;
 			0) return ;;
 		esac
 	done
@@ -2382,6 +2398,12 @@ status_lines() {
 		[ -f "$p" ] || continue
 		c=""; read -r c < "$p" 2>/dev/null || continue
 		st=""; read -r st < "${p%capacity}status" 2>/dev/null || true
+		# no pack on the rail: a percentage would only mislead
+		pr=1; read -r pr < "${p%capacity}present" 2>/dev/null || pr=1
+		if [ "$pr" = 0 ]; then
+			echo " battery: none"
+			continue
+		fi
 		echo " battery: ${c}% ${st}"
 	done
 }
@@ -2482,7 +2504,7 @@ menu_main() {
 		_pcm=0
 		for d in /dev/snd/pcm*; do [ -e "$d" ] && { _pcm=1; break; }; done
 		[ -x /usr/bin/pcm-sine ] && [ "$_pcm" = 1 ] || snd=0
-		[ -x /usr/sbin/tab5-rails ] || prt=0
+		[ -x "$RAILS" ] || prt=0
 		[ -x "$BLEKBD" ] || ble=0
 		_d=""; for d in "$BLDIR"/*/brightness; do
 			[ -f "$d" ] && { _d=$d; break; }

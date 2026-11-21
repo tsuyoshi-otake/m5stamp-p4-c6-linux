@@ -2110,6 +2110,99 @@ echo "$out" | grep -qF 'a bonded keyboard no longer accepts the Tab5 -- pair it 
 	ok "one-line refused warning on the Bluetooth screen (plain)" ||
 	bad "plain warning: $(echo "$out" | tail -8)"
 
+# The charger key (Tab5): auto|on|off, there only where tab5-rails
+# ships -- a charger working into an empty pack node gets the radio chip
+# reset, so the boot shim leaves it off without a pack and this key is
+# the way to force it either way.
+printf '#!/bin/sh\nexit 0\n' > "$tmp/bin/tab5-rails"
+chmod +x "$tmp/bin/tab5-rails"
+start_saver
+out=$(M5CFG_RAILS="$tmp/bin/tab5-rails" sh "$tool" set charger on 2>&1); rc=$?
+stop_saver
+[ "$rc" -eq 0 ] && echo "$out" | grep -qF 'saved to flash' &&
+	[ "$(imgfile config.txt | grep -c '^charger=on')" = 1 ] &&
+	ok "set charger saves through drive_write" ||
+	bad "set charger: rc=$rc $out"
+imgfile config.txt > "$tmp/pub/config.txt"
+out=$(M5CFG_RAILS="$tmp/bin/tab5-rails" sh "$tool" get charger 2>&1)
+[ "$out" = "on" ] && ok "get charger returns the saved value" ||
+	bad "get charger: $out"
+out=$(M5CFG_RAILS="$tmp/bin/tab5-rails" sh "$tool" list 2>&1)
+echo "$out" | grep -q 'charger' &&
+	ok "list shows charger" || bad "list charger: $out"
+for v in 1 0 yes ON autox ""; do
+	out=$(M5CFG_RAILS="$tmp/bin/tab5-rails" sh "$tool" set charger "$v" 2>&1); rc=$?
+	[ "$rc" -ne 0 ] ||
+		bad "set charger '$v' not rejected: rc=$rc $out"
+done
+ok "charger values other than auto/on/off rejected (1,0,yes,ON,autox,empty)"
+out=$(M5CFG_RAILS="$tmp/no-such-rails" sh "$tool" set charger off 2>&1); rc=$?
+[ "$rc" -ne 0 ] &&
+	ok "no rails helper: set charger rejected" ||
+	bad "norails set charger: rc=$rc $out"
+out=$(M5CFG_RAILS="$tmp/no-such-rails" sh "$tool" list 2>&1)
+echo "$out" | grep -q 'charger' &&
+	bad "no rails helper: list still shows charger" ||
+	ok "no rails helper: list hides charger"
+# Power menu: the entry shows the saved value, and is not there without
+# the helper.  8 opens Power, 0 back, 0 exit.
+printf '8\n0\n0\n' > "$tmp/tscr/kbd"
+out=$(env -u M5CFG_FORCE_TOUCH -u M5CFG_TSCRIPT M5CFG_RAILS="$tmp/bin/tab5-rails" \
+	sh "$tool" menu < "$tmp/tscr/kbd" 2>&1)
+echo "$out" | grep -qF 'battery charger: on' &&
+	ok "Power menu shows the charger entry with the saved value" ||
+	bad "Power menu charger entry: $(echo "$out" | tail -8)"
+out=$(env -u M5CFG_FORCE_TOUCH -u M5CFG_TSCRIPT M5CFG_RAILS="$tmp/no-such-rails" \
+	sh "$tool" menu < "$tmp/tscr/kbd" 2>&1)
+echo "$out" | grep -q 'battery charger' &&
+	bad "no rails helper: Power menu still shows the charger entry" ||
+	ok "no rails helper: Power menu hides the charger entry"
+# choosing a value from the menu saves it: 8 Power, 5 charger, "auto",
+# Enter for the pause, 0 back, 0 exit.
+printf '8\n5\nauto\n\n0\n0\n' > "$tmp/tscr/kbd"
+start_saver
+out=$(env -u M5CFG_FORCE_TOUCH -u M5CFG_TSCRIPT M5CFG_RAILS="$tmp/bin/tab5-rails" \
+	sh "$tool" menu < "$tmp/tscr/kbd" 2>&1)
+stop_saver
+[ "$(imgfile config.txt | grep -c '^charger=auto')" = 1 ] &&
+	ok "Power menu: choosing auto saves charger=auto" ||
+	bad "Power menu choose: $(echo "$out" | tail -8)"
+imgfile config.txt > "$tmp/pub/config.txt"
+# Status: no pack on the rail is "none", not a percentage.
+mkdir -p "$tmp/psy/battery" "$tmp/psy/usb"
+echo 0 > "$tmp/psy/battery/capacity"
+echo Unknown > "$tmp/psy/battery/status"
+echo 0 > "$tmp/psy/battery/present"
+echo 0 > "$tmp/psy/usb/online"
+printf '9\n0\n0\n' > "$tmp/tscr/kbd"
+out=$(env -u M5CFG_FORCE_TOUCH -u M5CFG_TSCRIPT M5CFG_PSUPPLY="$tmp/psy" \
+	M5CFG_STATUS_TXT="$tmp/status.txt" M5CFG_SYSINFO="$tmp/bin/sysinfo" \
+	M5CFG_USB_LUN="$tmp/bin/usb-lun" M5CFG_SYS_BOARD="$tmp/sysboard" \
+	sh "$tool" menu < "$tmp/tscr/kbd" 2>&1)
+echo "$out" | grep -qx ' battery: none' &&
+	! echo "$out" | grep -q 'battery: 0%' &&
+	ok "Status: no pack reads 'battery: none'" ||
+	bad "Status no pack: $(echo "$out" | grep -i batt)"
+echo 83 > "$tmp/psy/battery/capacity"
+echo Charging > "$tmp/psy/battery/status"
+echo 1 > "$tmp/psy/battery/present"
+out=$(env -u M5CFG_FORCE_TOUCH -u M5CFG_TSCRIPT M5CFG_PSUPPLY="$tmp/psy" \
+	M5CFG_STATUS_TXT="$tmp/status.txt" M5CFG_SYSINFO="$tmp/bin/sysinfo" \
+	M5CFG_USB_LUN="$tmp/bin/usb-lun" M5CFG_SYS_BOARD="$tmp/sysboard" \
+	sh "$tool" menu < "$tmp/tscr/kbd" 2>&1)
+echo "$out" | grep -qx ' battery: 83% Charging' &&
+	ok "Status: a pack keeps the percentage line" ||
+	bad "Status pack: $(echo "$out" | grep -i batt)"
+# a supply without a present attribute keeps the old line
+rm -f "$tmp/psy/battery/present"
+out=$(env -u M5CFG_FORCE_TOUCH -u M5CFG_TSCRIPT M5CFG_PSUPPLY="$tmp/psy" \
+	M5CFG_STATUS_TXT="$tmp/status.txt" M5CFG_SYSINFO="$tmp/bin/sysinfo" \
+	M5CFG_USB_LUN="$tmp/bin/usb-lun" M5CFG_SYS_BOARD="$tmp/sysboard" \
+	sh "$tool" menu < "$tmp/tscr/kbd" 2>&1)
+echo "$out" | grep -qx ' battery: 83% Charging' &&
+	ok "Status: no present attribute, percentage line as before" ||
+	bad "Status nopresent: $(echo "$out" | grep -i batt)"
+
 if [ "$fails" -gt 0 ]; then
 	echo "FAILED: $fails checks"
 	exit 1

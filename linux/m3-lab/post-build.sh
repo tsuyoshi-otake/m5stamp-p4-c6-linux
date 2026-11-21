@@ -273,13 +273,19 @@ hostname=${def_host}
 # these defaults and generate new credentials.
 EOF
 	if [ -r "${TARGET_DIR}/etc/board/default-hostname" ]; then
-		# Tab5-only expander 0x43 rails (#35).  Keys default off; they
-		# are applied at boot (S06rails) and live on a config.txt save.
+		# Tab5-only expander keys: the 0x43 rails (#35), default off,
+		# and the charger enable on 0x44.  They are applied at boot
+		# (S06rails) and live on a config.txt save.
 		cat >>"${stage}/config.txt" <<'EOF'
 # Tab5 expander rails: ext5v_en=1 powers the EXT header 5 V output,
 # ext_ant_en=1 selects the external MMCX antenna (0 = internal antenna).
 #ext5v_en=1
 #ext_ant_en=1
+# Battery charger: auto (the default) charges only when a battery pack is
+# found at boot.  on forces it -- needed once for a pack drained until its
+# protection cut it off; without any pack it makes Wi-Fi and Bluetooth
+# drop out.  off never charges.
+#charger=auto
 EOF
 	fi
 	cp "${wpa}" "${stage}/wpa_supplicant.conf"

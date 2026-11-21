@@ -844,6 +844,16 @@ net_dispatch() {
 				else
 					net_note "ES_CONFIG: $k applies to Tab5 only; ignored"
 				fi ;;
+			charger)
+				# Tab5 battery charger enable (expander 0x44
+				# P7): applied live, no restart.  auto tests
+				# for a pack with the charger off, so this
+				# takes a second.
+				if [ -x /usr/sbin/tab5-rails ]; then
+					/usr/sbin/tab5-rails charger || net_note "ES_CONFIG: $k apply failed"
+				else
+					net_note "ES_CONFIG: $k applies to Tab5 only; ignored"
+				fi ;;
 			autorun*|auto_reboot)
 				# autorun_* is applied by bootsync's autorun_apply;
 				# auto_reboot is re-read on every save.
