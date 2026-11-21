@@ -1791,6 +1791,77 @@ stop_saver
 [ "$(grep -c 'stty echo' "$tmp/sttylog" 2>/dev/null)" -ge 3 ] &&
 	ok "stty echo retried through denied execs" ||
 	bad "stty retry: $(cat "$tmp/sttylog" 2>/dev/null)"
+# The cleanup's rm can be refused as well.  B64 showed it: right after
+# a save from the menu, while the change was being applied, the kernel
+# refused umount and rm for want of memory.  The lock dir then stayed,
+# holding the pid of a menu that was still up, and the next save in
+# that menu was turned away as "another m5-config is running" -- by
+# its own pid.  Forget-then-pair in the Bluetooth menu is two saves in
+# one session (#41).  The stub refuses the cleanup's rm
+# (-rf MNT IMG LOCK) once per marker file; every other rm is real.
+real_rm=$(command -v rm)
+cat > "$tmp/bin/rm" <<EOF
+#!/bin/sh
+if [ "\$#" = 4 ] && [ "\$4" = "$tmp/run/.m5-config.lock" ] &&
+	[ ! -e "$tmp/rm-refused" ]; then
+	: > "$tmp/rm-refused"
+	exit 126
+fi
+exec "$real_rm" "\$@"
+EOF
+chmod +x "$tmp/bin/rm"
+# Wi-Fi -> PMF -> 1, then PMF -> 0 without leaving the menu.
+printf 'T 4 10\nT 12 10\nT 4 50\nT 20 10\nT 12 10\nT 4 10\nT 20 10\nT 20 10\nT 20 10\n' \
+	> "$tmp/tscr/events"
+start_saver
+out=$(M5CFG_TSCRIPT="$tmp/tscr/events" sh "$tool" menu </dev/null 2>&1)
+stop_saver
+[ -e "$tmp/rm-refused" ] && [ ! -e "$tmp/run/.m5-config.lock" ] &&
+	! echo "$out" | grep -qF 'another m5-config' &&
+	imgfile config.txt | grep -q 'wifi_pmf=0' &&
+	ok "a refused cleanup rm does not lock the menu out of its next save" ||
+	bad "own lock after a refused rm: $(echo "$out" | grep -ao 'another m5-config[^(]*' | head -1) $(imgfile config.txt | grep wifi_pmf)"
+# The leftover must not shut out another m5-config either, while the
+# menu that left it is still up.  "G" holds this m5-key until the gate
+# file appears, so a command-line set can run in between.
+cat > "$tmp/bin/m5-key-gate" <<EOF
+#!/bin/sh
+[ "\$1" = probe ] && exit 0
+while :; do
+	IFS= read -r ev < "\$M5CFG_TSCRIPT" 2>/dev/null || exit 1
+	tail -n +2 "\$M5CFG_TSCRIPT" > "\$M5CFG_TSCRIPT.n" 2>/dev/null || :
+	mv -f "\$M5CFG_TSCRIPT.n" "\$M5CFG_TSCRIPT" 2>/dev/null || :
+	[ "\$ev" = G ] || break
+	: > "$tmp/gate-reached"
+	n=0
+	while [ ! -e "$tmp/gate" ] && [ "\$n" -lt 300 ]; do
+		sleep 0.1; n=\$((n + 1))
+	done
+done
+printf '%s\n' "\$ev"
+EOF
+chmod +x "$tmp/bin/m5-key-gate"
+"$real_rm" -f "$tmp/rm-refused" "$tmp/gate" "$tmp/gate-reached"
+printf 'T 4 10\nT 12 10\nT 4 50\nT 20 10\nG\nT 20 10\nT 20 10\n' > "$tmp/tscr/events"
+start_saver
+M5CFG_M5_KEY="$tmp/bin/m5-key-gate" M5CFG_TSCRIPT="$tmp/tscr/events" \
+	sh "$tool" menu </dev/null > "$tmp/gate.out" 2>&1 &
+gpid=$!
+n=0
+while [ ! -e "$tmp/gate-reached" ] && [ "$n" -lt 300 ]; do
+	sleep 0.1; n=$((n + 1))
+done
+out=$(sh "$tool" set hostname gate-7 2>&1)
+rc=$?
+: > "$tmp/gate"
+wait "$gpid"
+stop_saver
+[ -e "$tmp/rm-refused" ] && [ -e "$tmp/gate-reached" ] && [ "$rc" = 0 ] &&
+	imgfile config.txt | grep -q 'hostname=gate-7' &&
+	ok "nor another m5-config out, while that menu is still up" ||
+	bad "foreign lock after a refused rm: rc=$rc $out"
+"$real_rm" -f "$tmp/bin/rm" "$tmp/bin/m5-key-gate" "$tmp/gate" \
+	"$tmp/gate-reached" "$tmp/rm-refused" "$tmp/gate.out"
 
 # 36. B55: text_color -- the preset lib, the managed key, S07textcolor
 # and the Display menu path.  The hue values are tuned on the panel

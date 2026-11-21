@@ -459,6 +459,13 @@ lun_file() { # -> LF
 _drive_clean() {
 	umount "$MNT" 2>/dev/null
 	rm -rf "$MNT" "$WORK_IMG" "$LOCK"
+	# The rm is an exec and can be refused for want of memory (seen on
+	# B64 right after a save, while the change was being applied).  The
+	# lock dir then stays, and with the pid of a menu that is still up
+	# in it, that menu's own next save was turned away as "another
+	# m5-config is running".  Emptying the pid file takes no exec and
+	# marks the lock stale: the next save, ours or anyone's, takes it.
+	if [ -d "$LOCK" ]; then echo 2>/dev/null > "$LOCK/pid"; fi
 }
 
 # _cleanup: session teardown, runs once at session end (EXIT trap or
