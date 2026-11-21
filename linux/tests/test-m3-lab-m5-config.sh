@@ -703,7 +703,7 @@ rm -rf "$tmp/proc"; mkdir -p "$tmp/proc"; rm -f "$tmp/ble-release"
 # an 8-byte header-only store to the staged path, like the real tool
 # does).
 : > "$tmp/blelog"; : > "$tmp/initlog"
-printf 'M5b\0\0\0\0\0\x0f\x00' > "$tmp/ble-bonds.dat"
+printf 'M5b\0\0\0\0\0\017\000' > "$tmp/ble-bonds.dat"
 printf 'T 8 50\nT 10 10\nT 4 50\nT 4 10\nT 20 10\nT 20 10\nT 20 10\n' \
 	> "$tmp/tscr/events"
 out=$(M5CFG_BLE_KBD="$tmp/bin/ble-kbd" M5CFG_BLELOG="$tmp/blelog" \
@@ -725,7 +725,7 @@ case "$1" in
 scan|list) cat "$M5CFG_BLE_IN" ;;
 pair) printf 'pairing %s ...\n' "$2" ;;
 forget)
-	{ printf 'M5b\0\0\0\0\0\x01\x00'; head -c 72 /dev/zero; } \
+	{ printf 'M5b\0\0\0\0\0\001\000'; head -c 72 /dev/zero; } \
 		> "$M5CFG_BLE_BONDS"
 	printf 'forgotten\n' ;;
 esac
@@ -765,7 +765,7 @@ echo "daemon $*" >> "$M5CFG_BLELOG"
 EOF
 chmod +x "$tmp/bin/ble-kbd-s95"
 : > "$tmp/blelog"
-printf 'M5b\0\0\0\0\0\x01\x00' > "$tmp/ble-bonds.dat"
+printf 'M5b\0\0\0\0\0\001\000' > "$tmp/ble-bonds.dat"
 head -c 72 /dev/zero >> "$tmp/ble-bonds.dat"
 BLEKBD="$tmp/bin/ble-kbd-s95" BLE_BONDS="$tmp/ble-bonds.dat" \
 	M5CFG_BLELOG="$tmp/blelog" sh "$s95" start
@@ -790,7 +790,7 @@ rm -f "$tmp/bin/ble-kbd-s95"
 store="$repo_root/linux/m3-lab/rootfs-overlay/usr/sbin/ble-bond-store"
 bootedit="$repo_root/linux/m3-lab/rootfs-overlay/usr/sbin/boot-edit"
 mkdir -p "$tmp/udc-empty"
-{ printf 'M5b\0\0\0\0\0\x01\x00'; head -c 72 /dev/zero; } \
+{ printf 'M5b\0\0\0\0\0\001\000'; head -c 72 /dev/zero; } \
 	> "$tmp/ble-bonds.dat"
 md5sum "$tmp/ble-bonds.dat" | cut -d' ' -f1 > "$tmp/bonds.md5"
 start_saver

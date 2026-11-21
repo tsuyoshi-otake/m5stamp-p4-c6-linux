@@ -43,8 +43,8 @@ check() { # name expected actual
 
 mkimg() { # path -- 262144 zero bytes with the FAT signature at 11 and 510
 	dd if=/dev/zero of="$1" bs=4096 count=64 2>/dev/null
-	printf '\x00\x02' | dd of="$1" bs=1 seek=11 conv=notrunc 2>/dev/null
-	printf '\x55\xaa' | dd of="$1" bs=1 seek=510 conv=notrunc 2>/dev/null
+	printf '\000\002' | dd of="$1" bs=1 seek=11 conv=notrunc 2>/dev/null
+	printf '\125\252' | dd of="$1" bs=1 seek=510 conv=notrunc 2>/dev/null
 }
 
 # 1. Valid signed image, mount stub succeeds.
@@ -125,6 +125,8 @@ grep -q 'NOSAVE_MARK' "$tmp/funcs.sh" || {
 cat > "$tmp/stub.sh" <<EOF
 log() { echo "[bootsync] \$1" >> "$tmp/log"; }
 release() { :; }
+pending_save_on() { :; }
+pending_save_off() { :; }
 NOSAVE_MARK="$tmp/run/.boot-nosave"
 BOOT_IMG="$tmp/drive.img"
 IMPORT_MODE=settle
