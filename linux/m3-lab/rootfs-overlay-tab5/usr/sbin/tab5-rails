@@ -19,18 +19,52 @@
 #
 # The lines are driven through the sysfs GPIO ABI (the image carries no
 # libgpiod tools; CONFIG_GPIO_SYSFS is on for exactly this).
+#
+# Everything here is a shell builtin except the one sleep of the live
+# charger test.  A live apply runs when memory is shortest -- the menu,
+# bootsyncd and S40network are all still up -- and on this board every
+# sed, every $( ) and every other applet is one more 480 KB allocation
+# that the kernel refuses then (seen on the first live saves of
+# charger=: "refused by user reserve" for whatever ran next).
 
 GPIO=${TAB5_RAILS_GPIO:-/sys/class/gpio}
 PSY=${TAB5_RAILS_PSY:-/sys/class/power_supply/battery}
 SETTLE=${TAB5_RAILS_SETTLE:-1}
+SPIN=${TAB5_RAILS_SPIN:-12000}
 
+# conf_get KEY FILE -> CV: the value of the first "KEY = value" line of
+# FILE; rc 1 and an empty CV without one.
+#
+# [!!-~] is "not a visible ASCII character": blanks, the CR of a CRLF
+# file and the bytes of a UTF-8 byte-order mark.  Taking those off both
+# ends of the key and of the value is all the cleaning there is, so a
+# "#key=..." comment never matches and a value keeps what is inside it.
 conf_get() {
-	bom=$(printf '\357\273\277')
-	cr=$(printf '\r')
-	sed -n -e "1s/^$bom//" -e "s/$cr\$//" \
-		-e "/^[[:blank:]]*$1[[:blank:]]*=/{s/^[[:blank:]]*$1[[:blank:]]*=[[:blank:]]*//;${3:-}p;q;}" "$2" 2>/dev/null
+	CV=""
+	[ -f "$2" ] || return 1
+	while IFS= read -r _l || [ -n "$_l" ]; do
+		case "$_l" in *=*) ;; *) continue ;; esac
+		_k=${_l%%=*}
+		while :; do
+			case "$_k" in
+				[!!-~]*) _k=${_k#?} ;;
+				*[!!-~]) _k=${_k%?} ;;
+				*) break ;;
+			esac
+		done
+		[ "$_k" = "$1" ] || continue
+		CV=${_l#*=}
+		while :; do
+			case "$CV" in
+				[!!-~]*) CV=${CV#?} ;;
+				*[!!-~]) CV=${CV%?} ;;
+				*) break ;;
+			esac
+		done
+		return 0
+	done < "$2"
+	return 1
 }
-NOSPACE='s/ //g;'
 
 if [ -n "${TAB5_RAILS_CFG:-}" ]; then
 	CFG=$TAB5_RAILS_CFG
@@ -97,7 +131,8 @@ set_level() {
 }
 
 apply_key() { # $1 = config key, $2 = port offset, $3 = description
-	v=$(conf_get "$1" "$CFG" "$NOSPACE")
+	conf_get "$1" "$CFG"
+	v=$CV
 	case "$v" in
 		1) want=1 ;;
 		""|0) want=0 ;;
@@ -128,13 +163,26 @@ apply_key() { # $1 = config key, $2 = port offset, $3 = description
 # The pack voltage is the battery supply's voltage_now (the INA226).
 pack_mv() { # -> MV
 	v=""
+	[ -r "$PSY/voltage_now" ] || return 1
 	read -r v < "$PSY/voltage_now" 2>/dev/null || return 1
 	case "$v" in ''|*[!0-9]*) return 1 ;; esac
 	MV=$((v / 1000))
 }
 
+# settle: the time the pack node gets to fall once CHG_EN is low (below
+# 2 V within 0.3 s, measured).  A denied sleep must not cut it short:
+# read at once, the node still shows the charger's own 8.4 V and a board
+# without a pack would get its charger back.  $SPIN turns of the loop
+# take about a second on the P4.
+settle() {
+	sleep "$SETTLE" 2>/dev/null && return 0
+	_n=0
+	while [ "$_n" -lt "$SPIN" ]; do _n=$((_n + 1)); done
+}
+
 apply_charger() { # $1 = boot|live
-	v=$(conf_get charger "$CFG" "$NOSPACE")
+	conf_get charger "$CFG"
+	v=$CV
 	case "$v" in
 		""|auto) v=auto ;;
 		on|off) ;;
@@ -155,7 +203,7 @@ apply_charger() { # $1 = boot|live
 				echo "M3-lab: charger=off applied (expander 0x44 P7)" ;;
 		auto)
 			set_level 7 low || return 1
-			sleep "$SETTLE"
+			settle
 			if ! pack_mv; then
 				set_level 7 high &&
 					echo "M3-lab: charger=auto: pack voltage not readable; charger on"

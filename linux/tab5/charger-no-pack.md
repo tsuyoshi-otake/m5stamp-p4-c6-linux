@@ -92,6 +92,26 @@ Two timings from the same session:
 - `m5-config`'s Status page says `battery: none` when the battery supply
   reports no pack, instead of a percentage.
 
+## Checked on the image with the fix
+
+Same unit, same USB port, build B60, 2026-11-21:
+
+- The boot shim logs `no battery pack (pack node 1806 mV with the charger
+  off): CHG_EN stays low`; Linux then finds output register 5 at 0x09 and
+  the node at 1.88 V.
+- SoftAP up and the BLE keyboard daemon running from boot: no C6 reset in
+  the first 590 s (one boot-up event, the one of the boot itself). The
+  bonded keyboard reconnected by itself 177 s after boot.
+- `charger=on` saved through `m5-config` took the register to 0x89 (set
+  back by hand at once); removing the key took the live `auto` path and
+  left it at 0x09. The live test took 1.1 s, and 1.3 s with `sleep` made
+  unavailable.
+- The first version of the helper read `config.txt` with `sed` and command
+  substitutions. Four live saves with it left 20 "refused by user reserve"
+  lines in the kernel log -- programs that ran next to the apply were
+  denied their memory. With the helper reduced to shell builtins the same
+  four saves left 2.
+
 The one case `auto` cannot see: a pack whose protection circuit has opened
 after a deep discharge reads 0 V until a charger wakes it. With such a pack
 the charger now stays off until `charger=on` is set. This path is untested

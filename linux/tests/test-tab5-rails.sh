@@ -41,6 +41,15 @@ run() {
 		sh "$tool" "$@" 2>&1
 }
 chg() { cat "$tmp/gpio/gpio527/direction"; }
+# run_in DIR ARGS...: the same with DIR as the whole PATH, so the helper
+# finds only the applets a test puts there.
+shbin=$(command -v sh)
+run_in() {
+	_p=$1; shift
+	PATH="$_p" TAB5_RAILS_GPIO="$tmp/gpio" TAB5_RAILS_PSY="$tmp/psy" \
+		TAB5_RAILS_CFG="$tmp/config.txt" TAB5_RAILS_SETTLE=0 \
+		TAB5_RAILS_SPIN=20 "$shbin" "$tool" "$@" 2>&1
+}
 
 # 1. boot, no keys: both 0x43 lines driven 0, the charger line is not
 # touched -- the boot shim made that decision.
@@ -173,7 +182,91 @@ fresh
 out=$(run bogus); rc=$?
 [ "$rc" -eq 2 ] && ok "unknown argument: usage, rc 2" || bad "usage: rc=$rc $out"
 
-# 10. the boot shim's half of the contract, in its source: the charger
+# 10. config.txt as people's editors leave it: a byte-order mark, CRLF
+# line ends, blanks and tabs around the key and the value, no newline
+# at the end.  Comments and longer key names never match; the first
+# real line wins.
+fresh
+printf '\357\273\277 \tcharger \t= \ton \t\r\n' > "$tmp/config.txt"
+out=$(run charger); rc=$?
+[ "$rc" -eq 0 ] && [ "$(chg)" = high ] &&
+	ok "config: BOM, CRLF and blanks around key and value are taken off" ||
+	bad "config bom/crlf: rc=$rc $(chg) $out"
+fresh
+printf '#charger=on\nxcharger=on\ncharger_x=on\n  # charger=on\ncharger=off\ncharger=on\n' \
+	> "$tmp/config.txt"
+echo 7912000 > "$tmp/psy/voltage_now"
+out=$(run charger); rc=$?
+[ "$rc" -eq 0 ] && [ "$(chg)" = low ] &&
+	ok "config: comments and other keys do not match; the first line wins" ||
+	bad "config first-match: rc=$rc $(chg) $out"
+fresh
+printf 'ext_ant_en=1\r\next5v_en=1' > "$tmp/config.txt"
+out=$(run); rc=$?
+[ "$rc" -eq 0 ] && [ "$(cat "$tmp/gpio/gpio512/value")" = 1 ] &&
+	[ "$(cat "$tmp/gpio/gpio514/value")" = 1 ] &&
+	ok "config: a last line without a newline still counts" ||
+	bad "config no-eol: rc=$rc $out"
+fresh
+printf 'charger=o n\n' > "$tmp/config.txt"
+out=$(run charger)
+echo "$out" | grep -qF 'ignoring invalid charger=o n' &&
+	ok "config: a value keeps what is inside it" || bad "config inner blank: $out"
+
+# 11. no helper programs: a live apply runs when memory is shortest and
+# every exec can be refused then.  With an empty PATH the boot path and
+# the forced charger values still work; nothing is looked up.
+fresh
+mkdir -p "$tmp/empty"
+printf 'ext5v_en=1\next_ant_en=1\ncharger=off\n' > "$tmp/config.txt"
+out=$(run_in "$tmp/empty"); rc=$?
+[ "$rc" -eq 0 ] && [ "$(cat "$tmp/gpio/gpio512/value")" = 1 ] &&
+	[ "$(cat "$tmp/gpio/gpio514/value")" = 1 ] && [ "$(chg)" = low ] &&
+	! echo "$out" | grep -qi 'not found' &&
+	ok "boot path runs without a single helper program" ||
+	bad "boot noexec: rc=$rc $(chg) $out"
+fresh
+mkdir -p "$tmp/empty"
+echo 'charger=on' > "$tmp/config.txt"
+out=$(run_in "$tmp/empty" charger); rc=$?
+[ "$rc" -eq 0 ] && [ "$(chg)" = high ] && ! echo "$out" | grep -qi 'not found' &&
+	ok "live charger=on runs without a single helper program" ||
+	bad "live on noexec: rc=$rc $(chg) $out"
+
+# 12. the settle time.  The node is read after the wait, not before:
+# here the fake sleep is what lets the node fall from the charger's own
+# 8.4 V.  And a sleep that cannot run does not stop the test or skip
+# the decision.
+fresh
+mkdir -p "$tmp/bin"
+cat > "$tmp/bin/sleep" <<EOF
+#!$shbin
+echo 1830000 > "$tmp/psy/voltage_now"
+EOF
+chmod +x "$tmp/bin/sleep"
+echo 8376000 > "$tmp/psy/voltage_now"
+out=$(run_in "$tmp/bin" charger); rc=$?
+[ "$rc" -eq 0 ] && [ "$(chg)" = low ] &&
+	echo "$out" | grep -qF 'no battery pack (1830 mV); charger off' &&
+	ok "live auto: the node is read after the settle time" ||
+	bad "settle order: rc=$rc $(chg) $out"
+fresh
+mkdir -p "$tmp/empty"
+echo 1830000 > "$tmp/psy/voltage_now"
+out=$(run_in "$tmp/empty" charger); rc=$?
+[ "$rc" -eq 0 ] && [ "$(chg)" = low ] &&
+	echo "$out" | grep -qF 'no battery pack (1830 mV); charger off' &&
+	ok "live auto: a sleep that cannot run still ends in a decision" ||
+	bad "denied sleep: rc=$rc $(chg) $out"
+grep -q '^	sleep "\$SETTLE" 2>/dev/null && return 0$' "$tool" &&
+	grep -q '^	while \[ "\$_n" -lt "\$SPIN" \]; do' "$tool" &&
+	ok "settle: a denied sleep falls back to a counted loop" ||
+	bad "settle lost its fallback loop"
+! grep -n -E '\$\([^(]|`|\bsed\b|\bawk\b|\bcut\b|\bcat\b|\bgrep\b' "$tool" | grep -v -E '^[0-9]+:[[:blank:]]*#' | grep -q . &&
+	ok "tab5-rails: no command substitution, no text tools" ||
+	bad "tab5-rails execs again: $(grep -n -E '\$\([^(]|`|\bsed\b|\bawk\b|\bcut\b|\bcat\b|\bgrep\b' "$tool" | grep -v -E '^[0-9]+:[[:blank:]]*#')"
+
+# 13. the boot shim's half of the contract, in its source: the charger
 # is not enabled in the expander init any more, the decision is made
 # after the C6 reset wait from the pack node voltage, and a failed read
 # keeps the stock behaviour.
