@@ -109,6 +109,13 @@ lun_state() {
 	esac
 }
 
+apply_done() {
+	_ad=0
+	[ -f "$APPLY_DONE" ] && read -r _ad < "$APPLY_DONE" 2>/dev/null
+	case "$_ad" in ''|*[!0-9]*) _ad=0 ;; esac
+	echo $((_ad + 1)) > "$APPLY_DONE" 2>/dev/null || true
+}
+
 # config.txt diffing (#39): normalise both files the way S40network's
 # conf_get reads them -- UTF-8 BOM on line 1, CRs, leading blanks, comments
 # and blank lines dropped, blanks around "=" collapsed -- into key=value
@@ -168,6 +175,11 @@ net_changed_keys() {
 }
 
 FLASH_HASH_FILE="/run/.boot-flash-md5"
+# "m5-config set" returns when its save has been dealt with, not when it is
+# on flash: it waits for this count to move.  S40network moves it when a
+# live apply has finished; a save with nothing to apply is finished here
+# (apply_done, builtins only).
+APPLY_DONE="/run/.netapply.done"
 
 # The host's writes change boot.img's mtime.  SEEN_REF carries the mtime of
 # the image last looked at (S05 sets it before the LUN is attached), and both
@@ -485,6 +497,8 @@ import_snapshot() {
 	fi
 	# Restarts the program only when it or its autorun= settings changed.
 	autorun_apply
+	# With keys to apply, S40network reports the end of the apply.
+	[ -n "$NET_KEYS" ] || apply_done
 	return 0
 }
 

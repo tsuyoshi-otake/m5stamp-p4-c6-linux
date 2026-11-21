@@ -804,6 +804,20 @@ apply_wpa_hup() {
 NET_LOCK=/run/.netapply.lock
 NET_PENDING=/run/.netapply.pending
 
+# Finished applies are counted in NET_DONE, with builtins only.  "m5-config
+# set" waits for the count to move before it returns: while an apply runs,
+# the next program to start is the one the kernel refuses its memory, so
+# the caller must not get the prompt back before the change is live.
+# (bootsyncd moves the same count for a save that has nothing to apply.)
+NET_DONE=/run/.netapply.done
+
+net_done() {
+	_nd=0
+	[ -f "$NET_DONE" ] && read -r _nd < "$NET_DONE" 2>/dev/null
+	case "$_nd" in ''|*[!0-9]*) _nd=0 ;; esac
+	echo $((_nd + 1)) > "$NET_DONE" 2>/dev/null || true
+}
+
 net_acquire() {
 	if mkdir "$NET_LOCK" 2>/dev/null; then
 		echo $$ > "$NET_LOCK/pid"
@@ -968,6 +982,7 @@ net_apply() {
 			net_dispatch $reqs
 		done
 		rm -rf "$NET_LOCK"
+		net_done
 		# A request written between the last drain and the unlock had no
 		# holder to drain it; pick it up ourselves.  If another requester
 		# already holds the lock it drains the file instead.

@@ -77,6 +77,9 @@ export M5CFG_HOME_M5="$tmp/home-m5" M5CFG_HOME_ROOT="$tmp/home-root"
 export RUN_SYSTEM_CLASS_UDC_ROOT="$tmp/udc" M5CFG_SAVE_WAIT=3 M5CFG_ASSUME_ROOT=1
 # The denied-exec retry delay is real on board but only slows the host.
 export M5CFG_SPIN=50
+# The wait for the live apply has its own tests at the end; everywhere
+# else there is no S40network whose count could move.
+export M5CFG_APPLY_WAIT=0
 # Runtime bond store is the staged /tmp copy (#43), never $BOOT_MNT.
 export M5CFG_BLE_BONDS="$tmp/ble-bonds.dat"
 
@@ -2202,6 +2205,144 @@ out=$(env -u M5CFG_FORCE_TOUCH -u M5CFG_TSCRIPT M5CFG_PSUPPLY="$tmp/psy" \
 echo "$out" | grep -qx ' battery: 83% Charging' &&
 	ok "Status: no present attribute, percentage line as before" ||
 	bad "Status nopresent: $(echo "$out" | grep -i batt)"
+
+# 39. "set" on the command line returns when the change is live (#42).
+# While bootsyncd and S40network deal with a save, the next program to
+# start is the one the kernel refuses its memory on the Tab5 --
+# m5-config's own cleanup, then the caller's next command.  The two count
+# the saves they have dealt with in .netapply.done (S40network at the end
+# of an apply, bootsyncd when there was nothing to apply) and the CLI
+# waits for the count to move.
+# The stand-in apply bumps the count three seconds after the image
+# changed -- well after the save itself is confirmed.
+s40="$repo_root/linux/m3-lab/rootfs-overlay/etc/init.d/S40network"
+done_f="$tmp/run/.netapply.done"
+fake_apply() { # $1 = count to write once the image has changed
+	_was=$(md5sum "$img" | cut -d' ' -f1)
+	( i=0
+	  while [ "$i" -lt 200 ]; do
+		[ "$(md5sum "$img" 2>/dev/null | cut -d' ' -f1)" != "$_was" ] && break
+		sleep 0.1; i=$((i + 1))
+	  done
+	  sleep 3
+	  echo "$1" > "$done_f" ) &
+	applier=$!
+}
+echo 4 > "$done_f"
+start_saver
+fake_apply 5
+out=$(M5CFG_APPLY_WAIT=20 sh "$tool" set debug 1 2>&1); rc=$?
+seen=$(cat "$done_f")
+stop_saver
+wait "$applier" 2>/dev/null
+[ "$rc" -eq 0 ] && echo "$out" | grep -qF 'saved to flash' && [ "$seen" = 5 ] &&
+	! echo "$out" | grep -q 'still being applied' &&
+	ok "set returns after the live apply has finished" ||
+	bad "apply wait: rc=$rc count=$seen $out"
+imgfile config.txt > "$tmp/pub/config.txt"
+# the very first apply of a boot: there is no count file yet
+rm -f "$done_f"
+start_saver
+fake_apply 1
+out=$(M5CFG_APPLY_WAIT=20 sh "$tool" set debug 0 2>&1); rc=$?
+seen=$(cat "$done_f" 2>/dev/null)
+stop_saver
+wait "$applier" 2>/dev/null
+[ "$rc" -eq 0 ] && [ "$seen" = 1 ] && ! echo "$out" | grep -q 'still being applied' &&
+	ok "set waits for the first apply of a boot too (no count file yet)" ||
+	bad "apply wait, no file: rc=$rc count=$seen $out"
+imgfile config.txt > "$tmp/pub/config.txt"
+# an apply that never reports: the wait is bounded, the save still counts
+echo 7 > "$done_f"
+start_saver
+out=$(M5CFG_APPLY_WAIT=1 sh "$tool" set debug 1 2>&1); rc=$?
+stop_saver
+[ "$rc" -eq 0 ] && echo "$out" | grep -qF 'saved to flash' &&
+	echo "$out" | grep -qF 'saved; the change is still being applied' &&
+	ok "an apply that does not finish in time: said so, rc 0" ||
+	bad "apply wait cap: rc=$rc $out"
+imgfile config.txt > "$tmp/pub/config.txt"
+# every save is waited for, whatever file the key lives in: bootsyncd
+# counts the ones that have nothing for S40network
+echo 7 > "$done_f"
+start_saver
+fake_apply 8
+out=$(M5CFG_APPLY_WAIT=20 sh "$tool" set password waitfor99 2>&1); rc=$?
+seen=$(cat "$done_f")
+stop_saver
+wait "$applier" 2>/dev/null
+[ "$rc" -eq 0 ] && [ "$seen" = 8 ] && ! echo "$out" | grep -q 'still being applied' &&
+	ok "a credentials.txt key waits for the count as well" ||
+	bad "apply wait, password: rc=$rc count=$seen $out"
+imgfile config.txt > "$tmp/pub/config.txt"
+# the menu stays up and starts nothing next: it does not wait
+printf '8\n5\noff\n\n0\n0\n' > "$tmp/tscr/kbd"
+start_saver
+out=$(env -u M5CFG_FORCE_TOUCH -u M5CFG_TSCRIPT M5CFG_APPLY_WAIT=1 \
+	M5CFG_RAILS="$tmp/bin/tab5-rails" sh "$tool" menu < "$tmp/tscr/kbd" 2>&1)
+stop_saver
+[ "$(imgfile config.txt | grep -c '^charger=off')" = 1 ] &&
+	! echo "$out" | grep -q 'still being applied' &&
+	ok "a save from the menu does not wait for the apply" ||
+	bad "menu waited: $(echo "$out" | tail -6)"
+imgfile config.txt > "$tmp/pub/config.txt"
+
+# S40network's half: every release of the apply lock moves the count,
+# with builtins only, and a queued second request is counted once.
+sed -n '/^net_done()/,/^}/p;/^net_acquire()/,/^}/p;/^net_apply()/,/^}/p' "$s40" \
+	> "$tmp/netfuncs.sh"
+(
+	NET_LOCK="$tmp/run/.netapply.lock"
+	NET_PENDING="$tmp/run/.netapply.pending"
+	NET_DONE="$done_f"
+	net_tick() { :; }
+	net_dispatch() { echo "$*" >> "$tmp/dispatched"; }
+	. "$tmp/netfuncs.sh"
+	rm -f "$done_f" "$tmp/dispatched"
+	net_apply charger
+	a=$(cat "$done_f")
+	net_apply brightness
+	b=$(cat "$done_f")
+	echo garbage > "$done_f"
+	net_apply charger
+	c=$(cat "$done_f")
+	echo "$a $b $c $(grep -c . "$tmp/dispatched")"
+	[ -d "$NET_LOCK" ] && echo locked
+) > "$tmp/netdone.out" 2>&1
+[ "$(cat "$tmp/netdone.out")" = "1 2 1 3" ] &&
+	ok "S40network counts each finished apply; a broken count restarts at 1" ||
+	bad "net_done: $(cat "$tmp/netdone.out")"
+grep -q '^		net_done$' "$s40" &&
+	[ "$(sed -n '/^net_done()/,/^}/p' "$s40" | grep -c -E '\$\([^(]|`')" = 0 ] &&
+	ok "S40network: the count is kept without a single exec" ||
+	bad "net_done is not builtin-only or not called at the unlock"
+
+# bootsyncd's half: a save with nothing to apply moves the count itself,
+# at the very end of the import; with keys to apply it leaves that to
+# S40network.
+bsd="$repo_root/linux/m3-lab/rootfs-overlay/usr/sbin/bootsyncd"
+sed -n '/^apply_done()/,/^}/p' "$bsd" > "$tmp/bsdfuncs.sh"
+(
+	APPLY_DONE="$done_f"
+	. "$tmp/bsdfuncs.sh"
+	rm -f "$done_f"
+	apply_done; a=$(cat "$done_f")
+	apply_done; b=$(cat "$done_f")
+	echo x > "$done_f"
+	apply_done; c=$(cat "$done_f")
+	echo "$a $b $c"
+) > "$tmp/bsddone.out" 2>&1
+[ "$(cat "$tmp/bsddone.out")" = "1 2 1" ] &&
+	[ "$(sed -n '/^apply_done()/,/^}/p' "$bsd" | grep -c -E '\$\([^(]|`')" = 0 ] &&
+	ok "bootsyncd counts a save that has nothing to apply, without an exec" ||
+	bad "apply_done: $(cat "$tmp/bsddone.out")"
+awk '/^	autorun_apply$/ { a = NR }
+     /^	\[ -n "\$NET_KEYS" \] \|\| apply_done$/ { d = NR }
+     END { exit !(a && d && d > a && d - a <= 3) }' "$bsd" &&
+	grep -q '^APPLY_DONE="/run/.netapply.done"$' "$bsd" &&
+	grep -q '^NET_DONE=/run/.netapply.done$' "$s40" &&
+	ok "bootsyncd and S40network keep the same count, bootsyncd last in the import" ||
+	bad "apply_done is not the last step of the import, or the count files differ"
 
 if [ "$fails" -gt 0 ]; then
 	echo "FAILED: $fails checks"

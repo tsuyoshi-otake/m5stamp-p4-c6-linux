@@ -38,6 +38,12 @@ HOME_ROOT="${M5CFG_HOME_ROOT:-/root}"
 LOCK="$RUN_DIR/.m5-config.lock"
 WORK_IMG="$PUB_DIR/.m5cfg-img.$$"
 MNT="$RUN_DIR/.m5cfg-mnt.$$"
+# bootsyncd and S40network count the saves they have dealt with in
+# APPLY_DONE; the command-line "set" waits up to APPLY_WAIT seconds for
+# its own (_apply_wait).  _AWAIT is 1 on that path only.
+APPLY_DONE="$RUN_DIR/.netapply.done"
+APPLY_WAIT="${M5CFG_APPLY_WAIT:-10}"
+_AWAIT=0
 CR=$(printf '\r')
 # A newline inside quotes: $(printf '\n') would be stripped to empty.
 NL='
@@ -477,6 +483,50 @@ _x() {
 	return $_rc
 }
 
+# _apply_count -> AC: saves dealt with so far ("" before the first).
+_apply_count() {
+	AC=""
+	[ -f "$APPLY_DONE" ] && read -r AC < "$APPLY_DONE" 2>/dev/null
+	return 0
+}
+
+# _uptime -> UP: whole seconds since boot, "" where /proc is not there.
+_uptime() {
+	UP=""
+	[ -r /proc/uptime ] && read -r UP _r < /proc/uptime 2>/dev/null
+	UP=${UP%%.*}
+	case "$UP" in *[!0-9]*) UP="" ;; esac
+}
+
+# _apply_wait: "set" on the command line returns when the change is live,
+# not when it is saved.  After the save bootsyncd publishes the files and
+# hands the changed keys to S40network, and while that runs the next
+# 480 KB program is the one the kernel turns away: our own cleanup, then
+# whatever the caller runs next ("Segmentation fault" on the console).
+# The count in APPLY_DONE moves when that work is over -- S40network moves
+# it at the end of an apply, bootsyncd when there was nothing to apply.
+# Builtins only: a sleep here would be one more program in the way.
+#
+# The menu does not wait: it stays up and starts nothing by itself.
+_apply_wait() {
+	[ "$_AWAIT" = 1 ] && [ "$APPLY_WAIT" -gt 0 ] || return 0
+	_uptime
+	_aw0=$UP
+	[ -n "$_aw0" ] || return 0
+	while :; do
+		_apply_count
+		if [ "$AC" != "$_ac0" ]; then
+			# The one that counted is on its way out; let it go.
+			_sp=0
+			while [ "$_sp" -lt 600 ]; do _sp=$((_sp + 1)); done
+			return 0
+		fi
+		_uptime
+		[ -n "$UP" ] && [ $((UP - _aw0)) -lt "$APPLY_WAIT" ] || break
+	done
+	echo "m5-config: saved; the change is still being applied" >&2
+}
+
 # drive_write KEY VALUE set|del -- edit a key=value file in the image.
 # drive_put SRC NAME            -- copy SRC into the image as NAME
 #                                  (binary files like ble-bonds.dat).
@@ -570,6 +620,8 @@ _drive_save() {
 		_drive_clean
 		return 0
 	fi
+	_apply_count
+	_ac0=$AC
 	_x mv -f "$WORK_IMG" "$BOOT_IMG" || {
 		[ "$?" = 4 ] &&
 			echo "m5-config: busy (low memory); nothing was changed" >&2 ||
@@ -597,6 +649,7 @@ _drive_save() {
 		[ -f "$FLASH_HASH_FILE" ] && read -r _saved < "$FLASH_HASH_FILE"
 		if [ "$_saved" = "$new" ]; then
 			echo "m5-config: saved to flash"
+			_apply_wait
 			_drive_clean
 			return 0
 		fi
@@ -616,6 +669,7 @@ usage() {
 	  m5-config list             managed keys and current values
 	  m5-config get KEY          print the value (secrets print "set")
 	  m5-config set KEY VALUE    validate, write, save to flash, apply
+	                             (returns when the change is live)
 	  m5-config set KEY ""       remove the key where valid
 	  m5-config set KEY -        read the value from stdin (secrets)
 	set exits 0 saved, 1 rejected, 2 not saved (#43), 3 unconfirmed.
@@ -2565,6 +2619,7 @@ case "${1:-menu}" in
 		done ;;
 	set)
 		[ $# -ge 2 ] && [ $# -le 3 ] || usage
+		_AWAIT=1
 		if [ $# -eq 3 ] && [ "$3" = - ]; then
 			do_set "$2" "" 1
 		elif [ $# -eq 3 ]; then
