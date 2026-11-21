@@ -1,0 +1,49 @@
+From: Stamp-P4 maintainers <noreply@example.invalid>
+Subject: [PATCH] sdio: the configured bus clock survives esp_remove (#41)
+
+After a re-probe of the SDIO function (unbind/bind of the function or of
+the whole mmc host, which is how a dead C6 link is brought back) the bus
+ran at the 20 MHz the mmc core negotiated, not at the module's
+clockspeed (5 MHz on these boards):
+
+  boot:    mmc1 400 kHz -> 20 MHz -> ES_SDIO_CLOCK_APPLY requested_mhz=5
+  rebind:  mmc1 400 kHz -> 20 MHz    (no ES_SDIO_CLOCK_APPLY line)
+
+esp_probe() applies the clock only if sdio_context.sdio_clk_mhz is set.
+That field is written once, by esp_init_interface_layer() at module
+load, and esp_remove() ends with a memset of the whole context.  The
+adapter pointer wiped by the same memset is fetched again in
+init_context(); the clock was simply lost.
+
+Keep it across the memset.
+
+---
+ sdio/esp_sdio.c | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+--- a/sdio/esp_sdio.c
++++ b/sdio/esp_sdio.c
+@@ -647,6 +647,7 @@
+ {
+ 	struct esp_sdio_context *context;
+ 	uint8_t prio_q_idx = 0;
++	u32 clk_mhz;
+ 
+ 	context = sdio_get_drvdata(func);
+ 
+@@ -682,7 +683,15 @@
+ 			context->func = NULL;
+ 			context->adapter->dev = NULL;
+ 		}
++		/*
++		 * The bus clock is a module parameter, handed over once in
++		 * esp_init_interface_layer().  It has to be there for the next
++		 * probe, or a re-probed card stays at the speed the mmc core
++		 * picked.
++		 */
++		clk_mhz = context->sdio_clk_mhz;
+ 		memset(context, 0, sizeof(struct esp_sdio_context));
++		context->sdio_clk_mhz = clk_mhz;
+ 	}
+ 	esp_dbg("ESP SDIO cleanup completed\n");
+ }
