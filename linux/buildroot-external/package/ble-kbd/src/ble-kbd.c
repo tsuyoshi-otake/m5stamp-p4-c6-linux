@@ -31,6 +31,7 @@
 #include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/time.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -48,6 +49,10 @@
 #define HCI_CHANNEL_CONTROL	3
 #define BT_SECURITY		4
 #define BT_SECURITY_MEDIUM	2
+struct bt_security {
+	uint8_t level;
+	uint8_t key_size;
+};
 
 struct sockaddr_hci {
 	sa_family_t	hci_family;
@@ -612,8 +617,18 @@ static int att_fd = -1;
 static uint16_t att_mtu = 23;
 static uint8_t att_buf[520];
 
-/* connect L2CAP to ATT fixed channel */
-static int att_connect(const bdaddr_t *addr, uint8_t addr_type)
+/* connect L2CAP to ATT fixed channel.
+ *
+ * sec_level != 0 asks for that security level BEFORE connect(): the
+ * blocking connect() then returns once the link is encrypted with the
+ * stored LTK, or fails when the keyboard no longer has the bond.  Asked
+ * after connect() the kernel answers EINVAL on a link that is already
+ * secure enough and otherwise parks the socket unwritable until the
+ * encryption is done.  The option value is a struct bt_security: the
+ * bare 1-byte level this code used to pass has been rejected with
+ * EINVAL since Linux 6.9, so no reconnect was ever encrypted (#41). */
+static int att_connect(const bdaddr_t *addr, uint8_t addr_type,
+		       int sec_level)
 {
 	struct sockaddr_l2 sa = {0};
 	int fd = socket(AF_BLUETOOTH, SOCK_SEQPACKET, BTPROTO_L2CAP);
@@ -625,7 +640,19 @@ static int att_connect(const bdaddr_t *addr, uint8_t addr_type)
 	la.l2_bdaddr_type = BDADDR_LE_PUBLIC;
 	la.l2_cid = ATT_CID;
 	if (bind(fd, (struct sockaddr *)&la, sizeof(la)) < 0) {
-		close(fd); return -1;
+		int e = errno;
+		close(fd); errno = e; return -1;
+	}
+
+	if (sec_level) {
+		struct bt_security sec = { .level = sec_level };
+		/* bounds the wait for the encryption inside connect() */
+		struct timeval tv = { .tv_sec = 20 };
+		if (setsockopt(fd, SOL_BLUETOOTH, BT_SECURITY,
+			       &sec, sizeof(sec)) < 0)
+			printf("  BT_SECURITY %d refused: %s\n",
+			       sec_level, strerror(errno));
+		setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
 	}
 
 	sa.l2_family = AF_BLUETOOTH;
@@ -633,9 +660,38 @@ static int att_connect(const bdaddr_t *addr, uint8_t addr_type)
 	sa.l2_bdaddr = *addr;
 	sa.l2_bdaddr_type = addr_type;
 	if (connect(fd, (struct sockaddr *)&sa, sizeof(sa)) < 0) {
-		close(fd); return -1;
+		int e = errno;
+		close(fd); errno = e; return -1;
 	}
 	return fd;
+}
+
+/* The keyboard may act as a GATT client as well (its own MTU exchange,
+ * a look for our GAP/GATT services).  We serve no attributes, but a
+ * request left unanswered times out on the peer after 30 s and it
+ * drops the link.  Returns 1 when the PDU was a peer request or
+ * command (handled here), 0 when it is a response/notification for
+ * the caller. */
+#define ATT_MY_MTU	185
+static int att_peer_pdu(const uint8_t *p, int n)
+{
+	uint8_t op = p[0];
+	if (op & 0x40) return 1;		/* command: no answer */
+	if (op == ATT_OP_CONFIRM) return 1;
+	if (op & 1) return 0;			/* response/notify/indicate */
+	if (op == ATT_OP_MTU_REQ) {
+		uint8_t r[3] = { ATT_OP_MTU_RSP,
+				 ATT_MY_MTU & 0xff, ATT_MY_MTU >> 8 };
+		write(att_fd, r, sizeof(r));
+		return 1;
+	}
+	/* discovery requests: nothing there; anything else: unsupported */
+	uint8_t e[5] = { ATT_OP_ERROR, op, n > 1 ? p[1] : 0, n > 2 ? p[2] : 0,
+			 (op == ATT_OP_FIND_INFO_REQ || op == 0x06 ||
+			  op == ATT_OP_READ_TYPE_REQ ||
+			  op == ATT_OP_READ_GROUP_REQ) ? ATT_ERR_NOT_FOUND : 0x06 };
+	write(att_fd, e, sizeof(e));
+	return 1;
 }
 
 /* one ATT request -> response. Returns rsp len or <0; opcode in *rop */
@@ -656,6 +712,7 @@ static int att_req(const uint8_t *req, int reqlen,
 			continue;
 		}
 		if (att_buf[0] == ATT_OP_NOTIFY) continue;  /* stray */
+		if (att_peer_pdu(att_buf, n)) continue;
 		*rop = att_buf[0];
 		if (att_buf[0] == ATT_OP_ERROR &&
 		    n >= 5 && att_buf[1] == req[0]) {
@@ -736,30 +793,35 @@ static int att_find_info(uint16_t start, uint16_t end,
 	return n;
 }
 
-/* Read (optionally blob loop). Returns value length, or <0 */
+/* Read (blob loop for long values). Returns value length, or <0:
+ * -(0x1000 | att error), -2 timeout, -1 link error.
+ *
+ * Read Request = opcode + 16-bit handle (3 bytes), Read Blob adds a
+ * 16-bit offset (5 bytes).  Both went out one byte short until #41,
+ * so every real keyboard answered Invalid PDU and no report map or
+ * report reference was ever read. */
 static int att_read(uint16_t handle, uint8_t *out, int cap)
 {
-	uint8_t req[2] = { ATT_OP_READ_REQ, handle & 0xff };
+	uint8_t req[3] = { ATT_OP_READ_REQ, handle & 0xff, handle >> 8 };
 	uint8_t op;
-	uint8_t rsp[64];
-	req[1] = handle >> 8;
-	int n = att_req(req, 2, &op, rsp, sizeof(rsp), 3000);
-	if (n < 0) return n;
+	/* a response fills the MTU: as large as att_buf, off the stack */
+	static uint8_t rsp[sizeof(att_buf)];
+	int got = att_req(req, sizeof(req), &op, rsp, sizeof(rsp), 3000);
+	if (got < 0) return got;
 	if (op == ATT_OP_ERROR) return -(0x1000 | att_errcode(rsp));
 	if (op != ATT_OP_READ_RSP) return -1;
-	int tot = 0;
-	if (n > cap) n = cap;
-	memcpy(out, rsp, n); tot = n;
-	/* blob loop while response fills the mtu */
-	while (n == att_mtu - 1 && tot < cap) {
+	int n = got > cap ? cap : got;
+	int tot = n;
+	memcpy(out, rsp, n);
+	/* blob loop while the response fills the mtu */
+	while (got == att_mtu - 1 && tot < cap) {
 		uint8_t breq[5] = { ATT_OP_READ_BLOB_REQ,
 			handle & 0xff, handle >> 8,
 			(uint8_t)(tot & 0xff), (uint8_t)(tot >> 8) };
-		n = att_req(breq, 4, &op, rsp, sizeof(rsp), 3000);
-		if (n <= 0 || op != ATT_OP_READ_BLOB_RSP) break;
-		if (tot + n > cap) n = cap - tot;
+		got = att_req(breq, sizeof(breq), &op, rsp, sizeof(rsp), 3000);
+		if (got <= 0 || op != ATT_OP_READ_BLOB_RSP) break;
+		n = tot + got > cap ? cap - tot : got;
 		memcpy(out + tot, rsp, n); tot += n;
-		if (n < att_mtu - 1) break;
 	}
 	return tot;
 }
@@ -861,16 +923,17 @@ static int hogp_find_chars(struct hogp *h)
 		uint16_t last = 0;
 		for (int off = 1; off + ilen <= n; off += ilen) {
 			uint16_t dh = rsp[off] | (rsp[off+1] << 8);
+			uint16_t vh = rsp[off+3] | (rsp[off+4] << 8);
 			uint16_t uuid = rsp[off+5] | (rsp[off+6] << 8);
-			if (uuid == UUID_REPORT_MAP) h->map_handle = dh + 1;
-			else if (uuid == UUID_HID_INFO) h->info_handle = dh + 1;
+			if (uuid == UUID_REPORT_MAP) h->map_handle = vh;
+			else if (uuid == UUID_HID_INFO) h->info_handle = vh;
 			else if (uuid == UUID_REPORT) {
 				struct report_desc *r;
 				if (h->nreports < 16) {
 					r = &h->reports[h->nreports++];
 					memset(r, 0, sizeof(*r));
 					r->decl_handle = dh;
-					r->val_handle = dh + 1;
+					r->val_handle = vh;
 				}
 			}
 			last = dh;
@@ -1049,19 +1112,24 @@ static int hogp_session(const bdaddr_t *addr, uint8_t atype,
 	memset(&h, 0, sizeof(h));
 	int ufd = -1, rc = 1;
 
-	att_fd = att_connect(addr, atype);
-	if (att_fd < 0) { printf("  l2cap connect failed\n"); return 1; }
-	printf("  l2cap att connected\n");
-
-	if (encrypted) {
-		uint8_t lvl = BT_SECURITY_MEDIUM;
-		if (setsockopt(att_fd, SOL_BLUETOOTH, BT_SECURITY,
-			       &lvl, 1) < 0)
-			printf("  BT_SECURITY_MEDIUM failed: %s\n",
-			       strerror(errno));
+	att_fd = att_connect(addr, atype,
+			     encrypted ? BT_SECURITY_MEDIUM : 0);
+	if (att_fd < 0) {
+		printf("  l2cap connect failed: %s%s\n", strerror(errno),
+		       encrypted ? " (no encryption -- is the bond still on"
+				   " the keyboard?)" : "");
+		return 1;
+	}
+	{
+		/* key_size 0 = the link is not encrypted */
+		struct bt_security sec = { 0, 0 };
+		socklen_t sl = sizeof(sec);
+		getsockopt(att_fd, SOL_BLUETOOTH, BT_SECURITY, &sec, &sl);
+		printf("  l2cap att connected (enc key size %u)\n",
+		       sec.key_size);
 	}
 
-	if (att_mtu_req(185) < 0)
+	if (att_mtu_req(ATT_MY_MTU) < 0)
 		printf("  mtu exchange failed (using %u)\n", att_mtu);
 	else
 		printf("  att mtu %u\n", att_mtu);
@@ -1079,7 +1147,12 @@ static int hogp_session(const bdaddr_t *addr, uint8_t atype,
 
 	h.map_len = att_read(h.map_handle, h.report_map, sizeof(h.report_map));
 	if (h.map_len <= 0) {
-		printf("  report map read failed\n");
+		if (h.map_len <= -0x1000)
+			printf("  report map read failed: att error 0x%02x\n",
+			       (-h.map_len) & 0xff);
+		else
+			printf("  report map read failed: %s\n",
+			       h.map_len == -2 ? "timeout" : "link error");
 		/* brief: boot protocol fallback could go here */
 		goto out;
 	}
@@ -1127,6 +1200,8 @@ static int hogp_session(const bdaddr_t *addr, uint8_t atype,
 			} else if (att_buf[0] == ATT_OP_INDICATE) {
 				uint8_t c = ATT_OP_CONFIRM;
 				write(att_fd, &c, 1);
+			} else {
+				att_peer_pdu(att_buf, n);
 			}
 		}
 		if (pf[0].revents & (POLLERR | POLLHUP)) break;
@@ -1418,6 +1493,7 @@ static int cmd_pair(const char *addr_str)
 	int done = -1;
 	int auth_status = -1;
 	int connected = 0;
+	int got_central = 0;
 	struct bond_entry *b = NULL;
 	for (int k = 0; k < 360 && done < 0; k++) {
 		int ev = mgmt_recv(mgmt, buf, sizeof(rxbuf), 250);
@@ -1468,8 +1544,16 @@ static int cmd_pair(const char *addr_str)
 		}
 		case MGMT_EV_NEW_LONG_TERM_KEY: {
 			struct mgmt_ev_new_long_term_key *k2 = d;
+			/* Legacy pairing can report two LTKs: the keyboard's
+			 * (initiator=1, the one a central encrypts with) and
+			 * the one we handed out for a role swap (initiator=0).
+			 * The store holds one: keep the usable one whatever
+			 * the order.  A Secure Connections key (type >= 2)
+			 * serves both roles. */
+			int central = k2->key.initiator || k2->key.type >= 2;
 			b = bond_new(&k2->key.addr.bdaddr, k2->key.addr.type);
-			if (b) {
+			if (b && (central || !got_central)) {
+				if (central) got_central = 1;
 				b->have_ltk = 1;
 				b->ltk_type = k2->key.type;
 				b->initiator = k2->key.initiator;
@@ -1719,17 +1803,21 @@ static int daemon_setup(int mgmt, uint8_t *buf)
 	usleep(200000);
 
 	/* Prefer the kernel's background scan + auto-connect: one
-	 * ADD_DEVICE action=1 per bond leaves the radio on a low-duty
-	 * background scan in the kernel instead of this daemon's
-	 * continuous mgmt discovery (the C6 shares one antenna between
-	 * Wi-Fi and BLE).  Fall back to the discovery loop when the
-	 * kernel refuses it. */
+	 * ADD_DEVICE per bond leaves the radio on a low-duty background
+	 * scan in the kernel instead of this daemon's continuous mgmt
+	 * discovery (the C6 shares one antenna between Wi-Fi and BLE).
+	 * Fall back to the discovery loop when the kernel refuses it.
+	 *
+	 * action=2 (HCI_AUTO_CONN_ALWAYS), as BlueZ uses for HID: for an
+	 * LE address action=1 is HCI_AUTO_CONN_DIRECT, which connects
+	 * only on directed advertising -- a keyboard that reconnects with
+	 * plain ADV_IND (most cheap ones) was never connected (#41). */
 	for (int i = 0; i < nbonds; i++) {
 		struct mgmt_cp_add_device ad;
 		memset(&ad, 0, sizeof(ad));
 		ad.addr.bdaddr = bonds[i].addr;
 		ad.addr.type = bonds[i].type;
-		ad.action = 1;
+		ad.action = 2;
 		mgmt_send(mgmt, MGMT_OP_ADD_DEVICE, HCI_DEV, &ad, sizeof(ad));
 	}
 	usleep(200000);
@@ -1787,6 +1875,9 @@ static int daemon_setup(int mgmt, uint8_t *buf)
 static int cmd_daemon(void)
 {
 	uint8_t *buf = rxbuf;
+	/* line-buffered, so `ble-kbd daemon >/tmp/log` shows each state
+	 * change as it happens instead of a 4 KB block much later */
+	setvbuf(stdout, NULL, _IOLBF, 0);
 	if (bonds_load() < 0 || !nbonds) {
 		printf("no bonds — daemon exits\n");
 		return 0;
