@@ -393,7 +393,9 @@ write-save-apply cycle you see after editing the files on a PC.
 `m5-config list` prints every managed key and its current value
 (passwords and the Wi-Fi passphrase masked); `m5-config get KEY` and
 `m5-config set KEY VALUE` do the same thing without the menu, so it
-is scriptable.  Most keys apply on save; a few (`sdio_mhz`,
+is scriptable.  `set` returns when the saved change has been applied,
+up to ten seconds after the save, so a script can run its next command
+straight away.  Most keys apply on save; a few (`sdio_mhz`,
 `watchdog`, `ssh_password_auth`, the LP-core program) take effect at
 the next boot.  If the boot-time FAT read failed, the menu says so
 and refuses to claim a save — check for `NOT-SAVED.txt` on the drive.
