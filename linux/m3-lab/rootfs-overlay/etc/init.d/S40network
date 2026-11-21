@@ -419,32 +419,47 @@ c6_reset_pulse() {
 
 # #22: a wiped-out C6 boot leaves the SDIO link half-up.  The module
 # cannot be unloaded (see the sdio_mhz note above), so rmmod/insmod is
-# not an option; the real re-init is: unbind the sdio function from its
-# driver, pulse the C6 reset, wait for it to boot, then re-probe so
-# esp_probe/ esp_init runs the handshake again.  esp_remove() exists, so
-# the unbind is a clean teardown.  One retry only.
+# not an option; the real re-init is: take the mmc host the C6 sits on
+# away from its driver, pulse the C6 reset, wait for it to boot, then
+# bind the host again.  One retry only.
+#
+# It has to be the host, not the sdio function (#41): a C6 that was
+# reset has forgotten its card address and bus settings, and only the
+# host's probe runs the card initialisation again.  Re-probing the
+# function alone left every command timing out ("probe with driver
+# esp32_sdio failed with error -110").  On both boards this host
+# carries nothing but the C6; the Tab5's microSD is an SPI host.
+#
+# C6_MMC_DRV / C6_MMC_HOST override the driver directory and the device
+# name for tests.
 c6_reinit() {
-	bus=${C6_SDIO_BUS:-/sys/bus/sdio}
-	fdev=${C6_SDIO_DEV:-}
-	if [ -z "$fdev" ]; then
-		for d in "$bus"/devices/mmc*:0001:1; do
-			[ -e "$d" ] && { fdev=$d; break; }
+	drv=${C6_MMC_DRV:-/sys/bus/platform/drivers/dw_mmc}
+	host=${C6_MMC_HOST:-}
+	if [ -z "$host" ]; then
+		# bound: listed under the driver; left unbound by an
+		# interrupted earlier attempt: only under the bus
+		for d in "$drv"/*.mmc /sys/bus/platform/devices/*.mmc; do
+			[ -e "$d" ] && { host=${d##*/}; break; }
 		done
 	fi
-	if [ -z "$fdev" ]; then
-		echo "M3-lab: C6 re-init skipped: no sdio function device"
+	if [ -z "$host" ] || [ ! -e "$drv/bind" ]; then
+		echo "M3-lab: C6 re-init skipped: no mmc host to rebind"
 		return 1
 	fi
-	fname=${fdev##*/}
-	echo "M3-lab: retrying SoftAP once after C6 re-init (reset pulse + sdio re-probe of $fname)"
+	echo "M3-lab: retrying SoftAP once after C6 re-init (reset pulse + rebind of mmc host $host)"
 	stop_wpa
 	ifconfig wlan0 down 2>/dev/null || true
-	[ -w "$fdev/driver/unbind" ] &&
-		echo "$fname" > "$fdev/driver/unbind" 2>/dev/null || true
+	# A command already on its way to a silent C6 sleeps five seconds
+	# before it times out; let it finish before the driver is torn down
+	# (esp-hosted 0047 makes the teardown safe by itself).
+	net_tick 6
+	[ -e "$drv/$host" ] && echo "$host" > "$drv/unbind" 2>/dev/null || true
 	c6_reset_pulse ||
-		echo "M3-lab: C6 reset GPIO unknown on this board; re-probing anyway"
-	sleep 2
-	echo "$fname" > "$bus/drivers_probe" 2>/dev/null || true
+		echo "M3-lab: C6 reset GPIO unknown on this board; rebinding anyway"
+	# the card is non-removable: the host looks for it once, at bind
+	# time, so the C6 must have booted by then
+	net_tick 3
+	echo "$host" > "$drv/bind" 2>/dev/null || true
 	r=0
 	while [ "$r" -lt 15 ]; do
 		ifconfig wlan0 >/dev/null 2>&1 && return 0

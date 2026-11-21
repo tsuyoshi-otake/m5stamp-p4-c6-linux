@@ -254,32 +254,58 @@ C6_MODEL_FILE="$tmp/model" c6_reset_pulse &&
 	echo "ok: pulse drives GPIO15 low then high" ||
 	{ echo "FAIL: pulse sequence: $(cat "$tmp/devmem.log")"; fails=$((fails + 1)); }
 
-# 12. c6_reinit: unbind the sdio function, reset, drivers_probe.
-# C6_SDIO_DEV injects the function path (Windows filesystems cannot
-# create a directory with ':' in its name like real sysfs has).
-mkdir -p "$tmp/sys/devices/mmc0-0001-1/driver"
-: > "$tmp/sys/devices/mmc0-0001-1/driver/unbind"
-: > "$tmp/sys/drivers_probe"
+# 12. c6_reinit: unbind the mmc host, reset the C6, bind the host again
+# (#41: only the host's probe enumerates the card after a reset; a
+# re-probe of the sdio function alone times out on every command).
+# The host is found under the driver directory.
+mkdir -p "$tmp/drv/50083000.mmc"
+: > "$tmp/drv/unbind"
+: > "$tmp/drv/bind"
 rm -f "$tmp/devmem.log"
-if C6_SDIO_BUS="$tmp/sys" C6_SDIO_DEV="$tmp/sys/devices/mmc0-0001-1" \
-		C6_MODEL_FILE="$tmp/model" c6_reinit; then
-	[ "$(cat "$tmp/sys/devices/mmc0-0001-1/driver/unbind")" = "mmc0-0001-1" ] &&
-	[ "$(cat "$tmp/sys/drivers_probe")" = "mmc0-0001-1" ] &&
+if C6_MMC_DRV="$tmp/drv" C6_MODEL_FILE="$tmp/model" c6_reinit > "$tmp/reinit.out"; then
+	[ "$(cat "$tmp/drv/unbind")" = "50083000.mmc" ] &&
+	[ "$(cat "$tmp/drv/bind")" = "50083000.mmc" ] &&
 		grep -q '^0x500e000c 32 0x8000' "$tmp/devmem.log" &&
-		echo "ok: c6_reinit unbinds, resets and re-probes" ||
+		echo "ok: c6_reinit unbinds the mmc host, resets and binds it again" ||
 		{ echo "FAIL: c6_reinit side effects"; fails=$((fails + 1)); }
+	grep -q 'rebind of mmc host 50083000.mmc' "$tmp/reinit.out" &&
+		echo "ok: c6_reinit names the host it rebinds" ||
+		{ echo "FAIL: c6_reinit message: $(cat "$tmp/reinit.out")"; fails=$((fails + 1)); }
 else
 	echo "FAIL: c6_reinit returned nonzero"
 	fails=$((fails + 1))
 fi
 
-# 13. No sdio function device -> clean skip.
-mkdir -p "$tmp/sys-empty/devices"
-if C6_SDIO_BUS="$tmp/sys-empty" c6_reinit 2>/dev/null; then
-	echo "FAIL: c6_reinit passed with no sdio function"
+# 12b. The source must not go back to the function-level re-probe.
+if sed -n '/^c6_reinit()/,/^}/p' "$script" | grep -q 'drivers_probe'; then
+	echo "FAIL: c6_reinit re-probes the sdio function again"
 	fails=$((fails + 1))
 else
-	echo "ok: c6_reinit skips when no sdio function is bound"
+	echo "ok: c6_reinit does not re-probe the sdio function"
+fi
+
+# 12c. A host an interrupted attempt left unbound is not under the
+# driver any more: nothing to unbind, but it is still bound again.
+mkdir -p "$tmp/drv2"
+: > "$tmp/drv2/unbind"
+: > "$tmp/drv2/bind"
+if C6_MMC_DRV="$tmp/drv2" C6_MMC_HOST=50083000.mmc C6_MODEL_FILE="$tmp/model" \
+		c6_reinit >/dev/null; then
+	[ ! -s "$tmp/drv2/unbind" ] && [ "$(cat "$tmp/drv2/bind")" = "50083000.mmc" ] &&
+		echo "ok: an unbound host is only bound" ||
+		{ echo "FAIL: unbound host handling"; fails=$((fails + 1)); }
+else
+	echo "FAIL: c6_reinit with an unbound host returned nonzero"
+	fails=$((fails + 1))
+fi
+
+# 13. No mmc host driver -> clean skip.
+mkdir -p "$tmp/drv-empty"
+if C6_MMC_DRV="$tmp/drv-empty" C6_MMC_HOST=50083000.mmc c6_reinit >/dev/null 2>&1; then
+	echo "FAIL: c6_reinit passed with no mmc host driver"
+	fails=$((fails + 1))
+else
+	echo "ok: c6_reinit skips when there is no mmc host to rebind"
 fi
 
 if [ "$fails" -eq 0 ]; then
