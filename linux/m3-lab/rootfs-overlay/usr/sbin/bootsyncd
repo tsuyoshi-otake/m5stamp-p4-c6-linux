@@ -244,6 +244,56 @@ netreq_check() {
 	( umask 022; exec /etc/init.d/S40network $req ) >/dev/null 2>&1 &
 }
 
+# C6 link watch (#41).  The C6 (Wi-Fi and Bluetooth, on SDIO) now and then
+# stops answering long after boot, and nothing brought it back short of a
+# reboot.  Every C6_WATCH_TICKS seconds read the first line of the driver's
+# observation node -- a live CMD52 read of the C6, done with builtins only,
+# no exec.  Two misses in a row ask S40network for a re-init (a rebind of
+# the C6's mmc host, then a network restart); the watch then holds off for
+# a minute and a half while that runs.  From the fourth re-init in a row
+# that did not help, one attempt in ten minutes.  A reload in progress owns
+# the link and is not disturbed; without the node the driver is not loaded.
+C6_OBS=${C6_OBS:-/proc/esp32_sdio_h2c_obs}
+C6_NET_CTL=${C6_NET_CTL:-/etc/init.d/S40network}
+C6_NET_LOCK=${C6_NET_LOCK:-/run/.netapply.lock}
+C6_WATCH_TICKS=10
+C6_TICKS=0
+C6_MISS=0
+C6_HOLD=0
+C6_TRIES=0
+c6_watch() {
+	C6_TICKS=$((C6_TICKS + 1))
+	[ "$C6_TICKS" -ge "$C6_WATCH_TICKS" ] || return 0
+	C6_TICKS=0
+	if [ "$C6_HOLD" -gt 0 ]; then
+		C6_HOLD=$((C6_HOLD - 1))
+		return 0
+	fi
+	[ -e "$C6_OBS" ] || return 0
+	[ -d "$C6_NET_LOCK" ] && return 0
+	c6l=""
+	read -r c6l 2>/dev/null < "$C6_OBS" || c6l="unreadable"
+	if [ "$c6l" = "status=ok" ]; then
+		[ "$C6_TRIES" -gt 0 ] && log "C6 link answers again"
+		C6_MISS=0
+		C6_TRIES=0
+		return 0
+	fi
+	C6_MISS=$((C6_MISS + 1))
+	[ "$C6_MISS" -ge 2 ] || return 0
+	C6_MISS=0
+	C6_TRIES=$((C6_TRIES + 1))
+	if [ "$C6_TRIES" -le 3 ]; then
+		C6_HOLD=9
+	else
+		C6_HOLD=59
+		[ "$C6_TRIES" -eq 4 ] &&
+			log "C6 link: three re-inits did not help; one attempt in ten minutes from now on"
+	fi
+	log "C6 link is dead ($c6l); asking S40network to re-initialise it"
+	( umask 022; exec "$C6_NET_CTL" apply c6link ) >/dev/null 2>&1 &
+}
+
 # Validate a snapshot of the drive, save it to flash and apply what changed.
 # Returns 1 when the snapshot was not imported.
 import_snapshot() {
@@ -468,6 +518,7 @@ fi
 while true; do
 	tick 1
 	netreq_check
+	c6_watch
 	LOG_TICKS=$((LOG_TICKS + 1))
 	if [ "$LOG_TICKS" -ge 30 ]; then
 		LOG_TICKS=0
