@@ -109,6 +109,13 @@ lun_state() {
 	esac
 }
 
+apply_done() {
+	_ad=0
+	[ -f "$APPLY_DONE" ] && read -r _ad < "$APPLY_DONE" 2>/dev/null
+	case "$_ad" in ''|*[!0-9]*) _ad=0 ;; esac
+	echo $((_ad + 1)) > "$APPLY_DONE" 2>/dev/null || true
+}
+
 # config.txt diffing (#39): normalise both files the way S40network's
 # conf_get reads them -- UTF-8 BOM on line 1, CRs, leading blanks, comments
 # and blank lines dropped, blanks around "=" collapsed -- into key=value
@@ -168,6 +175,11 @@ net_changed_keys() {
 }
 
 FLASH_HASH_FILE="/run/.boot-flash-md5"
+# "m5-config set" returns when its save has been dealt with, not when it is
+# on flash: it waits for this count to move.  S40network moves it when a
+# live apply has finished; a save with nothing to apply is finished here
+# (apply_done, builtins only).
+APPLY_DONE="/run/.netapply.done"
 
 # The host's writes change boot.img's mtime.  SEEN_REF carries the mtime of
 # the image last looked at (S05 sets it before the LUN is attached), and both
@@ -242,6 +254,56 @@ netreq_check() {
 	esac
 	log "network request: $req"
 	( umask 022; exec /etc/init.d/S40network $req ) >/dev/null 2>&1 &
+}
+
+# C6 link watch (#41).  The C6 (Wi-Fi and Bluetooth, on SDIO) now and then
+# stops answering long after boot, and nothing brought it back short of a
+# reboot.  Every C6_WATCH_TICKS seconds read the first line of the driver's
+# observation node -- a live CMD52 read of the C6, done with builtins only,
+# no exec.  Two misses in a row ask S40network for a re-init (a rebind of
+# the C6's mmc host, then a network restart); the watch then holds off for
+# a minute and a half while that runs.  From the fourth re-init in a row
+# that did not help, one attempt in ten minutes.  A reload in progress owns
+# the link and is not disturbed; without the node the driver is not loaded.
+C6_OBS=${C6_OBS:-/proc/esp32_sdio_h2c_obs}
+C6_NET_CTL=${C6_NET_CTL:-/etc/init.d/S40network}
+C6_NET_LOCK=${C6_NET_LOCK:-/run/.netapply.lock}
+C6_WATCH_TICKS=10
+C6_TICKS=0
+C6_MISS=0
+C6_HOLD=0
+C6_TRIES=0
+c6_watch() {
+	C6_TICKS=$((C6_TICKS + 1))
+	[ "$C6_TICKS" -ge "$C6_WATCH_TICKS" ] || return 0
+	C6_TICKS=0
+	if [ "$C6_HOLD" -gt 0 ]; then
+		C6_HOLD=$((C6_HOLD - 1))
+		return 0
+	fi
+	[ -e "$C6_OBS" ] || return 0
+	[ -d "$C6_NET_LOCK" ] && return 0
+	c6l=""
+	read -r c6l 2>/dev/null < "$C6_OBS" || c6l="unreadable"
+	if [ "$c6l" = "status=ok" ]; then
+		[ "$C6_TRIES" -gt 0 ] && log "C6 link answers again"
+		C6_MISS=0
+		C6_TRIES=0
+		return 0
+	fi
+	C6_MISS=$((C6_MISS + 1))
+	[ "$C6_MISS" -ge 2 ] || return 0
+	C6_MISS=0
+	C6_TRIES=$((C6_TRIES + 1))
+	if [ "$C6_TRIES" -le 3 ]; then
+		C6_HOLD=9
+	else
+		C6_HOLD=59
+		[ "$C6_TRIES" -eq 4 ] &&
+			log "C6 link: three re-inits did not help; one attempt in ten minutes from now on"
+	fi
+	log "C6 link is dead ($c6l); asking S40network to re-initialise it"
+	( umask 022; exec "$C6_NET_CTL" apply c6link ) >/dev/null 2>&1 &
 }
 
 # Validate a snapshot of the drive, save it to flash and apply what changed.
@@ -435,6 +497,8 @@ import_snapshot() {
 	fi
 	# Restarts the program only when it or its autorun= settings changed.
 	autorun_apply
+	# With keys to apply, S40network reports the end of the apply.
+	[ -n "$NET_KEYS" ] || apply_done
 	return 0
 }
 
@@ -468,6 +532,7 @@ fi
 while true; do
 	tick 1
 	netreq_check
+	c6_watch
 	LOG_TICKS=$((LOG_TICKS + 1))
 	if [ "$LOG_TICKS" -ge 30 ]; then
 		LOG_TICKS=0

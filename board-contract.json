@@ -71,7 +71,7 @@
     "P4": { "function": "PWROFF_PLUSE to PMS150G (PA6 via D12/E_TRG); must be pulsed ~100ms x3 and end low -- a latched level makes the next power-on land in ROM download mode (PMS150G PA5 holds BOOT_GPIO35 low)", "boot_state": "out 0 (never pulse at boot)" },
     "P5": { "function": "nCHG_QC_EN", "boot_state": "out 0 (QC on, stock parity)" },
     "P6": { "function": "CHG_STAT = IP2326 BAT_STAT (pin 5 via R37 5.1K); high while the charger is in/past CC charge = the BSP's USB-C detect", "boot_state": "input (BSP: IN_DEF_STA bit6=1, INT unmasked)" },
-    "P7": { "function": "CHG_EN", "boot_state": "out 1 (stock parity)" }
+    "P7": { "function": "CHG_EN", "boot_state": "out 0 through the expander init; then out 1 (stock parity) only if the INA226 reads 4 V or more on the pack node after the C6 reset wait, or does not answer. Without a pack the IP2326 lifts the empty node to 8.4 V and the C6 is power-on reset every few seconds (linux/tab5/charger-no-pack.md). config.txt charger=on|off overrides from Linux." }
   },
   "c6_sdio": {
     "status": "research_validated_waiting_hardware",

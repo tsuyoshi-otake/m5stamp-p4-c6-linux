@@ -1,0 +1,89 @@
+#!/bin/sh
+# Tab5 only: apply text_color= from config.txt to the panel console
+# palette early in boot, so a preset saved by m5-config survives a
+# reboot; S40network calls 'apply' on every config save, which is
+# what makes a change live.  A preset makes the Linux VT a
+# two-intensity monochrome display (slot 0 black, 1-7 the colour,
+# 8 a dim shade, 9-F the bold colour); 'white' or a missing key is
+# the stock 16 colours, so 'start' only writes a real preset (boot
+# already has stock).  Written to the panel tty only -- serial/SSH
+# terminals never see it.  Builtins only except one printf for the
+# CR byte: no $( ) storm on NOMMU.
+#
+# Text that is already on the screen keeps its old colours on this
+# truecolor framebuffer, so every palette write is followed by the
+# DECSCNM on/off pair: the VT redraws all cells with the new palette
+# (0.1 s, one flash).
+
+CFG=${M5CFG_CONFIG_TXT:-/tmp/config.txt}
+TTYN=${M5CFG_TEXTCOLOR_TTY:-/dev/tty1}
+LIB=${M5CFG_TEXTCOLOR_LIB:-/usr/lib/board/textcolor.sh}
+RUN_DIR=${M5CFG_RUN_DIR:-/run}
+PROCDIR=${M5CFG_PROC:-/proc}
+CR=$(printf '\r')
+
+case "$1" in
+  start|apply|restart|reload)
+	name=""
+	if [ -f "$CFG" ]; then
+		while IFS= read -r _l || [ -n "$_l" ]; do
+			_l=${_l%"$CR"}
+			while :; do
+				case "$_l" in
+					" "*|"	"*) _l=${_l#?} ;;
+					*) break ;;
+				esac
+			done
+			case "$_l" in
+				text_color=*)
+					name=${_l#text_color=}
+					while :; do
+						case "$name" in
+							*" "|*"	") name=${name%?} ;;
+							*) break ;;
+						esac
+					done
+					while :; do
+						case "$name" in
+							" "*|"	"*) name=${name#?} ;;
+							*) break ;;
+						esac
+					done
+					break ;;
+			esac
+		done < "$CFG"
+	fi
+	if [ "$1" = apply ]; then
+		# A live touch-menu session owns the panel palette (its
+		# own Nord scheme, re-applying text_color on exit) -- an
+		# apply must not clobber it.  The event file alone is not
+		# proof: a dead menu's stale file does not block.
+		for _f in "$RUN_DIR"/.m5cfg-ev.*; do
+			[ -f "$_f" ] || continue
+			[ -e "$PROCDIR/${_f##*/.m5cfg-ev.}" ] && exit 0
+		done
+	fi
+	TC_SEQ=""; TC_HEX=""
+	[ -r "$LIB" ] && . "$LIB"
+	if [ "$1" = start ]; then
+		# Boot: the stock palette is already up, so nothing is
+		# written for a missing key, 'white' or a bad name.
+		[ -n "$name" ] && [ "$name" != white ] || exit 0
+		textcolor_seq "$name" 2>/dev/null || exit 0
+	else
+		# apply|restart|reload: a missing key or a bad name goes
+		# back to stock (white == ]R).
+		textcolor_seq "$name" 2>/dev/null || TC_SEQ='\033]R'
+	fi
+	[ -w "$TTYN" ] || exit 0
+	{ printf "$TC_SEQ"; printf '\033[?5h\033[?5l'; } \
+		> "$TTYN" 2>/dev/null || :
+	;;
+  stop) ;;
+  *)
+	echo "Usage: $0 {start|stop}" >&2
+	exit 1
+	;;
+esac
+
+exit 0
