@@ -639,8 +639,12 @@ _drive_save() {
 	}
 
 	# The save can take SAVE_WAIT seconds; on the panel the message
-	# area says what the wait is for instead of looking hung.
-	[ "$_TOUCH" = 1 ] && { _tmsg; printf 'saving ...\n'; }
+	# area says what the wait is for instead of looking hung.  The
+	# area is one row, so the notice ends with a carriage return and
+	# the result line takes its place.  With a newline the result
+	# went to the first nav row, where [ tap to continue ] covered
+	# all but its first character.
+	[ "$_TOUCH" = 1 ] && { _tmsg; printf 'saving ...\r'; }
 	i=0
 	while [ "$i" -lt "$SAVE_WAIT" ]; do
 		# A denied sleep must not turn the wait into a hot loop.

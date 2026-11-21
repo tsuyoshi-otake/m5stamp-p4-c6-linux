@@ -471,6 +471,12 @@ stop_saver
 echo "$out" | grep -q 'saving \.\.\.' && echo "$out" | grep -q 'saved to flash' &&
 	echo "$out" | grep -q "$(printf '\033\[2;1H')$(printf '\033\[0m')> box-1_" &&
 	ok "results print in the message area" || bad "msg area: $out"
+# The message area is one row.  The result replaces the notice on that
+# row (carriage return, no newline): one row lower it would sit on the
+# first nav row, under the [ tap to continue ] button.
+printf '%s' "$out" | grep -qF "$(printf '\033[19;1H\033[Jsaving ...\rm5-config: saved to flash')" &&
+	ok "the save result replaces the saving notice on the message row" ||
+	bad "save result row: $(printf '%s' "$out" | grep -a 'saving' | od -c | head -4)"
 imgfile config.txt | grep -q 'hostname=box-1' &&
 	ok "touch set still saves" || bad "touch set"
 
