@@ -223,5 +223,33 @@ grep -q 'BLE_KBD_STATUS' "$src" &&
 	ok "status file path is env-seamed (BLE_KBD_STATUS)" ||
 	bad "no BLE_KBD_STATUS seam"
 
+# 12. No key refresh (#41): the link a pairing leaves behind is already
+#     encrypted (short term key).  Asking for a security level on it
+#     makes the kernel encrypt it again with the new LTK, and the CACOE
+#     then refuses that LTK on every later reconnect.  att_connect()
+#     looks first with a channel that asks for nothing and keeps a link
+#     that is encrypted well enough; BT_SECURITY_MEDIUM is 2.
+is "encrypted pairing link (level 2, 16-byte key) is used as it is" \
+	"$(run secok 2 16 2)" "enough=1"
+is "unencrypted reconnect link gets the encrypting connect" \
+	"$(run secok 1 0 2)" "enough=0"
+is "level without a key is not encryption" \
+	"$(run secok 2 0 2)" "enough=0"
+is "encrypted below the wanted level is not enough" \
+	"$(run secok 1 16 2)" "enough=0"
+is "a stronger link is enough" \
+	"$(run secok 3 16 2)" "enough=1"
+probe_line=$(grep -n 'int fd = att_connect_at(addr, addr_type, 0,$' "$src" |
+	head -1 | cut -d: -f1)
+enc_line=$(grep -n 'return att_connect_at(addr, addr_type, sec_level,$' "$src" |
+	head -1 | cut -d: -f1)
+[ -n "$probe_line" ] && [ -n "$enc_line" ] && [ "$probe_line" -lt "$enc_line" ] &&
+	grep -q 'sec_enough(&sec, sec_level)) {$' "$src" &&
+	ok "att_connect looks at the link before it asks for encryption" ||
+	bad "att_connect does not probe the link first"
+[ "$(grep -c 'att_connect_at(' "$src")" -eq 3 ] &&
+	ok "sessions cannot reach the encrypting connect directly" ||
+	bad "att_connect_at has callers besides att_connect"
+
 [ "$fails" -eq 0 ] && echo "PASS: $checks checks" ||
 	{ echo "FAILED: $fails of $checks checks"; exit 1; }

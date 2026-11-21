@@ -15,6 +15,9 @@
  *   peer HEX..
  *       hand one PDU "from the keyboard" to att_peer_pdu(); prints
  *       "handled=N rsp=xx xx .." (rsp=none when nothing was sent).
+ *   secok LEVEL KEYSIZE WANT
+ *       would att_connect() use a link in that BT_SECURITY state as it
+ *       is, without encrypting it again?  Prints "enough=0|1".
  */
 #define main ble_kbd_main
 #include "ble-kbd.c"
@@ -235,8 +238,17 @@ int main(int argc, char **argv)
 		return 0;
 	}
 
+	if (argc >= 5 && !strcmp(argv[1], "secok")) {
+		struct bt_security sec = { (uint8_t)atoi(argv[2]),
+					   (uint8_t)atoi(argv[3]) };
+
+		printf("enough=%d\n", sec_enough(&sec, atoi(argv[4])));
+		return 0;
+	}
+
 	fprintf(stderr, "usage: %s read LEN MTU [mtureq] | peer HEX.. | "
-		"holds SEQ | status rSECS.. | storefull\n",
+		"holds SEQ | status rSECS.. | storefull | "
+		"secok LEVEL KEYSIZE WANT\n",
 		argv[0]);
 	return 2;
 }

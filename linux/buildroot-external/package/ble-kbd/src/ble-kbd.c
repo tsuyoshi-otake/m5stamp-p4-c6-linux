@@ -628,9 +628,11 @@ static uint8_t att_buf[520];
  * secure enough and otherwise parks the socket unwritable until the
  * encryption is done.  The option value is a struct bt_security: the
  * bare 1-byte level this code used to pass has been rejected with
- * EINVAL since Linux 6.9, so no reconnect was ever encrypted (#41). */
-static int att_connect(const bdaddr_t *addr, uint8_t addr_type,
-		       int sec_level)
+ * EINVAL since Linux 6.9, so no reconnect was ever encrypted (#41).
+ * timeout_s != 0 bounds the wait inside connect(), the encryption
+ * included. */
+static int att_connect_at(const bdaddr_t *addr, uint8_t addr_type,
+			  int sec_level, int timeout_s)
 {
 	struct sockaddr_l2 sa = {0};
 	int fd = socket(AF_BLUETOOTH, SOCK_SEQPACKET, BTPROTO_L2CAP);
@@ -648,12 +650,13 @@ static int att_connect(const bdaddr_t *addr, uint8_t addr_type,
 
 	if (sec_level) {
 		struct bt_security sec = { .level = sec_level };
-		/* bounds the wait for the encryption inside connect() */
-		struct timeval tv = { .tv_sec = 20 };
 		if (setsockopt(fd, SOL_BLUETOOTH, BT_SECURITY,
 			       &sec, sizeof(sec)) < 0)
 			printf("  BT_SECURITY %d refused: %s\n",
 			       sec_level, strerror(errno));
+	}
+	if (timeout_s) {
+		struct timeval tv = { .tv_sec = timeout_s };
 		setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
 	}
 
@@ -666,6 +669,62 @@ static int att_connect(const bdaddr_t *addr, uint8_t addr_type,
 		close(fd); errno = e; return -1;
 	}
 	return fd;
+}
+
+/* 1 = a link in this BT_SECURITY state is already encrypted at least
+ * as well as `want` asks for.  key_size 0 = not encrypted at all. */
+static int sec_enough(const struct bt_security *sec, int want)
+{
+	return sec->key_size > 0 && sec->level >= want;
+}
+
+#define ATT_PROBE_TIMEOUT	5	/* s; an existing link answers at once */
+#define ATT_ENC_TIMEOUT		20	/* s; connect + encryption */
+
+/* ATT channel at sec_level, without encrypting a link a second time.
+ *
+ * Right after a pairing the link is still up, encrypted with the
+ * pairing's short term key.  Asking for a security level on such a
+ * link makes the kernel start the encryption again with the fresh
+ * LTK (smp_sufficient_security() prefers an LTK to an STK), and the
+ * CACOE keyboard does not survive that key refresh: it types for the
+ * rest of that link, but answers every later Start Encryption with
+ * "PIN or key missing" -- paired, lost after the first disconnect.
+ * Left alone on the pairing link, the same keyboard reconnects with
+ * the stored LTK (#41).
+ *
+ * So look first, with a plain channel that asks for nothing: a link
+ * that is already encrypted well enough is used as it is.  Only an
+ * unencrypted link (every reconnect) or no link at all gets the
+ * encrypting connect, and the "key refused" verdict (ECONNABORTED)
+ * keeps coming from that one. */
+static int att_connect(const bdaddr_t *addr, uint8_t addr_type,
+		       int sec_level)
+{
+	if (sec_level) {
+		int fd = att_connect_at(addr, addr_type, 0,
+					ATT_PROBE_TIMEOUT);
+		if (fd >= 0) {
+			struct bt_security sec = { 0, 0 };
+			socklen_t sl = sizeof(sec);
+
+			if (getsockopt(fd, SOL_BLUETOOTH, BT_SECURITY,
+				       &sec, &sl) == 0 &&
+			    sec_enough(&sec, sec_level)) {
+				struct timeval tv = {
+					.tv_sec = ATT_ENC_TIMEOUT };
+
+				setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO,
+					   &tv, sizeof(tv));
+				printf("  link is already encrypted: "
+				       "used as it is, no key refresh\n");
+				return fd;
+			}
+			close(fd);
+		}
+	}
+	return att_connect_at(addr, addr_type, sec_level,
+			      sec_level ? ATT_ENC_TIMEOUT : 0);
 }
 
 /* The keyboard may act as a GATT client as well (its own MTU exchange,
