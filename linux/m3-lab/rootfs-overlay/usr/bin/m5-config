@@ -830,6 +830,7 @@ M5KEY="${M5CFG_M5_KEY:-/usr/bin/m5-key}"
 STTY="${M5CFG_STTY:-stty}"
 BLEKBD="${M5CFG_BLE_KBD:-/usr/bin/ble-kbd}"
 BLEKBD_INITD="${M5CFG_BLE_INITD:-/etc/init.d/S95blekbd}"
+PROCDIR="${M5CFG_PROC:-/proc}"
 # Runtime store is the staged copy; /boot is unmounted after S05tmpfs.
 BLE_BONDS="${M5CFG_BLE_BONDS:-/tmp/ble-bonds.dat}"
 # The menu persists bonds itself through drive_put (one applet exec
@@ -1901,10 +1902,14 @@ menu_ports() {
 # address tail in the label; the tap is resolved by TPIDX slot index,
 # never by comparing label text.
 _blescan() {
-	_i=0; _picks=""
+	_i=0; _picks=""; _seen=" "
 	while read -r _a _rest; do
 		case "$_a" in
 			??:??:??:??:??:??)
+				# a scan prints every advertising report, so a
+				# keyboard can appear twice: one slot per address
+				case "$_seen" in *" $_a "*) continue ;; esac
+				_seen="$_seen$_a "
 				# scan lines end "name=X Y"; list lines have
 				# no name at all -- fall back to the addr
 				case "$_rest" in
@@ -1971,8 +1976,42 @@ ble_after_pair() {
 		fi ;;
 		*) say "  bond works this boot only (not saved)" ;;
 	esac
-	"$BLEKBD_INITD" restart >/dev/null 2>&1
-	say "  press a key on the keyboard to connect"
+	if ble_restart_daemon; then
+		say "  press a key on the keyboard to connect"
+	else
+		say "  keyboard service did not start (low memory)"
+		say "  reboot to connect the keyboard"
+	fi
+}
+
+# ble_daemon_up: is a ble-kbd process running?  Builtins only -- a
+# pidof exec is the very allocation a low-memory menu cannot spare.
+ble_daemon_up() {
+	for _p in "$PROCDIR"/[0-9]*; do
+		read -r _c < "$_p/comm" 2>/dev/null || continue
+		[ "$_c" = ble-kbd ] && return 0
+	done
+	return 1
+}
+
+# ble_restart_daemon: the init script nests three shells (restart ->
+# stop + start), and with the menu up NOMMU refuses those execs: the
+# first finger pairing (#41) left no daemon at all while the panel
+# said "press a key".  Retry the script, then start the daemon
+# directly (one exec), and only report success when a ble-kbd process
+# is really there.
+ble_restart_daemon() {
+	_ri=0
+	while [ "$_ri" -lt 3 ]; do
+		"$BLEKBD_INITD" restart >/dev/null 2>&1
+		ble_daemon_up && return 0
+		_spin
+		ble_daemon_up && return 0
+		_ri=$((_ri + 1))
+	done
+	"$BLEKBD" daemon >/dev/null 2>&1 &
+	_spin
+	ble_daemon_up
 }
 
 # After a forget: the tool ran stage-only (rc 8), so persist the

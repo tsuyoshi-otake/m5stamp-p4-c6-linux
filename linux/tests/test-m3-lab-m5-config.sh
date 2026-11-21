@@ -522,6 +522,10 @@ EOF
 chmod +x "$tmp/bin/ble-kbd"
 printf '  AA:BB:CC:DD:EE:01 type=1 rssi=-50 [HID] name=Kbd One\n' \
 	 > "$tmp/ble-in"
+# a scan prints every advertising report: the repeat of EE:01 must not
+# take a slot, or the 2nd-slot tap below would pick EE:01 again (#41)
+printf '  AA:BB:CC:DD:EE:01 type=1 rssi=-52 [HID] name=Kbd One\n' \
+	>> "$tmp/ble-in"
 printf '  AA:BB:CC:DD:EE:02 type=1 rssi=-60 [HID] name=Kbd One\n' \
 	>> "$tmp/ble-in"
 : > "$tmp/blelog"
@@ -534,7 +538,7 @@ out=$(M5CFG_BLE_KBD="$tmp/bin/ble-kbd" M5CFG_BLELOG="$tmp/blelog" \
 echo "$out" | grep -q 'EE:01' && echo "$out" | grep -q 'EE:02' &&
 	ok "same-named keyboards get distinct labels" || bad "ble labels: $out"
 grep -q 'pair AA:BB:CC:DD:EE:02' "$tmp/blelog" &&
-	ok "tap resolved by slot index (2nd addr)" ||
+	ok "tap resolved by slot index (2nd addr, repeated report skipped)" ||
 	bad "slot resolve: $(cat "$tmp/blelog")"
 # the tool's own output is verbatim (it does its own bolding on a
 # real tty) -- the menu only draws the header.
@@ -562,6 +566,11 @@ pair)
 		exit 7
 	fi
 	printf 'paired + bonded (keys stored, not shown)\n' ;;
+daemon)
+	# the menu's direct start after a refused init script
+	if [ -z "$BLE_FAKE_NODIRECT" ]; then
+		mkdir -p "$M5CFG_PROC/4343" && echo ble-kbd > "$M5CFG_PROC/4343/comm"
+	fi ;;
 forget)
 	printf 'M5b\0\0\0\0\0' > "$M5CFG_BLE_BONDS"
 	printf 'forgotten\n' ;;
@@ -574,6 +583,11 @@ cat > "$tmp/bin/S95blekbd" <<'EOF'
 # restart must come AFTER the menu's own persist, not before it --
 # the daemon takes pool the save needs (#41 review).
 if [ "$1" = restart ]; then
+	# a started daemon shows up as a ble-kbd process (m5-config checks
+	# /proc with builtins); BLE_FAKE_NODAEMON simulates a refused exec
+	if [ -z "$BLE_FAKE_NODAEMON" ]; then
+		mkdir -p "$M5CFG_PROC/4242" && echo ble-kbd > "$M5CFG_PROC/4242/comm"
+	fi
 	if tar -tf "$M5CFG_BOOT_IMG" 2>/dev/null | grep -q ble-bonds.dat; then
 		echo "initd restart img=bond" >> "$M5CFG_INITLOG"
 	else
@@ -585,7 +599,8 @@ fi
 exit 0
 EOF
 chmod +x "$tmp/bin/S95blekbd"
-mkdir -p "$tmp/boot" "$tmp/run"
+mkdir -p "$tmp/boot" "$tmp/run" "$tmp/proc"
+export M5CFG_PROC="$tmp/proc"
 printf '  AA:BB:CC:DD:EE:01 type=1 rssi=-50 [HID] name=Kbd One\n' > "$tmp/ble-in"
 printf '  AA:BB:CC:DD:EE:02 type=1 rssi=-60 [HID] name=Kbd One\n' >> "$tmp/ble-in"
 : > "$tmp/blelog"; : > "$tmp/initlog"
@@ -643,6 +658,43 @@ grep -q 'initd restart' "$tmp/initlog" &&
 	ok "rc7 still restarts the daemon on the staged bond" ||
 	bad "rc7 initd: $(cat "$tmp/initlog")"
 rm -f "$tmp/run/.boot-nosave"
+
+# 27b. #41 on the board: with the menu up NOMMU refused the init
+# script's execs, no daemon ran, and the panel still said "press a
+# key".  The menu must retry, fall back to starting ble-kbd itself, and
+# only promise a connect when a ble-kbd process really exists.
+# (i) init script refused, direct start works.
+rm -rf "$tmp/proc"; mkdir -p "$tmp/proc"
+: > "$tmp/blelog"; : > "$tmp/initlog"; touch "$tmp/ble-release"
+printf 'T 8 50\nT 4 10\nT 4 50\nT 20 10\nT 20 10\nT 20 10\n' > "$tmp/tscr/events"
+out=$(BLE_FAKE_NODAEMON=1 M5CFG_SPIN=200000 \
+	M5CFG_BLE_KBD="$tmp/bin/ble-kbd" M5CFG_BLELOG="$tmp/blelog" \
+	M5CFG_BLE_IN="$tmp/ble-in" M5CFG_TSCRIPT="$tmp/tscr/events" \
+	M5CFG_BLE_INITD="$tmp/bin/S95blekbd" M5CFG_INITLOG="$tmp/initlog" \
+	M5CFG_BLE_RELEASE="$tmp/ble-release" M5CFG_BOOT_MNT="$tmp/boot" \
+	M5CFG_RUN_DIR="$tmp/run" sh "$tool" menu </dev/null 2>&1)
+_nr=$(grep -c 'initd restart' "$tmp/initlog")
+[ "$_nr" -eq 3 ] && grep -q 'ble-kbd daemon' "$tmp/blelog" &&
+	echo "$out" | grep -q 'press a key on the keyboard to connect' &&
+	! echo "$out" | grep -q 'did not start' &&
+	ok "refused init script -> 3 retries, then direct daemon start" ||
+	bad "direct start: restarts=$_nr $(cat "$tmp/blelog"); $(echo "$out" | tail -5)"
+# (ii) nothing starts at all: no false "press a key" promise.
+rm -rf "$tmp/proc"; mkdir -p "$tmp/proc"
+: > "$tmp/blelog"; : > "$tmp/initlog"
+printf 'T 8 50\nT 4 10\nT 4 50\nT 20 10\nT 20 10\nT 20 10\n' > "$tmp/tscr/events"
+out=$(BLE_FAKE_NODAEMON=1 BLE_FAKE_NODIRECT=1 M5CFG_SPIN=2000 \
+	M5CFG_BLE_KBD="$tmp/bin/ble-kbd" M5CFG_BLELOG="$tmp/blelog" \
+	M5CFG_BLE_IN="$tmp/ble-in" M5CFG_TSCRIPT="$tmp/tscr/events" \
+	M5CFG_BLE_INITD="$tmp/bin/S95blekbd" M5CFG_INITLOG="$tmp/initlog" \
+	M5CFG_BLE_RELEASE="$tmp/ble-release" M5CFG_BOOT_MNT="$tmp/boot" \
+	M5CFG_RUN_DIR="$tmp/run" sh "$tool" menu </dev/null 2>&1)
+echo "$out" | grep -q 'keyboard service did not start' &&
+	echo "$out" | grep -q 'reboot to connect the keyboard' &&
+	! echo "$out" | grep -q 'press a key on the keyboard to connect' &&
+	ok "no daemon -> honest 'did not start' instead of 'press a key'" ||
+	bad "no daemon wording: $(echo "$out" | tail -6)"
+rm -rf "$tmp/proc"; mkdir -p "$tmp/proc"; rm -f "$tmp/ble-release"
 
 # 28. forget of the last bond stops the daemon (the fake forget writes
 # an 8-byte header-only store to the staged path, like the real tool
@@ -1138,7 +1190,7 @@ _tblock _navdraw _tflash _tget say msg _tmsg nosave_note scr_clear \
 menu_wifi menu_system menu_datetime menu_display menu_sound \
 menu_ports menu_blekbd menu_power menu_lpcore menu_status menu_main \
 status_lines menu_set menu_secret menu_choose menu_adjust menu_keys \
-_blescan touch_ok _touch_init _pal_set _pal_restore set_apply trun \
+_blescan ble_daemon_up ble_restart_daemon touch_ok _touch_init _pal_set _pal_restore set_apply trun \
 cfg_get eff_file key_file keys_file eff_ssid key_explained lun_file \
 do_get is_key_line pwroff_support _cleanup _drive_clean key_maxlen \
 _kbroww _kblock _kb_keys _kb_field _kb_char _kb_hit _kb_press"
