@@ -1,0 +1,142 @@
+Subject: [PATCH] esp32 ACM: commit again when a USB bus reset took the commit away (#45)
+
+The USB Serial/JTAG ACM port (ttyGS1) went silent for good, while it went
+on taking input, whenever the host enumerated the device again with output
+waiting: a packet committed and not yet read, or anything printed while the
+bus was away.  On the bench (D+ pull-up off for 3 s through CONF0, with a
+2 KB line waiting) that is 4 of 4.  The bus reset takes the commit away and
+leaves the bytes in the FIFO:
+
+    EP1_CONF  0x0   no room
+    IN_EP1_ST 0x1   endpoint idle (0x2 while a packet waits for the host)
+    INT_ENA   0xc   the driver waits for IN-empty
+
+Nothing is sent, so IN-empty never comes; transmit_buffer() sees "no room"
+and returns, and push() commits only into a FIFO that has room.  A typed
+key did not start it again; `devmem <base+4> 32 1` (WR_DONE) did, and a
+reboot.  A PC that sleeps, restarts or resets its hub does the same to a
+board that keeps its power.
+
+start_tx() and the console write now look at the endpoint when the FIFO
+has no room: idle, and still no room a microsecond later, is a lost commit,
+and they write WR_DONE again.  The second look is for a packet that
+completes at that moment (the endpoint goes idle just before the FIFO shows
+its room).  The interrupt handler does not commit again: a lost commit
+raises no interrupt, and the serial core calls start_tx() every 0.5 s while
+xmit holds data, and for every write and echoed key.
+
+What waited in xmit is sent.  The bytes that were in the FIFO at the reset
+are not all kept: the bench lost up to five 60-byte pieces of a 2 KB line.
+
+/sys/class/tty/ttyGS<n>/tx_recommits counts these.
+
+---
+--- a/drivers/tty/serial/esp32_acm.c
++++ b/drivers/tty/serial/esp32_acm.c
+@@ -40,6 +40,8 @@
+ #define USB_SERIAL_JTAG_SERIAL_IN_EMPTY_INT_ENA		BIT(3)
+ #define USB_SERIAL_JTAG_INT_CLR_REG	0x14
+ #define USB_SERIAL_JTAG_IN_EP1_ST_REG	0x2c
++#define USB_SERIAL_JTAG_IN_EP1_STATE			GENMASK(1, 0)
++#define USB_SERIAL_JTAG_IN_EP1_STATE_IDLE		1
+ #define USB_SERIAL_JTAG_IN_EP1_WR_ADDR			GENMASK(8, 2)
+ #define USB_SERIAL_JTAG_OUT_EP1_ST_REG	0x3c
+ #define USB_SERIAL_JTAG_OUT_EP1_REC_DATA_CNT		GENMASK(22, 16)
+@@ -57,6 +59,8 @@
+ /* Console output per port: time waited for room, characters dropped. */
+ static unsigned int esp32s3_acm_con_waited[UART_NR];
+ static unsigned long esp32s3_acm_con_dropped[UART_NR];
++/* Commits written a second time, see esp32s3_acm_recommit(). */
++static unsigned long esp32s3_acm_tx_recommits[UART_NR];
+ 
+ static void esp32s3_acm_write(struct uart_port *port, unsigned long reg, u32 v)
+ {
+@@ -152,6 +156,40 @@
+ 				  USB_SERIAL_JTAG_WR_DONE);
+ }
+ 
++static bool esp32s3_acm_tx_ep_idle(struct uart_port *port)
++{
++	u32 status = esp32s3_acm_read(port, USB_SERIAL_JTAG_IN_EP1_ST_REG);
++
++	return FIELD_GET(USB_SERIAL_JTAG_IN_EP1_STATE, status) ==
++	       USB_SERIAL_JTAG_IN_EP1_STATE_IDLE;
++}
++
++/*
++ * For a FIFO that has no room.  That normally means a committed packet is
++ * waiting for the host, and the endpoint says so.  A USB bus reset (the host
++ * enumerating the device again: a PC back from sleep or from a reboot, a hub
++ * reset, the cable of a board with a supply of its own) takes the commit
++ * away and leaves the bytes.  The FIFO then still has no room and the
++ * endpoint is idle: nothing is sent, so no IN-empty interrupt comes, and the
++ * port says nothing more until a reboot while it goes on taking input (#45).
++ * Commit again.
++ *
++ * When a packet completes, the endpoint is idle a bus clock or two before
++ * the FIFO shows its room; the second look, a microsecond later, tells that
++ * from a lost commit.
++ */
++static void esp32s3_acm_recommit(struct uart_port *port)
++{
++	if (!esp32s3_acm_tx_ep_idle(port))
++		return;
++	udelay(1);
++	if (esp32s3_acm_tx_fifo_free(port) || !esp32s3_acm_tx_ep_idle(port))
++		return;
++	esp32s3_acm_write(port, USB_SERIAL_JTAG_EP1_CONF_REG,
++			  USB_SERIAL_JTAG_WR_DONE);
++	esp32s3_acm_tx_recommits[port->line]++;
++}
++
+ static void esp32s3_acm_put_char(struct uart_port *port, u8 c)
+ {
+ 	esp32s3_acm_write(port, USB_SERIAL_JTAG_EP1_REG, c);
+@@ -240,6 +278,15 @@
+ 
+ static void esp32s3_acm_start_tx(struct uart_port *port)
+ {
++	/*
++	 * Here and in the console write only, never from the interrupt: a
++	 * lost commit raises none, and what the endpoint does with a second
++	 * commit while the bus is away is not known well enough to answer
++	 * it from a handler.  The serial core calls start_tx() again every
++	 * 0.5 s while xmit holds data, and for every write and echoed key.
++	 */
++	if (!esp32s3_acm_tx_fifo_free(port))
++		esp32s3_acm_recommit(port);
+ 	esp32s3_acm_transmit_buffer(port);
+ }
+ 
+@@ -349,6 +396,10 @@
+ {
+ 	bool sent = false;
+ 
++	/* A kernel message must not wait for a key press to get going again. */
++	if (!esp32s3_acm_tx_fifo_free(port))
++		esp32s3_acm_recommit(port);
++
+ 	for (; count; count--, s++) {
+ 		if (*s == '\n')
+ 			sent |= esp32s3_acm_console_putchar(port, '\r');
+@@ -369,8 +420,20 @@
+ }
+ static DEVICE_ATTR_RO(console_dropped);
+ 
++static ssize_t tx_recommits_show(struct device *dev,
++				 struct device_attribute *attr, char *buf)
++{
++	struct tty_port *tport = dev_get_drvdata(dev);
++	struct uart_state *state = container_of(tport, struct uart_state, port);
++
++	return sysfs_emit(buf, "%lu\n",
++			  esp32s3_acm_tx_recommits[state->uart_port->line]);
++}
++static DEVICE_ATTR_RO(tx_recommits);
++
+ static struct attribute *esp32s3_acm_attrs[] = {
+ 	&dev_attr_console_dropped.attr,
++	&dev_attr_tx_recommits.attr,
+ 	NULL
+ };
+ 

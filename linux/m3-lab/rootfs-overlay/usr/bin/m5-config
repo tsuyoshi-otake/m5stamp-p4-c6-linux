@@ -459,6 +459,13 @@ lun_file() { # -> LF
 _drive_clean() {
 	umount "$MNT" 2>/dev/null
 	rm -rf "$MNT" "$WORK_IMG" "$LOCK"
+	# The rm is an exec and can be refused for want of memory (seen on
+	# B64 right after a save, while the change was being applied).  The
+	# lock dir then stays, and with the pid of a menu that is still up
+	# in it, that menu's own next save was turned away as "another
+	# m5-config is running".  Emptying the pid file takes no exec and
+	# marks the lock stale: the next save, ours or anyone's, takes it.
+	if [ -d "$LOCK" ]; then echo 2>/dev/null > "$LOCK/pid"; fi
 }
 
 # _cleanup: session teardown, runs once at session end (EXIT trap or
@@ -639,8 +646,12 @@ _drive_save() {
 	}
 
 	# The save can take SAVE_WAIT seconds; on the panel the message
-	# area says what the wait is for instead of looking hung.
-	[ "$_TOUCH" = 1 ] && { _tmsg; printf 'saving ...\n'; }
+	# area says what the wait is for instead of looking hung.  The
+	# area is one row, so the notice ends with a carriage return and
+	# the result line takes its place.  With a newline the result
+	# went to the first nav row, where [ tap to continue ] covered
+	# all but its first character.
+	[ "$_TOUCH" = 1 ] && { _tmsg; printf 'saving ...\r'; }
 	i=0
 	while [ "$i" -lt "$SAVE_WAIT" ]; do
 		# A denied sleep must not turn the wait into a hot loop.
@@ -930,9 +941,23 @@ _pal_on=0
 # 4 button #3b4252, 5 tapped #5e81ac, 6 title #88c0d0, 7 text #e5e9f0.
 _TTL='\033[36m'; _DIM='\033[33m'; _WRN='\033[31m'; _OK='\033[32m'
 _BTN='\033[37;44m'; _TAP='\033[37;45m'
+_pal_bg=0
 _pal_set() {
 	printf '\033]P02e3440\033]P1bf616a\033]P2a3be8c\033]P381a1c1\033]P43b4252\033]P55e81ac\033]P688c0d0\033]P7e5e9f0'
 	_pal_on=1
+	# A preset with a lit background (lcd) left the margin outside
+	# the text rows in its colour, and the margin follows slot 0
+	# only on a repaint: repaint, so it goes dark with the menu.
+	# _pal_bg remembers that the margin wears the menu background.
+	[ -n "${TEXTCOLOR_NAMES:-}" ] || return 0
+	cfg_get text_color 2>/dev/null || CFG_VAL=""
+	[ -n "$CFG_VAL" ] && textcolor_seq "$CFG_VAL" 2>/dev/null ||
+		return 0
+	case "$TC_BG" in
+		""|000000) ;;
+		*) _pal_bg=1; textcolor_redraw ;;
+	esac
+	return 0
 }
 # _tc_now: the text_color picked in this session -- _pal_restore
 # re-applies it ahead of the published config, which can lag the
@@ -951,8 +976,15 @@ _pal_restore() {
 		cfg_get text_color 2>/dev/null || CFG_VAL=""
 		_name=$CFG_VAL
 	fi
+	TC_BG=""
 	[ -n "$_name" ] && textcolor_seq "$_name" 2>/dev/null &&
 		printf "$TC_SEQ"
+	# The margin needs a repaint when it wears the menu background
+	# or when the preset brings a background of its own.
+	_rd=$_pal_bg
+	case "$TC_BG" in ""|000000) ;; *) _rd=1 ;; esac
+	[ "$_rd" = 1 ] && textcolor_redraw
+	_pal_bg=0
 	return 0
 }
 _touch_init() {
@@ -1979,14 +2011,17 @@ menu_textcolor() {
 		if [ -n "$REPLY" ]; then
 			_tc_now=$REPLY
 			set_apply text_color "$REPLY" || true
-			# A sample in the new colour: the menu palette only
+			# A sample in the new colours: the menu palette only
 			# defines slots 0-7, so slot 9 takes the preset's
-			# normal colour and bold red prints it.  It goes on
-			# the second header row -- the message strip below
-			# holds the save result and must stay readable.
+			# normal colour and slot A its background.  Bold
+			# red on blinking green prints one on the other --
+			# fbcon draws the blink bit as the bright background
+			# slot.  It goes on the second header row: the
+			# message strip below holds the save result and
+			# must stay readable.
 			textcolor_seq "$_tc_now" &&
-				printf '\033]P9%s' "$TC_HEX"
-			printf '\033[2;1H\033[1;31m  sample -- the console changes when you leave the menu\033[0m\033[K'
+				printf '\033]P9%s\033]PA%s' "$TC_HEX" "$TC_BG"
+			printf '\033[2;1H\033[1;31;5;42m  sample -- the console changes when you leave the menu  \033[0m\033[K'
 		else
 			msg "  unchanged"
 		fi

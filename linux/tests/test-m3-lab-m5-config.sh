@@ -82,6 +82,10 @@ export M5CFG_SPIN=50
 export M5CFG_APPLY_WAIT=0
 # Runtime bond store is the staged /tmp copy (#43), never $BOOT_MNT.
 export M5CFG_BLE_BONDS="$tmp/ble-bonds.dat"
+# Never the host's own fbcon: textcolor_redraw writes the rotation
+# attribute back when it finds one.  The text_color tests point this
+# at a file of their own.
+export M5CFG_FBCON_ROTATE="$tmp/no-fbcon-rotate"
 
 fails=0
 ok() { echo "ok: $1"; }
@@ -467,6 +471,12 @@ stop_saver
 echo "$out" | grep -q 'saving \.\.\.' && echo "$out" | grep -q 'saved to flash' &&
 	echo "$out" | grep -q "$(printf '\033\[2;1H')$(printf '\033\[0m')> box-1_" &&
 	ok "results print in the message area" || bad "msg area: $out"
+# The message area is one row.  The result replaces the notice on that
+# row (carriage return, no newline): one row lower it would sit on the
+# first nav row, under the [ tap to continue ] button.
+printf '%s' "$out" | grep -qF "$(printf '\033[19;1H\033[Jsaving ...\rm5-config: saved to flash')" &&
+	ok "the save result replaces the saving notice on the message row" ||
+	bad "save result row: $(printf '%s' "$out" | grep -a 'saving' | od -c | head -4)"
 imgfile config.txt | grep -q 'hostname=box-1' &&
 	ok "touch set still saves" || bad "touch set"
 
@@ -1781,6 +1791,77 @@ stop_saver
 [ "$(grep -c 'stty echo' "$tmp/sttylog" 2>/dev/null)" -ge 3 ] &&
 	ok "stty echo retried through denied execs" ||
 	bad "stty retry: $(cat "$tmp/sttylog" 2>/dev/null)"
+# The cleanup's rm can be refused as well.  B64 showed it: right after
+# a save from the menu, while the change was being applied, the kernel
+# refused umount and rm for want of memory.  The lock dir then stayed,
+# holding the pid of a menu that was still up, and the next save in
+# that menu was turned away as "another m5-config is running" -- by
+# its own pid.  Forget-then-pair in the Bluetooth menu is two saves in
+# one session (#41).  The stub refuses the cleanup's rm
+# (-rf MNT IMG LOCK) once per marker file; every other rm is real.
+real_rm=$(command -v rm)
+cat > "$tmp/bin/rm" <<EOF
+#!/bin/sh
+if [ "\$#" = 4 ] && [ "\$4" = "$tmp/run/.m5-config.lock" ] &&
+	[ ! -e "$tmp/rm-refused" ]; then
+	: > "$tmp/rm-refused"
+	exit 126
+fi
+exec "$real_rm" "\$@"
+EOF
+chmod +x "$tmp/bin/rm"
+# Wi-Fi -> PMF -> 1, then PMF -> 0 without leaving the menu.
+printf 'T 4 10\nT 12 10\nT 4 50\nT 20 10\nT 12 10\nT 4 10\nT 20 10\nT 20 10\nT 20 10\n' \
+	> "$tmp/tscr/events"
+start_saver
+out=$(M5CFG_TSCRIPT="$tmp/tscr/events" sh "$tool" menu </dev/null 2>&1)
+stop_saver
+[ -e "$tmp/rm-refused" ] && [ ! -e "$tmp/run/.m5-config.lock" ] &&
+	! echo "$out" | grep -qF 'another m5-config' &&
+	imgfile config.txt | grep -q 'wifi_pmf=0' &&
+	ok "a refused cleanup rm does not lock the menu out of its next save" ||
+	bad "own lock after a refused rm: $(echo "$out" | grep -ao 'another m5-config[^(]*' | head -1) $(imgfile config.txt | grep wifi_pmf)"
+# The leftover must not shut out another m5-config either, while the
+# menu that left it is still up.  "G" holds this m5-key until the gate
+# file appears, so a command-line set can run in between.
+cat > "$tmp/bin/m5-key-gate" <<EOF
+#!/bin/sh
+[ "\$1" = probe ] && exit 0
+while :; do
+	IFS= read -r ev < "\$M5CFG_TSCRIPT" 2>/dev/null || exit 1
+	tail -n +2 "\$M5CFG_TSCRIPT" > "\$M5CFG_TSCRIPT.n" 2>/dev/null || :
+	mv -f "\$M5CFG_TSCRIPT.n" "\$M5CFG_TSCRIPT" 2>/dev/null || :
+	[ "\$ev" = G ] || break
+	: > "$tmp/gate-reached"
+	n=0
+	while [ ! -e "$tmp/gate" ] && [ "\$n" -lt 300 ]; do
+		sleep 0.1; n=\$((n + 1))
+	done
+done
+printf '%s\n' "\$ev"
+EOF
+chmod +x "$tmp/bin/m5-key-gate"
+"$real_rm" -f "$tmp/rm-refused" "$tmp/gate" "$tmp/gate-reached"
+printf 'T 4 10\nT 12 10\nT 4 50\nT 20 10\nG\nT 20 10\nT 20 10\n' > "$tmp/tscr/events"
+start_saver
+M5CFG_M5_KEY="$tmp/bin/m5-key-gate" M5CFG_TSCRIPT="$tmp/tscr/events" \
+	sh "$tool" menu </dev/null > "$tmp/gate.out" 2>&1 &
+gpid=$!
+n=0
+while [ ! -e "$tmp/gate-reached" ] && [ "$n" -lt 300 ]; do
+	sleep 0.1; n=$((n + 1))
+done
+out=$(sh "$tool" set hostname gate-7 2>&1)
+rc=$?
+: > "$tmp/gate"
+wait "$gpid"
+stop_saver
+[ -e "$tmp/rm-refused" ] && [ -e "$tmp/gate-reached" ] && [ "$rc" = 0 ] &&
+	imgfile config.txt | grep -q 'hostname=gate-7' &&
+	ok "nor another m5-config out, while that menu is still up" ||
+	bad "foreign lock after a refused rm: rc=$rc $out"
+"$real_rm" -f "$tmp/bin/rm" "$tmp/bin/m5-key-gate" "$tmp/gate" \
+	"$tmp/gate-reached" "$tmp/rm-refused" "$tmp/gate.out"
 
 # 36. B55: text_color -- the preset lib, the managed key, S07textcolor
 # and the Display menu path.  The hue values are tuned on the panel
@@ -1796,21 +1877,23 @@ done
 [ "$_tcb" -eq 0 ] &&
 	ok "textcolor_seq accepts every name in TEXTCOLOR_NAMES"
 # non-white shape: exactly 16 ]P entries (\033]PdRRGGBB = 13 chars,
-# digit = upper-case hex slot), slot 0 000000, 1-7 equal, 9-F equal,
-# slot 8 differs from both groups.
+# digit = upper-case hex slot), slot 0 the background TC_BG, 1-7
+# equal, 9-F equal, slot 8 differs from both groups and none of the
+# three is the background.  The background is black for every preset
+# but lcd, which has a lit one.
 _tcb=0
 for n in $TEXTCOLOR_NAMES; do
 	[ "$n" = white ] && continue
 	textcolor_seq "$n"
-	printf '%s' "$TC_SEQ" | awk '
+	printf '%s' "$TC_SEQ" | awk -v bg="$TC_BG" '
 		{
-			if (length($0) != 208) exit 1
+			if (length($0) != 208 || length(bg) != 6) exit 1
 			for (i = 0; i < 16; i++) {
 				e = substr($0, i * 13 + 1, 13)
 				if (substr(e, 1, 6) != "\\033]P") exit 1
 				d = substr(e, 7, 1); c = substr(e, 8, 6)
 				if (d != substr("0123456789ABCDEF", i + 1, 1)) exit 1
-				if (i == 0) { if (c != "000000") exit 1 }
+				if (i == 0) { if (c != bg) exit 1 }
 				else if (i < 8) {
 					if (nrm == "") nrm = c
 					else if (c != nrm) exit 1
@@ -1820,18 +1903,48 @@ for n in $TEXTCOLOR_NAMES; do
 					else if (c != brt) exit 1
 				}
 			}
-			if (nrm == "000000" || dim == nrm || dim == brt) exit 1
+			if (dim == nrm || dim == brt) exit 1
+			if (nrm == bg || dim == bg || brt == bg) exit 1
 		}' || { _tcb=1; bad "preset $n shape"; }
+	case "$n" in
+		lcd)	[ "$TC_BG" != 000000 ] ||
+				{ _tcb=1; bad "lcd has a black background"; } ;;
+		*)	[ "$TC_BG" = 000000 ] ||
+				{ _tcb=1; bad "preset $n background $TC_BG"; } ;;
+	esac
 done
 [ "$_tcb" -eq 0 ] &&
-	ok "presets: 16 slots, slot0 black, mono normal/dim/bright"
+	ok "presets: 16 slots, slot0 the background, mono normal/dim/bright"
 textcolor_seq white && [ "$TC_SEQ" = '\033]R' ] && [ -n "$TC_HEX" ] &&
+	[ "$TC_BG" = 000000 ] &&
 	ok "white resets to the stock palette" || bad "white: $TC_SEQ"
-TC_SEQ=x TC_HEX=x
+TC_SEQ=x TC_HEX=x TC_BG=x
 textcolor_seq nosuch 2>/dev/null; rc=$?
 [ "$rc" -eq 1 ] && [ -z "$TC_SEQ" ] && [ -z "$TC_HEX" ] &&
-	ok "unknown name: rc 1, TC_SEQ/TC_HEX empty" ||
+	[ -z "$TC_BG" ] &&
+	ok "unknown name: rc 1, TC_SEQ/TC_HEX/TC_BG empty" ||
 	bad "unknown name rc=$rc seq=$TC_SEQ"
+# textcolor_redraw: with fbcon's rotation attribute it writes the
+# value back (that is the repaint) and prints nothing; without the
+# attribute, or with a value that is no rotation, the DECSCNM pair
+# goes to stdout.  The attribute file starts without a newline, so
+# its size shows the write.
+_dec=$(printf '\033[?5h\033[?5l')
+printf 3 > "$tmp/tc-rot"
+out=$(TEXTCOLOR_FBROT="$tmp/tc-rot"; textcolor_redraw)
+[ -z "$out" ] && [ "$(wc -c < "$tmp/tc-rot")" -eq 2 ] &&
+	[ "$(cat "$tmp/tc-rot")" = 3 ] &&
+	ok "redraw writes the rotation back and prints nothing" ||
+	bad "redraw rot: $(printf '%s' "$out" | od -c | head -1) $(od -c < "$tmp/tc-rot" | head -1)"
+out=$(TEXTCOLOR_FBROT="$tmp/tc-no-rot"; textcolor_redraw)
+[ "$out" = "$_dec" ] && [ ! -e "$tmp/tc-no-rot" ] &&
+	ok "redraw without the attribute prints the DECSCNM pair" ||
+	bad "redraw no attr: $(printf '%s' "$out" | od -c | head -1)"
+printf 'junk\n' > "$tmp/tc-rot"
+out=$(TEXTCOLOR_FBROT="$tmp/tc-rot"; textcolor_redraw)
+[ "$out" = "$_dec" ] && [ "$(cat "$tmp/tc-rot")" = junk ] &&
+	ok "redraw leaves a value that is no rotation alone" ||
+	bad "redraw junk: $(cat "$tmp/tc-rot")"
 
 # (b) the managed key: set/get/list round trip through drive_write,
 # an unknown colour rejected with the name list, "" deletes, and the
@@ -1964,6 +2077,27 @@ M5CFG_CONFIG_TXT="$tmp/s07tc/config.txt" \
 	M5CFG_PROC="$tmp/tcproc" sh "$S07TC" start; rc=$?
 [ "$rc" -eq 0 ] && ok "missing tty is a soft no-op" ||
 	bad "s07tc notty rc=$rc"
+# with fbcon's rotation attribute the repaint goes through it: the
+# tty gets the palette alone and the value is written back.
+printf 'text_color=lcd\n' > "$tmp/s07tc/config.txt"
+: > "$tmp/tctty"; printf 3 > "$tmp/tc-rot"
+textcolor_seq lcd; printf "$TC_SEQ" > "$tmp/tc-want-lcd"
+M5CFG_CONFIG_TXT="$tmp/s07tc/config.txt" M5CFG_TEXTCOLOR_TTY="$tmp/tctty" \
+	M5CFG_TEXTCOLOR_LIB="$TCLIB" M5CFG_RUN_DIR="$tmp/tcrun" \
+	M5CFG_PROC="$tmp/tcproc" M5CFG_FBCON_ROTATE="$tmp/tc-rot" \
+	sh "$S07TC" apply
+cmp -s "$tmp/tctty" "$tmp/tc-want-lcd" &&
+	[ "$(wc -c < "$tmp/tc-rot")" -eq 2 ] &&
+	ok "apply repaints through the rotation attribute" ||
+	bad "s07tc rot: $(od -c "$tmp/tctty" | tail -3) $(od -c < "$tmp/tc-rot" | head -1)"
+# no lib (it defines the repaint): apply still resets and toggles.
+: > "$tmp/tctty"
+M5CFG_CONFIG_TXT="$tmp/s07tc/config.txt" M5CFG_TEXTCOLOR_TTY="$tmp/tctty" \
+	M5CFG_TEXTCOLOR_LIB="$tmp/no-such-lib" M5CFG_RUN_DIR="$tmp/tcrun" \
+	M5CFG_PROC="$tmp/tcproc" sh "$S07TC" apply
+cmp -s "$tmp/tctty" "$tmp/tc-want-reset" &&
+	ok "apply without the lib resets to white + toggles" ||
+	bad "s07tc nolib: $(od -c "$tmp/tctty" | head -3)"
 
 # (d) the menu, touch mode.  With backlight + presets the Display
 # screen is the two-item submenu; amber = tpick slot 2.
@@ -1979,21 +2113,28 @@ imgfile config.txt > "$tmp/pub/config.txt"
 	imgfile config.txt | grep -q '^text_color=amber' &&
 	ok "touch pick saves text_color=amber once" ||
 	bad "touch amber: $(imgfile config.txt | grep text_color) $out"
+# The sample is slot 9 (the preset's normal colour) on slot A (its
+# background): bold red on blinking green.
 echo "$out" | grep -qF 'sample -- the console changes when you leave the menu' &&
-	printf '%s' "$out" | grep -qF "$(printf '\033]P9%s' "$_ahex")" &&
-	ok "sample line drawn in the new colour" ||
+	printf '%s' "$out" | grep -qF "$(printf '\033]P9%s\033]PA000000' "$_ahex")" &&
+	ok "sample line drawn in the new colour on its background" ||
 	bad "sample line: $out"
 # The sample sits on header row 2; the save result in the message
 # strip (row MSGTOP+1 = 19) must not be overwritten by it.
-printf '%s' "$out" | grep -qF "$(printf '\033[2;1H\033[1;31m  sample')" &&
-	! printf '%s' "$out" | grep -qF "$(printf '\033[19;1H\033[1;31m')" &&
+printf '%s' "$out" | grep -qF "$(printf '\033[2;1H\033[1;31;5;42m  sample')" &&
+	! printf '%s' "$out" | grep -qF "$(printf '\033[19;1H\033[1;31;5;42m')" &&
 	echo "$out" | grep -qF 'saved to flash' &&
 	ok "sample on the header row, save result left readable" ||
-	bad "sample row: $(printf '%s' "$out" | grep -o 'H.\[1;31m  sample' | head -2)"
+	bad "sample row: $(printf '%s' "$out" | grep -o 'H.\[1;31;5;42m  sample' | head -2)"
 # On exit the stock reset comes first, then the configured preset.
 printf '%s' "$out" | grep -qF "$escR$_aseq" &&
 	ok "exit emits ESC ] R then re-applies the preset" ||
 	bad "restore order: $(printf '%s' "$out" | tail -c 300 | od -c | head -6)"
+# amber has a black background: the margin outside the text rows is
+# never touched, so the session asks for no repaint.
+! printf '%s' "$out" | grep -qF "$_dec" &&
+	ok "black-background preset: no repaint at menu start or exit" ||
+	bad "amber session repainted"
 # brightness is still reachable through the two-item Display screen.
 printf 'T 8 50\nT 4 10\nT 8 10\nT 20 10\nT 20 10\nT 20 10\n' \
 	> "$tmp/tscr/events"
@@ -2030,6 +2171,58 @@ echo "$out" | grep -qF '== brightness ==' &&
 	[ "$(imgfile config.txt | grep -c '^brightness=50')" = 1 ] &&
 	ok "no lib: Display opens brightness directly" ||
 	bad "nolib display: $out"
+
+# lcd is the ninth name, on the picker's second page ([ more ] = nav
+# row, cols 60-79).  It has a lit background: the sample shows ink on
+# it, and leaving the menu repaints so the margin outside the text
+# rows takes the new slot 0 -- through fbcon's rotation attribute
+# when there is one.
+textcolor_seq lcd; _lseq=$(printf "$TC_SEQ"); _lhex=$TC_HEX; _lbg=$TC_BG
+printf 'T 8 50\nT 4 50\nT 20 65\nT 4 10\nT 20 10\nT 20 10\nT 20 10\n' \
+	> "$tmp/tscr/events"
+printf 3 > "$tmp/tc-rot"
+start_saver
+out=$(M5CFG_BLDIR="$tmp/bl" M5CFG_TEXTCOLOR_LIB="$TCLIB" \
+	M5CFG_FBCON_ROTATE="$tmp/tc-rot" \
+	M5CFG_TSCRIPT="$tmp/tscr/events" sh "$tool" menu </dev/null 2>&1)
+stop_saver
+imgfile config.txt > "$tmp/pub/config.txt"
+imgfile config.txt | grep -q '^text_color=lcd' &&
+	printf '%s' "$out" | grep -qF "$(printf '\033]P9%s\033]PA%s' "$_lhex" "$_lbg")" &&
+	ok "touch pick on page 2 saves lcd, sample is ink on its background" ||
+	bad "touch lcd: $(imgfile config.txt | grep text_color) $out"
+printf '%s' "$out" | grep -qF "$escR$_lseq" &&
+	[ "$(wc -c < "$tmp/tc-rot")" -eq 2 ] &&
+	! printf '%s' "$out" | grep -qF "$_dec" &&
+	ok "exit re-applies lcd and repaints through the attribute" ||
+	bad "lcd exit: $(od -c < "$tmp/tc-rot" | head -1)"
+# A session that starts under lcd repaints at once, so the margin
+# goes dark with the menu, and again when it hands the panel back.
+# Without the attribute both are the DECSCNM pair -- the first right
+# after the menu palette, whose last entry is slot 7 e5e9f0.
+printf 'T 20 10\n' > "$tmp/tscr/events"
+out=$(M5CFG_BLDIR="$tmp/bl" M5CFG_TEXTCOLOR_LIB="$TCLIB" \
+	M5CFG_TSCRIPT="$tmp/tscr/events" sh "$tool" menu </dev/null 2>&1)
+printf '%s' "$out" | grep -qF "e5e9f0$_dec" &&
+	printf '%s' "$out" | grep -qF "$escR$_lseq$_dec" &&
+	ok "a session under lcd repaints at start and at exit" ||
+	bad "lcd session: $(printf '%s' "$out" | head -c 200 | od -c | head -8)"
+# From lcd to a black-background preset: at exit the margin still
+# wears the menu background, so the repaint is owed there too.
+printf 'T 8 50\nT 4 50\nT 8 10\nT 20 10\nT 20 10\nT 20 10\n' \
+	> "$tmp/tscr/events"
+start_saver
+out=$(M5CFG_BLDIR="$tmp/bl" M5CFG_TEXTCOLOR_LIB="$TCLIB" \
+	M5CFG_TSCRIPT="$tmp/tscr/events" sh "$tool" menu </dev/null 2>&1)
+stop_saver
+imgfile config.txt | grep -q '^text_color=amber' &&
+	printf '%s' "$out" | grep -qF "$escR$_aseq$_dec" &&
+	ok "lcd -> amber: exit repaints the margin back to black" ||
+	bad "lcd to amber: $(imgfile config.txt | grep text_color)"
+start_saver
+M5CFG_TEXTCOLOR_LIB="$TCLIB" sh "$tool" set text_color "" >/dev/null 2>&1
+stop_saver
+imgfile config.txt > "$tmp/pub/config.txt"
 
 # (e) plain mode: the typed pick saves, and no palette sequence ever
 # goes to the caller's own terminal.
