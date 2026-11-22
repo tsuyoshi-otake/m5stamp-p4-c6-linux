@@ -12,6 +12,12 @@
  *       Request in the middle of the first transaction.  Prints one
  *       "req xx xx .." line per PDU the keyboard received, then
  *       "read=N ok=0|1".
+ *   setup SRV_MTU MAPLEN
+ *       hogp_setup() -- MTU, HID service, characteristics, descriptors,
+ *       report map, input-report notifications -- against a HOGP
+ *       keyboard (hogp_keyboard) that answers MTU SRV_MTU and holds a
+ *       MAPLEN-byte report map.  Prints "write 0017 xx .." per CCCD
+ *       write, then one "setup=N mtu=.. reports=.. map=.." line.
  *   peer HEX..
  *       hand one PDU "from the keyboard" to att_peer_pdu(); prints
  *       "handled=N rsp=xx xx .." (rsp=none when nothing was sent).
@@ -93,6 +99,163 @@ static void keyboard(int fd, const uint8_t *val, int len, int mtu,
 	}
 }
 
+/* a HOGP keyboard: GAP + HID service, report map, HID info, one input
+ * report (CCCD + report reference) and one output report.  Serves the
+ * discovery requests a real keyboard answers, at most `srv_mtu` per
+ * response (the smaller of both MTUs once the client asked), and
+ * prints one "write HHHH xx .." line per Write Request it gets. */
+struct fattr {
+	uint16_t h, type;
+	uint8_t len;
+	uint8_t v[5];
+};
+
+static const struct fattr hogp_db[] = {
+	{ 0x0001, 0x2800, 2, { 0x00, 0x18 } },			/* GAP */
+	{ 0x0002, 0x2803, 5, { 0x02, 0x03, 0x00, 0x00, 0x2a } },
+	{ 0x0003, 0x2a00, 3, { 'k', 'b', 'd' } },
+	{ 0x0010, 0x2800, 2, { 0x12, 0x18 } },			/* HID */
+	{ 0x0011, 0x2803, 5, { 0x02, 0x12, 0x00, 0x4b, 0x2a } },	/* map */
+	{ 0x0012, 0x2a4b, 0, { 0 } },				/* fmap */
+	{ 0x0013, 0x2803, 5, { 0x02, 0x14, 0x00, 0x4a, 0x2a } },	/* info */
+	{ 0x0014, 0x2a4a, 4, { 0x11, 0x01, 0x00, 0x02 } },
+	{ 0x0015, 0x2803, 5, { 0x12, 0x16, 0x00, 0x4d, 0x2a } },	/* input */
+	{ 0x0016, 0x2a4d, 3, { 0, 0, 0 } },
+	{ 0x0017, 0x2902, 2, { 0, 0 } },				/* CCCD */
+	{ 0x0018, 0x2908, 2, { 0x01, 0x01 } },			/* id 1 in */
+	{ 0x0019, 0x2803, 5, { 0x0e, 0x1a, 0x00, 0x4d, 0x2a } },	/* output */
+	{ 0x001a, 0x2a4d, 1, { 0 } },
+	{ 0x001b, 0x2908, 2, { 0x01, 0x02 } },			/* id 1 out */
+};
+#define HOGP_DB_N	((int)(sizeof(hogp_db) / sizeof(hogp_db[0])))
+#define HOGP_LAST	0x001b
+
+static uint8_t fmap[512];
+static int fmaplen;
+
+static void att_err(int fd, uint8_t op, uint16_t h, uint8_t code)
+{
+	uint8_t e[5] = { ATT_OP_ERROR, op, h & 0xff, h >> 8, code };
+
+	if (write(fd, e, sizeof(e)) < 0)
+		_exit(3);
+}
+
+static void hogp_keyboard(int fd, int srv_mtu)
+{
+	uint8_t b[600], r[600];
+	int mtu = 23;
+
+	for (;;) {
+		ssize_t n = read(fd, b, sizeof(b));
+		uint16_t s = n >= 3 ? b[1] | (b[2] << 8) : 0;
+		uint16_t e = n >= 5 ? b[3] | (b[4] << 8) : 0;
+		uint16_t want = n >= 7 ? b[5] | (b[6] << 8) : 0;
+		int o = 0, ilen = 0;
+
+		if (n <= 0)
+			_exit(0);
+		switch (b[0]) {
+		case ATT_OP_MTU_REQ:
+			mtu = s < srv_mtu ? s : srv_mtu;
+			r[0] = ATT_OP_MTU_RSP;
+			r[1] = srv_mtu & 0xff;
+			r[2] = srv_mtu >> 8;
+			o = 3;
+			break;
+		case ATT_OP_READ_GROUP_REQ:
+			r[o++] = ATT_OP_READ_GROUP_RSP;
+			r[o++] = 6;
+			for (int i = 0; i < HOGP_DB_N; i++) {
+				const struct fattr *a = &hogp_db[i];
+				uint16_t end = HOGP_LAST;
+
+				if (a->type != 0x2800 || a->h < s || a->h > e)
+					continue;
+				for (int j = i + 1; j < HOGP_DB_N; j++)
+					if (hogp_db[j].type == 0x2800) {
+						end = hogp_db[j].h - 1;
+						break;
+					}
+				if (o + 6 > mtu)
+					break;
+				r[o++] = a->h & 0xff; r[o++] = a->h >> 8;
+				r[o++] = end & 0xff; r[o++] = end >> 8;
+				r[o++] = a->v[0]; r[o++] = a->v[1];
+			}
+			if (o == 2) { att_err(fd, b[0], s, ATT_ERR_NOT_FOUND); continue; }
+			break;
+		case ATT_OP_READ_TYPE_REQ:
+			r[o++] = ATT_OP_READ_TYPE_RSP;
+			r[o++] = 0;
+			for (int i = 0; i < HOGP_DB_N; i++) {
+				const struct fattr *a = &hogp_db[i];
+
+				if (a->type != want || a->h < s || a->h > e)
+					continue;
+				if (!ilen)
+					ilen = 2 + a->len;
+				if (2 + a->len != ilen || o + ilen > mtu)
+					break;
+				r[o++] = a->h & 0xff; r[o++] = a->h >> 8;
+				memcpy(r + o, a->v, a->len);
+				o += a->len;
+			}
+			if (o == 2) { att_err(fd, b[0], s, ATT_ERR_NOT_FOUND); continue; }
+			r[1] = (uint8_t)ilen;
+			break;
+		case ATT_OP_FIND_INFO_REQ:
+			r[o++] = ATT_OP_FIND_INFO_RSP;
+			r[o++] = 1;
+			for (int i = 0; i < HOGP_DB_N; i++) {
+				const struct fattr *a = &hogp_db[i];
+
+				if (a->h < s || a->h > e)
+					continue;
+				if (o + 4 > mtu)
+					break;
+				r[o++] = a->h & 0xff; r[o++] = a->h >> 8;
+				r[o++] = a->type & 0xff; r[o++] = a->type >> 8;
+			}
+			if (o == 2) { att_err(fd, b[0], s, ATT_ERR_NOT_FOUND); continue; }
+			break;
+		case ATT_OP_READ_REQ:
+		case ATT_OP_READ_BLOB_REQ: {
+			int off = b[0] == ATT_OP_READ_BLOB_REQ && n >= 5 ? e : 0;
+			const uint8_t *v = NULL;
+			int len = 0;
+
+			for (int i = 0; i < HOGP_DB_N; i++)
+				if (hogp_db[i].h == s) {
+					v = s == 0x0012 ? fmap : hogp_db[i].v;
+					len = s == 0x0012 ? fmaplen : hogp_db[i].len;
+				}
+			if (!v) { att_err(fd, b[0], s, 0x01); continue; }
+			if (off > len) { att_err(fd, b[0], s, 0x07); continue; }
+			r[o++] = b[0] + 1;
+			int chunk = len - off;
+
+			if (chunk > mtu - 1)
+				chunk = mtu - 1;
+			memcpy(r + o, v + off, chunk);
+			o += chunk;
+			break;
+		}
+		case ATT_OP_WRITE_REQ:
+			put_hex(s == 0x0017 ? "write 0017" : "write other",
+				b + 3, (int)n - 3);
+			if (s != 0x0017) { att_err(fd, b[0], s, 0x03); continue; }
+			r[o++] = ATT_OP_WRITE_RSP;
+			break;
+		default:
+			att_err(fd, b[0], s, 0x06);
+			continue;
+		}
+		if (write(fd, r, o) < 0)
+			_exit(3);
+	}
+}
+
 static int hexbyte(const char *s)
 {
 	return (int)strtoul(s, NULL, 16) & 0xff;
@@ -137,6 +300,44 @@ int main(int argc, char **argv)
 		waitpid(pid, NULL, 0);
 		printf("read=%d ok=%d\n", n,
 		       n == len && !memcmp(out, val, len));
+		return 0;
+	}
+
+	if (argc >= 4 && !strcmp(argv[1], "setup")) {
+		/* setup SRV_MTU MAPLEN: hogp_setup() -- the HOGP setup the
+		 * daemon runs per session and pair runs on the pairing link
+		 * (#41) -- against hogp_keyboard() */
+		static struct hogp h;
+		int srv_mtu = atoi(argv[2]);
+
+		fmaplen = atoi(argv[3]);
+		if (srv_mtu < 23 || srv_mtu > 517 || fmaplen < 1 ||
+		    fmaplen > (int)sizeof(fmap))
+			return 2;
+		for (int i = 0; i < fmaplen; i++)
+			fmap[i] = (uint8_t)(i * 5 + 1);
+
+		pid_t pid = fork();
+
+		if (pid < 0)
+			return 2;
+		if (pid == 0) {
+			close(sv[0]);
+			hogp_keyboard(sv[1], srv_mtu);
+			_exit(0);
+		}
+		close(sv[1]);
+		att_fd = sv[0];
+		memset(&h, 0, sizeof(h));
+
+		int sub = hogp_setup(&h, 0);
+
+		close(att_fd);
+		waitpid(pid, NULL, 0);
+		printf("setup=%d mtu=%u reports=%d map=%d mapok=%d ids=%d "
+		       "info=%04x\n", sub, att_mtu, h.nreports, h.map_len,
+		       h.map_len == fmaplen && !memcmp(h.report_map, fmap, fmaplen),
+		       h.uses_report_ids, h.info_handle);
 		return 0;
 	}
 
@@ -246,8 +447,8 @@ int main(int argc, char **argv)
 		return 0;
 	}
 
-	fprintf(stderr, "usage: %s read LEN MTU [mtureq] | peer HEX.. | "
-		"holds SEQ | status rSECS.. | storefull | "
+	fprintf(stderr, "usage: %s read LEN MTU [mtureq] | setup SRV_MTU "
+		"MAPLEN | peer HEX.. | holds SEQ | status rSECS.. | storefull | "
 		"secok LEVEL KEYSIZE WANT\n",
 		argv[0]);
 	return 2;

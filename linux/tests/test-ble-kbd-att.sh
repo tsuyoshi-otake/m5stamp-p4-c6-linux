@@ -247,9 +247,45 @@ enc_line=$(grep -n 'return att_connect_at(addr, addr_type, sec_level,$' "$src" |
 	grep -q 'sec_enough(&sec, sec_level)) {$' "$src" &&
 	ok "att_connect looks at the link before it asks for encryption" ||
 	bad "att_connect does not probe the link first"
-[ "$(grep -c 'att_connect_at(' "$src")" -eq 3 ] &&
+pair_cfg='att_fd = att_connect_at(&b->addr, b->type, 0, ATT_PROBE_TIMEOUT);'
+[ "$(grep -v -F "$pair_cfg" "$src" | grep -c 'att_connect_at(')" -eq 3 ] &&
+	[ "$(grep -c -F "$pair_cfg" "$src")" -eq 1 ] &&
 	ok "sessions cannot reach the encrypting connect directly" ||
-	bad "att_connect_at has callers besides att_connect"
+	bad "att_connect_at has callers besides att_connect and pair's level-0 look"
+
+# 13. The keyboard is set up on the pairing link (#41): the CACOE went
+#     silent -- no advert, no reconnect until switched off and on --
+#     whenever the host let the pairing link drop untouched, and the
+#     menu saves the bond before
+#     the daemon starts, longer than the kernel keeps an idle link.  So
+#     pair runs the HOGP setup itself (hogp_setup, shared with every
+#     daemon session) on that link.  The harness plays a keyboard with
+#     an input report (CCCD 0x0017) and an output report (no CCCD).
+out=$(run setup 23 122)
+is "HOGP setup at MTU 23: one input report on, 122-byte map whole" \
+	"$out" "write 0017 01 00
+setup=1 mtu=23 reports=2 map=122 mapok=1 ids=1 info=0014"
+#     A keyboard that answers a larger MTU than ours: the link uses ours
+#     (185), and the report map still arrives whole (taking 247 stopped
+#     the blob loop after the first 184 bytes).
+is "keyboard answers MTU 247: 185 used, 300-byte map whole" \
+	"$(run setup 247 300 | tail -1)" \
+	"setup=1 mtu=185 reports=2 map=300 mapok=1 ids=1 info=0014"
+#     Source contracts: pair sets the keyboard up before it stores the
+#     bond, only on a link that is already encrypted (level 0 look, no
+#     key refresh), and the daemon's sessions run the same setup.
+cfg_line=$(grep -n 'int sub = pair_configure(b);' "$src" | head -1 | cut -d: -f1)
+com_line=$(grep -n 'int cr = bonds_commit();' "$src" | head -1 | cut -d: -f1)
+[ -n "$cfg_line" ] && [ -n "$com_line" ] && [ "$cfg_line" -lt "$com_line" ] &&
+	ok "pair sets the keyboard up on the pairing link before storing" ||
+	bad "pair does not run pair_configure before bonds_commit"
+awk '/^static int pair_configure\(/,/^}/' "$src" |
+	grep -q '!sec_enough(&sec, BT_SECURITY_MEDIUM)' &&
+	ok "pair's setup needs an encrypted link and never asks for one" ||
+	bad "pair_configure does not check the link's encryption"
+grep -q 'if (hogp_setup(&h, 1) < 0)' "$src" &&
+	ok "daemon sessions run the same HOGP setup" ||
+	bad "hogp_session does not use hogp_setup"
 
 [ "$fails" -eq 0 ] && echo "PASS: $checks checks" ||
 	{ echo "FAILED: $fails of $checks checks"; exit 1; }
