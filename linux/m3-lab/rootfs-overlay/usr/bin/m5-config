@@ -1029,12 +1029,22 @@ touch_ok() {
 # the message strip -- the screen and any typed text stay put (#42).
 _busy() { msg "  busy (low memory), tap again"; }
 
-# _spin: a pure-builtin delay for tap flashes and exec retries.  hush
-# has no builtin sleep and usleep is one more flat-exec -- the very
-# allocation a low-memory panel cannot spare.
+# _spin: a pure-builtin delay that paces exec retries.  hush has no
+# builtin sleep and usleep is one more flat-exec -- the very allocation
+# a low-memory panel cannot spare.  One pass of the loop takes about
+# 90 us on the ESP32-P4, so the default is about 5 s.
 _spin() {
 	_sp=0
 	while [ "$_sp" -lt "${M5CFG_SPIN:-60000}" ]; do _sp=$((_sp + 1)); done
+}
+
+# _flash: the moment a tapped button or key shows its tapped colour
+# before the screen moves on -- the 0.2 s of the usleep it replaced.
+# It used _spin until 2026-11-22, which made every tap and every
+# on-screen key wait more than 5 s.
+_flash() {
+	_sp=0
+	while [ "$_sp" -lt "${M5CFG_FLASH_SPIN:-2200}" ]; do _sp=$((_sp + 1)); done
 }
 
 # _echo_off/_echo_on: termios flips with a few retries -- a transient
@@ -1191,7 +1201,7 @@ _tflash() { # brief tapped-colour redraw of the tapped button
 	_s=$_BTN; _BTN=$_TAP
 	_tblock "$_top" "$_col" "$_k $_l"
 	_BTN=$_s
-	_spin
+	_flash
 }
 
 # pause: plain mode waits for Enter; touch mode draws a [tap to
@@ -1558,7 +1568,7 @@ _kb_press() {
 	_s=$_BTN; _BTN=$_TAP
 	_kblock "$3" "$4" "$5" "$_kwt"
 	_BTN=$_s
-	_spin
+	_flash
 	case "$_kwt" in
 		"[ABC]") _kbl=1; _kb_keys ;;
 		"[abc]") _kbl=0; _kb_keys ;;

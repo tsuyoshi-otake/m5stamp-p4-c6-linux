@@ -348,6 +348,17 @@ out=$(M5CFG_TSCRIPT="$tmp/tscr/events" sh "$tool" menu </dev/null 2>&1)
 echo "$out" | grep -q 'ABC' && echo "$out" | grep -q 'cancel' &&
 	echo "$out" | grep -q 'OK' && echo "$out" | grep -q '> a_' &&
 	ok "OSK draws layers+nav, a letter tap types" || bad "ttext: $out"
+# ... and neither the tapped button nor the tapped key waits through
+# _spin, the exec-retry pacing (about 5 s on the board; it made every
+# tap that slow).  With a word in M5CFG_SPIN a _spin call shows itself
+# as a test error naming that word.  stty is made to succeed: without a
+# tty the echo restore at session end would retry through _spin.
+printf 'T 4 50\nT 4 10\nT 6 6\nT 20 10\nT 20 10\n' > "$tmp/tscr/events"
+out=$(M5CFG_SPIN=SPIN-ON-A-TAP M5CFG_STTY=true \
+	M5CFG_TSCRIPT="$tmp/tscr/events" sh "$tool" menu </dev/null 2>&1)
+echo "$out" | grep -q '> a_' && ! echo "$out" | grep -q 'SPIN-ON-A-TAP' &&
+	ok "a tap flashes without the retry pacing" ||
+	bad "tap flash: $(echo "$out" | grep 'SPIN-ON-A-TAP' | head -2)"
 # ... and a real keyboard types through the same field as K bytes;
 # K enter is [OK].
 printf 'T 4 50\nT 4 10\nK h\nK o\nK s\nK t\nK -\nK 9\nK enter\nT 20 10\nT 20 10\n' \
