@@ -896,9 +896,11 @@ set_apply() {
 # header stay inert.
 #
 # Palette: Linux console redefinition (ESC ] P n rrggbb) turns the
-# default slots into a calm Nord scheme -- VT/panel only, serial and
-# SSH never see it.  ESC ] R restores the default palette on every
-# exit path (exit button, EOF, signal, m5-key failure) via _cleanup.
+# default slots into a calm Nord scheme, or into the text_color
+# preset's monochrome palette when one is set (_pal_apply) -- VT/panel
+# only, serial and SSH never see it.  ESC ] R restores the default
+# palette on every exit path (exit button, EOF, signal, m5-key
+# failure) via _cleanup, and the configured preset goes back on.
 _TOUCH=0
 ITOP=3; NAVTOP=19; TPP=${M5CFG_TPP:-8}; COLW=40
 MSGTOP=18
@@ -936,27 +938,65 @@ EVF=$RUN_DIR/.m5cfg-ev.$$
 # never creates -- or removes -- the 0600 event file.
 USF=$RUN_DIR/.m5cfg-us.$$
 _pal_on=0
-# SGR colours on the redefined slots (fg 3x / bg 4x):
-# 0 bg #2e3440, 1 warn #bf616a, 2 ok #a3be8c, 3 dim #81a1c1,
+# The menu's colours, set by _pal_apply.  With text_color unset or
+# white -- and on a board without the presets -- the menu redefines
+# slots 0-7 into the Nord scheme; SGR colours on those slots (fg 3x /
+# bg 4x): 0 bg #2e3440, 1 warn #bf616a, 2 ok #a3be8c, 3 dim #81a1c1,
 # 4 button #3b4252, 5 tapped #5e81ac, 6 title #88c0d0, 7 text #e5e9f0.
+# Under a monochrome preset (green ... lcd) the menu keeps the
+# preset's own palette, so it looks like the rest of the panel: title
+# and warnings bold (the bright colour), the other header rows in the
+# normal colour, buttons in reverse video (background colour on the
+# normal colour) and a tapped button on the dim shade -- 30;40 puts
+# slot 0 on slot 0 and fbcon draws the blink bit as the bright
+# background slot, 8.
 _TTL='\033[36m'; _DIM='\033[33m'; _WRN='\033[31m'; _OK='\033[32m'
 _BTN='\033[37;44m'; _TAP='\033[37;45m'
-_pal_bg=0
+# _pal_mg: the colour (rrggbb) the margin outside the text rows wears.
+# The margin follows slot 0 only on a full repaint (textcolor_redraw),
+# so it is tracked: _pal_set starts it at the configured preset's
+# background, which boot and every apply have painted.
+_pal_mg=000000
 _pal_set() {
-	printf '\033]P02e3440\033]P1bf616a\033]P2a3be8c\033]P381a1c1\033]P43b4252\033]P55e81ac\033]P688c0d0\033]P7e5e9f0'
+	_pn=""
+	if [ -n "${TEXTCOLOR_NAMES:-}" ]; then
+		cfg_get text_color 2>/dev/null || CFG_VAL=""
+		_pn=$CFG_VAL
+		[ -n "$_pn" ] && textcolor_seq "$_pn" 2>/dev/null &&
+			_pal_mg=$TC_BG
+	fi
+	_pal_apply "$_pn"
+}
+# _pal_apply NAME: the menu palette and SGR colours for text_color
+# NAME (see above), repainting when the margin has to change colour.
+# The black margin of a stock console stays under the Nord menu (the
+# common case gets no flash); a lit one (lcd) is repainted.  The
+# screen is cleared before that repaint: on this truecolor framebuffer
+# a cell keeps its pixels until it is drawn again, and a repaint draws
+# the old cells' slot numbers in the new palette.  A caller switching
+# mid-session clears the screen afterwards for the same reason.
+_pal_apply() {
+	TC_BG=""
+	if [ -n "${TEXTCOLOR_NAMES:-}" ] && [ -n "$1" ] &&
+		[ "$1" != white ] && textcolor_seq "$1" 2>/dev/null; then
+		printf "$TC_SEQ"
+		_TTL='\033[1m'; _DIM=''; _WRN='\033[1m'; _OK=''
+		_BTN='\033[7m'; _TAP='\033[30;40;5m'
+		_pbg=$TC_BG
+	else
+		printf '\033]P02e3440\033]P1bf616a\033]P2a3be8c\033]P381a1c1\033]P43b4252\033]P55e81ac\033]P688c0d0\033]P7e5e9f0'
+		_TTL='\033[36m'; _DIM='\033[33m'; _WRN='\033[31m'; _OK='\033[32m'
+		_BTN='\033[37;44m'; _TAP='\033[37;45m'
+		_pbg=2e3440
+	fi
 	_pal_on=1
-	# A preset with a lit background (lcd) left the margin outside
-	# the text rows in its colour, and the margin follows slot 0
-	# only on a repaint: repaint, so it goes dark with the menu.
-	# _pal_bg remembers that the margin wears the menu background.
-	[ -n "${TEXTCOLOR_NAMES:-}" ] || return 0
-	cfg_get text_color 2>/dev/null || CFG_VAL=""
-	[ -n "$CFG_VAL" ] && textcolor_seq "$CFG_VAL" 2>/dev/null ||
-		return 0
-	case "$TC_BG" in
-		""|000000) ;;
-		*) _pal_bg=1; textcolor_redraw ;;
+	case "$_pal_mg" in
+		"$_pbg") return 0 ;;
+		000000) [ "$_pbg" = 2e3440 ] && return 0 ;;
 	esac
+	_pal_mg=$_pbg
+	printf '\033[0m\033[2J'
+	textcolor_redraw
 	return 0
 }
 # _tc_now: the text_color picked in this session -- _pal_restore
@@ -979,12 +1019,10 @@ _pal_restore() {
 	TC_BG=""
 	[ -n "$_name" ] && textcolor_seq "$_name" 2>/dev/null &&
 		printf "$TC_SEQ"
-	# The margin needs a repaint when it wears the menu background
-	# or when the preset brings a background of its own.
-	_rd=$_pal_bg
-	case "$TC_BG" in ""|000000) ;; *) _rd=1 ;; esac
-	[ "$_rd" = 1 ] && textcolor_redraw
-	_pal_bg=0
+	# The margin goes back to the preset's background (black for
+	# white, unset or a bad name): a repaint when it wears another.
+	[ "$_pal_mg" = "${TC_BG:-000000}" ] || textcolor_redraw
+	_pal_mg=${TC_BG:-000000}
 	return 0
 }
 _touch_init() {
@@ -2009,9 +2047,9 @@ menu_brightness() {
 
 # menu_textcolor: the console text colour presets -- tpick buttons in
 # touch mode, the typed menu_choose prompt elsewhere.  The header
-# shows the colour in effect; the picked name is kept in _tc_now so
-# _pal_restore can re-apply it at session end (the published config
-# can lag the save).
+# shows the colour in effect.  A touch pick re-colours the menu at
+# once, and the picked name is kept in _tc_now so _pal_restore can
+# re-apply it at session end (the published config can lag the save).
 menu_textcolor() {
 	[ -z "$_tc_now" ] && {
 		cfg_get text_color 2>/dev/null || CFG_VAL=""
@@ -2020,18 +2058,14 @@ menu_textcolor() {
 	if tpick "text colour (now: ${_tc_now:-white})" "$TEXTCOLOR_NAMES"; then
 		if [ -n "$REPLY" ]; then
 			_tc_now=$REPLY
+			# The menu takes the new colours at once: the palette,
+			# then a clean screen (drawn cells keep their old
+			# pixels), the title, and the save -- so its result
+			# shows in the colours it is about.
+			_pal_apply "$_tc_now"
+			scr_clear
+			say "== text colour (now: $_tc_now) =="
 			set_apply text_color "$REPLY" || true
-			# A sample in the new colours: the menu palette only
-			# defines slots 0-7, so slot 9 takes the preset's
-			# normal colour and slot A its background.  Bold
-			# red on blinking green prints one on the other --
-			# fbcon draws the blink bit as the bright background
-			# slot.  It goes on the second header row: the
-			# message strip below holds the save result and
-			# must stay readable.
-			textcolor_seq "$_tc_now" &&
-				printf '\033]P9%s\033]PA%s' "$TC_HEX" "$TC_BG"
-			printf '\033[2;1H\033[1;31;5;42m  sample -- the console changes when you leave the menu  \033[0m\033[K'
 		else
 			msg "  unchanged"
 		fi

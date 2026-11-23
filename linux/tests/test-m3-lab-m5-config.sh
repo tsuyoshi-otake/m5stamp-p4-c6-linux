@@ -2111,8 +2111,12 @@ cmp -s "$tmp/tctty" "$tmp/tc-want-reset" &&
 	bad "s07tc nolib: $(od -c "$tmp/tctty" | head -3)"
 
 # (d) the menu, touch mode.  With backlight + presets the Display
-# screen is the two-item submenu; amber = tpick slot 2.
-textcolor_seq amber; _aseq=$(printf "$TC_SEQ"); _ahex=$TC_HEX
+# screen is the two-item submenu; amber = tpick slot 2.  The session
+# starts with text_color unset (published), so in the Nord colours.
+textcolor_seq amber; _aseq=$(printf "$TC_SEQ")
+_clr=$(printf '\033[0m\033[2J'); _rev=$(printf '\033[7m')
+_nord=$(printf '\033]P02e3440')
+imgfile config.txt > "$tmp/pub/config.txt"
 printf 'T 8 50\nT 4 50\nT 8 10\nT 20 10\nT 20 10\nT 20 10\n' \
 	> "$tmp/tscr/events"
 start_saver
@@ -2124,19 +2128,15 @@ imgfile config.txt > "$tmp/pub/config.txt"
 	imgfile config.txt | grep -q '^text_color=amber' &&
 	ok "touch pick saves text_color=amber once" ||
 	bad "touch amber: $(imgfile config.txt | grep text_color) $out"
-# The sample is slot 9 (the preset's normal colour) on slot A (its
-# background): bold red on blinking green.
-echo "$out" | grep -qF 'sample -- the console changes when you leave the menu' &&
-	printf '%s' "$out" | grep -qF "$(printf '\033]P9%s\033]PA000000' "$_ahex")" &&
-	ok "sample line drawn in the new colour on its background" ||
-	bad "sample line: $out"
-# The sample sits on header row 2; the save result in the message
-# strip (row MSGTOP+1 = 19) must not be overwritten by it.
-printf '%s' "$out" | grep -qF "$(printf '\033[2;1H\033[1;31;5;42m  sample')" &&
-	! printf '%s' "$out" | grep -qF "$(printf '\033[19;1H\033[1;31;5;42m')" &&
-	echo "$out" | grep -qF 'saved to flash' &&
-	ok "sample on the header row, save result left readable" ||
-	bad "sample row: $(printf '%s' "$out" | grep -o 'H.\[1;31;5;42m  sample' | head -2)"
+# The pick re-colours the menu at once: the amber palette, a clean
+# screen, the title with the new name, then the save -- its result in
+# the new colours -- and the [ tap to continue ] button in reverse
+# video.  The Nord palette was up before it.
+case "$out" in
+	*"$_nord"*"$_aseq"*"$_clr"*"(now: amber)"*"saved to flash"*"$_rev"*)
+		ok "a pick switches the menu to the preset before the save" ;;
+	*) bad "menu switch: $(printf '%s' "$out" | tail -c 600 | od -c | head -12)" ;;
+esac
 # On exit the stock reset comes first, then the configured preset.
 printf '%s' "$out" | grep -qF "$escR$_aseq" &&
 	ok "exit emits ESC ] R then re-applies the preset" ||
@@ -2184,11 +2184,12 @@ echo "$out" | grep -qF '== brightness ==' &&
 	bad "nolib display: $out"
 
 # lcd is the ninth name, on the picker's second page ([ more ] = nav
-# row, cols 60-79).  It has a lit background: the sample shows ink on
-# it, and leaving the menu repaints so the margin outside the text
-# rows takes the new slot 0 -- through fbcon's rotation attribute
-# when there is one.
-textcolor_seq lcd; _lseq=$(printf "$TC_SEQ"); _lhex=$TC_HEX; _lbg=$TC_BG
+# row, cols 60-79).  The session runs under amber (published above).
+# lcd has a lit background: the pick clears the screen in the lcd
+# palette and repaints, so the margin outside the text rows takes the
+# new slot 0 -- through fbcon's rotation attribute when there is one.
+# Leaving the menu then owes no repaint: the margin is already lcd.
+textcolor_seq lcd; _lseq=$(printf "$TC_SEQ")
 printf 'T 8 50\nT 4 50\nT 20 65\nT 4 10\nT 20 10\nT 20 10\nT 20 10\n' \
 	> "$tmp/tscr/events"
 printf 3 > "$tmp/tc-rot"
@@ -2199,27 +2200,34 @@ out=$(M5CFG_BLDIR="$tmp/bl" M5CFG_TEXTCOLOR_LIB="$TCLIB" \
 stop_saver
 imgfile config.txt > "$tmp/pub/config.txt"
 imgfile config.txt | grep -q '^text_color=lcd' &&
-	printf '%s' "$out" | grep -qF "$(printf '\033]P9%s\033]PA%s' "$_lhex" "$_lbg")" &&
-	ok "touch pick on page 2 saves lcd, sample is ink on its background" ||
+	case "$out" in *"$_lseq$_clr"*"(now: lcd)"*) true ;; *) false ;; esac &&
+	ok "touch pick on page 2 saves lcd, the menu clears in its palette" ||
 	bad "touch lcd: $(imgfile config.txt | grep text_color) $out"
 printf '%s' "$out" | grep -qF "$escR$_lseq" &&
 	[ "$(wc -c < "$tmp/tc-rot")" -eq 2 ] &&
 	! printf '%s' "$out" | grep -qF "$_dec" &&
-	ok "exit re-applies lcd and repaints through the attribute" ||
+	ok "one repaint through the attribute at the pick, exit re-applies lcd" ||
 	bad "lcd exit: $(od -c < "$tmp/tc-rot" | head -1)"
-# A session that starts under lcd repaints at once, so the margin
-# goes dark with the menu, and again when it hands the panel back.
-# Without the attribute both are the DECSCNM pair -- the first right
-# after the menu palette, whose last entry is slot 7 e5e9f0.
-printf 'T 20 10\n' > "$tmp/tscr/events"
+# A session that starts under lcd draws the menu in lcd: its palette,
+# not the Nord one, reverse-video buttons, a tapped button (Display)
+# on the dim shade, and no repaint at start or exit -- the margin
+# already wears the lcd background.
+printf 'T 8 50\nT 20 10\nT 20 10\n' > "$tmp/tscr/events"
 out=$(M5CFG_BLDIR="$tmp/bl" M5CFG_TEXTCOLOR_LIB="$TCLIB" \
 	M5CFG_TSCRIPT="$tmp/tscr/events" sh "$tool" menu </dev/null 2>&1)
-printf '%s' "$out" | grep -qF "e5e9f0$_dec" &&
-	printf '%s' "$out" | grep -qF "$escR$_lseq$_dec" &&
-	ok "a session under lcd repaints at start and at exit" ||
-	bad "lcd session: $(printf '%s' "$out" | head -c 200 | od -c | head -8)"
-# From lcd to a black-background preset: at exit the margin still
-# wears the menu background, so the repaint is owed there too.
+printf '%s' "$out" | grep -qF "$_lseq" &&
+	! printf '%s' "$out" | grep -qF "$_nord" &&
+	printf '%s' "$out" | grep -qF "$_rev" &&
+	printf '%s' "$out" | grep -qF "$(printf '\033[30;40;5m')" &&
+	! printf '%s' "$out" | grep -qF "$escB" &&
+	! printf '%s' "$out" | grep -qF "$(printf '\033[37;45m')" &&
+	! printf '%s' "$out" | grep -qF "$_dec" &&
+	printf '%s' "$out" | grep -qF "$escR$_lseq" &&
+	ok "a session under lcd is drawn in lcd, no repaint" ||
+	bad "lcd session: $(printf '%s' "$out" | head -c 300 | od -c | head -10)"
+# From lcd to a black-background preset: the pick repaints the margin
+# back to black right after the clear (the DECSCNM pair without the
+# attribute), and the exit owes nothing.
 printf 'T 8 50\nT 4 50\nT 8 10\nT 20 10\nT 20 10\nT 20 10\n' \
 	> "$tmp/tscr/events"
 start_saver
@@ -2227,9 +2235,29 @@ out=$(M5CFG_BLDIR="$tmp/bl" M5CFG_TEXTCOLOR_LIB="$TCLIB" \
 	M5CFG_TSCRIPT="$tmp/tscr/events" sh "$tool" menu </dev/null 2>&1)
 stop_saver
 imgfile config.txt | grep -q '^text_color=amber' &&
-	printf '%s' "$out" | grep -qF "$escR$_aseq$_dec" &&
-	ok "lcd -> amber: exit repaints the margin back to black" ||
+	printf '%s' "$out" | grep -qF "$_aseq$_clr$_dec" &&
+	! printf '%s' "$out" | grep -qF "$escR$_aseq$_dec" &&
+	ok "lcd -> amber: the pick repaints the margin back to black" ||
 	bad "lcd to amber: $(imgfile config.txt | grep text_color)"
+# Back to the Nord menu: from lcd, white repaints the margin to the
+# menu background at the pick and to black at the exit.  white is
+# slot 0 on page 1.
+start_saver
+M5CFG_TEXTCOLOR_LIB="$TCLIB" sh "$tool" set text_color lcd >/dev/null 2>&1
+stop_saver
+imgfile config.txt > "$tmp/pub/config.txt"
+printf 'T 8 50\nT 4 50\nT 4 10\nT 20 10\nT 20 10\nT 20 10\n' \
+	> "$tmp/tscr/events"
+start_saver
+out=$(M5CFG_BLDIR="$tmp/bl" M5CFG_TEXTCOLOR_LIB="$TCLIB" \
+	M5CFG_TSCRIPT="$tmp/tscr/events" sh "$tool" menu </dev/null 2>&1)
+stop_saver
+imgfile config.txt | grep -q '^text_color=white' &&
+	printf '%s' "$out" | grep -qF "e5e9f0$_clr$_dec" &&
+	printf '%s' "$out" | grep -qF "$escR$escR$_dec" &&
+	case "$out" in *"e5e9f0$_clr$_dec"*"$escB"*) true ;; *) false ;; esac &&
+	ok "lcd -> white: back to the Nord menu, margin repainted both ways" ||
+	bad "lcd to white: $(imgfile config.txt | grep text_color) $(printf '%s' "$out" | tail -c 300 | od -c | head -8)"
 start_saver
 M5CFG_TEXTCOLOR_LIB="$TCLIB" sh "$tool" set text_color "" >/dev/null 2>&1
 stop_saver
