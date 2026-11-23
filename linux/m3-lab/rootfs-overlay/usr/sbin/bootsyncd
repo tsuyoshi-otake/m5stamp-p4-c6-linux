@@ -265,6 +265,7 @@ netreq_check() {
 # a minute and a half while that runs.  From the fourth re-init in a row
 # that did not help, one attempt in ten minutes.  A reload in progress owns
 # the link and is not disturbed; without the node the driver is not loaded.
+# On a link that answers, ap_watch (below) looks at the SoftAP.
 C6_OBS=${C6_OBS:-/proc/esp32_sdio_h2c_obs}
 C6_NET_CTL=${C6_NET_CTL:-/etc/init.d/S40network}
 C6_NET_LOCK=${C6_NET_LOCK:-/run/.netapply.lock}
@@ -289,6 +290,7 @@ c6_watch() {
 		[ "$C6_TRIES" -gt 0 ] && log "C6 link answers again"
 		C6_MISS=0
 		C6_TRIES=0
+		ap_watch
 		return 0
 	fi
 	C6_MISS=$((C6_MISS + 1))
@@ -304,6 +306,49 @@ c6_watch() {
 	fi
 	log "C6 link is dead ($c6l); asking S40network to re-initialise it"
 	( umask 022; exec "$C6_NET_CTL" apply c6link ) >/dev/null 2>&1 &
+}
+
+# SoftAP watch, run by c6_watch on a link that answers.  A re-init can
+# bring the C6 back without its access point: S40network then leaves
+# status=AP_FAILED in the status file and nothing tried again (2026-11-23:
+# after two C6 resets the SoftAP stayed down for two hours, and one plain
+# restart brought it back).  Two looks in a row at AP_FAILED ask
+# S40network for a restart -- it takes the apply lock, which c6_watch
+# already waits on -- with the link watch's hold-off and slow-down.
+# Station-mode results (DHCP_FAILED, AUTH_FAILED, ...) and a stopped
+# network are left alone: a restart does not fix a password, and a stop
+# was asked for.  Builtins only: the file is read with read.
+C6_STATUS=${C6_STATUS:-/run/status.txt}
+AP_MISS=0
+AP_TRIES=0
+ap_watch() {
+	ap_st=""
+	if [ -f "$C6_STATUS" ]; then
+		while IFS= read -r ap_l; do
+			case "$ap_l" in
+				status=*) ap_st=${ap_l#status=}; break ;;
+			esac
+		done < "$C6_STATUS"
+	fi
+	if [ "$ap_st" != AP_FAILED ]; then
+		[ "$AP_TRIES" -gt 0 ] && log "SoftAP watch: network status is ${ap_st:-unknown} now"
+		AP_MISS=0
+		AP_TRIES=0
+		return 0
+	fi
+	AP_MISS=$((AP_MISS + 1))
+	[ "$AP_MISS" -ge 2 ] || return 0
+	AP_MISS=0
+	AP_TRIES=$((AP_TRIES + 1))
+	if [ "$AP_TRIES" -le 3 ]; then
+		C6_HOLD=9
+	else
+		C6_HOLD=59
+		[ "$AP_TRIES" -eq 4 ] &&
+			log "SoftAP: three restarts did not help; one attempt in ten minutes from now on"
+	fi
+	log "SoftAP did not start (status=AP_FAILED); asking S40network to restart the network"
+	( umask 022; exec "$C6_NET_CTL" restart ) >/dev/null 2>&1 &
 }
 
 # Validate a snapshot of the drive, save it to flash and apply what changed.

@@ -11,8 +11,8 @@ tmp=${TMPDIR:-/tmp}/bootsyncd-c6watch-test.$$
 trap 'rm -rf -- "$tmp"' EXIT HUP INT TERM
 mkdir -p "$tmp"
 
-# Source just the watch; its globals are set by reset() below.
-sed -n '/^c6_watch()/,/^}/p' "$daemon" > "$tmp/funcs.sh"
+# Source just the two watches; their globals are set by reset() below.
+sed -n '/^c6_watch()/,/^}/p; /^ap_watch()/,/^}/p' "$daemon" > "$tmp/funcs.sh"
 
 # The S40network stand-in records how it was called.
 cat > "$tmp/net-ctl" <<EOF
@@ -26,13 +26,20 @@ log() { echo "$1" >> "$tmp/log"; }
 C6_OBS="$tmp/obs"
 C6_NET_CTL="$tmp/net-ctl"
 C6_NET_LOCK="$tmp/lock"
+C6_STATUS="$tmp/status"
 reset() {
 	C6_WATCH_TICKS=10
 	C6_TICKS=0
 	C6_MISS=0
 	C6_HOLD=0
 	C6_TRIES=0
-	rm -rf "$tmp/calls" "$tmp/log" "$tmp/lock" "$C6_OBS"
+	AP_MISS=0
+	AP_TRIES=0
+	rm -rf "$tmp/calls" "$tmp/log" "$tmp/lock" "$C6_OBS" "$C6_STATUS"
+}
+# status STATE: a status file in update-status's shape
+status() {
+	printf '# Network Status\nstatus=%s\nwifi_mode=ap\nip_address=none\n' "$1" > "$C6_STATUS"
 }
 ticks() { # n: n one-second ticks, then let the requests finish
 	i=0
@@ -153,14 +160,105 @@ sed -n '/^while true; do$/,/^done$/p' "$daemon" | sed -n '2,4p' | grep -q '^	c6_
 	echo "ok: the main loop runs the watch every tick" ||
 	{ echo "FAIL: c6_watch is not at the top of the main loop"; fails=$((fails + 1)); }
 
-# 10. The watch itself execs nothing while the link is fine (NOMMU: an
-# exec is ~0.5 MB): no command substitution, no external program.
-if sed -n '/^c6_watch()/,/^}/p' "$daemon" | grep -v 'C6_NET_CTL' | grep -qE '\$\([^(]|`|grep|sed|cat '; then
-	echo "FAIL: c6_watch runs an external program on the healthy path"
+# 10. The watches exec nothing while the link is fine (NOMMU: an exec is
+# ~0.5 MB): no command substitution, no external program.
+if sed -n '/^c6_watch()/,/^}/p; /^ap_watch()/,/^}/p' "$daemon" | grep -v 'C6_NET_CTL' | grep -qE '\$\([^(]|`|grep|sed|cat '; then
+	echo "FAIL: c6_watch/ap_watch run an external program on the healthy path"
 	fails=$((fails + 1))
 else
-	echo "ok: the watch uses builtins only"
+	echo "ok: the watches use builtins only"
 fi
+
+# 11. The SoftAP watch: a link that answers with the SoftAP up, a station
+# result or a stopped network asks for nothing.
+for st in AP_ACTIVE DHCP_FAILED AUTH_FAILED STOPPED; do
+	reset
+	echo "status=ok" > "$C6_OBS"
+	status "$st"
+	ticks 100
+	want_calls "link ok, status=$st: no request" 0
+done
+
+# 12. A link that answers but status=AP_FAILED (the C6 came back without
+# its access point): nothing after the first look, a restart after the
+# second, said in the log.
+reset
+echo "status=ok" > "$C6_OBS"
+status AP_FAILED
+ticks 19
+want_calls "one look at AP_FAILED is not enough" 0
+ticks 1
+want_calls "two looks at AP_FAILED ask for a restart" 1
+[ "$(cat "$tmp/calls")" = "restart" ] &&
+	echo "ok: the request is 'restart'" ||
+	{ echo "FAIL: request was '$(cat "$tmp/calls")'"; fails=$((fails + 1)); }
+grep -q 'SoftAP did not start (status=AP_FAILED)' "$tmp/log" &&
+	echo "ok: the log says why" ||
+	{ echo "FAIL: log: $(cat "$tmp/log")"; fails=$((fails + 1)); }
+
+# 13. The same hold-off and slow-down as the link watch: three restarts
+# 110 s apart, then one in ten minutes, announced once.
+ticks 109
+want_calls "no second restart during the hold-off" 1
+ticks 1
+want_calls "the second restart after the hold-off and two looks" 2
+ticks 110
+ticks 110
+want_calls "the fourth still follows the short hold-off" 4
+[ "$(grep -c 'three restarts did not help' "$tmp/log")" = 1 ] &&
+	echo "ok: the SoftAP slow-down is announced" ||
+	{ echo "FAIL: SoftAP slow-down message: $(cat "$tmp/log")"; fails=$((fails + 1)); }
+ticks 609
+want_calls "no restart during the ten minutes" 4
+ticks 1
+want_calls "one more restart after the ten minutes" 5
+
+# 14. The SoftAP is back: said once, and the count starts again.
+ticks 600
+status AP_ACTIVE
+ticks 10
+[ "$(grep -c 'network status is AP_ACTIVE now' "$tmp/log")" = 1 ] && [ "$AP_TRIES" = 0 ] &&
+	echo "ok: a SoftAP that is up again resets the watch" ||
+	{ echo "FAIL: SoftAP back: tries=$AP_TRIES $(cat "$tmp/log")"; fails=$((fails + 1)); }
+ticks 100
+[ "$(grep -c 'network status is' "$tmp/log")" = 1 ] &&
+	echo "ok: a SoftAP that stays up is not announced again" ||
+	{ echo "FAIL: 'network status' repeated"; fails=$((fails + 1)); }
+
+# 15. A restart in progress holds S40network's lock: no second request.
+reset
+echo "status=ok" > "$C6_OBS"
+status AP_FAILED
+mkdir "$tmp/lock"
+ticks 100
+want_calls "no restart while the lock is held" 0
+rmdir "$tmp/lock"
+ticks 20
+want_calls "the SoftAP watch goes on once the lock is gone" 1
+
+# 16. A dead link is the link watch's: the c6link re-init, never a
+# restart, whatever the status file still says.
+reset
+echo "status=read_fail ret=-110" > "$C6_OBS"
+status AP_FAILED
+ticks 20
+[ "$(cat "$tmp/calls" 2>/dev/null)" = "apply c6link" ] &&
+	echo "ok: a dead link gets the re-init, not a restart" ||
+	{ echo "FAIL: dead link + AP_FAILED: $(cat "$tmp/calls" 2>/dev/null)"; fails=$((fails + 1)); }
+
+# 17. After a re-init that left the SoftAP down, the link answers again:
+# the SoftAP watch takes over and asks for the restart.
+echo "status=ok" > "$C6_OBS"
+ticks 110
+[ "$(grep -c . "$tmp/calls")" = 2 ] && [ "$(sed -n 2p "$tmp/calls")" = "restart" ] &&
+	echo "ok: re-init then AP_FAILED: the restart follows" ||
+	{ echo "FAIL: re-init then AP_FAILED: $(cat "$tmp/calls")"; fails=$((fails + 1)); }
+
+# 18. No status file (S40network has not run yet): nothing.
+reset
+echo "status=ok" > "$C6_OBS"
+ticks 100
+want_calls "no status file, no request" 0
 
 if [ "$fails" -eq 0 ]; then
 	echo "PASS: bootsyncd C6 link watch"
