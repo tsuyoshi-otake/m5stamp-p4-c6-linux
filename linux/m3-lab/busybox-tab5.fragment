@@ -3,3 +3,6 @@
 # RX8130CE RTC (#28): S02rtc restores/saves the clock with hwclock -s/-w,
 # and the smoke test reads it back with hwclock -r.
 CONFIG_HWCLOCK=y
+# Kernel messages go to the second virtual console instead of the panel's
+# shell: inittab runs `setlogcons 2` before rcS.
+CONFIG_SETLOGCONS=y

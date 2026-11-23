@@ -248,6 +248,8 @@ The keys work as they do with M5Stack's own firmware:
 
 The right LED, which the keyboard lights all the time on its own, is kept dark. The left LED's brightness is `m5stack,led-brightness` (0–100, 0 for off) in `linux/dts/esp32p4-tab5.dts`.
 
+Kernel messages never print over the panel's shell: from the start of init they go to the second virtual console. On a keyboard with function keys, `Alt`+`F2` shows them and `Alt`+`F1` returns to the shell (`Alt`+`←`/`→` switch between the two as well). The serial console, `dmesg` and the ramoops crash record still get every message.
+
 ---
 
 ## Security Design
