@@ -1,3 +1,16 @@
+# Kernel messages go to the second virtual console (Alt+F2 shows it, Alt+F1
+# returns), not over the panel's shell: console=tty0 otherwise paints every
+# error at the console loglevel onto tty1 -- a C6 restart writes dozens of
+# esp32_sdio lines across whatever is on the screen.  The serial console
+# (ttyGS1), the ramoops console record and dmesg still get every message.
+# setlogcons opens /dev/tty2 itself, which allocates the VT; devtmpfs is
+# mounted by the kernel, so this runs before rcS.
+::sysinit:/usr/sbin/setlogcons 2
+# The kernel's keymap switches consoles with the LEFT Alt only (Alt+F1/F2,
+# Alt+Left/Right).  A tablet-case Bluetooth keyboard in its Windows mode
+# has no F-row and no left Alt -- the CACOE sends Win and AltGr -- so
+# AltGr+Left/Right get the same console keys.
+::sysinit:/usr/bin/m5-key vt-keys
 ::sysinit:/etc/init.d/rcS
 # USB-C/COM10 is the interactive lab console; UART0 remains the recovery fixture.
 ttyGS1::askfirst:-/bin/sh

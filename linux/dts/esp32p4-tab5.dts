@@ -71,7 +71,13 @@
 		 * console= wins) while kernel messages also reach the panel through
 		 * fbcon.  consoleblank=0: the framebuffer has no blank op, so fbcon
 		 * would just paint the panel black after 10 minutes and the device
-		 * would look dead.  fbcon=font:TER16x32: the 8x16 default makes
+		 * would look dead.  loglevel=7: the kernel's boot messages up to
+		 * KERN_INFO show on the panel and the serial console, as on a
+		 * Raspberry Pi; from the start of init they go to VT 2
+		 * (inittab: setlogcons 2), and S40network lowers the console
+		 * to errors (dmesg -n 4) before it loads the Wi-Fi module --
+		 * console traffic at runtime starves SDIO.
+		 * fbcon=font:TER16x32: the 8x16 default makes
 		 * 90 x 80 cells on 720x1280, too small to read; the 16x32 font
 		 * (45 x 40) must be named because fbcon prefers 8x16 by default.
 		 * fbcon=rotate:3 draws the console 90 deg CCW -- the keyboard
@@ -79,7 +85,7 @@
 		 * console reads upright (the ST712x MADCTL only mirrors; the
 		 * 90 deg turn has to be done in fbcon, the panel cannot).
 		 */
-		bootargs = "earlycon=esp32p4usbjtag,mmio32,0x500d2000 console=tty0 console=ttyGS1,115200n8 loglevel=4 consoleblank=0 fbcon=font:TER16x32 fbcon=rotate:3 root=/dev/mtdblock0 rootfstype=squashfs ro init=/sbin/init maxcpus=1";
+		bootargs = "earlycon=esp32p4usbjtag,mmio32,0x500d2000 console=tty0 console=ttyGS1,115200n8 loglevel=7 consoleblank=0 fbcon=font:TER16x32 fbcon=rotate:3 root=/dev/mtdblock0 rootfstype=squashfs ro init=/sbin/init maxcpus=1";
 		/*
 		 * Filled in by the boot shim's tab5_detect_panel() before the
 		 * Linux jump (fixed 8-byte field, patched in place):
@@ -439,14 +445,14 @@
 
 		/*
 		 * DW-GDMA scanout channel handed over by the boot shim.  The
-		 * hardware clears the LLI valid bit in memory on every
-		 * block end (there is no free-run -- the channel stalls one
-		 * frame after the last re-arm), so a kernel driver re-arms
-		 * it in IRQ context, the same contract ESP-IDF's trans-done
-		 * callback and upstream dw-axi-dmac cyclic mode implement.
-		 * DW-GDMA is ETS interrupt source 24, routed to free CLIC
-		 * slot 25; the shim detaches the IDF route before the jump
-		 * and the kernel's clic_domain_map installs this one.
+		 * shim switches it from ESP-IDF's link-list mode (which
+		 * stops one frame after the last re-arm) to auto-reload,
+		 * which rescans the framebuffer frame after frame with no
+		 * CPU help (linux/tab5/0141); the driver checks that, or
+		 * does the switch itself after an older shim.  No
+		 * interrupt: the stream must not wait for one, and the
+		 * shim detaches the IDF route of DW-GDMA (ETS source 24)
+		 * before the jump.
 		 *
 		 * espressif,scanout-lli/-chan are patched by the boot shim
 		 * (patch_scanout_node in main.c): the 64-byte link-list
@@ -458,7 +464,6 @@
 		dsi_scanout: dsi-scanout@50081000 {
 			compatible = "espressif,esp32p4-dsi-scanout";
 			reg = <0x50081000 0x600>;
-			interrupts-extended = <&clic0 25 24 IRQ_TYPE_LEVEL_HIGH>;
 			espressif,scanout-lli = <0x5ca11000>;
 			espressif,scanout-chan = <0x5ca12000>;
 			status = "okay";

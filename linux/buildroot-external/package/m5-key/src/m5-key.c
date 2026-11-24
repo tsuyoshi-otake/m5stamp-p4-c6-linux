@@ -24,6 +24,10 @@
  *   m5-key kmap BYTE  print the K token BYTE (decimal) would produce
  *                     (host-test seam; nothing for a byte that is
  *                     not reported)
+ *   m5-key vt-keys [TTY]
+ *                     let AltGr+Left/Right switch virtual consoles like
+ *                     Alt+Left/Right (keymap of TTY, default /dev/tty1;
+ *                     run once from inittab, see vt_keys())
  *
  * Exit: 0 an event was printed, 1 setup failed, 2 interrupted.
  * Host-buildable for tests: cc -o m5-key m5-key.c
@@ -33,6 +37,8 @@
 #include <fcntl.h>
 #include <linux/fb.h>
 #include <linux/input.h>
+#include <linux/kd.h>
+#include <linux/keyboard.h>
 #include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -264,6 +270,49 @@ static int feed_stream(int fd)
 	return 0;
 }
 
+/*
+ * vt-keys: make AltGr+Left/Right switch virtual consoles the way
+ * Alt+Left/Right do in the kernel's default keymap.  Kernel messages
+ * live on VT 2 (inittab: setlogcons 2), and the keys that reach it are
+ * Alt+F1/F2 and Alt+Left/Right, all with the LEFT Alt.  A tablet-case
+ * Bluetooth keyboard in its Windows mode has neither an F-row nor a
+ * left Alt: the CACOE sends Win for "Option/Win" and right Alt (AltGr)
+ * for "CMD/Alt Gr".  The AltGr entries are copied from the Alt plane,
+ * so whatever Alt+Left/Right do in the loaded keymap, AltGr does too.
+ */
+static int vt_keys(const char *tty)
+{
+	static const unsigned char keys[] = { KEY_LEFT, KEY_RIGHT };
+	struct kbentry e;
+	unsigned int i;
+	int fd, rc = 0;
+
+	fd = open(tty, O_RDWR | O_NOCTTY | O_CLOEXEC);
+	if (fd < 0) {
+		fprintf(stderr, "m5-key: %s: %s\n", tty, strerror(errno));
+		return 1;
+	}
+	for (i = 0; i < sizeof(keys); i++) {
+		e.kb_table = 1 << KG_ALT;
+		e.kb_index = keys[i];
+		e.kb_value = 0;
+		if (ioctl(fd, KDGKBENT, &e) < 0) {
+			fprintf(stderr, "m5-key: KDGKBENT alt %u: %s\n",
+				keys[i], strerror(errno));
+			rc = 1;
+			continue;
+		}
+		e.kb_table = 1 << KG_ALTGR;
+		if (ioctl(fd, KDSKBENT, &e) < 0) {
+			fprintf(stderr, "m5-key: KDSKBENT altgr %u: %s\n",
+				keys[i], strerror(errno));
+			rc = 1;
+		}
+	}
+	close(fd);
+	return rc;
+}
+
 int main(int argc, char *argv[])
 {
 	static struct input_absinfo abx, aby;
@@ -311,11 +360,13 @@ int main(int argc, char *argv[])
 	}
 	if (argc == 3 && strcmp(argv[1], "kmap") == 0)
 		return emit_key(atoi(argv[2])) ? 0 : 1;
+	if ((argc == 2 || argc == 3) && strcmp(argv[1], "vt-keys") == 0)
+		return vt_keys(argc == 3 ? argv[2] : "/dev/tty1");
 	if (argc != 1) {
 		fputs("usage: m5-key | m5-key probe | "
 		      "m5-key map XRES YRES ROT COLS ROWS PX PY | "
 		      "m5-key feed FILE XRES YRES ROT COLS ROWS MAXX MAXY | "
-		      "m5-key kmap BYTE\n",
+		      "m5-key kmap BYTE | m5-key vt-keys [TTY]\n",
 		      stderr);
 		return 1;
 	}

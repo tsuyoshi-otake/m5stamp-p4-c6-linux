@@ -799,8 +799,12 @@ static int att_mtu_req(uint16_t want)
 	uint8_t op, rsp[8];
 	int n = att_req(req, 3, &op, rsp, sizeof(rsp), 2000);
 	if (n < 0 || op != ATT_OP_MTU_RSP) return -1;
+	/* the link uses the smaller of both: a keyboard that answers 247
+	 * to our 185 still sends 184-byte reads, and taking its number
+	 * ended the report-map blob loop after the first piece */
 	att_mtu = rsp[0] | (rsp[1] << 8);
-	if (att_mtu > 517) att_mtu = 517;
+	if (att_mtu > want) att_mtu = want;
+	if (att_mtu < 23) att_mtu = 23;
 	return att_mtu;
 }
 
@@ -1068,6 +1072,63 @@ static int hogp_subscribe(struct hogp *h)
 	return sub;
 }
 
+/* HOGP setup on an open ATT channel (att_fd): MTU, HID service,
+ * characteristics, descriptors, report map, then notifications on the
+ * input reports.  Returns how many input reports were subscribed, or
+ * -1 when the HID service could not be used.  verbose prints each
+ * step (the daemon's log); pair runs it quietly on the pairing link
+ * and prints one line of its own (#41). */
+static int hogp_setup(struct hogp *h, int verbose)
+{
+	if (att_mtu_req(ATT_MY_MTU) < 0) {
+		if (verbose)
+			printf("  mtu exchange failed (using %u)\n", att_mtu);
+	} else if (verbose) {
+		printf("  att mtu %u\n", att_mtu);
+	}
+
+	if (hogp_find_service(h) < 0) {
+		if (verbose)
+			printf("  no %s service\n",
+			       g_vendor_test ? "vendor-test" : "HID");
+		return -1;
+	}
+	if (verbose)
+		printf("  hid svc %04x-%04x\n", h->svc_start, h->svc_end);
+	if (hogp_find_chars(h) < 0) {
+		if (verbose)
+			printf("  no HID chars\n");
+		return -1;
+	}
+	hogp_find_descs(h);
+	if (verbose)
+		printf("  reports=%d map=%04x info=%04x ids=%d\n",
+		       h->nreports, h->map_handle, h->info_handle,
+		       h->uses_report_ids);
+
+	h->map_len = att_read(h->map_handle, h->report_map,
+			      sizeof(h->report_map));
+	if (h->map_len <= 0) {
+		if (!verbose)
+			return -1;
+		if (h->map_len <= -0x1000)
+			printf("  report map read failed: att error 0x%02x\n",
+			       (-h->map_len) & 0xff);
+		else
+			printf("  report map read failed: %s\n",
+			       h->map_len == -2 ? "timeout" : "link error");
+		/* brief: boot protocol fallback could go here */
+		return -1;
+	}
+	if (verbose)
+		printf("  report map %d bytes\n", h->map_len);
+
+	int sub = hogp_subscribe(h);
+	if (verbose)
+		printf("  subscribed %d input reports\n", sub);
+	return sub;
+}
+
 /* ---- UHID ---- */
 static int uhid_open(void)
 {
@@ -1202,37 +1263,8 @@ static int hogp_session(const bdaddr_t *addr, uint8_t atype,
 		       sec.key_size);
 	}
 
-	if (att_mtu_req(ATT_MY_MTU) < 0)
-		printf("  mtu exchange failed (using %u)\n", att_mtu);
-	else
-		printf("  att mtu %u\n", att_mtu);
-
-	if (hogp_find_service(&h) < 0) {
-		printf("  no %s service\n",
-		       g_vendor_test ? "vendor-test" : "HID");
+	if (hogp_setup(&h, 1) < 0)
 		goto out;
-	}
-	printf("  hid svc %04x-%04x\n", h.svc_start, h.svc_end);
-	if (hogp_find_chars(&h) < 0) { printf("  no HID chars\n"); goto out; }
-	hogp_find_descs(&h);
-	printf("  reports=%d map=%04x info=%04x ids=%d\n",
-	       h.nreports, h.map_handle, h.info_handle, h.uses_report_ids);
-
-	h.map_len = att_read(h.map_handle, h.report_map, sizeof(h.report_map));
-	if (h.map_len <= 0) {
-		if (h.map_len <= -0x1000)
-			printf("  report map read failed: att error 0x%02x\n",
-			       (-h.map_len) & 0xff);
-		else
-			printf("  report map read failed: %s\n",
-			       h.map_len == -2 ? "timeout" : "link error");
-		/* brief: boot protocol fallback could go here */
-		goto out;
-	}
-	printf("  report map %d bytes\n", h.map_len);
-
-	int sub = hogp_subscribe(&h);
-	printf("  subscribed %d input reports\n", sub);
 
 	ufd = uhid_open();
 	if (ufd < 0) { printf("  /dev/uhid: %s\n", strerror(errno)); goto out; }
@@ -1719,6 +1751,44 @@ static void pair_result(const char *s)
 	fflush(stdout);
 }
 
+/* Set the keyboard up on the pairing link itself, right after the bond
+ * (#41): HID service discovery, report map, notifications on the input
+ * reports -- what a HOGP host does first on a new keyboard.
+ *
+ * After a pairing whose link the host let drop untouched, the CACOE
+ * went silent -- no advert on a key press, no reconnect -- until it was
+ * switched off and on again; then the same bond reconnected.  It never
+ * went silent when a HOGP session had run on that first link (pair and
+ * daemon on one command line).  The menu cannot promise that: it saves
+ * the bond to the boot image before it starts the daemon, and that
+ * takes longer than the kernel keeps an idle link (about 2 s).  So pair
+ * does the setup before it returns; the daemon later serves the
+ * reconnects as usual.
+ *
+ * Only an encrypted link is used, as it is: asking for a security level
+ * here would refresh the key, which this keyboard does not survive (see
+ * att_connect).  Returns the number of input reports enabled, or -1. */
+static int pair_configure(const struct bond_entry *b)
+{
+	static struct hogp h;
+	struct bt_security sec = { 0, 0 };
+	socklen_t sl = sizeof(sec);
+	int sub;
+
+	memset(&h, 0, sizeof(h));
+	att_fd = att_connect_at(&b->addr, b->type, 0, ATT_PROBE_TIMEOUT);
+	if (att_fd < 0)
+		return -1;
+	if (getsockopt(att_fd, SOL_BLUETOOTH, BT_SECURITY, &sec, &sl) < 0 ||
+	    !sec_enough(&sec, BT_SECURITY_MEDIUM)) {
+		close(att_fd); att_fd = -1;
+		return -1;
+	}
+	sub = hogp_setup(&h, 0);
+	close(att_fd); att_fd = -1;
+	return sub;
+}
+
 static int cmd_pair(const char *addr_str)
 {
 	uint8_t *buf = rxbuf;
@@ -1878,6 +1948,14 @@ static int cmd_pair(const char *addr_str)
 	}
 
 	if (done == 0 && b && b->have_ltk) {
+		int sub = pair_configure(b);
+		if (sub > 0)
+			printf("  keyboard set up: %d input report%s on\n",
+			       sub, sub == 1 ? "" : "s");
+		else
+			printf("  keyboard not set up on the pairing link%s\n",
+			       sub == 0 ? " (no input report)" : "");
+		fflush(stdout);
 		int cr = bonds_commit();
 		if (cr == 0) {
 			pair_result("paired + bonded (keys stored, not shown)");

@@ -230,5 +230,23 @@ fcase "st7123 press/move/release"   "T 5 59"  st7123
 fcase "slot-1 lift, slot-0 still down" "T 6 54" st7123two
 fi
 
+# vt-keys (#42): on something that is not a VT the keymap ioctls fail;
+# the helper names both keys and exits 1 instead of claiming success,
+# and a tty that cannot be opened is named too.
+got=$(run vt-keys /dev/null 2>&1); rc=$?
+case "$rc:$got" in
+	1:*"KDGKBENT alt 105"*"KDGKBENT alt 106"*)
+		echo "ok: vt-keys on a non-VT fails and names both keys" ;;
+	*) echo "FAIL: vt-keys /dev/null rc=$rc got '$got'"
+	   fails=$((fails + 1)) ;;
+esac
+got=$(run vt-keys /nonexistent-vt 2>&1); rc=$?
+case "$rc:$got" in
+	1:"m5-key: /nonexistent-vt: "*)
+		echo "ok: vt-keys on a missing tty fails and names it" ;;
+	*) echo "FAIL: vt-keys /nonexistent-vt rc=$rc got '$got'"
+	   fails=$((fails + 1)) ;;
+esac
+
 rm -rf "$tmp"; [ "${bin#docker:}" = "$bin" ] && rm -f "$bin"
 [ "$fails" -eq 0 ] && echo PASS || { echo "FAILED: $fails checks"; exit 1; }
