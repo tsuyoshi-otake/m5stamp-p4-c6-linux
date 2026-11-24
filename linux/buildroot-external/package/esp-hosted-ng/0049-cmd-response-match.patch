@@ -1,0 +1,184 @@
+From: Stamp-P4 maintainers <noreply@example.invalid>
+Subject: [PATCH] cmd: a command completes only with its own answer
+
+A live switch from SoftAP to station mode never came up on the Tab5:
+
+  esp_cfg80211_change_iface: current iface type=1 new iface type=0
+  esp_cfg80211_change_iface: wdev iftype=2, ret=0
+  process_cmd_resp: Command response not expected=3
+  ...
+  ifconfig: SIOCSIFFLAGS: Cannot assign requested address
+
+wlan0 was left with the MAC address 00:00:00:00:00:00, so every "up"
+failed with EADDRNOTAVAIL and wpa_supplicant could not start.  After a
+reboot straight into station mode the same network worked.
+
+process_cmd_resp() handed whatever command response arrived to the
+command that was current, without looking at its code.  Two things
+send answers that belong to no waiting command:
+
+  - The ESP sends a CMD_MGMT_TX answer when a management frame it sent
+    itself has gone out (mgmt_txcb), e.g. the deauthentications of a
+    SoftAP that is being stopped.
+  - wait_and_decode_cmd_resp() slept interruptibly.  A signal ended the
+    wait early (wpa_supplicant, terminated, switches a SoftAP back to
+    station mode on its way out), the result was taken as success, and
+    the command's real answer arrived later, while another one waited.
+
+esp_cfg80211_change_iface() then sent CMD_GET_MAC, took one of those
+answers as its own, decode_mac_addr() copied the address field of a
+reply that has none -- it copies even when the status says failure --
+and the interface got that address.
+
+Four changes:
+
+  - process_cmd_resp() drops a response whose code is not the current
+    command's (the firmware echoes the code; it answers
+    CMD_GET_REG_DOMAIN with CMD_SET_REG_DOMAIN, which is allowed) and
+    a response shorter than its header.
+  - The wait is uninterruptible (wait_event_timeout, bounded by the
+    five-second COMMAND_RESPONSE_TIMEOUT as before), and the wakers use
+    wake_up()/wake_up_all() so they reach such a sleeper.  The teardown
+    wake-up of 0047 still works the same way.
+  - decode_mac_addr() copies the address only from a successful answer
+    of full length.
+  - esp_cfg80211_change_iface() sets the interface address only when
+    CMD_GET_MAC succeeded with a valid address, and keeps the old one
+    otherwise.
+
+---
+--- a/esp_cfg80211.c
++++ b/esp_cfg80211.c
+@@ -422,9 +422,15 @@
+ 	if (ret == 0) {
+ 		priv->if_type = esp_if_type;
+ 		priv->wdev.iftype = type;
+-		/* update Mac address of interface */
+-		cmd_get_mac(priv);
+-		ETH_HW_ADDR_SET(dev, priv->mac_address/*mac_addr->sa_data*/);
++		/* Update the interface's MAC address (the ESP uses another one
++		 * per mode), but never to an address the ESP did not give us:
++		 * an all-zero one makes every "up" fail with EADDRNOTAVAIL. */
++		if (cmd_get_mac(priv) == 0 &&
++		    is_valid_ether_addr(priv->mac_address))
++			ETH_HW_ADDR_SET(dev, priv->mac_address/*mac_addr->sa_data*/);
++		else
++			esp_err("no MAC address for the new mode; keeping %pM\n",
++				dev->dev_addr);
+ 	}
+ 
+ 	esp_info("wdev iftype=%d, ret=%d\n", priv->wdev.iftype, ret);
+--- a/esp_cmd.c
++++ b/esp_cmd.c
+@@ -124,17 +124,21 @@
+ 		return -1;
+ 	}
+ 
++	if (cmd_node->resp_skb->len < sizeof(*header)) {
++		esp_err("MAC response too short (%u bytes)\n",
++			cmd_node->resp_skb->len);
++		return -1;
++	}
++
+ 	header = (struct cmd_config_mac_address *) (cmd_node->resp_skb->data);
+ 
++	/* Keep the old address unless the ESP really answered with one. */
+ 	if (header->header.cmd_status != CMD_RESPONSE_SUCCESS) {
+ 		esp_info("Command failed\n");
+-		ret = -1;
++		return -1;
+ 	}
+ 
+-	if (priv)
+-		memcpy(priv->mac_address, header->mac_addr, MAC_ADDR_LEN);
+-	else
+-		esp_err("priv not updated\n");
++	memcpy(priv->mac_address, header->mac_addr, MAC_ADDR_LEN);
+ 
+ 	return ret;
+ }
+@@ -283,8 +287,12 @@
+ 
+ 	adapter = priv->adapter;
+ 
+-	/* wait for command response */
+-	ret = wait_event_interruptible_timeout(adapter->wait_for_cmd_resp,
++	/* Wait for the command response, uninterruptibly: the command is
++	 * already on its way to the ESP, and a signal that ended the wait
++	 * early let its answer arrive later, while another command waited
++	 * (wpa_supplicant switching a SoftAP back to station mode on
++	 * SIGTERM).  The wait is bounded by COMMAND_RESPONSE_TIMEOUT. */
++	ret = wait_event_timeout(adapter->wait_for_cmd_resp,
+ 			!test_bit(ESP_CMD_INIT_DONE, &adapter->state_flags) ||
+ 			adapter->cmd_resp == cmd_node->cmd_code, COMMAND_RESPONSE_TIMEOUT);
+ 
+@@ -620,6 +628,15 @@
+ 	return node;
+ }
+ 
++/* Is a response with code @resp the answer to command @cmd?  The ESP
++ * firmware echoes the command code, except that it answers
++ * CMD_GET_REG_DOMAIN with CMD_SET_REG_DOMAIN (process_reg_get). */
++static bool esp_resp_matches(u8 resp, u8 cmd)
++{
++	return resp == cmd ||
++	       (cmd == CMD_GET_REG_DOMAIN && resp == CMD_SET_REG_DOMAIN);
++}
++
+ int process_cmd_resp(struct esp_adapter *adapter, struct sk_buff *skb)
+ {
+ 	if (!skb || !adapter) {
+@@ -638,6 +655,12 @@
+ 		return -1;
+ 	}
+ 
++	if (skb->len < sizeof(struct command_header)) {
++		esp_err("CMD resp: too short (%u bytes)\n", skb->len);
++		dev_kfree_skb_any(skb);
++		return -1;
++	}
++
+ 	spin_lock_bh(&adapter->cmd_lock);
+ 	if (!adapter->cur_cmd) {
+ 		struct command_header *header = (struct command_header *) skb->data;
+@@ -647,11 +670,30 @@
+ 		return -1;
+ 	}
+ 
++	/* Only the current command's own answer completes it.  The ESP also
++	 * sends CMD_MGMT_TX answers when a management frame it sent itself
++	 * was transmitted (a SoftAP deauthenticating its stations as it
++	 * stops), and a signal could leave an answer to arrive late.  Handed
++	 * to whatever command was current, such an answer made it decode the
++	 * wrong reply: a CMD_GET_MAC that took one left wlan0 with an
++	 * all-zero MAC address, so a live switch from SoftAP to station
++	 * never came up. */
++	if (!esp_resp_matches(((struct command_header *) skb->data)->cmd_code,
++			      adapter->cur_cmd->cmd_code)) {
++		esp_err("Command response %d while waiting for %d: dropped\n",
++			((struct command_header *) skb->data)->cmd_code,
++			adapter->cur_cmd->cmd_code);
++		dev_kfree_skb_any(skb);
++		spin_unlock_bh(&adapter->cmd_lock);
++		return -1;
++	}
++
+ 	adapter->cur_cmd->resp_skb = skb;
+ 	adapter->cmd_resp = adapter->cur_cmd->cmd_code;
+ 	spin_unlock_bh(&adapter->cmd_lock);
+ 
+-	wake_up_interruptible(&adapter->wait_for_cmd_resp);
++	/* The waiter sleeps uninterruptibly (wait_and_decode_cmd_resp). */
++	wake_up(&adapter->wait_for_cmd_resp);
+ 	queue_work(adapter->cmd_wq, &adapter->cmd_work);
+ 
+ 	return 0;
+@@ -2139,7 +2181,7 @@
+ 	/* Nobody may sleep on a command across the teardown: wake the
+ 	 * sleepers (they see ESP_CMD_INIT_DONE cleared and return) and give
+ 	 * them up to six seconds, one command timeout and a bit, to leave. */
+-	wake_up_interruptible_all(&adapter->wait_for_cmd_resp);
++	wake_up_all(&adapter->wait_for_cmd_resp);
+ 	for (i = 0; i < 300 && atomic_read(&cmd_waiters); i++)
+ 		msleep(20);
+ 	if (atomic_read(&cmd_waiters))
