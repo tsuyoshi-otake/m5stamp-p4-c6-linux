@@ -7,8 +7,8 @@
  * Bring up the MIPI-DSI panel exactly as the stock BSP does: reset the
  * display+touch chip, tell ST7121 from ST7123 by the touch firmware
  * byte, then LDO_VO3 2.5 V, 2 lanes at 965 Mbps, DPI RGB565 720x1280
- * @ 70 MHz and that chip's init table and vsync timing.  Fill the PSRAM
- * framebuffer with a boot test card, run the DW-GDMA scanout handoff
+ * @ 70 MHz and that chip's init table and vsync timing.  Clear the PSRAM
+ * framebuffer to black, run the DW-GDMA scanout handoff
  * self-test, enable the LEDC
  * backlight, and leave the DPI/GDMA stream running across the Linux
  * jump.

@@ -150,9 +150,8 @@ static const struct panel_profile profile_ili9881c = {
 #define LCD_BL_DUTY 307 /* ~30% of 1024 */
 #define LCD_BL_FADE_MS 200
 
-/* Static banner drawn before Linux is loaded.  The framebuffer is RGB565
- * little-endian; a solid fill keeps this independent of font assets. */
-#define FB_STRIDE_PX (LCD_H_RES)
+/* The PSRAM framebuffer the shim hands to Linux: RGB565 little-endian,
+ * portrait 720x1280. */
 #define FB_BYTES ((uint32_t)LCD_H_RES * LCD_V_RES * 2u)
 
 /* DW-GDMA register facts the handoff depends on. */
@@ -175,33 +174,14 @@ static uint8_t s_load_windows[(TAB5_DTB_LOAD_PA - TAB5_KERNEL_LOAD_PA) +
 			      TAB5_LOAD_RESERVE_BYTES]
 	EXT_RAM_NOINIT_ATTR __attribute__((aligned(64)));
 
-static void draw_splash(uint16_t *fb)
+static void clear_fb(uint16_t *fb)
 {
-	/* A test card that says something even without text: a dark blue
-	 * field; a red | green | blue bar across the top (left to right, so a
-	 * swapped colour order shows at once); a white band under it; and a
-	 * 4-pixel white frame on the very edge of the 720x1280 portrait
-	 * panel (a cropped or shifted picture shows as a missing frame side). */
-	for (uint32_t i = 0; i < LCD_H_RES * LCD_V_RES; ++i)
-		fb[i] = 0x000fu;
-	for (uint32_t y = 40; y < 120; ++y) {
-		for (uint32_t x = 40; x < LCD_H_RES - 40; ++x) {
-			uint32_t third = (x - 40) * 3 / (LCD_H_RES - 80);
-			fb[y * FB_STRIDE_PX + x] = third == 0 ? 0xf800u :
-						   third == 1 ? 0x07e0u : 0x001fu;
-		}
-	}
-	for (uint32_t y = 140; y < 170; ++y) {
-		for (uint32_t x = 40; x < LCD_H_RES - 40; ++x)
-			fb[y * FB_STRIDE_PX + x] = 0xffffu;
-	}
-	for (uint32_t y = 0; y < LCD_V_RES; ++y) {
-		for (uint32_t x = 0; x < LCD_H_RES; ++x) {
-			if (y < 4 || y >= LCD_V_RES - 4 || x < 4 ||
-			    x >= LCD_H_RES - 4)
-				fb[y * FB_STRIDE_PX + x] = 0xffffu;
-		}
-	}
+	/* Black until the kernel console takes the panel over; its boot
+	 * messages (loglevel=7) are the first thing on the screen, as on a
+	 * Raspberry Pi.  The bring-up test card that used to be drawn here
+	 * (colour bars and an edge frame, to spot a swapped colour order or
+	 * a cropped picture) is in git history, before this commit. */
+	memset(fb, 0, FB_BYTES);
 	cache_hal_writeback_addr((uint32_t)(uintptr_t)fb, FB_BYTES);
 }
 
@@ -636,7 +616,7 @@ void tab5_display_init(struct tab5_fb *out)
 		esp_lcd_panel_del(panel);
 		return;
 	}
-	draw_splash((uint16_t *)fb);
+	clear_fb((uint16_t *)fb);
 
 	out->pa = (uint32_t)(uintptr_t)fb;
 	out->bytes = FB_BYTES;
