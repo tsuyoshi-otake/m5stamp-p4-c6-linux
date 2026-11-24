@@ -135,16 +135,36 @@ stop_sup() {
 	rm -f "$1"
 }
 
+# ONE SIGTERM, then wait.  wpa_supplicant still talks to the driver on its
+# way out: a SoftAP is switched back to station mode.  A second signal
+# arriving during that command cut the esp-hosted driver's wait short, the
+# C6's late answers then went to the wrong commands, wlan0 was left with an
+# all-zero MAC and "ifconfig wlan0 up" failed (EADDRNOTAVAIL), so a live
+# switch from SoftAP to station never came up.  The supervisor, when there
+# is one, sends that single TERM itself; a daemon still alive after 10 s is
+# stuck and gets the old every-process TERM.
 stop_wpa() {
-	stop_sup "$WPA_SUP"
-	if wpa_alive; then
+	s=""
+	read -r s 2>/dev/null < "$WPA_SUP" || true
+	rm -f "$WPA_SUP"
+	if [ -n "$s" ] && kill "$s" 2>/dev/null; then
+		:
+	elif wpa_alive; then
 		kill "$p" 2>/dev/null || true
+	else
+		sig_if_running wpa_supplicant TERM
 	fi
 	rm -f "$WPA_PID"
-	sig_if_running wpa_supplicant TERM
 	# Its 1.8 MB block must be free before the next one can be loaded.
 	n=0
 	while proc_running wpa_supplicant && [ "$n" -lt 10 ]; do
+		net_tick 1
+		n=$((n + 1))
+	done
+	proc_running wpa_supplicant || return 0
+	sig_if_running wpa_supplicant TERM
+	n=0
+	while proc_running wpa_supplicant && [ "$n" -lt 5 ]; do
 		net_tick 1
 		n=$((n + 1))
 	done
