@@ -35,23 +35,33 @@
  * channel programmed with a single full-frame link-list item (LLI).
  * Measured on the board (P4 v1.3):
  *
- *   - There is no hardware free-run: with the CPU's interrupts off the
- *     channel stalls after one frame (chen 0, int_st0 latches
- *     DMA_TFR_DONE).  The hardware clears the LLI valid bit in memory
- *     on every block end; IDF's trans-done callback re-marks it and
- *     re-enables the channel each frame, and the Linux
- *     esp32p4-dsi-scanout driver does the same in IRQ context.
+ *   - In that link-list mode there is no free-run: with the CPU's
+ *     interrupts off the channel stalls after one frame (chen 0,
+ *     int_st0 latches DMA_TFR_DONE).  The hardware clears the LLI valid
+ *     bit in memory on every block end; IDF's trans-done callback
+ *     re-marks it and re-enables the channel each frame.
+ *   - The channel's auto-reload multi-block mode (cfg0 src/dst
+ *     multblk_type = reload) does free-run: at every block end it
+ *     reloads sar/dar/block_ts/ctl from its own registers and scans the
+ *     frame again, with no CPU in the loop.  tab5_display_status()
+ *     switches the stalled channel to it before the jump, so the
+ *     picture never waits for an interrupt again.  The Linux
+ *     esp32p4-dsi-scanout driver used to re-arm the link-list item from
+ *     its interrupt handler, and fbcon drawing boot messages with
+ *     interrupts off for longer than a frame starved the bridge: the
+ *     panel flashed white or cyan (#42).
  *   - A stalled channel re-arms cleanly (valid+last on the item through
  *     the uncached alias, llp0, chen) and the stream resumes at the
- *     same rate -- a handoff gap is recoverable, so the panel only
- *     holds the last frame between the jump and the driver's probe.
+ *     same rate.
  *   - Channel registers reject writes while the channel is enabled
  *     (int_sig_ena0 write ignored, llp0 store bus-faults), so every
  *     register touch below happens only after chen reads 0.
  *   - llp0 reads back 0x1 while the channel runs (it holds the NEXT
  *     item), so the item is found by content: the 64-byte-aligned
  *     record in internal SRAM with sar == framebuffer and
- *     dar == 0x50105000 (scanout_find_lli).
+ *     dar == 0x50105000 (scanout_find_lli).  Its address goes to Linux
+ *     in the DTB; the kernel driver reads the stream parameters from
+ *     it when it has to start the channel itself (older shims).
  *
  * The panic Linux had after the jump is explained by the handoff, not
  * by the stream: IDF vectors every CPU interrupt line (clicintattr
@@ -61,9 +71,8 @@
  * holds the line; the first MIE-raising moment in Linux dispatches it
  * through mtvt into the shim's dead vector table -- IDF code runs on
  * Linux's stack and double-panics.  tab5_display_status() therefore
- * detaches both sources and quiesces the channel before the jump; the
- * kernel keeper re-establishes the GDMA route when it claims
- * dsi-scanout@50081000 (interrupts-extended <&clic0 25 24 ...>).
+ * detaches both sources and masks the channel's interrupts before the
+ * jump; the kernel keeper claims no interrupt, so they stay detached.
  */
 
 #include <inttypes.h>
@@ -164,6 +173,7 @@ static const struct panel_profile profile_ili9881c = {
 #define DWGDMA_INT_CH_ABORTED (1u << 31)
 #define DWGDMA_LLI_CTRL_VALID (1u << 31)
 #define DWGDMA_LLI_CTRL_LAST (1u << 30)
+#define DWGDMA_CTRL_IOC_BLKTFR (1u << 26)
 
 static dw_gdma_dev_t *const gdma = &DW_GDMA;
 static int s_scanout_chan = -1;
@@ -229,8 +239,7 @@ static uint32_t scanout_find_lli(uint32_t fb_pa)
 
 /* Re-arm the scan-out channel exactly the way the IDF trans-done
  * callback does: re-mark the LLI valid+last, re-point llp0 at it, and
- * re-enable the channel.  Called by the self-test and documented as the
- * contract the kernel DSI-scanout driver implements. */
+ * re-enable the channel.  Called by the self-test. */
 static void scanout_rearm(int ch)
 {
 	/* Write through the uncached alias, as dw_gdma.c does (items_nc):
@@ -239,6 +248,35 @@ static void scanout_rearm(int ch)
 		(void *)CACHE_LL_L2MEM_NON_CACHE_ADDR(s_scanout_lli_pa);
 	lli->ctrl_hi.val |= DWGDMA_LLI_CTRL_VALID | DWGDMA_LLI_CTRL_LAST;
 	gdma->ch[ch].llp0.loc0 = s_scanout_lli_pa >> 6;
+	dw_gdma_ll_channel_enable(gdma, ch, true);
+}
+
+/* Restart a stalled scan-out channel in auto-reload mode: the IDF
+ * item's addresses, block size and control word go into the channel
+ * registers, which the hardware reloads at every block end, so the
+ * frame is scanned again and again with no CPU help.  The item's
+ * valid/last markers and its block-done interrupt are left out (a last
+ * block would end the stream).  The kernel esp32p4-dsi-scanout driver
+ * (linux/tab5/0141) does the same when it finds the channel stalled. */
+static void scanout_start_reload(int ch)
+{
+	volatile dmac_channel_reg_t *c = &gdma->ch[ch];
+	const volatile dw_gdma_link_list_item_t *lli =
+		(const volatile void *)CACHE_LL_L2MEM_NON_CACHE_ADDR(s_scanout_lli_pa);
+
+	c->sar0.val = lli->sar_lo.val;
+	c->sar1.val = 0;
+	c->dar0.val = lli->dar_lo.val;
+	c->dar1.val = 0;
+	c->block_ts0.val = lli->block_ts_lo.val;
+	c->ctl0.val = lli->ctrl_lo.val;
+	c->ctl1.val = lli->ctrl_hi.val & ~(DWGDMA_LLI_CTRL_VALID |
+					    DWGDMA_LLI_CTRL_LAST |
+					    DWGDMA_CTRL_IOC_BLKTFR);
+	dw_gdma_ll_channel_set_src_multi_block_type(gdma, ch,
+						    DW_GDMA_BLOCK_TRANSFER_RELOAD);
+	dw_gdma_ll_channel_set_dst_multi_block_type(gdma, ch,
+						    DW_GDMA_BLOCK_TRANSFER_RELOAD);
 	dw_gdma_ll_channel_enable(gdma, ch, true);
 }
 
@@ -252,8 +290,8 @@ static void scanout_rearm(int ch)
  *   2. irq-off    -- with mstatus.MIE clear the callback dies with the
  *      CPU and the channel must stall inside a frame: there is no
  *      hardware free-run;
- *   3. re-arm     -- a stalled channel takes the kernel-driver sequence
- *      and the stream resumes.
+ *   3. re-arm     -- a stalled channel takes IDF's re-arm sequence and
+ *      the stream resumes.
  *
  * Returns true when the stall and the resumed stream behave as
  * designed.
@@ -364,12 +402,14 @@ static void backlight_init(void)
  *      more; one frame worst case) -- channel registers are only
  *      writable while chen is 0, so masking and clearing the channel's
  *      interrupt status comes last;
- *   5. read back and print, so the serial log states the quiesced
- *      state Linux inherits.
+ *   5. restart the channel in auto-reload mode with its interrupts
+ *      still masked, and count frames for 100 ms -- with mstatus.MIE
+ *      still clear, so the stream has shown it runs without the CPU;
+ *   6. read back and print, so the serial log states the state Linux
+ *      inherits.
  *
- * The kernel esp32p4-dsi-scanout driver re-establishes the GDMA route
- * for its own slot when it probes (clic_domain_map writes
- * intmtx[source] = slot), then re-arms the stalled channel.
+ * The kernel esp32p4-dsi-scanout driver finds the channel free-running
+ * and leaves it alone; it claims no interrupt.
  */
 void tab5_display_status(void)
 {
@@ -402,6 +442,8 @@ void tab5_display_status(void)
 		wait_us += 500;
 	}
 	uint32_t chen_rb = gdma->chen0.val;
+	uint32_t free_frames = 0;
+	bool reload = false;
 	if (chen_rb & (1u << s_scanout_chan)) {
 		/* Channel still enabled: touching its registers would
 		 * fault.  The sources are detached so nothing reaches the
@@ -412,7 +454,11 @@ void tab5_display_status(void)
 		c->int_sig_ena0.val = 0;
 		c->int_sig_ena1.val = 0;
 		c->int_clr0.val = 0xffffffffu;
+		scanout_start_reload(s_scanout_chan);
+		reload = true;
+		free_frames = gdma_sample_wraps(s_scanout_chan, 100, NULL);
 	}
+	uint32_t chen_now = gdma->chen0.val;
 	uint32_t st_rb = c->int_st0.val;
 	uint32_t brg_st = MIPI_DSI_BRIDGE.int_st.val;
 	uint32_t gdma_map_rb = REG_READ(INTERRUPT_CORE0_GDMA_INT_MAP_REG);
@@ -424,11 +470,21 @@ void tab5_display_status(void)
 
 	ESP_LOGI(TAG, "handoff: gdma route %u->%u brg route %u->%u, "
 		 "slots %u/%u IE+IP cleared, ch%d chen0=0x%08" PRIx32
-		 " st0=0x%08" PRIx32 " brg_st=0x%08" PRIx32
-		 " (Linux dsi-scanout re-arms)",
+		 "->0x%08" PRIx32 " st0=0x%08" PRIx32 " brg_st=0x%08" PRIx32,
 		 gdma_route & 0x3f, gdma_map_rb & 0x3f,
 		 brg_route & 0x3f, brg_map_rb & 0x3f,
-		 gdma_slot, brg_slot, s_scanout_chan, chen_rb, st_rb, brg_st);
+		 gdma_slot, brg_slot, s_scanout_chan, chen_rb, chen_now,
+		 st_rb, brg_st);
+	if (!reload)
+		return;
+	if (free_frames >= 3)
+		ESP_LOGI(TAG, "handoff: ch%d auto-reload, %" PRIu32
+			 " frames/100ms with interrupts off -- free-running",
+			 s_scanout_chan, free_frames);
+	else
+		ESP_LOGE(TAG, "handoff: ch%d auto-reload gave %" PRIu32
+			 " frames/100ms with interrupts off -- NOT free-running",
+			 s_scanout_chan, free_frames);
 }
 
 /* Address of the scan-out LLI in internal SRAM, found by content; 0 if

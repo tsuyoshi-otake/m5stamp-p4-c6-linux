@@ -445,14 +445,14 @@
 
 		/*
 		 * DW-GDMA scanout channel handed over by the boot shim.  The
-		 * hardware clears the LLI valid bit in memory on every
-		 * block end (there is no free-run -- the channel stalls one
-		 * frame after the last re-arm), so a kernel driver re-arms
-		 * it in IRQ context, the same contract ESP-IDF's trans-done
-		 * callback and upstream dw-axi-dmac cyclic mode implement.
-		 * DW-GDMA is ETS interrupt source 24, routed to free CLIC
-		 * slot 25; the shim detaches the IDF route before the jump
-		 * and the kernel's clic_domain_map installs this one.
+		 * shim switches it from ESP-IDF's link-list mode (which
+		 * stops one frame after the last re-arm) to auto-reload,
+		 * which rescans the framebuffer frame after frame with no
+		 * CPU help (linux/tab5/0141); the driver checks that, or
+		 * does the switch itself after an older shim.  No
+		 * interrupt: the stream must not wait for one, and the
+		 * shim detaches the IDF route of DW-GDMA (ETS source 24)
+		 * before the jump.
 		 *
 		 * espressif,scanout-lli/-chan are patched by the boot shim
 		 * (patch_scanout_node in main.c): the 64-byte link-list
@@ -464,7 +464,6 @@
 		dsi_scanout: dsi-scanout@50081000 {
 			compatible = "espressif,esp32p4-dsi-scanout";
 			reg = <0x50081000 0x600>;
-			interrupts-extended = <&clic0 25 24 IRQ_TYPE_LEVEL_HIGH>;
 			espressif,scanout-lli = <0x5ca11000>;
 			espressif,scanout-chan = <0x5ca12000>;
 			status = "okay";

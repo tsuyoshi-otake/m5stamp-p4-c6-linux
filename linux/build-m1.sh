@@ -1149,7 +1149,7 @@ for patch_name in "${patches[@]}"; do
 	fi
 done
 # Tab5 board kernel patches (linux/tab5/*.patch) apply only to the
-# Tab5 kernel: the DSI-scanout GDMA re-arm driver, the simplefb
+# Tab5 kernel: the DSI-scanout GDMA auto-reload keeper, the simplefb
 # cache-flush ops, the ST7123 touch driver, and the esp32p4-gpio
 # single-bit-direction fix (0097) are meaningless on Stamp boards and
 # must not leak into the shared patch stage.  They stage in glob
