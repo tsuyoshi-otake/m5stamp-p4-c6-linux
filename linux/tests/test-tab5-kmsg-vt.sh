@@ -47,6 +47,24 @@ grep -q 'set_config_value "${br_output}/.config" BR2_PACKAGE_M5_KEY y' \
 	ok "the Tab5 build enables m5-key" ||
 	bad "build-m1.sh no longer enables BR2_PACKAGE_M5_KEY"
 
+# 2c. The kernel's own boot messages show on the panel (and the serial
+# console) up to KERN_INFO, as on a Raspberry Pi: loglevel=7 in the Tab5
+# bootargs.  Runtime console traffic starves SDIO, so S40network must
+# still lower the console (dmesg -n 4) before it loads the Wi-Fi module.
+dts="$repo_root/linux/dts/esp32p4-tab5.dts"
+grep -q 'bootargs = ".* console=tty0 console=ttyGS1,115200n8 loglevel=7 ' "$dts" &&
+	ok "Tab5 bootargs print the boot messages (loglevel=7)" ||
+	bad "Tab5 bootargs lost loglevel=7 or the tty0/ttyGS1 consoles"
+s40="$repo_root/linux/m3-lab/rootfs-overlay/etc/init.d/S40network"
+lower=$(grep -n 'dmesg -n 4' "$s40" | head -1 | cut -d: -f1)
+load=$(grep -n 'if insmod "$KO"' "$s40" | head -1 | cut -d: -f1)
+[ -n "$lower" ] && [ -n "$load" ] && [ "$lower" -lt "$load" ] &&
+	ok "S40network lowers the console before it loads the Wi-Fi module" ||
+	bad "S40network: dmesg -n 4 at line '${lower:-none}', insmod at '${load:-none}'"
+grep -q 'loglevel=4' "$repo_root/linux/dts/esp32p4-m5stamp-p4.dts" &&
+	ok "the Stamp-P4 (no panel) keeps loglevel=4" ||
+	bad "Stamp-P4 bootargs changed"
+
 # 3. Nothing runs on tty2: a shell or getty there would read the keys
 # typed on the log screen, and the panel's own shell stays on tty1.
 grep -q '^tty2:' "$inittab" &&

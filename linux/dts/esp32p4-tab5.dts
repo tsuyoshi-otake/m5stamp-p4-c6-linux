@@ -71,7 +71,13 @@
 		 * console= wins) while kernel messages also reach the panel through
 		 * fbcon.  consoleblank=0: the framebuffer has no blank op, so fbcon
 		 * would just paint the panel black after 10 minutes and the device
-		 * would look dead.  fbcon=font:TER16x32: the 8x16 default makes
+		 * would look dead.  loglevel=7: the kernel's boot messages up to
+		 * KERN_INFO show on the panel and the serial console, as on a
+		 * Raspberry Pi; from the start of init they go to VT 2
+		 * (inittab: setlogcons 2), and S40network lowers the console
+		 * to errors (dmesg -n 4) before it loads the Wi-Fi module --
+		 * console traffic at runtime starves SDIO.
+		 * fbcon=font:TER16x32: the 8x16 default makes
 		 * 90 x 80 cells on 720x1280, too small to read; the 16x32 font
 		 * (45 x 40) must be named because fbcon prefers 8x16 by default.
 		 * fbcon=rotate:3 draws the console 90 deg CCW -- the keyboard
@@ -79,7 +85,7 @@
 		 * console reads upright (the ST712x MADCTL only mirrors; the
 		 * 90 deg turn has to be done in fbcon, the panel cannot).
 		 */
-		bootargs = "earlycon=esp32p4usbjtag,mmio32,0x500d2000 console=tty0 console=ttyGS1,115200n8 loglevel=4 consoleblank=0 fbcon=font:TER16x32 fbcon=rotate:3 root=/dev/mtdblock0 rootfstype=squashfs ro init=/sbin/init maxcpus=1";
+		bootargs = "earlycon=esp32p4usbjtag,mmio32,0x500d2000 console=tty0 console=ttyGS1,115200n8 loglevel=7 consoleblank=0 fbcon=font:TER16x32 fbcon=rotate:3 root=/dev/mtdblock0 rootfstype=squashfs ro init=/sbin/init maxcpus=1";
 		/*
 		 * Filled in by the boot shim's tab5_detect_panel() before the
 		 * Linux jump (fixed 8-byte field, patched in place):
