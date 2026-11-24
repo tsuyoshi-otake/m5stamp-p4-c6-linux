@@ -79,8 +79,8 @@ Configuration edits are applied only after the host's safe-eject action.
 reboot: S40network then leaves all kernel messages on the console instead of
 lowering it to warnings. Expect slower Wi-Fi/SSH while it is on, and remove it
 afterwards. On the Tab5 the panel's shell never shows kernel messages: they
-are on the second virtual console (`Alt`+`F2`, back with `Alt`+`F1`), on the
-serial console and in `dmesg`. As root, `cat /run/messages.0 /run/messages`
+are on the second virtual console (`Alt`+`→`, back with `Alt`+`←`; see the
+README's keyboard section), on the serial console and in `dmesg`. As root, `cat /run/messages.0 /run/messages`
 shows syslog (Dropbear logins, DHCP), capped at 64 KB, and `sysinfo` a
 status summary.
 

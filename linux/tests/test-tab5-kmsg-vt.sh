@@ -3,7 +3,8 @@
 # panel's shell on tty1 (a C6 restart printed dozens of esp32_sdio errors
 # across the screen; console=tty0 shows every message under the console
 # loglevel on the foreground VT unless the kernel is told otherwise).
-# The board-side half is one inittab line and one BusyBox applet; this
+# The board-side half is two inittab lines (setlogcons, and m5-key
+# vt-keys so that AltGr reaches VT 2 too) and one BusyBox applet; this
 # checks that they are there, in the right order, and that nothing else
 # claims the VT the messages go to.
 set -u
@@ -21,16 +22,30 @@ grep -qx '::sysinit:/usr/sbin/setlogcons 2' "$inittab" &&
 	bad "no '::sysinit:/usr/sbin/setlogcons 2' in $inittab"
 
 # 2. It runs before rcS: the esp32_sdio module loads from S40network, and
-# its boot-time errors must already go to VT 2.
-first=$(grep -n '^::sysinit:' "$inittab" | head -1)
-case "$first" in
-	*setlogcons*) ok "setlogcons is the first sysinit entry" ;;
-	*) bad "first sysinit entry is '$first'" ;;
-esac
-[ "$(grep -c '^::sysinit:' "$inittab")" -eq 2 ] &&
-	grep -qx '::sysinit:/etc/init.d/rcS' "$inittab" &&
-	ok "rcS still runs as the second sysinit entry" ||
-	bad "sysinit entries: $(grep '^::sysinit:' "$inittab" | tr '\n' ' ')"
+# its boot-time errors must already go to VT 2.  The AltGr console keys
+# come next (2b), then rcS.
+sysinit=$(grep '^::sysinit:' "$inittab" | tr '\n' '|')
+[ "$sysinit" = '::sysinit:/usr/sbin/setlogcons 2|::sysinit:/usr/bin/m5-key vt-keys|::sysinit:/etc/init.d/rcS|' ] &&
+	ok "sysinit runs setlogcons, then m5-key vt-keys, then rcS" ||
+	bad "sysinit entries: $sysinit"
+
+# 2b. VT 2 can be reached without a left Alt: the CACOE case keyboard in
+# Windows mode sends Win and AltGr and has no F-row.  m5-key vt-keys
+# copies the Alt plane's Left/Right entries (Decr/Incr_Console) into the
+# AltGr plane, and m5-key is built for every Tab5 image.
+m5key="$repo_root/linux/buildroot-external/package/m5-key/src/m5-key.c"
+if grep -q 'e.kb_table = 1 << KG_ALT;' "$m5key" &&
+	grep -q 'e.kb_table = 1 << KG_ALTGR;' "$m5key" &&
+	grep -q 'keys\[\] = { KEY_LEFT, KEY_RIGHT }' "$m5key" &&
+	grep -q 'strcmp(argv\[1\], "vt-keys")' "$m5key"; then
+	ok "m5-key vt-keys copies Alt+Left/Right into the AltGr plane"
+else
+	bad "m5-key.c lost vt-keys or its Alt -> AltGr copy"
+fi
+grep -q 'set_config_value "${br_output}/.config" BR2_PACKAGE_M5_KEY y' \
+	"$repo_root/linux/build-m1.sh" &&
+	ok "the Tab5 build enables m5-key" ||
+	bad "build-m1.sh no longer enables BR2_PACKAGE_M5_KEY"
 
 # 3. Nothing runs on tty2: a shell or getty there would read the keys
 # typed on the log screen, and the panel's own shell stays on tty1.
