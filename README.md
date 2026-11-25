@@ -118,6 +118,33 @@ Every board gets its own credentials on first boot; no SSID or password is share
 ### 1. Download Release Package
 
 <!-- 55b keep -->
+> **v0.6.0** is built and published the same way as v0.5.0: the tag run refuses any asset
+> whose hash is not in `linux/tests/v0.6.0-hardware-validation-2026-11-25.md`.
+> It carries the shared scripts, kernel and driver fixes of the M5Stack Tab5 port; "Tab5 #N"
+> below is an issue in [m5stack-tab5-linux](https://github.com/tsuyoshi-otake/m5stack-tab5-linux/issues).
+> Changes since v0.5.1:
+> - `m5-config`, a settings menu in the style of `raspi-config`, on the serial console
+>   (Tab5 #42; see "4. Settings menu"). `m5-config list/get/set` script it, and `set`
+>   returns once the change is live.
+> - A live switch from SoftAP to station mode (a saved `wifi_mode` change) works without a
+>   reboot: the ESP-Hosted driver matches each command to its own answer (`0049`), so wlan0
+>   comes up as a station with its own MAC address instead of an all-zero one, and
+>   `S40network` stops `wpa_supplicant` with a single SIGTERM.
+> - The board watches the C6 link (Tab5 #41): after a C6 restart Wi-Fi comes back without a
+>   reboot, and a SoftAP that did not come back restarts the network.  The driver's teardown
+>   no longer leaves a command waiting, and the configured SDIO clock survives it.
+> - The boot drive is checked before it is replaced (Tab5 #43): when the kernel could not read
+>   the flashed boot image, the drive carries the template and `NOT-SAVED.txt`, and nothing is
+>   saved over the flash copy.
+> - A reboot or power-off waits for a pending drive save to reach flash (Tab5 #42).
+> - The ttyGS1 console comes back after a USB bus reset (Tab5 #45).
+> - `flash-candidate.ps1` checks the board before writing (Tab5 #23, see Option B) and resets
+>   it after the verify (`-NoReset` keeps it in the bootloader).
+>
+> **v0.5.1** is v0.5.0 with the SoftAP transmit fix (the Wi-Fi driver had been built without
+> AP mode) and the Dropbear fixes of #53
+> (`linux/tests/v0.5.1-hardware-validation-2026-11-15.md`).
+>
 > **v0.5.0** is built and published the same way as v0.4.3: the tag run refuses any asset
 > whose hash is not in `linux/tests/v0.5.0-hardware-validation-2026-10-29.md`.
 > Changes since v0.4.3:
@@ -294,8 +321,8 @@ Every board gets its own credentials on first boot; no SSID or password is share
 > the GPL corresponding source (`*-legal-info.tar.gz`, #31).
 
 Download either the monolithic 16MB raw flash image or the partition zip package from the [Releases](https://github.com/tsuyoshi-otake/m5stamp-p4-c6-linux/releases) page:
-- **`m5stamp-p4-c6-linux-smp-v0.5.0-16mb.bin.gz`**: Single 16MB raw flash image (simplest, flash to `0x0`).
-- **`m5stamp-p4-c6-linux-smp-v0.5.0.zip`**: Individual partition binaries with automated PowerShell flash script.
+- **`m5stamp-p4-c6-linux-smp-v0.6.0-16mb.bin.gz`**: Single 16MB raw flash image (simplest, flash to `0x0`).
+- **`m5stamp-p4-c6-linux-smp-v0.6.0.zip`**: Individual partition binaries with automated PowerShell flash script.
 
 ### 2. Flash using `esptool.py`
 
@@ -303,8 +330,8 @@ Connect the M5Stamp-P4 via its USB-C port to your computer. Identify your serial
 
 #### Option A: Monolithic 16MB Raw Image Flash (Recommended)
 ```bash
-gzip -d m5stamp-p4-c6-linux-smp-v0.5.0-16mb.bin.gz
-esptool.py --chip esp32p4 --port COM10 --baud 460800 write_flash 0x0 m5stamp-p4-c6-linux-smp-v0.5.0-16mb.bin
+gzip -d m5stamp-p4-c6-linux-smp-v0.6.0-16mb.bin.gz
+esptool.py --chip esp32p4 --port COM10 --baud 460800 write_flash 0x0 m5stamp-p4-c6-linux-smp-v0.6.0-16mb.bin
 ```
 
 #### Option B: Release PowerShell Script
@@ -1129,24 +1156,24 @@ bash linux/release-build.sh --vendor /path/to/output --profile m3-lab
 
 ---
 
-## SHA-256 Checksums (v0.5.0)
+## SHA-256 Checksums (v0.6.0)
 
 ```text
 Raw 16MB Monolithic Image:
-3123bfdb1a398da67f92ffb3fccedab5ec68684ab694720b8636424702c8d3c9  m5stamp-p4-c6-linux-smp-v0.5.0-16mb.bin.gz
-ede8673dc2aa0431964dbd05ba8632236b11bdd4b151d0b0b98d657cbb772183  m5stamp-p4-c6-linux-smp-v0.5.0-16mb.bin (uncompressed)
+ac38dd80599ed710dd40a71262b340d4234bf75dc457a78cb724679d853221d4  m5stamp-p4-c6-linux-smp-v0.6.0-16mb.bin.gz
+fe8485319b7a9e8fd3126c62023bff969dce80797d8b6f627cf40bf661bfda9e  m5stamp-p4-c6-linux-smp-v0.6.0-16mb.bin (uncompressed)
 
 Partition Archive:
-8092cd0b930aba972acf1f4a1f520cc42f5da036e153b3979a1dfd46ebd1ce81  m5stamp-p4-c6-linux-smp-v0.5.0.zip
+4edf1907748db73c177b18f53155cfb93f7b81429b6cd6b407d2e68515dff57a  m5stamp-p4-c6-linux-smp-v0.6.0.zip
 
 Individual Partitions:
-c0050045c8fd03ea89ccdb53176ec9cf37a4c58632bc1b8afbcbd6a72b33e0c6  bootloader.bin
+43fb8b6f4f92753c877822c4205d4b146a871f07c093e8588432666ac2740d8c  bootloader.bin
 7937656f29960d53b63010b51836e233d092e067e320cde5778ec43e04218870  partition-table.bin
-dac407089d532ef56c09cd699011ab370aca0728eac3f1a1a904f5774b29afc8  boot-shim.bin
-1239c2e806a2435456a846f29ea57c4bf6f15dad2bc69275176b9fbd45cdbd62  Image
-911ce4ce2d311d06ec4f7aacd1bf98fceb1deb9e3dd6e8f6d56e4709231f9094  rootfs.squashfs
-2cffd1615e895ff0911e2a56feb689ee7bffe832fa61a6d1619510984188e7af  esp32p4-m5stamp-p4.dtb
-ab4bec8915b52ea0647ee3abcdb0d042c721df8ff6a5265ed455557ddefa80c5  boot.img
+be909b0eace54d7f063414a4d5f106015d1901f336c970d361a7cb1e5f540cea  boot-shim.bin
+bc40c249e6a387b0039fc3db35c946a9752ccbac4123c1cd14825fed2b5ff3dd  Image
+78534b8810d317125805b33dce0209e32ee0c275051c7906ae0f62dac78ecf55  rootfs.squashfs
+32b26434c6e6d1fe6fe3e9cc8b06a722f0546dcdae965affccbc292dbfea9279  esp32p4-m5stamp-p4.dtb
+ebd82ee8fa624d30051ad1c865ba56acbc17c8e0c62cb7b84782558041e048c5  boot.img
 ```
 
 ---
